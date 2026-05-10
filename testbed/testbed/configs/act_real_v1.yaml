@@ -1,0 +1,48 @@
+# ACT offline training config for the real excavator V1 dataset.
+# Uses joint-sensor qpos and qvel only; hydraulic cylinder signals are not part
+# of the first-stage schema or training input.
+
+task:
+  task_name: real_excavation_teleop_v1
+  equipment_model: real_excavator
+  dataset_dir: data/real_teleop_v1
+  num_episodes: 30
+  episode_len: 1000
+  camera_names:
+    - fpv
+  backend:
+    name: real
+    dt: 0.02
+
+policy:
+  class: ACT
+  device: cuda
+  low_dim_keys:
+    - qpos
+    - qvel
+  act_params:
+    chunk_size: 100
+    kl_weight: 10.0
+    hidden_dim: 512
+    dim_feedforward: 3200
+
+train:
+  lr: 1.0e-5
+  num_epochs: 2000
+  batch_size: 4
+  seed: 0
+  device: cuda
+  num_workers: 0
+  prefetch_factor:
+  persistent_workers: false
+  pin_memory: true
+  split_seed: 0
+  train_split_ratio: 0.8
+  reuse_split: true
+  val_every: 5
+  save_latest_every: 10
+  checkpoint_every: 50
+  plot_every: 50
+  amp: true
+  amp_dtype: auto
+  ckpt_dir: runs/ckpts/real_excavation_act_v1

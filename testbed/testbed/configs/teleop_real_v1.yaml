@@ -1,0 +1,83 @@
+# Real excavator V1 teleop recording config.
+# First stage: safe teleop data collection, QC, and offline training.
+# This path does not issue autonomous ACT commands and does not use any V2 planner.
+
+real:
+  backend: mock          # mock | noop | bridge_mock | bridge_tcp
+  state_reader: mock     # mock | bridge_mock | bridge_tcp
+  control_hz: 50
+  image_width: 160
+  image_height: 120
+  mock_velocity_scale_rad_s: 0.5
+  bridge:
+    host: "127.0.0.1"
+    port: 0              # required only when backend/state_reader uses bridge_tcp
+    timeout_s: 1.0
+
+teleop:
+  input: joystick        # joystick | keyboard | oem_remote | zero
+  learning_target: operator_command_from_observation
+  num_episodes: 30
+  metadata:
+    operator_id: ""
+    session_id: ""
+    notes: ""
+
+  joystick:
+    joystick_id: 0
+    joystick_ids: [1, 0, 1, 0]
+    axis_map: [0, 1, 1, 0]
+    invert: [false, false, false, false]
+    reset_button: 10
+    deadzone: 0.05
+    scale: [0.6, 0.3, 0.7, 0.7]
+    clip: 1.0
+    response_profile:
+      enabled: true
+      use_measured_dt: false
+      deadzone: [0.05, 0.05, 0.05, 0.05]
+      attack_rate: 4.0
+      release_rate: 6.0
+      recenter_rate: 7.0
+      exponent: 1.0
+
+  keyboard:
+    key_speed: 0.5
+    window_title: "Real Excavator Teleop"
+
+  oem_remote:
+    required: false
+    allow_stub: false
+    source_id: oem_remote
+    interface: ""
+    note: "Set allow_stub=true only for local interface checks without the vendor remote reader."
+
+task:
+  task_name: real_excavation_teleop_v1
+  dataset_dir: data/real_teleop_v1
+  camera_names: ["fpv"]
+  max_steps: 1000
+  control_hz: 50
+  dt: 0.02
+  seed: -1
+  param_version: real_v1
+
+sync:
+  time_source: sensor_or_ros_header_stamp
+  max_observation_skew_ms: 40.0
+  required_cameras: ["fpv"]
+  record_action_sample_time: true
+  record_action_send_time: true
+
+video:
+  target_latency_ms: 120.0
+  transport_hint: low_latency
+  prefer_compressed_transport: true
+
+safety:
+  deadman_enabled: true
+  estop_enabled: true
+  manual_override_enabled: true
+  sensor_timeout_s: 0.20
+  action_clip: 0.20
+  max_delta_per_step: 0.02

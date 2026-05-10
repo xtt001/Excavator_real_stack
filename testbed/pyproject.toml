@@ -1,0 +1,74 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "excavator-testbed"
+version = "0.1.0"
+description = "Engineering machinery imitation learning testbed — model-agnostic, hot-swappable policies"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    # Core
+    "numpy>=1.24,<2",
+    "torch>=2.0",
+    "torchvision>=0.15",
+    # Data
+    "h5py>=3.9",
+    # Config
+    "pydantic>=2.0",
+    "PyYAML>=6.0",
+    # Visualization / video
+    "opencv-python>=4.8,<4.12",
+    "matplotlib>=3.7",
+    # Teleop input
+    "pygame>=2.5",
+    # Utils
+    "einops>=0.7",
+    "tqdm>=4.65",
+]
+
+[project.optional-dependencies]
+dev = [
+    "black>=24.0",
+    "isort>=5.13",
+    "ruff>=0.3",
+    "mypy>=1.9",
+    "pre-commit>=3.7",
+]
+
+[project.scripts]
+tb-record-real    = "testbed.cli.record_real:main"
+tb-bridge-mock-server = "testbed.cli.bridge_mock_server:main"
+tb-dataset-qc     = "testbed.cli.dataset_qc:main"
+tb-train          = "testbed.cli.train:main"
+tb-dataset-videos = "testbed.cli.dataset_videos:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["testbed*"]
+
+# ─── black ────────────────────────────────────────────────────────────────────
+[tool.black]
+line-length = 88
+target-version = ["py310"]
+
+# ─── isort ────────────────────────────────────────────────────────────────────
+[tool.isort]
+profile = "black"
+line_length = 88
+
+# ─── ruff ─────────────────────────────────────────────────────────────────────
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP"]
+ignore = ["E501"]   # line length handled by black
+
+# ─── mypy ─────────────────────────────────────────────────────────────────────
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+strict = false              # start relaxed; tighten per module over time
