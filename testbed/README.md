@@ -12,9 +12,9 @@ flowchart LR
     OP["Operator<br/>joystick / keyboard / OEM remote"] --> AS["ActionSource<br/>normalized 4D command"]
     AS --> GUARD["ActionGuard<br/>clip / rate limit / deadman / stale sensor"]
     GUARD --> RB["RealBackend<br/>single backend API"]
-    RB --> LLC["LowLevelController adapter<br/>mock / noop / future ROS-CAN bridge"]
-    RB --> SR["RealStateReader<br/>mock / future ROS state bridge"]
-    LLC --> BC["RealBridgeClient<br/>bridge_mock / future external bridge"]
+    RB --> LLC["LowLevelController adapter<br/>mock / noop / bridge_tcp"]
+    RB --> SR["RealStateReader<br/>mock / bridge_tcp"]
+    LLC --> BC["RealBridgeClient<br/>bridge_mock / JSON-TCP bridge"]
     BC --> LOW["Lower control repo<br/>C++ control, PID, CAN, machine mapping"]
     LOW --> HYD["Real hydraulic actuators"]
 
@@ -129,17 +129,18 @@ The lower `excavator` repo has usable core pieces for real control:
 - CAN loop code and a TCP packet demo shape compatible with this testbed's
   `excavator_api` packet adapter.
 
-What is not complete in this testbed branch yet:
+What still requires target-machine or hardware validation:
 
-- A production ROS/CAN bridge process or node.
-- A real joint/status reader implementation behind `RealStateReader`.
-- A hardware controller implementation that sends guarded 4D commands through
-  the lower repo and returns controller acknowledgements.
+- A production ROS/CAN bridge node and final low-latency camera path.
+- The C++ JSON/TCP bridge against real SocketCAN rather than simulation.
+- Real qpos/qvel/status units, signs, timestamps, and fault semantics.
 - OEM remote command decoding.
 - End-to-end hardware timing validation.
 
-So the bottom repo is a useful control foundation, but this branch still needs
-bridge/adapters before `tb-record-real` can drive a real excavator directly.
+The monorepo now includes a first C++ JSON/TCP bridge process under `bridge/`
+for smoke testing the shared `bridge_tcp` protocol against the lower C++ API.
+It defaults to simulation and real CAN disabled; it is not the final ROS/camera
+integration.
 
 ## Bridge Contract
 
@@ -158,7 +159,8 @@ process, both adapters can share one `RealBridgeClient`:
 BridgeLowLevelController -> RealBridgeClient <- BridgeStateReader
 ```
 
-The future ROS/CAN bridge should satisfy these fields:
+Any external bridge, including the current C++ JSON/TCP bridge and a future
+ROS/CAN bridge, should satisfy these fields:
 
 - Command input: normalized 4D action, action send timestamp, optional current
   state snapshot.
@@ -170,7 +172,7 @@ The future ROS/CAN bridge should satisfy these fields:
 
 `MockStateReader` and `MockLowLevelController` exercise the same public
 interfaces without requiring ROS, CAN, or hardware. `bridge_mock` exercises the
-shared-client path and is closer to the future external bridge topology.
+same shared-client topology used by `bridge_tcp`.
 
 ### JSON/TCP Bridge
 
@@ -182,6 +184,7 @@ send_action.request  -> send_action.response
 read_state.request   -> read_state.response
 reset.request        -> reset.response
 close.request        -> close.response
+shutdown.request     -> shutdown.response
 ```
 
 The `send_action` payload carries normalized 4D action and a compact state
@@ -211,8 +214,8 @@ tb-train --config testbed/configs/act_real_v1.yaml
 
 `mock` lets the full HDF5/QC/training path run without hardware. `bridge_mock`
 uses a shared in-process bridge client for command and state. `noop` accepts
-valid actions but commands zeros. Future ROS/CAN integration should arrive as
-controller/state-reader bridge adapters without requiring ROS to import the
+valid actions but commands zeros. Hardware integrations should arrive as bridge
+adapters or external bridge processes without requiring ROS/CAN to import the
 whole package.
 
 For a local external bridge process, use:
@@ -232,6 +235,17 @@ tb-record-real \
 overrides above. The same server can also be launched as
 `python3 tools/bridge_mock_server.py --port 8765` when console scripts are not
 installed.
+
+For the C++ bridge, build `bridge/excavator_real_bridge` from the repository
+root and point the same `bridge_tcp` command at its host/port. Keep
+`--can-bus-enabled false --can-simulation true --imu-simulation true` for the
+first smoke test.
+
+The repository-level smoke script wraps this path:
+
+```bash
+scripts/smoke_real_bridge.sh
+```
 
 ## Adapter Boundary
 

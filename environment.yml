@@ -1,0 +1,11 @@
+name: excavator-real-stack
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - cmake>=3.20
+  - eigen
+  - pkg-config
+  - pip:
+      - -r requirements.txt

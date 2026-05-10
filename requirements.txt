@@ -1,0 +1,5 @@
+# Python package dependencies are owned by testbed/pyproject.toml.
+# Install from the repository root:
+#   python -m pip install -r requirements.txt
+-e ./testbed
+pytest>=8.0
