@@ -105,6 +105,16 @@ def main() -> None:
         default=None,
         help="Override real.bridge.timeout_s for bridge_tcp mode.",
     )
+    parser.add_argument(
+        "--data-side",
+        choices=["host", "slave"],
+        default=None,
+        help=(
+            "Where HDF5 is written: host=operator PC, slave=vehicle PC. "
+            "Sets default dataset_dir and bridge host/port; run tb-record-real on that machine. "
+            "Also configurable via real.data_side or EXCAVATOR_DATA_SIDE."
+        ),
+    )
     args = parser.parse_args()
 
     cfg = _load_yaml_config(args.config)
@@ -116,6 +126,16 @@ def main() -> None:
     sync_cfg = cfg.setdefault("sync", {})
     video_cfg = cfg.setdefault("video", {})
     teleop_meta_cfg = teleop_cfg.setdefault("metadata", {})
+
+    from testbed.cli.data_side import apply_data_side_config, validate_data_side_for_bridge_tcp
+
+    resolved_data_side = apply_data_side_config(
+        cfg,
+        data_side=args.data_side,
+        cli_output_dir=str(args.output_dir) if args.output_dir is not None else None,
+        cli_bridge_host=args.bridge_host,
+        cli_bridge_port=args.bridge_port,
+    )
 
     if args.backend is not None:
         real_cfg["backend"] = args.backend
@@ -159,6 +179,13 @@ def main() -> None:
     input_device = str(teleop_cfg.get("input", "joystick"))
     backend_mode = str(real_cfg.get("backend", "mock"))
     state_reader_mode = str(real_cfg.get("state_reader", "mock"))
+    bridge_cfg = dict(real_cfg.get("bridge", {}) or {})
+    validate_data_side_for_bridge_tcp(
+        resolved_data_side,
+        backend_mode=backend_mode,
+        state_reader_mode=state_reader_mode,
+        bridge_host=str(bridge_cfg.get("host", "127.0.0.1")),
+    )
     sync_max_slop_ns = int(float(sync_cfg.get("max_observation_skew_ms", 40.0)) * 1_000_000)
     camera_names: list[str] = list(task_cfg.get("camera_names", ["fpv"]))
     record_config_yaml = _dump_yaml_config(cfg)
@@ -198,10 +225,13 @@ def main() -> None:
         dt=dt,
         sync_cfg=sync_cfg,
         video_cfg=video_cfg,
+        data_side=resolved_data_side or real_cfg.get("data_side"),
     )
 
     log.info(
-        "Real v1 config: backend=%s state_reader=%s input=%s episodes=%d max_steps=%d output=%s",
+        "Real v1 config: data_side=%s backend=%s state_reader=%s input=%s "
+        "episodes=%d max_steps=%d output=%s",
+        resolved_data_side or real_cfg.get("data_side", "-"),
         backend_mode,
         state_reader_mode,
         input_device,
@@ -548,6 +578,7 @@ def _build_episode_metadata(
     dt: float,
     sync_cfg: dict[str, Any],
     video_cfg: dict[str, Any],
+    data_side: str | None = None,
 ) -> dict[str, Any]:
     camera_width = int(real_cfg.get("image_width", 160))
     camera_height = int(real_cfg.get("image_height", 120))
@@ -578,6 +609,7 @@ def _build_episode_metadata(
         ATTR_CAMERA_ROW_ORDER: "top_to_bottom",
         "real_backend": str(real_cfg.get("backend", "mock")),
         "real_state_reader": str(real_cfg.get("state_reader", "mock")),
+        "data_side": str(data_side or real_cfg.get("data_side", "")),
         "learning_target": str(
             teleop_cfg.get("learning_target", "operator_command_from_observation")
         ),

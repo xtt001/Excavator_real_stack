@@ -1,4 +1,8 @@
-"""独立启动 Orbbec 相机（仅彩色 640x480@30，compressed 发布）。"""
+"""独立启动 Orbbec 相机（仅彩色 640x480@30，compressed 发布）。
+
+Orbbec 驱动来自从机工作空间 OrbbecSDK_ROS2（默认 ~/orbbec_ws/src/OrbbecSDK_ROS2），
+colcon 后包名为 orbbec_camera；启动前 source scripts/source_ros_stack.sh。
+"""
 
 import os
 
@@ -9,9 +13,18 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 
 
+def _orbbec_camera_share() -> str:
+    """优先 ament 索引；也可设 EXCAVATOR_ORBBEC_SHARE 指向 install/share/orbbec_camera。"""
+    override = os.environ.get("EXCAVATOR_ORBBEC_SHARE", "").strip()
+    if override:
+        return override
+    pkg = os.environ.get("EXCAVATOR_ORBBEC_PACKAGE", "orbbec_camera")
+    return get_package_share_directory(pkg)
+
+
 def generate_launch_description():
     pkg_share = get_package_share_directory("excavator_ros2_bridge")
-    orbbec_share = get_package_share_directory("orbbec_camera")
+    orbbec_share = _orbbec_camera_share()
     default_config = os.path.join(pkg_share, "config", "orbbec_fpv.yaml")
 
     return LaunchDescription(

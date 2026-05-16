@@ -20,10 +20,25 @@ testbed (tb-record-real, bridge_tcp :8765)
 
 ## 依赖
 
-```bash
-source /home/yxc/ros2_ws/install/setup.bash   # orbbec_camera
-source .venv/bin/activate                       # testbed
+从机 Orbbec 驱动位于 **`~/orbbec_ws/src/OrbbecSDK_ROS2`**（colcon 后 ROS 包名 `orbbec_camera`）。
 
+```bash
+# 1) 构建 Orbbec（从机，仅需一次）
+cd ~/orbbec_ws/src
+# git clone https://github.com/orbbec/OrbbecSDK_ROS2.git  # 若尚未克隆
+cd ~/orbbec_ws
+colcon build --symlink-install --packages-select orbbec_camera
+
+# 2) 将本仓库 launch 包放入 colcon 工作空间（可与 orbbec_ws 共用）
+ln -sf ~/Excavator_real_stack/ros2_bridge/excavator_ros2_bridge ~/orbbec_ws/src/
+cd ~/orbbec_ws   # 或单独的 EXCAVATOR_ROS_WS
+colcon build --symlink-install --packages-select excavator_ros2_bridge
+
+# 3) 环境
+source ~/Excavator_real_stack/scripts/source_ros_stack.sh
+# 或: export EXCAVATOR_ORBBEC_WS=~/orbbec_ws EXCAVATOR_ROS_WS=~/orbbec_ws
+
+source .venv/bin/activate   # testbed（可选）
 sudo apt install -y ros-${ROS_DISTRO}-compressed-image-transport ros-${ROS_DISTRO}-cv-bridge
 pip install -r requirements.txt
 ```
@@ -34,9 +49,9 @@ pip install -r requirements.txt
 # 1. 控制 bridge（原版，未改 cpp）
 ./bridge/build/excavator_real_bridge --port 8766 --can-bus-enabled false
 
-# 2. Orbbec 相机
-source /home/yxc/ros2_ws/install/setup.bash
-ros2 launch excavator_ros2_bridge orbbec_fpv_camera.launch.py
+# 2. Orbbec 相机（OrbbecSDK_ROS2 @ ~/orbbec_ws）
+./scripts/start_orbbec_fpv_camera.sh
+# 等价: source scripts/source_ros_stack.sh && ros2 launch excavator_ros2_bridge orbbec_fpv_camera.launch.py
 
 # 3. 图像订阅 -> SHM + rqt 可视化（默认开启 rqt_image_view）
 ./scripts/start_fpv_subscriber_py.sh
@@ -55,7 +70,7 @@ tb-record-real --backend bridge_tcp --bridge-port 8765 --input joystick ...
 `excavator_ros2_bridge` 包内另有 C++ `fpv_image_subscriber`（与 Python 订阅二选一）：
 
 ```bash
-cd /home/yxc/ros2_ws && colcon build --packages-select excavator_ros2_bridge
+cd ~/orbbec_ws && colcon build --packages-select excavator_ros2_bridge
 ```
 
 ## 说明

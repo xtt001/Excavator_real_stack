@@ -366,6 +366,40 @@ class RealworldV1Tests(unittest.TestCase):
             thread.join(timeout=2.0)
         self.assertFalse(errors)
 
+    def test_apply_data_side_slave_defaults(self) -> None:
+        from testbed.cli.data_side import apply_data_side_config
+
+        cfg = {"real": {"bridge": {"host": "10.0.0.2", "port": 0}}, "task": {}}
+        side = apply_data_side_config(cfg, data_side="slave")
+        self.assertEqual(side, "slave")
+        self.assertEqual(cfg["task"]["dataset_dir"], "/data/real_teleop_v1")
+        self.assertEqual(cfg["real"]["bridge"]["host"], "127.0.0.1")
+        self.assertEqual(cfg["real"]["bridge"]["port"], 8765)
+
+    def test_apply_data_side_host_respects_cli_overrides(self) -> None:
+        from testbed.cli.data_side import apply_data_side_config
+
+        cfg = {"real": {"bridge": {"port": 0}}, "task": {"dataset_dir": "keep"}}
+        side = apply_data_side_config(
+            cfg,
+            data_side="host",
+            cli_output_dir="/custom/out",
+            cli_bridge_host="192.168.1.50",
+        )
+        self.assertEqual(side, "host")
+        self.assertEqual(cfg["task"]["dataset_dir"], "keep")
+        self.assertNotIn("host", cfg["real"]["bridge"])
+
+        cfg2 = {"real": {"bridge": {"port": 0}}, "task": {}}
+        apply_data_side_config(cfg2, data_side="host")
+        self.assertEqual(cfg2["task"]["dataset_dir"], "data/real_teleop_v1")
+
+    def test_apply_data_side_invalid_raises(self) -> None:
+        from testbed.cli.data_side import apply_data_side_config
+
+        with self.assertRaises(ValueError):
+            apply_data_side_config({}, data_side="edge")
+
     def test_record_real_builds_bridge_client_from_tcp_config(self) -> None:
         from testbed.cli.record_real import _build_bridge_client
 

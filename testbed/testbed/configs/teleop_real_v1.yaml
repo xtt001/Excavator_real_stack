@@ -5,6 +5,8 @@
 real:
   backend: mock          # mock | noop | bridge_mock | bridge_tcp
   state_reader: mock     # mock | bridge_mock | bridge_tcp
+  # host=主端落盘；slave=从端落盘（须在对应机器运行 tb-record-real）
+  # data_side: host
   control_hz: 50
   image_width: 160
   image_height: 120
@@ -13,6 +15,17 @@ real:
     host: "127.0.0.1"
     port: 0              # required only when backend/state_reader uses bridge_tcp
     timeout_s: 1.0
+  data_side_defaults:
+    host:
+      dataset_dir: data/real_teleop_v1
+      bridge:
+        host: "127.0.0.1"   # 分体部署时设 EXCAVATOR_BRIDGE_HOST=从机 IP
+        port: 8765
+    slave:
+      dataset_dir: /data/real_teleop_v1
+      bridge:
+        host: "127.0.0.1"
+        port: 8765
 
 teleop:
   input: joystick        # joystick | keyboard | oem_remote | zero

@@ -1,17 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-WS="${EXCAVATOR_ROS_WS:-/home/yxc/ros2_ws}"
+
+# OrbbecSDK_ROS2: ~/orbbec_ws/src/OrbbecSDK_ROS2 -> 包名 orbbec_camera
+export EXCAVATOR_ORBBEC_WS="${EXCAVATOR_ORBBEC_WS:-${HOME}/orbbec_ws}"
+export EXCAVATOR_ORBBEC_SRC="${EXCAVATOR_ORBBEC_SRC:-${EXCAVATOR_ORBBEC_WS}/src/OrbbecSDK_ROS2}"
+export EXCAVATOR_ROS_WS="${EXCAVATOR_ROS_WS:-${HOME}/ros2_ws}"
 
 set +u
 # shellcheck disable=SC1091
-source /opt/ros/humble/setup.bash
-if [[ -f "${WS}/install/setup.bash" ]]; then
-  source "${WS}/install/setup.bash"
-else
-  echo "Missing ${WS}/install/setup.bash — build excavator_ros2_bridge first." >&2
-  exit 1
-fi
+source "${ROOT_DIR}/scripts/source_ros_stack.sh"
 set -u
 
 exec ros2 launch excavator_ros2_bridge orbbec_fpv_camera.launch.py "$@"
