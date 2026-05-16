@@ -38,6 +38,11 @@ class LowLevelController(ABC):
     def send(self, action: np.ndarray, state: dict[str, Any] | None = None) -> ControlResult:
         """Send one normalized four-axis action to the low-level controller."""
 
+    def apply_status_toggle_mask(self, toggle_mask: int) -> bool:
+        """Flip discrete machine status bits (excavator_api toggle_mask)."""
+
+        return int(toggle_mask) == 0
+
     def close(self) -> None:
         """Release controller resources."""
 
@@ -56,6 +61,8 @@ class MockLowLevelController(LowLevelController):
     def __init__(self) -> None:
         self.last_action = np.zeros(ACTION_DIM, dtype=np.float32)
         self.send_count = 0
+        self.last_toggle_mask = 0
+        self.status11: list[int] = [0] * 11
 
     def send(self, action: np.ndarray, state: dict[str, Any] | None = None) -> ControlResult:
         commanded = np.clip(_as_action(action), -1.0, 1.0).astype(np.float32)
@@ -69,12 +76,23 @@ class MockLowLevelController(LowLevelController):
             raw_low_level_command=commanded.copy(),
         )
 
+    def apply_status_toggle_mask(self, toggle_mask: int) -> bool:
+        from testbed.backends.real.contracts import apply_status_toggle_mask_to_status11
+
+        mask = int(toggle_mask)
+        self.last_toggle_mask = mask
+        if mask == 0:
+            return True
+        apply_status_toggle_mask_to_status11(self.status11, mask)
+        return True
+
 
 class NoopLowLevelController(LowLevelController):
     """Controller that never drives hardware and always commands zeros."""
 
     def __init__(self) -> None:
         self.send_count = 0
+        self.last_toggle_mask = 0
 
     def send(self, action: np.ndarray, state: dict[str, Any] | None = None) -> ControlResult:
         _as_action(action)
@@ -87,3 +105,7 @@ class NoopLowLevelController(LowLevelController):
             commanded_action=zero,
             raw_low_level_command=zero.copy(),
         )
+
+    def apply_status_toggle_mask(self, toggle_mask: int) -> bool:
+        self.last_toggle_mask = int(toggle_mask)
+        return True

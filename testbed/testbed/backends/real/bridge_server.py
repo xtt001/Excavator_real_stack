@@ -123,6 +123,14 @@ class JsonTcpBridgeMockServer:
                     control_result_to_payload(result),
                 )
 
+            if message_type == "send_status.request":
+                toggle_mask = int(payload.get("toggle_mask", 0)) & 0x07FF
+                ack = self.client.apply_status_toggle_mask(toggle_mask)
+                return response_message(
+                    "send_status.response",
+                    {"ack": bool(ack), "toggle_mask": toggle_mask},
+                )
+
             if message_type == "read_state.request":
                 samples = self.client.read_state(
                     step_id=int(payload.get("step_id", 0)),

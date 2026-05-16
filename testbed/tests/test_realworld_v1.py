@@ -39,6 +39,10 @@ from testbed.backends.real.bridge_protocol import (
     state_samples_from_payload,
     state_samples_to_payload,
 )
+from testbed.backends.real.contracts import (
+    STATUS_TOGGLE_BIT_COUNT,
+    apply_status_toggle_mask_to_status11,
+)
 from testbed.backends.real.excavator_api import SERVO_MAGIC, SERVO_PACKET_STRUCT
 from testbed.backends.real.ros_can import RosCanLowLevelController, RosCanStateReader
 from testbed.runtime.guard import ActionGuard
@@ -60,6 +64,23 @@ def _can_bind_loopback_socket() -> bool:
 
 
 class RealworldV1Tests(unittest.TestCase):
+    def test_status_toggle_mask_semantics(self) -> None:
+        status11 = [0] * STATUS_TOGGLE_BIT_COUNT
+        apply_status_toggle_mask_to_status11(status11, 1 << 0)
+        self.assertEqual(status11[0], 1)
+        apply_status_toggle_mask_to_status11(status11, 1 << 0)
+        self.assertEqual(status11[0], 0)
+        apply_status_toggle_mask_to_status11(status11, 1 << 9)
+        self.assertEqual(status11[9], 1)
+        apply_status_toggle_mask_to_status11(status11, 1 << 9)
+        self.assertEqual(status11[9], 2)
+
+    def test_mock_controller_applies_status_toggle_mask(self) -> None:
+        mock = MockLowLevelController()
+        self.assertTrue(mock.apply_status_toggle_mask(1 << 2))
+        self.assertEqual(mock.status11[2], 1)
+        self.assertEqual(mock.last_toggle_mask, 1 << 2)
+
     def test_low_level_controllers_return_control_result(self) -> None:
         action = np.array([0.1, -0.2, 0.3, -0.4], dtype=np.float32)
 
@@ -274,6 +295,11 @@ class RealworldV1Tests(unittest.TestCase):
                                     raw_low_level_command=action4_to_speed_scalar8(action),
                                 )
                             )
+                        elif message_type == "send_status.request":
+                            payload = {
+                                "ack": True,
+                                "toggle_mask": int(message["payload"].get("toggle_mask", 0)),
+                            }
                         elif message_type == "read_state.request":
                             payload = state_samples_to_payload(
                                 RealStateSamples(
@@ -328,8 +354,10 @@ class RealworldV1Tests(unittest.TestCase):
         try:
             client.reset(seed=0)
             result = client.send_action(np.array([0.1, 0.2, -0.3, 0.4], dtype=np.float32))
+            status = client.apply_status_toggle_mask(1 << 1)
             samples = client.read_state(step_id=1, action_timestamp_ns=2_000)
             self.assertTrue(result.ack)
+            self.assertTrue(status)
             np.testing.assert_allclose(result.commanded_action, [0.1, 0.2, -0.3, 0.4])
             np.testing.assert_allclose(samples.joint.payload["qpos"], np.ones(4))
             self.assertEqual(samples.images["fpv"].payload.shape, (2, 2, 3))
@@ -385,10 +413,13 @@ class RealworldV1Tests(unittest.TestCase):
         client = JsonTcpBridgeClient(port=server.bound_port, timeout_s=1.0)
         try:
             client.reset(seed=0)
+            client.apply_status_toggle_mask(1 << 3)
             result = client.send_action(np.array([0.4, -0.2, 0.0, 0.1], dtype=np.float32))
             samples = client.read_state(step_id=1, action_timestamp_ns=result.controller_timestamp_ns)
 
             self.assertTrue(result.ack)
+            self.assertEqual(server.client.status_toggle_count, 1)
+            self.assertEqual(server.client._status11[3], 1)
             np.testing.assert_allclose(samples.joint.payload["qvel"], [0.4, -0.2, 0.0, 0.1])
             np.testing.assert_allclose(samples.joint.payload["qpos"], [0.04, -0.02, 0.0, 0.01])
             self.assertEqual(samples.images["fpv"].payload.shape, (2, 3, 3))

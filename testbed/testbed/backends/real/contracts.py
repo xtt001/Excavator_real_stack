@@ -17,6 +17,39 @@ import numpy as np
 REAL_ACTION_DIM = 4
 EXCAVATOR_API_AXIS_COUNT = 8
 REAL_ACTION_ORDER = ("swing", "boom", "stick", "bucket")
+STATUS_TOGGLE_BIT_COUNT = 11
+
+
+def apply_status_toggle_mask_to_status11(
+    status11: list[int],
+    toggle_mask: int,
+) -> None:
+    """Apply excavator_api toggle_mask semantics (matches tcp_server / ExcavatorClient)."""
+
+    if len(status11) < STATUS_TOGGLE_BIT_COUNT:
+        raise ValueError(
+            f"status11 must have length >= {STATUS_TOGGLE_BIT_COUNT}, got {len(status11)}"
+        )
+    mask = int(toggle_mask) & 0x07FF
+    for bit in range(STATUS_TOGGLE_BIT_COUNT):
+        if (mask & (1 << bit)) == 0:
+            continue
+        if bit == 9:
+            status11[bit] = (int(status11[bit]) + 1) & 0x3
+        else:
+            status11[bit] = 0 if int(status11[bit]) else 1
+
+
+def status11_to_vector12(status11: Sequence[int]) -> np.ndarray:
+    """Pack teleop status bits into a 12-element vector for observations."""
+
+    out = np.zeros(12, dtype=np.int32)
+    count = min(STATUS_TOGGLE_BIT_COUNT, len(status11), 12)
+    for i in range(count):
+        out[i] = int(status11[i])
+    return out
+
+
 REAL_QPOS_ORDER = REAL_ACTION_ORDER
 REAL_QVEL_ORDER = REAL_ACTION_ORDER
 EXCAVATOR_API_AXIS_ORDER = (

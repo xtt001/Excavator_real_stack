@@ -16,8 +16,11 @@ import numpy as np
 
 from testbed.backends.real.contracts import (
     REAL_ACTION_DIM,
+    STATUS_TOGGLE_BIT_COUNT,
     action4_to_speed_scalar8,
+    apply_status_toggle_mask_to_status11,
     as_real_action,
+    status11_to_vector12,
 )
 from testbed.backends.real.control import ControlResult, LowLevelController
 from testbed.backends.real.state import RealStateReader, RealStateSamples
@@ -38,6 +41,11 @@ class RealBridgeClient(ABC):
         state: Mapping[str, Any] | None = None,
     ) -> ControlResult:
         """Send one normalized four-axis command through the bridge."""
+
+    def apply_status_toggle_mask(self, toggle_mask: int) -> bool:
+        """Apply discrete status toggle_mask to the low-level controller."""
+
+        return int(toggle_mask) == 0
 
     def apply_control_result(self, result: ControlResult, *, dt: float) -> None:
         """Let local/mock bridge clients update state after an ack."""
@@ -81,9 +89,11 @@ class InProcessMockBridgeClient(RealBridgeClient):
         self._qpos = np.zeros(REAL_ACTION_DIM, dtype=np.float32)
         self._qvel = np.zeros(REAL_ACTION_DIM, dtype=np.float32)
         self._last_action = np.zeros(REAL_ACTION_DIM, dtype=np.float32)
+        self._status11: list[int] = [0] * STATUS_TOGGLE_BIT_COUNT
         self._closed = False
         self.send_count = 0
         self.read_count = 0
+        self.status_toggle_count = 0
 
     @property
     def last_action(self) -> np.ndarray:
@@ -95,8 +105,10 @@ class InProcessMockBridgeClient(RealBridgeClient):
         self._qpos.fill(0.0)
         self._qvel.fill(0.0)
         self._last_action.fill(0.0)
+        self._status11 = [0] * STATUS_TOGGLE_BIT_COUNT
         self.send_count = 0
         self.read_count = 0
+        self.status_toggle_count = 0
 
     def send_action(
         self,
@@ -116,6 +128,15 @@ class InProcessMockBridgeClient(RealBridgeClient):
             commanded_action=commanded,
             raw_low_level_command=raw_low_level,
         )
+
+    def apply_status_toggle_mask(self, toggle_mask: int) -> bool:
+        self._ensure_open()
+        mask = int(toggle_mask)
+        if mask == 0:
+            return True
+        apply_status_toggle_mask_to_status11(self._status11, mask)
+        self.status_toggle_count += 1
+        return True
 
     def apply_control_result(self, result: ControlResult, *, dt: float) -> None:
         self._ensure_open()
@@ -139,7 +160,7 @@ class InProcessMockBridgeClient(RealBridgeClient):
             payload={
                 "qpos": self._qpos.copy(),
                 "qvel": self._qvel.copy(),
-                "status": np.zeros(16, dtype=np.int32),
+                "status": status11_to_vector12(self._status11),
                 "env_state": np.concatenate([self._qpos, self._qvel]).astype(np.float32),
             },
             source="bridge_joint_state",
@@ -181,6 +202,9 @@ class BridgeLowLevelController(LowLevelController):
 
     def send(self, action: np.ndarray, state: dict[str, Any] | None = None) -> ControlResult:
         return self.client.send_action(action, state=state)
+
+    def apply_status_toggle_mask(self, toggle_mask: int) -> bool:
+        return self.client.apply_status_toggle_mask(toggle_mask)
 
     def close(self) -> None:
         self.client.close()

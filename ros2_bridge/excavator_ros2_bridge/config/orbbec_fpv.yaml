@@ -1,0 +1,36 @@
+# Orbbec FPV defaults for Excavator_real_stack (color-only, 640x480@30, compressed).
+---
+orbbec_ros:
+  camera_parameters:
+    general:
+      camera_model: "gemini330_series"
+      config_file_path: "gemini330_series.yaml"
+      log_level: "none"
+    deivce:
+      camera_name: "camera"
+      device_num: 1
+      # 与 testbed sync 一致：使用消息 header.stamp（system 域便于与 bridge 墙钟对齐）
+      time_domain: "system"
+    color:
+      enable_color: true
+      color_width: 640
+      color_height: 480
+      color_fps: 30
+      color_qos: "sensor_data"
+      color_camera_info_qos: "sensor_data"
+    depth:
+      enable_depth: false
+    leftir:
+      enable_left_ir: false
+    rightir:
+      enable_right_ir: false
+    point_cloud:
+      enable_point_cloud: false
+      enable_colored_point_cloud: false
+    imu:
+      enable_sync_output_accel_gyro: false
+      enable_accel: false
+      enable_gyro: false
+
+# image_transport：仅发布 compressed（需安装 compressed_image_transport）
+color.image_raw.enable_pub_plugins: ["image_transport/compressed"]

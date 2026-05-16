@@ -143,6 +143,9 @@ class RealExcavatorBackend(Backend):
         obs = self.read_state()
         return self._timestep_from_obs(obs)
 
+    def apply_status_toggle_mask(self, toggle_mask: int) -> bool:
+        return self._controller.apply_status_toggle_mask(toggle_mask)
+
     def step(self, action: np.ndarray) -> RealExcavatorTimeStep:
         state = self._last_obs or self.read_state()
         result = self._controller.send(action, state=state)

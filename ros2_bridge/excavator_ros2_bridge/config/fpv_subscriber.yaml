@@ -1,0 +1,5 @@
+fpv_image_subscriber:
+  ros__parameters:
+    compressed_topic: "/camera/color/image_raw/compressed"
+    shm_name: "excavator_fpv_v1"
+    qos_profile: "sensor_data"

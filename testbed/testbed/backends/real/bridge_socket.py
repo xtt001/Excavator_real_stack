@@ -67,6 +67,13 @@ class JsonTcpBridgeClient(RealBridgeClient):
         )
         return control_result_from_payload(response)
 
+    def apply_status_toggle_mask(self, toggle_mask: int) -> bool:
+        mask = int(toggle_mask) & 0x07FF
+        if mask == 0:
+            return True
+        response = self._request("send_status", {"toggle_mask": mask})
+        return bool(response.get("ack", False))
+
     def read_state(
         self,
         *,

@@ -280,6 +280,11 @@ def main() -> None:
                     sensor_age_s=sensor_age_s,
                 )
 
+                extras = getattr(action_info, "extras", {}) or {}
+                toggle_mask = int(extras.get("toggle_mask", 0) or 0)
+                if toggle_mask:
+                    backend.apply_status_toggle_mask(toggle_mask)
+
                 action_send_ns = time.time_ns()
                 ts_next = backend.step(safe_action)
                 control_result = dict(ts_next.info.get("control_result", {}))
@@ -417,8 +422,11 @@ def _build_step_diagnostics(
     if not isinstance(image_timestamps, dict):
         image_timestamps = {}
     primary_image_ts = _primary_image_timestamp_ns(image_timestamps)
+    extras = getattr(action_info, "extras", {}) or {}
     diagnostics: dict[str, Any] = {
         "raw_action": np.asarray(raw_action, dtype=np.float32),
+        "toggle_mask": int(extras.get("toggle_mask", 0) or 0),
+        "status11": np.asarray(extras.get("status11", []), dtype=np.int32),
         "guard_triggered": int(guard.last_info.triggered),
         "guard_reason": ",".join(guard.last_info.reasons),
         "controller_ack": int(bool(control_result.get("ack", False))),

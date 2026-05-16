@@ -4,17 +4,9 @@ JoystickActionSource — maps a gamepad to the real excavator action vector.
 Action vector layout (length 4):
     [swing_speed_cmd, boom_speed_cmd, stick_speed_cmd, bucket_speed_cmd]
 
-All commands are normalized to [-1, 1] post-deadzone and post-scale.
-
-Default axis mapping (Xbox / generic dual-stick layout):
-    axis 0  → swing    (left stick X)
-    axis 1  → boom     (left stick Y, inverted)
-    axis 3  → stick    (right stick X)
-    axis 4  → bucket   (right stick Y, inverted)
-
-Override via the `axis_map` and `invert` config keys.
-All tunable values live in teleop_real_v1.yaml; defaults only provide a
-reasonable controller layout.
+Status buttons follow control/python/excavator_api_tcp_server.py on one joystick:
+    button0~10 rising edge -> toggle_mask bit0~10 -> excavator_api status bits
+    button11 rising edge -> group_switch (telemetry only in v1 four-axis path)
 
 Requires: pygame (pip install pygame)
 """
@@ -29,56 +21,51 @@ import numpy as np
 
 from testbed.actions.base import ActionInfo, ActionSource
 from testbed.actions.smoothing import ActionResponseSmoother
+from testbed.backends.real.contracts import (
+    STATUS_TOGGLE_BIT_COUNT,
+    apply_status_toggle_mask_to_status11,
+)
 
 log = logging.getLogger(__name__)
 
-# Real action indices, matching [swing, boom, stick, bucket].
-IDX_SWING  = 0
-IDX_BOOM   = 1
-IDX_STICK  = 2
+IDX_SWING = 0
+IDX_BOOM = 1
+IDX_STICK = 2
 IDX_BUCKET = 3
 ACTION_DIM = 4
+STATUS_BUTTON_SLOTS = 12
 
 
 class JoystickActionSource(ActionSource):
-    """
-    Reads a gamepad via pygame and produces normalized 4-axis commands.
-
-    Parameters
-    ----------
-    joystick_id  pygame joystick index (0 = first connected gamepad).
-    axis_map     List of 4 pygame axis indices mapped to
-                 [swing, boom, stick, bucket] in that order.
-    invert       List of 4 booleans; True = negate that axis.
-    deadzone     Per-axis deadzone threshold (applied before scale).
-                 Scalar applies to all axes; list overrides per-axis.
-    scale        Per-axis scale applied after deadzone.
-                 Scalar or list of 4.
-    clip         Hard clip limit applied last (default 1.0).
-    """
+    """Reads a gamepad via pygame: 4D action + discrete status toggle_mask."""
 
     def __init__(
         self,
         joystick_id: int = 0,
         joystick_ids: Sequence[int] | None = None,
-        axis_map:    Sequence[int]  = (0, 1, 3, 4),
-        invert:      Sequence[bool] = (False, True, False, True),
-        deadzone:    float | Sequence[float] = 0.05,
-        scale:       float | Sequence[float] = 1.0,
-        clip:        float = 1.0,
+        axis_map: Sequence[int] = (0, 1, 3, 4),
+        invert: Sequence[bool] = (False, True, False, True),
+        deadzone: float | Sequence[float] = 0.05,
+        scale: float | Sequence[float] = 1.0,
+        clip: float = 1.0,
         reset_button: int | None = None,
         discard_button: int | None = None,
         quit_button: int | None = None,
         button_joystick_ids: Sequence[int] | None = None,
         response_profile: dict | None = None,
         default_dt: float = 0.02,
+        *,
+        status_button_device: int = 0,
+        status_buttons_enabled: bool = True,
+        status_button_count: int = STATUS_TOGGLE_BIT_COUNT,
+        group_switch_button: int | None = 11,
     ) -> None:
-        import pygame  # lazy import — only needed when joystick is used
+        import pygame
 
         self._pygame = pygame
         self.joystick_id = joystick_id
-        self.axis_map    = list(axis_map)
-        self.invert      = list(invert)
+        self.axis_map = list(axis_map)
+        self.invert = list(invert)
         if joystick_ids is None:
             self._joystick_ids = [int(joystick_id)] * ACTION_DIM
         else:
@@ -86,7 +73,6 @@ class JoystickActionSource(ActionSource):
             if len(self._joystick_ids) != ACTION_DIM:
                 raise ValueError(f"joystick_ids must have length {ACTION_DIM}")
 
-        # Broadcast scalar → per-axis list
         if isinstance(deadzone, (int, float)):
             self._deadzone = [float(deadzone)] * ACTION_DIM
         else:
@@ -110,6 +96,21 @@ class JoystickActionSource(ActionSource):
         self._discard_button = self._normalize_button(discard_button, name="discard_button")
         self._quit_button = self._normalize_button(quit_button, name="quit_button")
         self._button_states: dict[tuple[int, int], bool] = {}
+
+        self._status_button_device = int(status_button_device)
+        self._status_buttons_enabled = bool(status_buttons_enabled)
+        self._status_button_count = int(status_button_count)
+        if not (0 < self._status_button_count <= STATUS_TOGGLE_BIT_COUNT):
+            raise ValueError(
+                f"status_button_count must be in 1..{STATUS_TOGGLE_BIT_COUNT}"
+            )
+        self._group_switch_button = self._normalize_button(
+            group_switch_button, name="group_switch_button"
+        )
+        self._status11: list[int] = [0] * STATUS_TOGGLE_BIT_COUNT
+        self._status_prev_buttons = [0] * STATUS_BUTTON_SLOTS
+        self._use_rear_group = False
+
         self._response_profile_cfg = dict(response_profile or {})
         self._response_profile_use_measured_dt = bool(
             self._response_profile_cfg.get("use_measured_dt", False)
@@ -118,17 +119,16 @@ class JoystickActionSource(ActionSource):
 
         self._init_pygame()
 
-    # ── ActionSource interface ────────────────────────────────────────────────
-
     def reset(self) -> None:
-        """Re-pump the event queue; no state to reset for a joystick."""
         self._pygame.event.pump()
         if self._smoother is not None:
             self._smoother.reset()
         self._button_states.clear()
+        self._status11 = [0] * STATUS_TOGGLE_BIT_COUNT
+        self._status_prev_buttons = [0] * STATUS_BUTTON_SLOTS
+        self._use_rear_group = False
 
     def next_action(self, obs: dict) -> tuple[np.ndarray, ActionInfo]:
-        """Read gamepad axes and return a (4,) action vector."""
         self._pygame.event.pump()
         action = np.zeros(ACTION_DIM, dtype=np.float32)
 
@@ -138,10 +138,11 @@ class JoystickActionSource(ActionSource):
 
         t0 = time.perf_counter()
         raw_action = np.zeros(ACTION_DIM, dtype=np.float32)
-        for out_idx, (device_id, axis_idx) in enumerate(zip(self._joystick_ids, self.axis_map)):
+        for out_idx, (device_id, axis_idx) in enumerate(
+            zip(self._joystick_ids, self.axis_map)
+        ):
             joystick = self._joysticks.get(device_id)
             if joystick is None:
-                log.warning("Configured joystick_id=%d is not available — returning zeros for that axis.", device_id)
                 continue
             raw = float(joystick.get_axis(axis_idx))
             if self.invert[out_idx]:
@@ -151,7 +152,9 @@ class JoystickActionSource(ActionSource):
         if self._smoother is not None:
             action = self._smoother.apply(
                 raw_action,
-                delta_time=None if self._response_profile_use_measured_dt else self._smoothing_dt,
+                delta_time=None
+                if self._response_profile_use_measured_dt
+                else self._smoothing_dt,
             )
             action = np.clip(
                 action * np.asarray(self._scale, dtype=np.float32),
@@ -167,6 +170,7 @@ class JoystickActionSource(ActionSource):
                     raw = (raw - dz * np.sign(raw)) / (1.0 - dz)
                 action[out_idx] = np.clip(raw * self._scale[out_idx], -self._clip, self._clip)
 
+        toggle_mask = self._poll_status_toggle_mask()
         latency_ms = (time.perf_counter() - t0) * 1000.0
         device_names = [
             self._joysticks[device_id].get_name()
@@ -181,6 +185,9 @@ class JoystickActionSource(ActionSource):
             ),
             latency_ms=latency_ms,
             extras={
+                "toggle_mask": int(toggle_mask),
+                "status11": list(self._status11),
+                "use_rear_group": bool(self._use_rear_group),
                 "reset_requested": self._button_edge(self._reset_button),
                 "discard_requested": self._button_edge(self._discard_button),
                 "quit_requested": self._button_edge(self._quit_button),
@@ -189,7 +196,6 @@ class JoystickActionSource(ActionSource):
         return action, info
 
     def close(self) -> None:
-        """Quit pygame joystick subsystem."""
         try:
             for joystick in self._joysticks.values():
                 joystick.quit()
@@ -197,7 +203,41 @@ class JoystickActionSource(ActionSource):
         except Exception:
             pass
 
-    # ── Init helpers ──────────────────────────────────────────────────────────
+    def _poll_status_toggle_mask(self) -> int:
+        """Rising-edge mask for status bits (excavator_api_tcp_server semantics)."""
+
+        if not self._status_buttons_enabled:
+            return 0
+
+        joystick = self._joysticks.get(self._status_button_device)
+        if joystick is None:
+            return 0
+
+        cur = [
+            1
+            if (i < joystick.get_numbuttons() and joystick.get_button(i))
+            else 0
+            for i in range(STATUS_BUTTON_SLOTS)
+        ]
+        toggle_mask = 0
+        for bit in range(self._status_button_count):
+            if self._status_prev_buttons[bit] == 0 and cur[bit] == 1:
+                toggle_mask |= 1 << bit
+
+        if toggle_mask:
+            apply_status_toggle_mask_to_status11(self._status11, toggle_mask)
+
+        if self._group_switch_button is not None:
+            gb = int(self._group_switch_button)
+            if (
+                gb < STATUS_BUTTON_SLOTS
+                and self._status_prev_buttons[gb] == 0
+                and cur[gb] == 1
+            ):
+                self._use_rear_group = not self._use_rear_group
+
+        self._status_prev_buttons = cur
+        return int(toggle_mask)
 
     def _init_pygame(self) -> None:
         pg = self._pygame
@@ -208,19 +248,19 @@ class JoystickActionSource(ActionSource):
 
         n = pg.joystick.get_count()
         if n == 0:
-            log.error(
-                "No joystick/gamepad detected by pygame. "
-                "Connect a gamepad and retry."
-            )
+            log.error("No joystick/gamepad detected by pygame.")
             return
 
-        requested_ids = sorted(set(self._joystick_ids))
+        requested_ids = sorted(
+            set(self._joystick_ids) | {self._status_button_device}
+        )
         for requested_id in requested_ids:
             actual_id = requested_id
             if actual_id >= n:
                 log.warning(
-                    "Requested joystick_id=%d but only %d found. Using 0 for that binding.",
-                    actual_id, n,
+                    "Requested joystick_id=%d but only %d found. Using 0.",
+                    actual_id,
+                    n,
                 )
                 actual_id = 0
 
@@ -228,20 +268,28 @@ class JoystickActionSource(ActionSource):
             joystick.init()
             self._joysticks[requested_id] = joystick
             log.info(
-                "Joystick ready: [%d -> %d] %s  axes=%d",
+                "Joystick ready: [%d -> %d] %s axes=%d buttons=%d",
                 requested_id,
                 actual_id,
                 joystick.get_name(),
                 joystick.get_numaxes(),
+                joystick.get_numbuttons(),
             )
 
         self._joystick = self._joysticks.get(self._joystick_ids[0])
         if self._smoother is not None:
             log.info("Joystick response smoothing enabled.")
+        if self._status_buttons_enabled:
+            log.info(
+                "Status buttons on device %d: bits 0..%d, group_switch=%s",
+                self._status_button_device,
+                self._status_button_count - 1,
+                self._group_switch_button,
+            )
 
     @classmethod
     def from_config(cls, cfg: dict, *, default_dt: float = 0.02) -> "JoystickActionSource":
-        """Construct from a flat config dict."""
+        group_switch = cfg.get("group_switch_button", 11)
         return cls(
             joystick_id=cfg.get("joystick_id", 0),
             joystick_ids=cfg.get("joystick_ids"),
@@ -256,6 +304,12 @@ class JoystickActionSource(ActionSource):
             button_joystick_ids=cfg.get("button_joystick_ids"),
             response_profile=cfg.get("response_profile"),
             default_dt=default_dt,
+            status_button_device=int(cfg.get("status_button_device", 0)),
+            status_buttons_enabled=bool(cfg.get("status_buttons_enabled", True)),
+            status_button_count=int(
+                cfg.get("status_button_count", STATUS_TOGGLE_BIT_COUNT)
+            ),
+            group_switch_button=None if group_switch is None else int(group_switch),
         )
 
     def _build_smoother(self, *, default_dt: float) -> ActionResponseSmoother | None:

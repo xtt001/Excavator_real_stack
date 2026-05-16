@@ -39,3 +39,7 @@ artifacts/
 .vscode/settings.json
 *.swp
 *.swo
+
+# dev_yxc
+test/
+bridge/.cache/

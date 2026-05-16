@@ -58,7 +58,7 @@ flowchart LR
 
 ```text
 testbed/  <- excavator_testbed, branch tx/v1-baseline-realworld, commit 2709f2f
-control/  <- excavator, branch main, commit 1ab8eba
+control/  <- excavator, branch main, commit cc286a1 (see control/UPSTREAM.md)
 ```
 
 ### testbed 侧

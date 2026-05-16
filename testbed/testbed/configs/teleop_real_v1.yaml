@@ -28,7 +28,12 @@ teleop:
     joystick_ids: [1, 0, 1, 0]
     axis_map: [0, 1, 1, 0]
     invert: [false, false, false, false]
-    reset_button: 10
+    # reset 勿用 button10：与 excavator_api status bit10（急停）冲突
+    reset_button: null
+    status_button_device: 0
+    status_buttons_enabled: true
+    status_button_count: 11
+    group_switch_button: 11
     deadzone: 0.05
     scale: [0.6, 0.3, 0.7, 0.7]
     clip: 1.0
