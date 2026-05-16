@@ -10,15 +10,22 @@ from typing import Any, Literal
 
 log = logging.getLogger(__name__)
 
+# 从端固定 IP（与 configs/deploy_network.yaml 一致）
+DEFAULT_SLAVE_IP = "192.168.31.171"
+
 DataSide = Literal["host", "slave"]
 DATA_SIDE_HOST: DataSide = "host"
 DATA_SIDE_SLAVE: DataSide = "slave"
 _VALID_DATA_SIDES = frozenset({DATA_SIDE_HOST, DATA_SIDE_SLAVE})
 
+def _default_slave_ip() -> str:
+    return os.environ.get("EXCAVATOR_SLAVE_IP", DEFAULT_SLAVE_IP).strip() or DEFAULT_SLAVE_IP
+
+
 _DEFAULT_SIDE_DEFAULTS: dict[str, dict[str, Any]] = {
     DATA_SIDE_HOST: {
         "dataset_dir": "data/real_teleop_v1",
-        "bridge": {"host": "127.0.0.1", "port": 8765},
+        "bridge": {"host": DEFAULT_SLAVE_IP, "port": 8765},
     },
     DATA_SIDE_SLAVE: {
         "dataset_dir": "/data/real_teleop_v1",
@@ -39,10 +46,16 @@ def normalize_data_side(value: str | None) -> DataSide | None:
     return side  # type: ignore[return-value]
 
 
-def resolve_data_side(*, cfg: dict[str, Any], cli_data_side: str | None) -> DataSide | None:
+def resolve_data_side(
+    *,
+    cfg: dict[str, Any],
+    cli_data_side: str | None,
+    default: DataSide = DATA_SIDE_SLAVE,
+) -> DataSide:
     real_cfg = cfg.get("real", {})
     env_side = os.environ.get("EXCAVATOR_DATA_SIDE")
-    return normalize_data_side(cli_data_side or real_cfg.get("data_side") or env_side)
+    side = normalize_data_side(cli_data_side or real_cfg.get("data_side") or env_side)
+    return side if side is not None else default
 
 
 def apply_data_side_config(
@@ -52,16 +65,14 @@ def apply_data_side_config(
     cli_output_dir: str | None = None,
     cli_bridge_host: str | None = None,
     cli_bridge_port: int | None = None,
-) -> DataSide | None:
+) -> DataSide:
     """
     按 host/slave 填充 dataset_dir 与 bridge 默认值（CLI 显式参数优先）。
 
-    host：主端落盘，bridge 默认指向 EXCAVATOR_BRIDGE_HOST（从机 gateway）。
-    slave：从端落盘，bridge 默认本机 127.0.0.1（须在从机运行 tb-record-real）。
+    默认 slave：HDF5（关节+图像+动作）落在从端。
+    host：主端落盘，bridge 默认 EXCAVATOR_BRIDGE_HOST（从机 gateway IP）。
     """
     side = resolve_data_side(cfg=cfg, cli_data_side=data_side)
-    if side is None:
-        return None
 
     real_cfg = cfg.setdefault("real", {})
     task_cfg = cfg.setdefault("task", {})
@@ -88,6 +99,8 @@ def apply_data_side_config(
         side_defaults["dataset_dir"] = env_dataset
 
     bridge_defaults = dict(side_defaults.get("bridge", {}))
+    if side == DATA_SIDE_HOST and bridge_defaults.get("host") in {None, "", "127.0.0.1"}:
+        bridge_defaults["host"] = _default_slave_ip()
     env_bridge_host = os.environ.get("EXCAVATOR_BRIDGE_HOST")
     if env_bridge_host and side == DATA_SIDE_HOST:
         bridge_defaults["host"] = env_bridge_host

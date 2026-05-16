@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# 加载 ROS2 + OrbbecSDK_ROS2（~/orbbec_ws）+ excavator_ros2_bridge 叠加工作空间。
-# 用法: source scripts/source_ros_stack.sh
+# 加载 ROS2 + OrbbecSDK_ROS2（~/orbbec_ws）+ excavator_ros2_bridge。
+# 仅 start_orbbec_fpv_camera.sh 等需要本机 Orbbec 时使用。
+# FPV 订阅/主端 rqt 请用 source_excavator_ros_ws.sh
 # 主从同域: export EXCAVATOR_ROS2_MULTIHOST=1 后再 source
 
 _stack_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

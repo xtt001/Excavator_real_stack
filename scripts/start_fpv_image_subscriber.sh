@@ -10,7 +10,7 @@ export EXCAVATOR_ROS_WS="${EXCAVATOR_ROS_WS:-${HOME}/ros2_ws}"
 
 set +u
 # shellcheck disable=SC1091
-source "${ROOT_DIR}/scripts/source_ros_stack.sh"
+source "${ROOT_DIR}/scripts/source_excavator_ros_ws.sh"
 set -u
 
 exec ros2 launch excavator_ros2_bridge fpv_image_subscriber.launch.py "$@"

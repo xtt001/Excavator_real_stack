@@ -394,6 +394,15 @@ class RealworldV1Tests(unittest.TestCase):
         apply_data_side_config(cfg2, data_side="host")
         self.assertEqual(cfg2["task"]["dataset_dir"], "data/real_teleop_v1")
 
+    def test_apply_data_side_defaults_to_slave_when_unset(self) -> None:
+        from testbed.cli.data_side import apply_data_side_config
+
+        cfg: dict = {"real": {"bridge": {"port": 0}}, "task": {}}
+        side = apply_data_side_config(cfg)
+        self.assertEqual(side, "slave")
+        self.assertEqual(cfg["task"]["dataset_dir"], "/data/real_teleop_v1")
+        self.assertEqual(cfg["real"]["data_side"], "slave")
+
     def test_apply_data_side_invalid_raises(self) -> None:
         from testbed.cli.data_side import apply_data_side_config
 

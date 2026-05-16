@@ -2,6 +2,10 @@
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# shellcheck disable=SC1091
+source "${ROOT_DIR}/scripts/excavator_deploy_network.sh"
+excavator_apply_slave_network_defaults
+
 if [[ -d "${ROOT_DIR}/.venv" ]]; then
   # shellcheck disable=SC1091
   source "${ROOT_DIR}/.venv/bin/activate"

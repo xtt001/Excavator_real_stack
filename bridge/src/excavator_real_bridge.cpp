@@ -411,6 +411,9 @@ private:
             if (type == "send_action.request") {
                 return handleSendAction(payload);
             }
+            if (type == "send_status.request") {
+                return handleSendStatus(payload);
+            }
             if (type == "read_state.request") {
                 return handleReadState(payload);
             }
@@ -443,6 +446,21 @@ private:
                     : "error.response";
             return responseMessage(response_type, json::object(), false, exc.what());
         }
+    }
+
+    json handleSendStatus(const json& payload) {
+        std::uint16_t toggle_mask = 0;
+        if (payload.contains("toggle_mask")) {
+            toggle_mask = static_cast<std::uint16_t>(payload.at("toggle_mask").get<int>()) & 0x07FFu;
+        }
+        const bool ok = control_.applyStatusToggleMask(toggle_mask);
+        return responseMessage(
+            "send_status.response",
+            json{
+                {"ack", ok},
+                {"toggle_mask", toggle_mask},
+                {"fault_code", ok ? "" : control_.lastError()},
+            });
     }
 
     json handleSendAction(const json& payload) {

@@ -12,8 +12,9 @@ export EXCAVATOR_ORBBEC_SRC="${EXCAVATOR_ORBBEC_SRC:-${EXCAVATOR_ORBBEC_WS}/src/
 export EXCAVATOR_ROS_WS="${EXCAVATOR_ROS_WS:-${HOME}/ros2_ws}"
 
 set +u
+# 仅需 excavator_ros2_bridge；不要求本机 ~/orbbec_ws（相机可在从端另一进程）
 # shellcheck disable=SC1091
-source "${ROOT_DIR}/scripts/source_ros_stack.sh"
+source "${ROOT_DIR}/scripts/source_excavator_ros_ws.sh"
 set -u
 
 exec ros2 launch excavator_ros2_bridge fpv_subscriber_with_rqt.launch.py \

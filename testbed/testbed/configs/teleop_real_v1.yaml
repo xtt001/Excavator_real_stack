@@ -5,8 +5,8 @@
 real:
   backend: mock          # mock | noop | bridge_mock | bridge_tcp
   state_reader: mock     # mock | bridge_mock | bridge_tcp
-  # host=主端落盘；slave=从端落盘（须在对应机器运行 tb-record-real）
-  # data_side: host
+  # 默认从端落盘；主端录数据改为 data_side: host
+  data_side: slave
   control_hz: 50
   image_width: 160
   image_height: 120
@@ -19,7 +19,7 @@ real:
     host:
       dataset_dir: data/real_teleop_v1
       bridge:
-        host: "127.0.0.1"   # 分体部署时设 EXCAVATOR_BRIDGE_HOST=从机 IP
+        host: "192.168.31.171"   # 从端固定 IP；覆盖: EXCAVATOR_BRIDGE_HOST
         port: 8765
     slave:
       dataset_dir: /data/real_teleop_v1

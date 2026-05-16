@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
-# 主端：订阅从端 /camera/color/image_raw/compressed，本机 republish 后 rqt 显示。
-# 规则：从端发布 compressed + 落盘；主端仅可视化，不写 SHM、不录 HDF5。
+# 主端：订阅从端 compressed（BEST_EFFORT）-> republish raw -> rqt
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # shellcheck disable=SC1091
+source "${ROOT_DIR}/scripts/excavator_deploy_network.sh"
+excavator_apply_host_network_defaults
+
+# shellcheck disable=SC1091
 source "${ROOT_DIR}/scripts/ros2_fpv_env.sh"
-# 组播不通: export EXCAVATOR_ROS_PEER_IP=<从机 IP>
 
 COMPRESSED_TOPIC="${EXCAVATOR_FPV_COMPRESSED_TOPIC:-/camera/color/image_raw/compressed}"
 DISPLAY_TOPIC="${EXCAVATOR_FPV_DISPLAY_TOPIC:-/fpv/host_display/image_raw}"
-WAIT_SEC="${EXCAVATOR_FPV_TOPIC_WAIT_SEC:-30}"
 
 if [[ -n "${VIRTUAL_ENV:-}" ]]; then
   export PATH="/usr/bin:/bin:${PATH}"
@@ -23,39 +24,12 @@ source "${ROOT_DIR}/scripts/ros2_multihost_env.sh"
 source "/opt/ros/${ROS_DISTRO:-humble}/setup.bash"
 set -u
 
-_wait_topic() {
-  local topic="$1"
-  local deadline=$((SECONDS + WAIT_SEC))
-  echo "Waiting for compressed topic: ${topic} (up to ${WAIT_SEC}s) ..."
-  while (( SECONDS < deadline )); do
-    if ros2 topic list 2>/dev/null | grep -Fx "${topic}" >/dev/null; then
-      echo "Found: ${topic}"
-      return 0
-    fi
-    sleep 1
-  done
-  return 1
-}
+ros2 daemon stop >/dev/null 2>&1 || true
 
-if ! _wait_topic "${COMPRESSED_TOPIC}"; then
-  echo "Missing ${COMPRESSED_TOPIC}. On slave:" >&2
-  echo "  ./scripts/start_orbbec_fpv_camera.sh" >&2
-  echo "Ensure both sides use scripts/ros2_fpv_env.sh (DOMAIN_ID=${EXCAVATOR_ROS_DOMAIN_ID})." >&2
-  echo "If needed: export EXCAVATOR_ROS_PEER_IP=<slave-ip>" >&2
-  exit 1
-fi
+LAUNCH_FILE="${ROOT_DIR}/ros2_bridge/excavator_ros2_bridge/launch/host_fpv_rqt.launch.py"
+echo "Host FPV rqt: ${COMPRESSED_TOPIC} -> ${DISPLAY_TOPIC} (ROS_DOMAIN_ID=${ROS_DOMAIN_ID}, RMW=${RMW_IMPLEMENTATION})"
+echo "QoS: subscription best_effort (match Orbbec sensor_data)"
 
-echo "Host rqt: ${COMPRESSED_TOPIC} -> ${DISPLAY_TOPIC}"
-ros2 run image_transport republish compressed raw \
-  --ros-args \
-  -r "in/compressed:=${COMPRESSED_TOPIC}" \
-  -r "out:=${DISPLAY_TOPIC}" &
-REPUBLISH_PID=$!
-
-cleanup() {
-  kill "${REPUBLISH_PID}" 2>/dev/null || true
-}
-trap cleanup EXIT INT TERM
-
-sleep 2
-exec /usr/bin/python3 /opt/ros/humble/lib/rqt_image_view/rqt_image_view "${DISPLAY_TOPIC}"
+exec ros2 launch "${LAUNCH_FILE}" \
+  compressed_topic:="${COMPRESSED_TOPIC}" \
+  display_topic:="${DISPLAY_TOPIC}"

@@ -108,11 +108,12 @@ def main() -> None:
     parser.add_argument(
         "--data-side",
         choices=["host", "slave"],
-        default=None,
+        default="slave",
         help=(
-            "Where HDF5 is written: host=operator PC, slave=vehicle PC. "
-            "Sets default dataset_dir and bridge host/port; run tb-record-real on that machine. "
-            "Also configurable via real.data_side or EXCAVATOR_DATA_SIDE."
+            "Where HDF5 is written (default slave=vehicle PC). "
+            "slave: run on vehicle, data under /data/real_teleop_v1; "
+            "host: run on operator PC, set EXCAVATOR_BRIDGE_HOST to vehicle IP. "
+            "Override via real.data_side or EXCAVATOR_DATA_SIDE."
         ),
     )
     args = parser.parse_args()

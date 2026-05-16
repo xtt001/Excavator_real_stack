@@ -52,10 +52,12 @@ pip install -r requirements.txt
 ```
 
 FPV 脚本默认 `EXCAVATOR_ROS2_MULTIHOST=1`、`EXCAVATOR_ROS_DOMAIN_ID=42`（`scripts/ros2_fpv_env.sh`）。
+RMW 自动选择：已安装 Cyclone 则用 `rmw_cyclonedds_cpp`，否则用系统默认 **Fast DDS**（主从须一致）。
 
 ```bash
-sudo apt install -y ros-humble-rmw-cyclonedds-cpp ros-humble-image-transport \
+sudo apt install -y ros-humble-image-transport \
   ros-humble-compressed-image-transport ros-humble-rqt-image-view
+# 可选，与从端统一用 Cyclone：ros-humble-rmw-cyclonedds-cpp
 ```
 
 **从端**：
@@ -69,9 +71,11 @@ sudo apt install -y ros-humble-rmw-cyclonedds-cpp ros-humble-image-transport \
 **主端**：
 
 ```bash
-# 组播不通: export EXCAVATOR_ROS_PEER_IP=<从机 IP>
+# 从端 IP 固定 192.168.31.171；组播不通时脚本已默认 EXCAVATOR_ROS_PEER_IP
 ./scripts/start_host_fpv_rqt.sh               # 只订 compressed + rqt
 ```
+
+完整主从命令见 **`docs/realworld_host_slave_runbook.md`**。
 
 验证：主端 `ros2 topic hz /camera/color/image_raw/compressed` 有帧率即通。
 
@@ -110,7 +114,7 @@ cd ~/orbbec_ws && colcon build --packages-select excavator_ros2_bridge
 | `excavator_real_bridge.cpp` | **保持仓库原版**，不链接相机 |
 | 时间戳 | 图像用 `header.stamp`；关节来自 control snapshot |
 | 仿真 | gateway `--fpv-source auto` 无 SHM 时用 placeholder |
-| `send_status` | 网关原样转发到 control bridge；若 control bridge 无此接口，需用 `bridge_mock` 或另行给 control 加 status 支持 |
+| `send_status` | 网关转发到 C++ bridge → `applyStatusToggleMask` |
 
 ## 目录
 

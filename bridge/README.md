@@ -21,6 +21,7 @@ existing `testbed` `bridge_tcp` protocol:
 
 ```text
 send_action.request  -> send_action.response
+send_status.request  -> send_status.response  (toggle_mask -> applyStatusToggleMask)
 read_state.request   -> read_state.response
 reset.request        -> reset.response
 close.request        -> close.response
