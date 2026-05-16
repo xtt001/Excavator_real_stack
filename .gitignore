@@ -43,3 +43,6 @@ artifacts/
 # dev_yxc
 test/
 bridge/.cache/
+
+# 由 ros2_multihost_env.sh 根据 EXCAVATOR_ROS_PEER_IP 生成
+configs/ros2_dds/.cyclonedds_peers_*.xml

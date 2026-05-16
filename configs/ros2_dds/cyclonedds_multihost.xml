@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 同网段多机 ROS2：开启组播发现。主从设相同 EXCAVATOR_ROS_DOMAIN_ID。 -->
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain>
+    <General>
+      <NetworkInterfaceAddress>auto</NetworkInterfaceAddress>
+      <AllowMulticast>true</AllowMulticast>
+    </General>
+    <Discovery>
+      <ParticipantIndex>auto</ParticipantIndex>
+      <MaxAutoParticipantIndex>120</MaxAutoParticipantIndex>
+    </Discovery>
+  </Domain>
+</CycloneDDS>

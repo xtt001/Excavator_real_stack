@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 组播不可靠时用：两端各设 EXCAVATOR_ROS_PEER_IP=对方 IP，由脚本生成最终 xml。 -->
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain>
+    <General>
+      <NetworkInterfaceAddress>auto</NetworkInterfaceAddress>
+      <AllowMulticast>false</AllowMulticast>
+    </General>
+    <Discovery>
+      <Peers>
+        <Peer address="@EXCAVATOR_ROS_PEER_IP@"/>
+      </Peers>
+      <ParticipantIndex>auto</ParticipantIndex>
+      <MaxAutoParticipantIndex>120</MaxAutoParticipantIndex>
+    </Discovery>
+  </Domain>
+</CycloneDDS>

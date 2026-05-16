@@ -43,6 +43,38 @@ sudo apt install -y ros-${ROS_DISTRO}-compressed-image-transport ros-${ROS_DISTR
 pip install -r requirements.txt
 ```
 
+## 主从分工（相机 / 可视化 / 落盘）
+
+```text
+从端: Orbbec 发布 /camera/color/image_raw/compressed
+      -> start_fpv_subscriber_py.sh 写 SHM -> gateway -> tb-record-real --data-side slave
+主端: start_host_fpv_rqt.sh 仅订阅同一 compressed，本机 rqt（不录 HDF5）
+```
+
+FPV 脚本默认 `EXCAVATOR_ROS2_MULTIHOST=1`、`EXCAVATOR_ROS_DOMAIN_ID=42`（`scripts/ros2_fpv_env.sh`）。
+
+```bash
+sudo apt install -y ros-humble-rmw-cyclonedds-cpp ros-humble-image-transport \
+  ros-humble-compressed-image-transport ros-humble-rqt-image-view
+```
+
+**从端**：
+
+```bash
+./scripts/start_orbbec_fpv_camera.sh
+./scripts/start_fpv_subscriber_py.sh          # 仅 SHM，无 rqt
+# 录制: tb-record-real --data-side slave ...
+```
+
+**主端**：
+
+```bash
+# 组播不通: export EXCAVATOR_ROS_PEER_IP=<从机 IP>
+./scripts/start_host_fpv_rqt.sh               # 只订 compressed + rqt
+```
+
+验证：主端 `ros2 topic hz /camera/color/image_raw/compressed` 有帧率即通。
+
 ## 运行（四终端示例）
 
 ```bash
@@ -53,10 +85,8 @@ pip install -r requirements.txt
 ./scripts/start_orbbec_fpv_camera.sh
 # 等价: source scripts/source_ros_stack.sh && ros2 launch excavator_ros2_bridge orbbec_fpv_camera.launch.py
 
-# 3. 图像订阅 -> SHM + rqt 可视化（默认开启 rqt_image_view）
+# 3. 从端 compressed -> SHM（主端 rqt 用 start_host_fpv_rqt.sh）
 ./scripts/start_fpv_subscriber_py.sh
-# 等价: ros2 launch excavator_ros2_bridge fpv_subscriber_with_rqt.launch.py
-# 仅订阅、不弹窗: ... fpv_subscriber_with_rqt.launch.py use_rqt:=false
 
 # 4. 网关（testbed 连 8765）
 ./scripts/start_bridge_gateway.sh

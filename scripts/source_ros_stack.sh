@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 # 加载 ROS2 + OrbbecSDK_ROS2（~/orbbec_ws）+ excavator_ros2_bridge 叠加工作空间。
 # 用法: source scripts/source_ros_stack.sh
+# 主从同域: export EXCAVATOR_ROS2_MULTIHOST=1 后再 source
+
+_stack_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ "${EXCAVATOR_ROS2_MULTIHOST:-0}" == "1" ]]; then
+  # shellcheck disable=SC1091
+  source "${_stack_root}/scripts/ros2_multihost_env.sh"
+fi
 
 _orbbec_ws="${EXCAVATOR_ORBBEC_WS:-${HOME}/orbbec_ws}"
 _excavator_ws="${EXCAVATOR_ROS_WS:-${HOME}/ros2_ws}"

@@ -1,8 +1,8 @@
 """
-启动 FPV 图像订阅（写 SHM）并同时用 rqt_image_view 可视化。
+从端 FPV：订阅 compressed 写 SHM（供 gateway / 从端 HDF5）。
 
-rqt 显示 raw Image：image_transport republish compressed -> /fpv/display/image_raw
-订阅节点仍直接订 compressed 写共享内存。
+默认不在从端开 rqt（主端用 scripts/start_host_fpv_rqt.sh 订同一 compressed 看图）。
+单机调试可传: use_rqt:=true use_republish:=true
 """
 
 import os
@@ -147,8 +147,8 @@ def generate_launch_description():
                 default_value="python",
                 description="python（默认）或 cpp（需 colcon 编译 fpv_image_subscriber）",
             ),
-            DeclareLaunchArgument("use_rqt", default_value="true"),
-            DeclareLaunchArgument("use_republish", default_value="true"),
+            DeclareLaunchArgument("use_rqt", default_value="false"),
+            DeclareLaunchArgument("use_republish", default_value="false"),
             OpaqueFunction(function=_launch_setup),
         ]
     )
