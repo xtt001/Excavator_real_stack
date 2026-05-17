@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # 主端：SSHFS 挂载从端数据集目录（手柄在主端、HDF5 写从端时用）
 set -euo pipefail
+if ! command -v sshfs >/dev/null 2>&1; then
+  echo "error: 未安装 sshfs。主端执行: sudo apt install -y sshfs" >&2
+  exit 1
+fi
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck disable=SC1091
 source "${ROOT_DIR}/scripts/excavator_deploy_network.sh"

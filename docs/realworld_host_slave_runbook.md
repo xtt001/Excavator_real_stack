@@ -10,7 +10,7 @@
 | 项目 | 约定 |
 |------|------|
 | 手柄 USB | **主端** |
-| HDF5 物理路径 | **从端** `/data/real_teleop_v1` |
+| HDF5 物理路径 | **从端** `/data/real_teleop_v1` 或 **`/media/mundane/D/real_teleop_v1`**（见 §0） |
 | 主端录制连 gateway | **`192.168.31.171:8765`** |
 | 从端 bridge 监听 | **`127.0.0.1:8766`**（仅本机 gateway 连） |
 | ROS2 | `ROS_DOMAIN_ID=42`；相机 `/camera/color/image_raw/compressed` |
@@ -49,11 +49,34 @@ sudo apt install -y ros-humble-compressed-image-transport ros-humble-cv-bridge \
   ros-humble-image-transport ros-humble-rqt-image-view
 ```
 
-**从端数据目录：**
+**从端数据目录**（二选一）：
+
+**A. 系统 `/data`（需 root，很多现场无权限）**
 
 ```bash
 sudo mkdir -p /data/real_teleop_v1 && sudo chown "$USER":"$USER" /data/real_teleop_v1
+ls -la /data/real_teleop_v1
 ```
+
+**B. 外置盘 D 盘下（推荐：仓库在 `/media/mundane/D/Excavator_real_stack` 时）**
+
+在**从端**执行（`real_teleop_v1` 是**文件夹**，在 D 盘根下，不在项目目录里）：
+
+```bash
+mkdir -p /media/mundane/D/real_teleop_v1
+ls -la /media/mundane/D/real_teleop_v1
+```
+
+**主端**挂载前指定从端路径与 SSH 用户名：
+
+```bash
+export EXCAVATOR_SLAVE_IP=192.168.31.171          # 从端 IP，按现场改
+export EXCAVATOR_SLAVE_SSH_USER=mundane           # 从端登录名
+export EXCAVATOR_SLAVE_DATASET_DIR=/media/mundane/D/real_teleop_v1
+./scripts/mount_slave_dataset.sh
+```
+
+录完后在从端查看：`ls -la /media/mundane/D/real_teleop_v1/episode_*.hdf5`
 
 **主端**（录制写从盘需要）：
 
@@ -144,7 +167,8 @@ export EXCAVATOR_SLAVE_IP=192.168.31.171
 ./scripts/mount_slave_dataset.sh
 ```
 
-默认：`192.168.31.171:/data/real_teleop_v1` → `~/mnt/slave_real_teleop`。  
+默认挂载从端 `/data/real_teleop_v1`；D 盘部署时先 `export EXCAVATOR_SLAVE_DATASET_DIR=/media/mundane/D/real_teleop_v1`。  
+映射到主端 `~/mnt/slave_real_teleop`。  
 录完可选：`./scripts/umount_slave_dataset.sh`。
 
 ### 终端 B — 手柄 + 录制（HDF5 写入从端盘）
