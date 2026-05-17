@@ -11,7 +11,7 @@ from typing import Any, Literal
 log = logging.getLogger(__name__)
 
 # 从端固定 IP（与 configs/deploy_network.yaml 一致）
-DEFAULT_SLAVE_IP = "192.168.31.171"
+DEFAULT_SLAVE_IP = "192.168.31.170"
 
 DataSide = Literal["host", "slave"]
 DATA_SIDE_HOST: DataSide = "host"

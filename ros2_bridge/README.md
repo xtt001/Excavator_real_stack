@@ -71,7 +71,7 @@ sudo apt install -y ros-humble-image-transport \
 **主端**：
 
 ```bash
-# 从端 IP 固定 192.168.31.171；组播不通时脚本已默认 EXCAVATOR_ROS_PEER_IP
+# 从端 IP 固定 192.168.31.170；组播不通时脚本已默认 EXCAVATOR_ROS_PEER_IP
 ./scripts/start_host_fpv_rqt.sh               # 只订 compressed + rqt
 ```
 

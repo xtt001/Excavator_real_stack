@@ -4,14 +4,14 @@
 
 | 角色 | 机器 | 进程 |
 |------|------|------|
-| 从端 slave | `192.168.31.171` | bridge、gateway、Orbbec、FPV→SHM（**不**在从端录） |
+| 从端 slave | `192.168.31.170` | bridge、gateway、Orbbec、FPV→SHM（**不**在从端录） |
 | 主端 host | 操作员 PC | 手柄 + **录制**（SSHFS 写到从盘）、可选 rqt |
 
 | 项目 | 约定 |
 |------|------|
 | 手柄 USB | **主端** |
 | HDF5 物理路径 | **从端** `/data/real_teleop_v1` 或 **`/media/mundane/D/real_teleop_v1`**（见 §0） |
-| 主端录制连 gateway | **`192.168.31.171:8765`** |
+| 主端录制连 gateway | **`192.168.31.170:8765`** |
 | 从端 bridge 监听 | **`127.0.0.1:8766`**（仅本机 gateway 连） |
 | ROS2 | `ROS_DOMAIN_ID=42`；相机 `/camera/color/image_raw/compressed` |
 
@@ -70,7 +70,7 @@ ls -la /media/mundane/D/real_teleop_v1
 **主端**挂载前指定从端路径与 SSH 用户名：
 
 ```bash
-export EXCAVATOR_SLAVE_IP=192.168.31.171          # 从端 IP，按现场改
+export EXCAVATOR_SLAVE_IP=192.168.31.170          # 从端 IP，按现场改
 export EXCAVATOR_SLAVE_SSH_USER=mundane           # 从端登录名
 export EXCAVATOR_SLAVE_DATASET_DIR=/media/mundane/D/real_teleop_v1
 ./scripts/mount_slave_dataset.sh
@@ -82,21 +82,21 @@ export EXCAVATOR_SLAVE_DATASET_DIR=/media/mundane/D/real_teleop_v1
 
 ```bash
 sudo apt install -y sshfs
-ssh-copy-id "${USER}@192.168.31.171"   # 推荐免密
+ssh-copy-id "${USER}@192.168.31.170"   # 推荐免密
 ```
 
-网络：从端放行 **TCP 8765**；主端 DDS 组播不通时 `export EXCAVATOR_ROS_PEER_IP=192.168.31.171`。
+网络：从端放行 **TCP 8765**；主端 DDS 组播不通时 `export EXCAVATOR_ROS_PEER_IP=192.168.31.170`。
 
 ---
 
-## 1. 从端 `192.168.31.171`（4 个终端）
+## 1. 从端 `192.168.31.170`（4 个终端）
 
 每个终端先：
 
 ```bash
 cd ~/Excavator_real_stack
 source .venv/bin/activate
-export EXCAVATOR_SLAVE_IP=192.168.31.171
+export EXCAVATOR_SLAVE_IP=192.168.31.170
 ```
 
 **不要在从端起 `tb-record-real`。** 顺序建议：1 → 4 → 2 → 3。
@@ -158,7 +158,7 @@ export EXCAVATOR_SLAVE_IP=192.168.31.171
 ```bash
 cd ~/Excavator_real_stack
 source .venv/bin/activate
-export EXCAVATOR_SLAVE_IP=192.168.31.171
+export EXCAVATOR_SLAVE_IP=192.168.31.170
 ```
 
 ### 终端 A — 挂载从端数据集（每次录制前）
@@ -193,7 +193,7 @@ tb-record-real \
   --data-side host \
   --backend bridge_tcp \
   --state-reader bridge_tcp \
-  --bridge-host 192.168.31.171 \
+  --bridge-host 192.168.31.170 \
   --bridge-port 8765 \
   --input joystick \
   --output-dir ~/mnt/slave_real_teleop
@@ -226,7 +226,7 @@ ros2 topic hz /camera/color/image_raw/compressed
 |------|------|------|
 | 从端终端 1 | `can-simulation true`，`can-bus-enabled false` | `can-simulation false`，`can-bus-enabled true` |
 | 从端 2～4 | 相同 | 相同 |
-| 主端录制 | 相同（`192.168.31.171:8765` + SSHFS） | 相同 |
+| 主端录制 | 相同（`192.168.31.170:8765` + SSHFS） | 相同 |
 
 录完后在**从端** QC：
 
@@ -240,7 +240,7 @@ tb-dataset-qc --dataset-dir /data/real_teleop_v1 --profile real
 
 ```text
 主端: 手柄 -> record_host_gamepad_slave_disk.sh
-          | TCP 192.168.31.171:8765
+          | TCP 192.168.31.170:8765
           v
 从端: gateway -> bridge 127.0.0.1:8766 -> control/CAN
           ^ read_state 图像来自 SHM <- fpv_subscriber <- Orbbec compressed
@@ -254,12 +254,12 @@ tb-dataset-qc --dataset-dir /data/real_teleop_v1 --profile real
 
 | 用途 | 地址 | 在哪填 |
 |------|------|--------|
-| 主端录制 / 控车 | `192.168.31.171:8765` | `record_host_gamepad_slave_disk.sh` |
+| 主端录制 / 控车 | `192.168.31.170:8765` | `record_host_gamepad_slave_disk.sh` |
 | 从端 bridge | `127.0.0.1:8766` | 仅从端终端 1 |
-| 主端 ROS2 peer | `192.168.31.171` | `EXCAVATOR_ROS_PEER_IP` |
+| 主端 ROS2 peer | `192.168.31.170` | `EXCAVATOR_ROS_PEER_IP` |
 | HDF5 | 从端 `/data/real_teleop_v1` | 经 `~/mnt/slave_real_teleop` 写入 |
 
-**不要**在从端用 `192.168.31.171` 连 gateway；**不要**在主端填 `127.0.0.1:8765`（除非整机单机调试）。
+**不要**在从端用 `192.168.31.170` 连 gateway；**不要**在主端填 `127.0.0.1:8765`（除非整机单机调试）。
 
 ---
 
@@ -290,7 +290,7 @@ tb-record-real --config testbed/configs/teleop_real_v1.yaml \
 |------|------|
 | `请先挂载从端目录` | 主端执行 `./scripts/mount_slave_dataset.sh` |
 | HDF5 出现在主端仓库下 | 未挂载或没用 `record_host_gamepad_slave_disk.sh` |
-| 主端连不上 8765 | 从端 gateway 已起、`ss -tlnp \| grep 8765`、`ping 192.168.31.171` |
+| 主端连不上 8765 | 从端 gateway 已起、`ss -tlnp \| grep 8765`、`ping 192.168.31.170` |
 | 主端 rqt 灰屏 | 从端 Orbbec + 终端 3；`ros2 topic hz .../compressed` |
 | SSHFS 断开 | 录前检查 `mountpoint ~/mnt/slave_real_teleop`；网络稳定后再录 |
 | 从端误开 `tb-record-real` | 关闭；录制只在主端 |

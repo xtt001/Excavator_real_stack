@@ -7,7 +7,7 @@ source "${ROOT_DIR}/scripts/excavator_deploy_network.sh"
 excavator_apply_host_network_defaults
 
 LOCAL_MOUNT="${EXCAVATOR_SLAVE_DATASET_MOUNT:-${HOME}/mnt/slave_real_teleop}"
-BRIDGE_HOST="${EXCAVATOR_BRIDGE_HOST:-${EXCAVATOR_SLAVE_IP:-192.168.31.171}}"
+BRIDGE_HOST="${EXCAVATOR_BRIDGE_HOST:-${EXCAVATOR_SLAVE_IP:-192.168.31.170}}"
 BRIDGE_PORT="${EXCAVATOR_BRIDGE_PORT:-8765}"
 
 if [[ ! -d "${LOCAL_MOUNT}" ]] || ! mountpoint -q "${LOCAL_MOUNT}" 2>/dev/null; then

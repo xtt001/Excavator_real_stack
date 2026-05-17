@@ -34,7 +34,7 @@ echo "  ROS_DOMAIN_ID=${ROS_DOMAIN_ID} RMW=${RMW_IMPLEMENTATION} peer=${EXCAVATO
 echo "  QoS: subscription best_effort（与 Orbbec sensor_data 一致）"
 if [[ -z "${EXCAVATOR_ROS_PEER_IP:-}" ]]; then
   echo "warn: 未设置 EXCAVATOR_ROS_PEER_IP，主端可能发现不了从端话题；请先:" >&2
-  echo "  export EXCAVATOR_SLAVE_IP=192.168.31.171" >&2
+  echo "  export EXCAVATOR_SLAVE_IP=192.168.31.170" >&2
   echo "  source scripts/excavator_deploy_network.sh && excavator_apply_host_network_defaults" >&2
 fi
 
