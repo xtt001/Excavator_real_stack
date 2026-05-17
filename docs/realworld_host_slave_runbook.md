@@ -189,7 +189,7 @@ export EXCAVATOR_SLAVE_IP=192.168.31.170
 
 ```bash
 tb-record-real \
-  --config testbed/configs/teleop_real_v1.yaml \
+  --config testbed/testbed/configs/teleop_real_v1.yaml \
   --data-side host \
   --backend bridge_tcp \
   --state-reader bridge_tcp \
@@ -276,7 +276,7 @@ tb-dataset-qc --dataset-dir /data/real_teleop_v1 --profile real
 ./scripts/start_bridge_gateway.sh
 
 # 终端 B：可不挂载 SSHFS，直接录到本地目录
-tb-record-real --config testbed/configs/teleop_real_v1.yaml \
+tb-record-real --config testbed/testbed/configs/teleop_real_v1.yaml \
   --data-side slave --backend bridge_tcp --state-reader bridge_tcp \
   --bridge-host 127.0.0.1 --bridge-port 8765 --input joystick \
   --output-dir data/real_teleop_v1_sim

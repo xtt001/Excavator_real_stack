@@ -22,7 +22,7 @@ fi
 
 echo "主端手柄 -> gateway ${BRIDGE_HOST}:${BRIDGE_PORT}；HDF5 -> ${LOCAL_MOUNT} (从端磁盘)"
 exec tb-record-real \
-  --config testbed/configs/teleop_real_v1.yaml \
+  --config "${ROOT_DIR}/testbed/testbed/configs/teleop_real_v1.yaml" \
   --data-side host \
   --backend bridge_tcp \
   --state-reader bridge_tcp \

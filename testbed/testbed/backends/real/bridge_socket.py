@@ -6,6 +6,7 @@ library sockets only, so the package remains importable without ROS/CAN.
 
 from __future__ import annotations
 
+import logging
 import socket
 import time
 from typing import Any, Mapping
@@ -24,6 +25,8 @@ from testbed.backends.real.bridge_protocol import (
 from testbed.backends.real.contracts import as_real_action
 from testbed.backends.real.control import ControlResult
 from testbed.backends.real.state import RealStateSamples
+
+log = logging.getLogger(__name__)
 
 
 class JsonTcpBridgeClient(RealBridgeClient):
@@ -71,8 +74,13 @@ class JsonTcpBridgeClient(RealBridgeClient):
         mask = int(toggle_mask) & 0x07FF
         if mask == 0:
             return True
-        response = self._request("send_status", {"toggle_mask": mask})
-        return bool(response.get("ack", False))
+        try:
+            response = self._request("send_status", {"toggle_mask": mask})
+            return bool(response.get("ack", False))
+        except BridgeProtocolError as exc:
+            # 从端 C++ bridge 未编 send_status 或 applyStatusToggleMask 失败时不中断录制
+            log.warning("send_status skipped: %s", exc)
+            return False
 
     def read_state(
         self,
