@@ -30,12 +30,19 @@ def _launch_setup(context, *args, **kwargs):
 
     compressed_topic = LaunchConfiguration("compressed_topic").perform(context)
     shm_name = LaunchConfiguration("shm_name").perform(context)
-    display_topic = LaunchConfiguration("display_topic").perform(context)
+    display_topic_cfg = LaunchConfiguration("display_topic").perform(context).strip()
     subscriber_backend = LaunchConfiguration("subscriber_backend").perform(context)
     use_rqt = LaunchConfiguration("use_rqt").perform(context).lower()
     use_republish = LaunchConfiguration("use_republish").perform(context).lower()
 
     actions = []
+    # 默认与 Orbbec 一致：compressed 旁路 raw 为 /camera/color/image_raw
+    if display_topic_cfg:
+        display_topic = display_topic_cfg
+    elif compressed_topic.endswith("/compressed"):
+        display_topic = compressed_topic[: -len("/compressed")]
+    else:
+        display_topic = "/camera/color/image_raw"
 
     if use_republish in ("1", "true", "yes", "on"):
         actions.append(
@@ -140,7 +147,8 @@ def generate_launch_description():
             DeclareLaunchArgument("shm_name", default_value="excavator_fpv_v1"),
             DeclareLaunchArgument(
                 "display_topic",
-                default_value="/fpv/display/image_raw",
+                default_value="",
+                description="空则自动取 compressed 去掉 /compressed 后缀",
             ),
             DeclareLaunchArgument(
                 "subscriber_backend",

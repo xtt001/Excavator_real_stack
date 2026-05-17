@@ -17,6 +17,11 @@ set +u
 source "${ROOT_DIR}/scripts/source_excavator_ros_ws.sh"
 set -u
 
+echo "【从端】仅订阅 compressed 写 SHM，不在此机起 rqt。"
+echo "【主端】在操作员 PC 上执行: ./scripts/start_host_fpv_rqt.sh"
+echo "       （主端经 DDS 订从端 /camera/color/image_raw/compressed 并用 rqt 显示）"
+echo
+
 exec ros2 launch excavator_ros2_bridge fpv_subscriber_with_rqt.launch.py \
   use_rqt:=false \
   use_republish:=false \
