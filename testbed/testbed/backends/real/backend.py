@@ -70,6 +70,8 @@ class RealExcavatorBackend(Backend):
     ) -> None:
         self._control_hz = float(control_hz)
         self._dt = 1.0 / self._control_hz if self._control_hz > 0 else 0.02
+        self._controller_mode = str(controller_mode)
+        self._state_reader_mode = str(state_reader_mode)
         self._step_id = 0
         self._last_obs: dict[str, Any] | None = None
         self._sync_builder = sync_builder or SynchronizedObservationBuilder(
@@ -139,7 +141,9 @@ class RealExcavatorBackend(Backend):
     def start_episode(self, seed: int | None = None) -> RealExcavatorTimeStep:
         """Mark a new episode boundary; this does not reset real hardware."""
         self._step_id = 0
-        self._state_reader.reset(seed=seed)
+        # 真机经 gateway 的 episode 边界不向 C++ bridge 发 reset（避免 CAN 零指令失败）
+        if self._state_reader_mode != "bridge_tcp":
+            self._state_reader.reset(seed=seed)
         obs = self.read_state()
         return self._timestep_from_obs(obs)
 

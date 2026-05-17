@@ -12,7 +12,9 @@ from __future__ import annotations
 import argparse
 import logging
 import signal
+import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -242,17 +244,53 @@ def main() -> None:
     )
 
     abort = False
+    sigint_count = 0
 
     def _sigint(_sig, _frame) -> None:
-        nonlocal abort
+        nonlocal abort, sigint_count
         abort = True
-        log.warning("Ctrl+C received - will save the current partial episode if it has data.")
+        sigint_count += 1
+        if sigint_count >= 2:
+            log.warning("再次 Ctrl+C：强制退出。")
+            raise SystemExit(130)
+        log.warning(
+            "Ctrl+C：本步结束后退出并保存当前片段（再按一次立即退出，不保存）。"
+        )
+        raise KeyboardInterrupt()
 
     signal.signal(signal.SIGINT, _sigint)
 
     dataset_dir.mkdir(parents=True, exist_ok=True)
     episode_idx = _next_episode_idx(dataset_dir)
     saved = 0
+
+    def _save_partial_episode(
+        recorder: EpisodeRecorder | None,
+        *,
+        discard: bool,
+    ) -> bool:
+        if recorder is None or discard or len(recorder) == 0:
+            return False
+        try:
+            path = recorder.save(success=False)
+        except KeyboardInterrupt:
+            log.warning("保存 HDF5 被中断，已跳过写入。")
+            return False
+        log.info("Saved real v1 episode: %d steps -> %s", len(recorder), path)
+        return True
+
+    def _shutdown() -> None:
+        try:
+            action_source.close()
+        except Exception:
+            pass
+        if bridge_client is not None and hasattr(bridge_client, "force_close"):
+            bridge_client.force_close()
+            return
+        try:
+            backend.close()
+        except Exception:
+            pass
 
     try:
         while saved < num_episodes and not abort:
@@ -268,91 +306,100 @@ def main() -> None:
             )
 
             log.info("Episode %d starts by operator/CLI control; no hardware reset is issued.", episode_idx)
-            ts = backend.start_episode(seed=ep_seed)
+            if abort:
+                break
+            try:
+                ts = backend.start_episode(seed=ep_seed)
+            except KeyboardInterrupt:
+                break
             action_source.reset()
             guard.reset()
             discard = False
 
-            for local_step in range(max_steps):
-                if abort:
-                    break
+            try:
+                for local_step in range(max_steps):
+                    if abort:
+                        break
 
-                discard, quit_now = _check_pygame_events(enabled=input_device != "zero")
-                if quit_now:
-                    abort = True
-                    break
-                if discard:
-                    log.info("Episode discarded by user.")
-                    break
+                    discard, quit_now = _check_pygame_events(enabled=input_device != "zero")
+                    if quit_now:
+                        abort = True
+                        break
+                    if discard:
+                        log.info("Episode discarded by user.")
+                        break
 
-                obs = ts.observation
-                raw_action, action_info = action_source.next_action(obs)
-                reset_now, discard_now, quit_now = _action_control_flags(action_info)
-                if quit_now:
-                    abort = True
-                    break
-                if reset_now or discard_now:
-                    discard = True
-                    log.info("Episode discarded by action-source request.")
-                    break
+                    obs = ts.observation
+                    raw_action, action_info = action_source.next_action(obs)
+                    reset_now, discard_now, quit_now = _action_control_flags(action_info)
+                    if quit_now:
+                        abort = True
+                        break
+                    if reset_now or discard_now:
+                        discard = True
+                        log.info("Episode discarded by action-source request.")
+                        break
 
-                action_sample_ns = _action_sample_timestamp_ns(action_info)
-                safety_state = dict(obs.get("safety_state", {}))
-                sensor_age_s = _sensor_age_s(obs)
-                safe_action, _triggered = guard.check(
-                    raw_action,
-                    obs.get("qpos"),
-                    deadman_pressed=bool(safety_state.get("deadman_pressed", True)),
-                    estop_active=bool(safety_state.get("estop_active", False)),
-                    manual_override_active=bool(
-                        safety_state.get("manual_override_active", False)
-                    ),
-                    sensor_stale=bool(safety_state.get("sensor_stale", False)),
-                    sensor_age_s=sensor_age_s,
-                )
+                    action_sample_ns = _action_sample_timestamp_ns(action_info)
+                    safety_state = dict(obs.get("safety_state", {}))
+                    sensor_age_s = _sensor_age_s(obs)
+                    safe_action, _triggered = guard.check(
+                        raw_action,
+                        obs.get("qpos"),
+                        deadman_pressed=bool(safety_state.get("deadman_pressed", True)),
+                        estop_active=bool(safety_state.get("estop_active", False)),
+                        manual_override_active=bool(
+                            safety_state.get("manual_override_active", False)
+                        ),
+                        sensor_stale=bool(safety_state.get("sensor_stale", False)),
+                        sensor_age_s=sensor_age_s,
+                    )
 
-                extras = getattr(action_info, "extras", {}) or {}
-                toggle_mask = int(extras.get("toggle_mask", 0) or 0)
-                if toggle_mask:
-                    backend.apply_status_toggle_mask(toggle_mask)
+                    extras = getattr(action_info, "extras", {}) or {}
+                    toggle_mask = int(extras.get("toggle_mask", 0) or 0)
+                    if toggle_mask:
+                        backend.apply_status_toggle_mask(toggle_mask)
 
-                action_send_ns = time.time_ns()
-                ts_next = backend.step(safe_action)
-                control_result = dict(ts_next.info.get("control_result", {}))
-                recorder.record(
-                    obs=obs,
-                    action=safe_action,
-                    reward=0.0,
-                    step_id=int(obs.get("step_id", local_step)),
-                    step_ns=action_send_ns,
-                    action_src_type=action_info.source_type,
-                    action_src_id=action_info.source_id,
-                    diagnostics=_build_step_diagnostics(
+                    action_send_ns = time.time_ns()
+                    ts_next = backend.step(safe_action)
+                    control_result = dict(ts_next.info.get("control_result", {}))
+                    recorder.record(
                         obs=obs,
-                        raw_action=raw_action,
-                        safe_action=safe_action,
-                        action_info=action_info,
-                        action_sample_timestamp_ns=action_sample_ns,
-                        action_send_timestamp_ns=action_send_ns,
-                        guard=guard,
-                        control_result=control_result,
-                    ),
-                )
-                ts = ts_next
-                _sleep_to_rate(control_hz)
+                        action=safe_action,
+                        reward=0.0,
+                        step_id=int(obs.get("step_id", local_step)),
+                        step_ns=action_send_ns,
+                        action_src_type=action_info.source_type,
+                        action_src_id=action_info.source_id,
+                        diagnostics=_build_step_diagnostics(
+                            obs=obs,
+                            raw_action=raw_action,
+                            safe_action=safe_action,
+                            action_info=action_info,
+                            action_sample_timestamp_ns=action_sample_ns,
+                            action_send_timestamp_ns=action_send_ns,
+                            guard=guard,
+                            control_result=control_result,
+                        ),
+                    )
+                    ts = ts_next
+                    _sleep_to_rate(control_hz, should_stop=lambda: abort)
+            except KeyboardInterrupt:
+                abort = True
 
-            if not discard and len(recorder) > 0:
-                path = recorder.save(success=False)
-                log.info("Saved real v1 episode: %d steps -> %s", len(recorder), path)
+            if _save_partial_episode(recorder, discard=discard):
                 saved += 1
                 episode_idx += 1
             elif discard:
                 log.info("Discarded current partial episode; episode index is unchanged.")
+    except KeyboardInterrupt:
+        abort = True
     finally:
-        backend.close()
-        action_source.close()
+        _shutdown()
 
     log.info("Real v1 recording complete: %d / %d episode(s) saved.", saved, num_episodes)
+    if abort and sigint_count >= 2:
+        sys.exit(130)
 
 
 def _build_action_source(input_device: str, teleop_cfg: dict[str, Any], *, dt: float):
@@ -545,13 +592,22 @@ def _check_pygame_events(*, enabled: bool = True) -> tuple[bool, bool]:
 _last_step_time: float = 0.0
 
 
-def _sleep_to_rate(control_hz: float) -> None:
+def _sleep_to_rate(
+    control_hz: float,
+    *,
+    should_stop: Callable[[], bool] | None = None,
+) -> None:
     global _last_step_time
     target_dt = 1.0 / float(control_hz)
-    now = time.perf_counter()
-    elapsed = now - _last_step_time
-    if elapsed < target_dt:
-        time.sleep(target_dt - elapsed)
+    deadline = _last_step_time + target_dt
+    while True:
+        if should_stop is not None and should_stop():
+            break
+        now = time.perf_counter()
+        remaining = deadline - now
+        if remaining <= 0.0:
+            break
+        time.sleep(min(remaining, 0.05))
     _last_step_time = time.perf_counter()
 
 

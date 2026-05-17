@@ -106,19 +106,43 @@ class BridgeGateway:
         self.placeholder_height = int(placeholder_height)
         self._frame_id = 0
         self._upstream_lock = threading.Lock()
+        self._upstream: JsonTcpBridgeClient | None = None
 
-    def _upstream_request(self, request_type: str, payload: dict[str, Any]) -> dict[str, Any]:
-        with self._upstream_lock:
-            client = JsonTcpBridgeClient(
+    def _drop_upstream(self) -> None:
+        if self._upstream is not None:
+            try:
+                self._upstream.force_close()
+            except Exception:
+                pass
+            self._upstream = None
+
+    def _ensure_upstream(self) -> JsonTcpBridgeClient:
+        if self._upstream is None:
+            self._upstream = JsonTcpBridgeClient(
                 host=self.control_host,
                 port=self.control_port,
                 timeout_s=self.control_timeout_s,
                 connect_on_init=True,
             )
-            try:
-                return client._request(request_type, payload)
-            finally:
-                client.close()
+            log.info(
+                "upstream bridge connected %s:%d",
+                self.control_host,
+                self.control_port,
+            )
+        return self._upstream
+
+    def _upstream_request(self, request_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._upstream_lock:
+            last_exc: Exception | None = None
+            for _attempt in range(2):
+                try:
+                    return self._ensure_upstream()._request(request_type, payload)
+                except (BridgeProtocolError, OSError, ConnectionError) as exc:
+                    last_exc = exc
+                    log.warning("upstream %s failed: %s", request_type, exc)
+                    self._drop_upstream()
+            assert last_exc is not None
+            raise last_exc
 
     def handle_message(self, message: dict[str, Any]) -> dict[str, Any]:
         msg_type = str(message.get("type", ""))

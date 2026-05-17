@@ -51,7 +51,11 @@ class JsonTcpBridgeClient(RealBridgeClient):
             self._connect()
 
     def reset(self, seed: int | None = None) -> None:
-        self._request("reset", {"seed": seed})
+        try:
+            self._request("reset", {"seed": seed})
+        except BridgeProtocolError as exc:
+            # 从端 bridge/gateway 不可达或 reset 失败时不中断其它调用方
+            log.warning("reset skipped: %s", exc)
 
     def send_action(
         self,
@@ -99,8 +103,15 @@ class JsonTcpBridgeClient(RealBridgeClient):
         return state_samples_from_payload(response)
 
     def close(self) -> None:
+        self._close_socket(send_close_request=True)
+
+    def force_close(self) -> None:
+        """立即断开，不向 bridge 发 close（Ctrl+C 退出时用）。"""
+        self._close_socket(send_close_request=False)
+
+    def _close_socket(self, *, send_close_request: bool) -> None:
         try:
-            if self._sock is not None:
+            if send_close_request and self._sock is not None:
                 try:
                     self._request("close", {})
                 except Exception:

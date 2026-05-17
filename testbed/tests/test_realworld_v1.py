@@ -211,6 +211,25 @@ class RealworldV1Tests(unittest.TestCase):
         finally:
             backend.close()
 
+    def test_start_episode_skips_remote_reset_on_bridge_tcp(self) -> None:
+        client = InProcessMockBridgeClient(
+            image_width=4,
+            image_height=3,
+            velocity_scale_rad_s=0.5,
+        )
+        client.send_count = 3
+        backend = RealExcavatorBackend(
+            controller_mode="bridge_tcp",
+            state_reader_mode="bridge_tcp",
+            bridge_client=client,
+            control_hz=20.0,
+        )
+        try:
+            backend.start_episode(seed=0)
+            self.assertEqual(client.send_count, 3)
+        finally:
+            backend.close()
+
     def test_bridge_protocol_round_trips_control_and_state_samples(self) -> None:
         result = ControlResult(
             ack=True,

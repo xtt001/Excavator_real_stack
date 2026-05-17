@@ -4,10 +4,19 @@ import unittest
 
 import numpy as np
 
+from testbed.actions.gamepad import remap_axis_deadzone
 from testbed.actions.smoothing import ActionResponseSmoother, AxisResponseProfile
 
 
 class ActionSmoothingTests(unittest.TestCase):
+    def test_remap_axis_deadzone_linear(self) -> None:
+        self.assertEqual(remap_axis_deadzone(0.0, 0.1), 0.0)
+        self.assertEqual(remap_axis_deadzone(0.05, 0.1), 0.0)
+        self.assertEqual(remap_axis_deadzone(0.1, 0.1), 0.0)
+        self.assertAlmostEqual(remap_axis_deadzone(1.0, 0.1), 1.0)
+        self.assertAlmostEqual(remap_axis_deadzone(-1.0, 0.1), -1.0)
+        self.assertAlmostEqual(remap_axis_deadzone(0.55, 0.1), (0.55 - 0.1) / 0.9)
+
     def test_axis_response_profile_deadzone_and_exponent(self) -> None:
         profile = AxisResponseProfile(deadzone=0.1, exponent=2.0)
         self.assertEqual(profile.remap(0.05), 0.0)

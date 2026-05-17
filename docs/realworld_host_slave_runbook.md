@@ -126,8 +126,10 @@ export EXCAVATOR_SLAVE_IP=192.168.31.170
   --can-bus-enabled true \
   --can-simulation false \
   --imu-simulation false \
-  --heartbeat-timeout-ms 200
+  --heartbeat-timeout-ms 800
 ```
+
+`heartbeat-timeout-ms` 须大于主端一轮 `send_action`+`read_state`+网络延迟（主从分体建议 **800～1000**，默认 200 易误触发 watchdog）。
 
 ### 终端 2 — Orbbec
 
@@ -294,6 +296,8 @@ tb-record-real --config testbed/testbed/configs/teleop_real_v1.yaml \
 | 主端 rqt 灰屏 | 从端 Orbbec + 终端 3；`ros2 topic hz .../compressed` |
 | SSHFS 断开 | 录前检查 `mountpoint ~/mnt/slave_real_teleop`；网络稳定后再录 |
 | 从端误开 `tb-record-real` | 关闭；录制只在主端 |
+| bridge 日志反复 `client connected/disconnected` | **旧版 gateway** 每请求新建 TCP；更新后 gateway 对 8766 **长连接复用**，仅首次 `upstream bridge connected` |
+| `watchdog forced zero command after … ms` | 超过 `heartbeat-timeout-ms` 未收到 `send_action`；加大 `--heartbeat-timeout-ms` 或检查主端录制是否卡住/环路过慢 |
 
 ---
 

@@ -47,13 +47,14 @@ teleop:
     status_buttons_enabled: true
     status_button_count: 11
     group_switch_button: 11
-    deadzone: 0.05
-    scale: [0.6, 0.3, 0.7, 0.7]
+    # 轴 [-1,1]：|v|<=0.1 为 0，(0.1,1] 线性映射到 (0,1]，满杆 -> control_api ±1
+    deadzone: 0.1
+    scale: 1.0
     clip: 1.0
     response_profile:
-      enabled: true
+      enabled: false
       use_measured_dt: false
-      deadzone: [0.05, 0.05, 0.05, 0.05]
+      deadzone: [0.0, 0.0, 0.0, 0.0]
       attack_rate: 4.0
       release_rate: 6.0
       recenter_rate: 7.0
@@ -97,5 +98,5 @@ safety:
   estop_enabled: true
   manual_override_enabled: true
   sensor_timeout_s: 0.20
-  action_clip: 0.20
-  max_delta_per_step: 0.02
+  action_clip: 1.0
+  max_delta_per_step: 1.0

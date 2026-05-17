@@ -36,6 +36,19 @@ ACTION_DIM = 4
 STATUS_BUTTON_SLOTS = 12
 
 
+def remap_axis_deadzone(value: float, deadzone: float) -> float:
+    """|v|<=dz 为 0； (dz,1] 线性映射到 (0,1]。"""
+    dz = float(deadzone)
+    if dz < 0.0 or dz >= 1.0:
+        raise ValueError("deadzone must be in [0, 1)")
+    v = float(np.clip(value, -1.0, 1.0))
+    magnitude = abs(v)
+    if magnitude <= dz:
+        return 0.0
+    out = (magnitude - dz) / (1.0 - dz)
+    return float(np.sign(v) * out)
+
+
 class JoystickActionSource(ActionSource):
     """Reads a gamepad via pygame: 4D action + discrete status toggle_mask."""
 
@@ -147,8 +160,9 @@ class JoystickActionSource(ActionSource):
             raw = float(joystick.get_axis(axis_idx))
             if self.invert[out_idx]:
                 raw = -raw
-            raw_action[out_idx] = np.clip(raw, -1.0, 1.0)
+            raw_action[out_idx] = remap_axis_deadzone(raw, self._deadzone[out_idx])
 
+        scale = np.asarray(self._scale, dtype=np.float32)
         if self._smoother is not None:
             action = self._smoother.apply(
                 raw_action,
@@ -156,19 +170,13 @@ class JoystickActionSource(ActionSource):
                 if self._response_profile_use_measured_dt
                 else self._smoothing_dt,
             )
-            action = np.clip(
-                action * np.asarray(self._scale, dtype=np.float32),
-                -self._clip,
-                self._clip,
-            ).astype(np.float32, copy=False)
+            action = np.clip(action * scale, -self._clip, self._clip).astype(
+                np.float32, copy=False
+            )
         else:
-            for out_idx, raw in enumerate(raw_action):
-                dz = self._deadzone[out_idx]
-                if abs(raw) < dz:
-                    raw = 0.0
-                else:
-                    raw = (raw - dz * np.sign(raw)) / (1.0 - dz)
-                action[out_idx] = np.clip(raw * self._scale[out_idx], -self._clip, self._clip)
+            action = np.clip(raw_action * scale, -self._clip, self._clip).astype(
+                np.float32, copy=False
+            )
 
         toggle_mask = self._poll_status_toggle_mask()
         latency_ms = (time.perf_counter() - t0) * 1000.0
