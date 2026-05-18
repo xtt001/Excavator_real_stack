@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import socket
+import threading
 import time
 from typing import Any, Mapping
 
@@ -47,6 +48,7 @@ class JsonTcpBridgeClient(RealBridgeClient):
         self.timeout_s = float(timeout_s)
         self._sock: socket.socket | None = None
         self._file: Any | None = None
+        self._lock = threading.RLock()
         if connect_on_init:
             self._connect()
 
@@ -110,19 +112,20 @@ class JsonTcpBridgeClient(RealBridgeClient):
         self._close_socket(send_close_request=False)
 
     def _close_socket(self, *, send_close_request: bool) -> None:
-        try:
-            if send_close_request and self._sock is not None:
-                try:
-                    self._request("close", {})
-                except Exception:
-                    pass
-        finally:
-            if self._file is not None:
-                self._file.close()
-            if self._sock is not None:
-                self._sock.close()
-            self._file = None
-            self._sock = None
+        with self._lock:
+            try:
+                if send_close_request and self._sock is not None:
+                    try:
+                        self._request("close", {})
+                    except Exception:
+                        pass
+            finally:
+                if self._file is not None:
+                    self._file.close()
+                if self._sock is not None:
+                    self._sock.close()
+                self._file = None
+                self._sock = None
 
     def _connect(self) -> None:
         if self._sock is not None:
@@ -133,26 +136,42 @@ class JsonTcpBridgeClient(RealBridgeClient):
         self._file = sock.makefile("rwb")
 
     def _request(self, request_type: str, payload: Mapping[str, Any]) -> dict[str, Any]:
-        self._connect()
-        assert self._file is not None
-        message = request_message(f"{request_type}.request", payload)
-        self._file.write(encode_frame(message))
-        self._file.flush()
-        frame = self._file.readline()
-        if not frame:
-            raise BridgeProtocolError("bridge socket closed before response")
-        response = decode_frame(frame)
-        expected_type = f"{request_type}.response"
-        if response.get("type") != expected_type:
-            raise BridgeProtocolError(
-                f"unexpected bridge response {response.get('type')!r}, expected {expected_type!r}"
-            )
+        response = self._request_response(request_type, payload)
         if not bool(response.get("ok", True)):
             raise BridgeProtocolError(str(response.get("error", "bridge request failed")))
         payload_raw = response.get("payload", {})
         if not isinstance(payload_raw, Mapping):
             raise BridgeProtocolError("bridge response payload must be a mapping")
         return dict(payload_raw)
+
+    def _request_response(
+        self,
+        request_type: str,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Send one request and return the full response, including ok/error.
+
+        This is used by the Python gateway so upstream application errors
+        (for example a transient read_state timeout) can be forwarded without
+        tearing down the long-lived control connection.
+        """
+
+        with self._lock:
+            self._connect()
+            assert self._file is not None
+            message = request_message(f"{request_type}.request", payload)
+            self._file.write(encode_frame(message))
+            self._file.flush()
+            frame = self._file.readline()
+            if not frame:
+                raise BridgeProtocolError("bridge socket closed before response")
+            response = decode_frame(frame)
+            expected_type = f"{request_type}.response"
+            if response.get("type") != expected_type:
+                raise BridgeProtocolError(
+                    f"unexpected bridge response {response.get('type')!r}, expected {expected_type!r}"
+                )
+            return response
 
 
 def _state_summary(state: Mapping[str, Any] | None) -> dict[str, Any]:

@@ -4,21 +4,25 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <arpa/inet.h>
 #include <cerrno>
 #include <chrono>
+#include <condition_variable>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <exception>
 #include <iostream>
+#include <mutex>
 #include <netinet/in.h>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <sys/select.h>
 #include <sys/socket.h>
+#include <thread>
 #include <unistd.h>
 #include <utility>
 #include <vector>
@@ -360,6 +364,7 @@ public:
             ::close(server_fd);
             return 1;
         }
+        startStateCacheThread();
 
         std::cerr << "excavator_real_bridge listening on "
                   << options_.host << ":" << options_.port << "\n";
@@ -384,6 +389,7 @@ public:
         }
 
         ::close(server_fd);
+        stopStateCacheThread();
         (void)sendZeroCommand("shutdown");
         (void)control_.close();
         (void)receive_.close();
@@ -391,6 +397,38 @@ public:
     }
 
 private:
+    void startStateCacheThread() {
+        state_thread_running_.store(true);
+        state_thread_ = std::thread([this]() { stateCacheLoop(); });
+    }
+
+    void stopStateCacheThread() {
+        const bool was_running = state_thread_running_.exchange(false);
+        state_cv_.notify_all();
+        if (was_running && state_thread_.joinable()) {
+            state_thread_.join();
+        }
+    }
+
+    void stateCacheLoop() {
+        while (state_thread_running_.load()) {
+            excavator_api::Snapshot snap{};
+            if (receive_.get(snap, std::chrono::milliseconds(options_.read_timeout_ms))) {
+                {
+                    std::lock_guard<std::mutex> lock(state_mutex_);
+                    cached_snapshot_ = snap;
+                    cached_snapshot_ns_ = nowNs();
+                    has_cached_snapshot_ = true;
+                    last_state_error_.clear();
+                }
+                state_cv_.notify_all();
+            } else {
+                std::lock_guard<std::mutex> lock(state_mutex_);
+                last_state_error_ = receive_.lastError();
+            }
+        }
+    }
+
     json handleMessage(const json& message, bool& close_connection) {
         if (!message.is_object()) {
             return responseMessage("error.response", json::object(), false,
@@ -496,12 +534,32 @@ private:
         const int step_id = payload.value("step_id", 0);
         (void)step_id;
         excavator_api::Snapshot snap{};
-        if (!receive_.get(snap, std::chrono::milliseconds(options_.read_timeout_ms))) {
+        std::uint64_t snapshot_ns = 0;
+        {
+            std::unique_lock<std::mutex> lock(state_mutex_);
+            if (!has_cached_snapshot_) {
+                state_cv_.wait_for(
+                    lock,
+                    std::chrono::milliseconds(options_.read_timeout_ms),
+                    [this]() { return has_cached_snapshot_ || !state_thread_running_.load(); });
+            }
+            if (!has_cached_snapshot_) {
+                const std::string err = last_state_error_.empty()
+                                            ? "no cached state snapshot yet"
+                                            : last_state_error_;
+                return responseMessage("read_state.response", json::object(), false, err);
+            }
+            snap = cached_snapshot_;
+            snapshot_ns = cached_snapshot_ns_;
+        }
+        if (snapshot_ns == 0) {
             return responseMessage("read_state.response", json::object(), false,
-                                   receive_.lastError());
+                                   "cached state snapshot timestamp missing");
         }
 
         const std::uint64_t ts = nowNs();
+        const double snapshot_age_ms =
+            static_cast<double>(ts - snapshot_ns) / 1000000.0;
         json qpos = vectorHeadJson(snap.resp.position, kActionDim);
         json qvel = vectorHeadJson(snap.resp.velocity, kActionDim);
         json env_state = json::array();
@@ -515,6 +573,8 @@ private:
             {"motor_rpm", vector8Json(snap.resp.motor_rpm)},
             {"plan_rpm", vector8Json(snap.resp.plan_rpm)},
             {"env_state", env_state},
+            {"snapshot_age_ms", snapshot_age_ms},
+            {"state_loop_tick", snap.meta.loop_tick},
         };
         json joint_sample{
             {"timestamp_ns", ts},
@@ -625,6 +685,14 @@ private:
     Options options_;
     excavator_api::ExcavatorControl control_{};
     excavator_api::ExcavatorReceive receive_{};
+    std::thread state_thread_{};
+    std::atomic<bool> state_thread_running_{false};
+    std::mutex state_mutex_{};
+    std::condition_variable state_cv_{};
+    excavator_api::Snapshot cached_snapshot_{};
+    std::uint64_t cached_snapshot_ns_{0};
+    bool has_cached_snapshot_{false};
+    std::string last_state_error_{};
     std::uint64_t last_valid_action_ns_{0};
     bool watchdog_zeroed_{true};
     std::uint64_t frame_id_{0};

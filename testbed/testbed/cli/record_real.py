@@ -110,12 +110,12 @@ def main() -> None:
     parser.add_argument(
         "--data-side",
         choices=["host", "slave"],
-        default="slave",
+        default=None,
         help=(
-            "Where HDF5 is written (default slave=vehicle PC). "
+            "Where HDF5 is written. If unset, resolve from real.data_side, "
+            "EXCAVATOR_DATA_SIDE, then default to slave=vehicle PC. "
             "slave: run on vehicle, data under /data/real_teleop_v1; "
-            "host: run on operator PC, set EXCAVATOR_BRIDGE_HOST to vehicle IP. "
-            "Override via real.data_side or EXCAVATOR_DATA_SIDE."
+            "host: run on operator PC, set EXCAVATOR_BRIDGE_HOST to vehicle IP."
         ),
     )
     args = parser.parse_args()
@@ -178,7 +178,8 @@ def main() -> None:
     seed = int(task_cfg.get("seed", -1))
     max_steps = int(task_cfg.get("max_steps", 1000))
     control_hz = float(task_cfg.get("control_hz", real_cfg.get("control_hz", 50)))
-    dt = float(task_cfg.get("dt", 1.0 / control_hz))
+    record_hz = float(task_cfg.get("record_hz", control_hz))
+    dt = float(task_cfg.get("dt", 1.0 / record_hz))
     input_device = str(teleop_cfg.get("input", "joystick"))
     backend_mode = str(real_cfg.get("backend", "mock"))
     state_reader_mode = str(real_cfg.get("state_reader", "mock"))
@@ -197,10 +198,34 @@ def main() -> None:
     from testbed.data.recorder import EpisodeRecorder
     from testbed.runtime.guard import ActionGuard
 
-    bridge_client = _build_bridge_client(real_cfg, backend_mode, state_reader_mode)
+    pump_cfg = dict(real_cfg.get("control_pump", {}) or {})
+    control_pump_enabled = bool(pump_cfg.get("enabled", False)) and backend_mode == "bridge_tcp"
+    backend_controller_mode = "noop" if control_pump_enabled else backend_mode
+    bridge_client = _build_bridge_client(real_cfg, backend_controller_mode, state_reader_mode)
+    control_pump = None
+    if control_pump_enabled:
+        from testbed.backends.real.action_pump import RealActionPump
+        from testbed.backends.real.bridge import BridgeLowLevelController
+
+        control_pump_client = _build_bridge_client(real_cfg, "bridge_tcp", "mock")
+        if control_pump_client is None:
+            raise RuntimeError("control_pump requires a bridge_tcp control client")
+        control_pump = RealActionPump(
+            BridgeLowLevelController(control_pump_client),
+            hz=float(pump_cfg.get("hz", control_hz)),
+            send_immediately_on_update=bool(
+                pump_cfg.get("send_immediately_on_update", True)
+            ),
+            zero_on_stop=bool(pump_cfg.get("zero_on_stop", True)),
+        )
+        log.info(
+            "Control action pump enabled at %.1f Hz; recorder loop %.1f Hz.",
+            control_pump.hz,
+            record_hz,
+        )
 
     backend = RealExcavatorBackend(
-        controller_mode=backend_mode,
+        controller_mode=backend_controller_mode,
         state_reader_mode=state_reader_mode,
         bridge_client=bridge_client,
         sync_max_slop_ns=sync_max_slop_ns,
@@ -225,7 +250,9 @@ def main() -> None:
         config_path=args.config.resolve(),
         record_config_yaml=record_config_yaml,
         control_hz=control_hz,
+        record_hz=record_hz,
         dt=dt,
+        control_pump_enabled=control_pump_enabled,
         sync_cfg=sync_cfg,
         video_cfg=video_cfg,
         data_side=resolved_data_side or real_cfg.get("data_side"),
@@ -284,6 +311,11 @@ def main() -> None:
             action_source.close()
         except Exception:
             pass
+        if control_pump is not None:
+            try:
+                control_pump.stop()
+            except Exception:
+                pass
         if bridge_client is not None and hasattr(bridge_client, "force_close"):
             bridge_client.force_close()
             return
@@ -291,6 +323,9 @@ def main() -> None:
             backend.close()
         except Exception:
             pass
+
+    if control_pump is not None:
+        control_pump.start()
 
     try:
         while saved < num_episodes and not abort:
@@ -358,10 +393,21 @@ def main() -> None:
                     extras = getattr(action_info, "extras", {}) or {}
                     toggle_mask = int(extras.get("toggle_mask", 0) or 0)
                     if toggle_mask:
-                        backend.apply_status_toggle_mask(toggle_mask)
+                        if control_pump is not None:
+                            control_pump.apply_status_toggle_mask(toggle_mask)
+                        else:
+                            backend.apply_status_toggle_mask(toggle_mask)
 
                     action_send_ns = time.time_ns()
-                    ts_next = backend.step(safe_action)
+                    if control_pump is not None:
+                        pump_result = control_pump.update_action(safe_action, state=obs)
+                        action_send_ns = int(pump_result.controller_timestamp_ns or action_send_ns)
+                        ts_next = backend.observe(
+                            action_timestamp_ns=action_send_ns,
+                            result=pump_result,
+                        )
+                    else:
+                        ts_next = backend.step(safe_action)
                     control_result = dict(ts_next.info.get("control_result", {}))
                     recorder.record(
                         obs=obs,
@@ -383,7 +429,7 @@ def main() -> None:
                         ),
                     )
                     ts = ts_next
-                    _sleep_to_rate(control_hz, should_stop=lambda: abort)
+                    _sleep_to_rate(record_hz, should_stop=lambda: abort)
             except KeyboardInterrupt:
                 abort = True
 
@@ -632,7 +678,9 @@ def _build_episode_metadata(
     config_path: Path,
     record_config_yaml: str,
     control_hz: float,
+    record_hz: float,
     dt: float,
+    control_pump_enabled: bool,
     sync_cfg: dict[str, Any],
     video_cfg: dict[str, Any],
     data_side: str | None = None,
@@ -662,10 +710,12 @@ def _build_episode_metadata(
         ATTR_RECORD_CONFIG_YAML: record_config_yaml,
         ATTR_CAMERA_WIDTH: camera_width,
         ATTR_CAMERA_HEIGHT: camera_height,
-        ATTR_CAMERA_FPS: float(control_hz),
+        ATTR_CAMERA_FPS: float(record_hz),
         ATTR_CAMERA_ROW_ORDER: "top_to_bottom",
         "real_backend": str(real_cfg.get("backend", "mock")),
         "real_state_reader": str(real_cfg.get("state_reader", "mock")),
+        "record_hz": float(record_hz),
+        "control_pump_enabled": int(bool(control_pump_enabled)),
         "data_side": str(data_side or real_cfg.get("data_side", "")),
         "learning_target": str(
             teleop_cfg.get("learning_target", "operator_command_from_observation")

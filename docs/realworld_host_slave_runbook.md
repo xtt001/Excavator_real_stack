@@ -130,6 +130,7 @@ export EXCAVATOR_SLAVE_IP=192.168.31.170
 ```
 
 `heartbeat-timeout-ms` 须大于主端一轮 `send_action`+`read_state`+网络延迟（主从分体建议 **800～1000**，默认 200 易误触发 watchdog）。
+当前 `tb-record-real` 在 `backend=bridge_tcp` 时会启用 action pump，按 `real.control_pump.hz` 重复发送最后一次安全速度命令；`read_state`、图像和 HDF5 录制慢下来时不应再饿死控制 heartbeat。联调早期仍建议先保守使用 `800～1000ms`，确认 `snapshot_age_ms` 和控制周期稳定后再收紧。
 
 ### 终端 2 — Orbbec
 
@@ -169,8 +170,8 @@ export EXCAVATOR_SLAVE_IP=192.168.31.170
 ./scripts/mount_slave_dataset.sh
 ```
 
-默认挂载从端 `/data/real_teleop_v1`；D 盘部署时先 `export EXCAVATOR_SLAVE_DATASET_DIR=/media/mundane/D/real_teleop_v1`。  
-映射到主端 `~/mnt/slave_real_teleop`。  
+默认挂载从端 `/data/real_teleop_v1`；D 盘部署时先 `export EXCAVATOR_SLAVE_DATASET_DIR=/media/mundane/D/real_teleop_v1`。
+映射到主端 `~/mnt/slave_real_teleop`。
 录完可选：`./scripts/umount_slave_dataset.sh`。
 
 ### 终端 B — 手柄 + 录制（HDF5 写入从端盘）
@@ -297,7 +298,7 @@ tb-record-real --config testbed/testbed/configs/teleop_real_v1.yaml \
 | SSHFS 断开 | 录前检查 `mountpoint ~/mnt/slave_real_teleop`；网络稳定后再录 |
 | 从端误开 `tb-record-real` | 关闭；录制只在主端 |
 | bridge 日志反复 `client connected/disconnected` | **旧版 gateway** 每请求新建 TCP；更新后 gateway 对 8766 **长连接复用**，仅首次 `upstream bridge connected` |
-| `watchdog forced zero command after … ms` | 超过 `heartbeat-timeout-ms` 未收到 `send_action`；加大 `--heartbeat-timeout-ms` 或检查主端录制是否卡住/环路过慢 |
+| `watchdog forced zero command after … ms` | 超过 `heartbeat-timeout-ms` 未收到 `send_action`；确认 `real.control_pump.enabled=true`、testbed 连接 gateway `8765`，并检查 `read_state`/网络是否长时间卡住 |
 
 ---
 

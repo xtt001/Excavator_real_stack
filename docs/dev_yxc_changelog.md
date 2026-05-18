@@ -1,10 +1,10 @@
 # dev_yxc 分支变更总结
 
-**基准**：`origin/dev_yxc`（推送前）  
-**当前分支**：`dev_yxc`  
-**生成日期**：2026-05-16  
+**基准**：`origin/dev_yxc`
+**当前分支**：`dev_yxc`
+**生成日期**：2026-05-16
 
-本文档汇总相对远程 `dev_yxc` 的全部本地变更：已提交 1 个 commit + 工作区未提交改动（含 `ros2_bridge/` 新增）。
+本文档记录 `dev_yxc` 分支引入的主要能力。部分内容最初来自推送前整理，现已按当前分支状态校正。
 
 ---
 
@@ -12,10 +12,14 @@
 
 | 类别 | 说明 |
 |------|------|
-| 已提交（领先远程 1 commit） | control 前馈/PID 与 plan_rpm 下发 |
-| 未提交 | testbed 手柄 status 链路、Orbbec 相机解耦（`ros2_bridge/`）、启动脚本、文档与 `.gitignore` |
+| control | 前馈/PID 与 `plan_rpm` 下发 |
+| testbed | 手柄 status 链路、主从 `data_side`、真机录制入口 |
+| testbed control | `RealActionPump` 固定频率重复发送最新速度命令，控制 heartbeat 与录制/观测解耦 |
+| bridge | `read_state` 改为后台状态缓存读取，避免阻塞 `send_action` 请求处理 |
+| ros2_bridge | Orbbec 相机解耦、FPV 共享内存、gateway 注入图像 |
+| scripts/docs | 主从部署脚本、运行手册、环境说明 |
 
-**统计**（含已提交 + 工作区，相对 `origin/dev_yxc`）：约 19+ 个已跟踪文件修改，新增 `ros2_bridge/` 与 4 个 `scripts/start_*.sh`。
+**统计**：新增 `ros2_bridge/`，并扩展 `testbed`、`bridge`、`control`、`scripts` 与部署文档。
 
 ---
 
@@ -44,7 +48,7 @@
 
 ---
 
-## 三、未提交：testbed 真机遥操作与 status
+## 三、已合入：testbed 真机遥操作与 status
 
 ### 3.1 手柄 → status 位（对齐 `excavator_api_tcp_server.py`）
 
@@ -52,7 +56,7 @@
 |------|------|
 | `testbed/actions/gamepad.py` | `button0~10` 上升沿 → `toggle_mask` bit0~10；`button11` → `group_switch`；`poll()` 返回 `toggle_mask` |
 | `testbed/backends/real/contracts.py` | `STATUS_TOGGLE_BIT_COUNT`、`apply_status_toggle_mask_to_status11()` |
-| `bridge.py` / `bridge_socket.py` / `bridge_server.py` | `send_status(status11)`、`apply_status_toggle_mask()` |
+| `bridge.py` / `bridge_socket.py` / `bridge_server.py` | `send_status(toggle_mask)`、`apply_status_toggle_mask()` |
 | `backend.py` | 录制循环每步应用 toggle |
 | `control.py`（mock） | mock 支持 status |
 | `cli/record_real.py` | 每步 `backend.apply_status_toggle_mask(toggle_mask)` |
@@ -72,14 +76,14 @@ gamepad (pygame)
 
 ### 3.3 限制说明
 
-- **`bridge/src/excavator_real_bridge.cpp` 未改**：C++ bridge 可能无 `send_status` RPC；status 经真机 C++ 路径可能无效，可用 `bridge_mock` 验证 testbed 逻辑。
+- **C++ bridge 已支持 `send_status.request(toggle_mask)`**：真机联调时仍需确认 status 位与底层控制/安全逻辑的实际语义一致。
 - 无相机时：testbed 可直连 `excavator_real_bridge:8765`，占位 FPV 图，已成功录制 HDF5。
 
 ---
 
-## 四、未提交：`ros2_bridge/` — 相机与 control 解耦
+## 四、已合入：`ros2_bridge/` — 相机与 control 解耦
 
-**原则**：不修改 `excavator_real_bridge.cpp`；Orbbec 仅在 ROS2 侧；FPV 经 POSIX 共享内存注入网关 `read_state`。
+**原则**：相机链路不进入 C++ control bridge；Orbbec 仅在 ROS2 侧；FPV 经 POSIX 共享内存注入 gateway 的 `read_state`。
 
 ### 4.1 架构
 
@@ -153,7 +157,7 @@ flowchart LR
 - `control/tools/excavator_api_tcp_client.cpp`
 - `control/tools/plot_joint_ref_resp.py`
 
-### 未提交（testbed + 根）
+### 已合入（testbed + 根）
 
 - `testbed/testbed/actions/gamepad.py`
 - `testbed/testbed/backends/real/*`（backend, bridge, bridge_server, bridge_socket, contracts, control）
@@ -162,7 +166,7 @@ flowchart LR
 - `testbed/tests/test_realworld_v1.py`
 - `.gitignore`, `README.md`, `control/UPSTREAM.md`
 
-### 未提交（ros2_bridge + scripts）
+### 已合入（ros2_bridge + scripts）
 
 - `ros2_bridge/**`（见仓库目录树）
 - `scripts/start_orbbec_fpv_camera.sh`
@@ -174,7 +178,7 @@ flowchart LR
 
 ## 七、后续待办
 
-- [ ] C++ bridge 增加 `send_status`（或 document 仅用 Python gateway mock 测 status）
+- [ ] 真机确认 `send_status` status 位到液压控制/安全逻辑的映射语义
 - [ ] 真机端到端：8765 网关 + Orbbec + `tb-record-real` HDF5 含 `observations/images/fpv`
 - [ ] `ros2_ws` 中 `ln -s` `excavator_ros2_bridge` 后 `colcon build`（部署文档化）
 

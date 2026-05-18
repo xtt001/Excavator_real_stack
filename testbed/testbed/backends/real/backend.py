@@ -159,6 +159,24 @@ class RealExcavatorBackend(Backend):
         obs = self.read_state(action_timestamp_ns=result.controller_timestamp_ns)
         return self._timestep_from_obs(obs, result=result)
 
+    def observe(
+        self,
+        *,
+        action_timestamp_ns: int | None = None,
+        result: ControlResult | None = None,
+    ) -> RealExcavatorTimeStep:
+        """Read one observation without sending a command.
+
+        Used when a fixed-rate action pump owns the control heartbeat and the
+        recorder loop only samples state/images.
+        """
+
+        if result is not None:
+            self._last_control_result = result
+        self._step_id += 1
+        obs = self.read_state(action_timestamp_ns=action_timestamp_ns)
+        return self._timestep_from_obs(obs, result=result)
+
     def read_state(self, *, action_timestamp_ns: int | None = None) -> dict[str, Any]:
         samples = self._state_reader.read(
             step_id=int(self._step_id),

@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import socket
 import struct
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
@@ -19,9 +22,11 @@ from testbed.backends.real import (
     InProcessMockBridgeClient,
     JsonTcpBridgeClient,
     JsonTcpBridgeMockServer,
+    LowLevelController,
     MockLowLevelController,
     MockStateReader,
     NoopLowLevelController,
+    RealActionPump,
     RealExcavatorBackend,
     RealStateSamples,
     SynchronizedObservationBuilder,
@@ -64,6 +69,44 @@ def _can_bind_loopback_socket() -> bool:
 
 
 class RealworldV1Tests(unittest.TestCase):
+    def test_action_pump_repeats_latest_action(self) -> None:
+        class RecordingController(LowLevelController):
+            def __init__(self) -> None:
+                self.lock = threading.Lock()
+                self.actions: list[np.ndarray] = []
+
+            def send(self, action: np.ndarray, state: dict | None = None) -> ControlResult:
+                commanded = np.asarray(action, dtype=np.float32).copy()
+                with self.lock:
+                    self.actions.append(commanded)
+                return ControlResult(
+                    ack=True,
+                    fault_code="",
+                    controller_timestamp_ns=time.time_ns(),
+                    commanded_action=commanded,
+                    raw_low_level_command=commanded.copy(),
+                )
+
+        controller = RecordingController()
+        pump = RealActionPump(
+            controller,
+            hz=40,
+            send_immediately_on_update=False,
+            zero_on_stop=False,
+        )
+        target = np.array([0.4, 0.0, -0.2, 0.1], dtype=np.float32)
+        pump.update_action(target)
+        pump.start()
+        try:
+            time.sleep(0.09)
+        finally:
+            pump.stop(close_controller=False)
+
+        with controller.lock:
+            actions = list(controller.actions)
+        self.assertGreaterEqual(len(actions), 2)
+        np.testing.assert_allclose(actions[-1], target)
+
     def test_status_toggle_mask_semantics(self) -> None:
         status11 = [0] * STATUS_TOGGLE_BIT_COUNT
         apply_status_toggle_mask_to_status11(status11, 1 << 0)
@@ -385,6 +428,70 @@ class RealworldV1Tests(unittest.TestCase):
             thread.join(timeout=2.0)
         self.assertFalse(errors)
 
+    def test_json_tcp_bridge_client_can_preserve_application_error_connection(self) -> None:
+        if not _can_bind_loopback_socket():
+            self.skipTest("loopback socket bind is blocked in this environment")
+
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        port = int(server.getsockname()[1])
+        errors: list[BaseException] = []
+
+        def serve_once() -> None:
+            try:
+                conn, _addr = server.accept()
+                with conn, conn.makefile("rwb") as stream:
+                    line = stream.readline()
+                    self.assertTrue(line)
+                    message = decode_frame(line)
+                    self.assertEqual(message["type"], "read_state.request")
+                    stream.write(
+                        encode_frame(
+                            response_message(
+                                "read_state.response",
+                                {},
+                                ok=False,
+                                error="temporary state timeout",
+                            )
+                        )
+                    )
+                    stream.flush()
+
+                    line = stream.readline()
+                    self.assertTrue(line)
+                    message = decode_frame(line)
+                    self.assertEqual(message["type"], "send_action.request")
+                    action = np.asarray(message["payload"]["action"], dtype=np.float32)
+                    payload = control_result_to_payload(
+                        ControlResult(
+                            ack=True,
+                            fault_code="",
+                            controller_timestamp_ns=4_000,
+                            commanded_action=action,
+                            raw_low_level_command=action4_to_speed_scalar8(action),
+                        )
+                    )
+                    stream.write(encode_frame(response_message("send_action.response", payload)))
+                    stream.flush()
+            except BaseException as exc:
+                errors.append(exc)
+            finally:
+                server.close()
+
+        thread = threading.Thread(target=serve_once, daemon=True)
+        thread.start()
+        client = JsonTcpBridgeClient(port=port, timeout_s=1.0)
+        try:
+            response = client._request_response("read_state", {"step_id": 1})
+            self.assertFalse(response["ok"])
+            result = client.send_action(np.zeros(4, dtype=np.float32))
+            self.assertTrue(result.ack)
+        finally:
+            client.force_close()
+            thread.join(timeout=2.0)
+        self.assertFalse(errors)
+
     def test_apply_data_side_slave_defaults(self) -> None:
         from testbed.cli.data_side import apply_data_side_config
 
@@ -417,10 +524,39 @@ class RealworldV1Tests(unittest.TestCase):
         from testbed.cli.data_side import apply_data_side_config
 
         cfg: dict = {"real": {"bridge": {"port": 0}}, "task": {}}
-        side = apply_data_side_config(cfg)
+        with patch.dict(os.environ, {}, clear=True):
+            side = apply_data_side_config(cfg)
         self.assertEqual(side, "slave")
         self.assertEqual(cfg["task"]["dataset_dir"], "/data/real_teleop_v1")
         self.assertEqual(cfg["real"]["data_side"], "slave")
+
+    def test_apply_data_side_uses_yaml_when_cli_unset(self) -> None:
+        from testbed.cli.data_side import apply_data_side_config
+
+        cfg: dict = {"real": {"data_side": "host", "bridge": {"port": 0}}, "task": {}}
+        with patch.dict(os.environ, {}, clear=True):
+            side = apply_data_side_config(cfg, data_side=None)
+        self.assertEqual(side, "host")
+        self.assertEqual(cfg["task"]["dataset_dir"], "data/real_teleop_v1")
+        self.assertEqual(cfg["real"]["bridge"]["host"], "192.168.31.170")
+
+    def test_apply_data_side_uses_env_when_cli_and_yaml_unset(self) -> None:
+        from testbed.cli.data_side import apply_data_side_config
+
+        cfg: dict = {"real": {"bridge": {"port": 0}}, "task": {}}
+        with patch.dict(os.environ, {"EXCAVATOR_DATA_SIDE": "host"}, clear=True):
+            side = apply_data_side_config(cfg, data_side=None)
+        self.assertEqual(side, "host")
+        self.assertEqual(cfg["real"]["data_side"], "host")
+
+    def test_apply_data_side_cli_overrides_env_and_yaml(self) -> None:
+        from testbed.cli.data_side import apply_data_side_config
+
+        cfg: dict = {"real": {"data_side": "host", "bridge": {"port": 0}}, "task": {}}
+        with patch.dict(os.environ, {"EXCAVATOR_DATA_SIDE": "host"}, clear=True):
+            side = apply_data_side_config(cfg, data_side="slave")
+        self.assertEqual(side, "slave")
+        self.assertEqual(cfg["task"]["dataset_dir"], "/data/real_teleop_v1")
 
     def test_apply_data_side_invalid_raises(self) -> None:
         from testbed.cli.data_side import apply_data_side_config

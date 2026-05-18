@@ -1,6 +1,7 @@
 """Real excavator backend and low-level control interfaces."""
 
 from testbed.backends.real.backend import RealExcavatorBackend, RealExcavatorTimeStep
+from testbed.backends.real.action_pump import RealActionPump
 from testbed.backends.real.bridge import (
     BridgeLowLevelController,
     BridgeStateReader,
@@ -76,6 +77,7 @@ __all__ = [
     "RealBridgeClient",
     "RealExcavatorBackend",
     "RealExcavatorTimeStep",
+    "RealActionPump",
     "RealStateReader",
     "RealStateSamples",
     "RosCanBridgeClient",

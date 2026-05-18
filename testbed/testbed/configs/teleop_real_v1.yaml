@@ -11,6 +11,14 @@ real:
   image_width: 160
   image_height: 120
   mock_velocity_scale_rad_s: 0.5
+  control_pump:
+    # bridge_tcp 真机模式下启用：独立线程按 50Hz(20ms) 重复发送最后一次安全速度命令。
+    # 若现场只要求 50ms 周期，可把 hz 改成 20。
+    # 这样 read_state、图像和 HDF5 录制变慢时，不会饿死底层 watchdog。
+    enabled: true
+    hz: 50
+    send_immediately_on_update: true
+    zero_on_stop: true
   bridge:
     host: "127.0.0.1"
     port: 0              # required only when backend/state_reader uses bridge_tcp
@@ -77,6 +85,7 @@ task:
   camera_names: ["fpv"]
   max_steps: 1000
   control_hz: 50
+  record_hz: 50
   dt: 0.02
   seed: -1
   param_version: real_v1

@@ -131,12 +131,12 @@ class BridgeGateway:
             )
         return self._upstream
 
-    def _upstream_request(self, request_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def _upstream_response(self, request_type: str, payload: dict[str, Any]) -> dict[str, Any]:
         with self._upstream_lock:
             last_exc: Exception | None = None
             for _attempt in range(2):
                 try:
-                    return self._ensure_upstream()._request(request_type, payload)
+                    return self._ensure_upstream()._request_response(request_type, payload)
                 except (BridgeProtocolError, OSError, ConnectionError) as exc:
                     last_exc = exc
                     log.warning("upstream %s failed: %s", request_type, exc)
@@ -151,7 +151,17 @@ class BridgeGateway:
             payload = {}
 
         if msg_type == "read_state.request":
-            upstream = self._upstream_request("read_state", dict(payload))
+            upstream_response = self._upstream_response("read_state", dict(payload))
+            if not bool(upstream_response.get("ok", True)):
+                return upstream_response
+            upstream = upstream_response.get("payload", {})
+            if not isinstance(upstream, dict):
+                return response_message(
+                    "read_state.response",
+                    {},
+                    ok=False,
+                    error="upstream read_state payload must be a mapping",
+                )
             self._frame_id += 1
             upstream["images"] = {
                 "fpv": _fpv_sample_from_shm(
@@ -167,8 +177,7 @@ class BridgeGateway:
 
         if msg_type.endswith(".request"):
             base = msg_type[: -len(".request")]
-            upstream = self._upstream_request(base, dict(payload))
-            return response_message(f"{base}.response", upstream)
+            return self._upstream_response(base, dict(payload))
 
         return response_message("error.response", {}, ok=False, error=f"unsupported type {msg_type}")
 
