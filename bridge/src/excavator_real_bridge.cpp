@@ -359,7 +359,7 @@ public:
             ::close(server_fd);
             return 1;
         }
-        if (::listen(server_fd, 1) != 0) {
+        if (::listen(server_fd, 8) != 0) {
             std::cerr << "listen failed: " << std::strerror(errno) << "\n";
             ::close(server_fd);
             return 1;
@@ -369,7 +369,24 @@ public:
         std::cerr << "excavator_real_bridge listening on "
                   << options_.host << ":" << options_.port << "\n";
 
-        while (!shutdown_requested_) {
+        std::vector<std::thread> client_threads;
+        while (!shutdown_requested_.load()) {
+            fd_set rfds;
+            FD_ZERO(&rfds);
+            FD_SET(server_fd, &rfds);
+            timeval tv{};
+            tv.tv_sec = 0;
+            tv.tv_usec = 100000;
+            const int ready = ::select(server_fd + 1, &rfds, nullptr, nullptr, &tv);
+            if (ready < 0) {
+                if (errno == EINTR) continue;
+                std::cerr << "accept select failed: " << std::strerror(errno) << "\n";
+                break;
+            }
+            if (ready == 0) {
+                continue;
+            }
+
             sockaddr_in peer{};
             socklen_t peer_len = sizeof(peer);
             const int client_fd =
@@ -379,15 +396,23 @@ public:
                 std::cerr << "accept failed: " << std::strerror(errno) << "\n";
                 break;
             }
-            std::cerr << "client connected\n";
-            handleClient(client_fd);
-            ::close(client_fd);
-            std::cerr << "client disconnected\n";
+            client_threads.emplace_back([this, client_fd]() {
+                std::cerr << "client connected\n";
+                handleClient(client_fd);
+                ::close(client_fd);
+                std::cerr << "client disconnected\n";
+            });
             if (options_.one_shot) {
                 break;
             }
         }
 
+        shutdown_requested_.store(true);
+        for (auto& thread : client_threads) {
+            if (thread.joinable()) {
+                thread.join();
+            }
+        }
         ::close(server_fd);
         stopStateCacheThread();
         (void)sendZeroCommand("shutdown");
@@ -456,9 +481,12 @@ private:
                 return handleReadState(payload);
             }
             if (type == "reset.request") {
-                (void)sendZeroCommand("reset");
-                last_valid_action_ns_ = 0;
-                watchdog_zeroed_ = true;
+                {
+                    std::lock_guard<std::mutex> lock(control_mutex_);
+                    (void)sendZeroCommandLocked("reset");
+                    last_valid_action_ns_ = 0;
+                    watchdog_zeroed_ = true;
+                }
                 return responseMessage("reset.response", json{{"reset", true}});
             }
             if (type == "close.request") {
@@ -467,7 +495,7 @@ private:
             }
             if (type == "shutdown.request") {
                 close_connection = true;
-                shutdown_requested_ = true;
+                shutdown_requested_.store(true);
                 return responseMessage("shutdown.response", json{{"shutdown", true}});
             }
 
@@ -491,13 +519,19 @@ private:
         if (payload.contains("toggle_mask")) {
             toggle_mask = static_cast<std::uint16_t>(payload.at("toggle_mask").get<int>()) & 0x07FFu;
         }
-        const bool ok = control_.applyStatusToggleMask(toggle_mask);
+        bool ok = false;
+        std::string fault_code;
+        {
+            std::lock_guard<std::mutex> lock(control_mutex_);
+            ok = control_.applyStatusToggleMask(toggle_mask);
+            fault_code = ok ? "" : control_.lastError();
+        }
         return responseMessage(
             "send_status.response",
             json{
                 {"ack", ok},
                 {"toggle_mask", toggle_mask},
-                {"fault_code", ok ? "" : control_.lastError()},
+                {"fault_code", fault_code},
             });
     }
 
@@ -511,10 +545,16 @@ private:
             cmd.speed_scalar(i) = 0.0;
         }
 
-        const bool sent = control_.sendCommand(cmd);
+        bool sent = false;
+        std::string fault_code;
         const std::uint64_t ts = nowNs();
-        last_valid_action_ns_ = ts;
-        watchdog_zeroed_ = false;
+        {
+            std::lock_guard<std::mutex> lock(control_mutex_);
+            sent = control_.sendCommand(cmd);
+            fault_code = sent ? "" : control_.lastError();
+            last_valid_action_ns_ = ts;
+            watchdog_zeroed_ = false;
+        }
 
         json commanded = json::array();
         for (double v : action4) commanded.push_back(v);
@@ -523,7 +563,7 @@ private:
             "send_action.response",
             json{
                 {"ack", sent},
-                {"fault_code", sent ? "" : control_.lastError()},
+                {"fault_code", fault_code},
                 {"controller_timestamp_ns", ts},
                 {"commanded_action", commanded},
                 {"raw_low_level_command", raw},
@@ -601,7 +641,7 @@ private:
     void handleClient(int client_fd) {
         std::string buffer;
         bool close_connection = false;
-        while (!close_connection && !shutdown_requested_) {
+        while (!close_connection && !shutdown_requested_.load()) {
             checkWatchdog();
 
             fd_set rfds;
@@ -657,6 +697,11 @@ private:
     }
 
     bool sendZeroCommand(const char* reason) {
+        std::lock_guard<std::mutex> lock(control_mutex_);
+        return sendZeroCommandLocked(reason);
+    }
+
+    bool sendZeroCommandLocked(const char* reason) {
         excavator_api::SpeedScalarCmd zero{};
         const bool ok = control_.sendCommand(zero);
         if (!ok) {
@@ -667,6 +712,7 @@ private:
     }
 
     void checkWatchdog() {
+        std::lock_guard<std::mutex> lock(control_mutex_);
         if (!options_.watchdog_enabled || last_valid_action_ns_ == 0 || watchdog_zeroed_) {
             return;
         }
@@ -676,7 +722,7 @@ private:
         if (elapsed_ns <= timeout_ns) {
             return;
         }
-        (void)sendZeroCommand("watchdog");
+        (void)sendZeroCommandLocked("watchdog");
         watchdog_zeroed_ = true;
         std::cerr << "watchdog forced zero command after "
                   << (elapsed_ns / 1000000ULL) << " ms without valid action\n";
@@ -685,6 +731,7 @@ private:
     Options options_;
     excavator_api::ExcavatorControl control_{};
     excavator_api::ExcavatorReceive receive_{};
+    std::mutex control_mutex_{};
     std::thread state_thread_{};
     std::atomic<bool> state_thread_running_{false};
     std::mutex state_mutex_{};
@@ -696,7 +743,7 @@ private:
     std::uint64_t last_valid_action_ns_{0};
     bool watchdog_zeroed_{true};
     std::uint64_t frame_id_{0};
-    bool shutdown_requested_{false};
+    std::atomic<bool> shutdown_requested_{false};
 };
 
 }  // namespace

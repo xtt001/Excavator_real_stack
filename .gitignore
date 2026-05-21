@@ -24,6 +24,8 @@ build/
 dist/
 cmake-build-*/
 compile_commands.json
+install/
+log/
 
 # Data and generated artifacts
 *.hdf5

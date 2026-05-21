@@ -1,1 +1,0 @@
-/media/mundane/D/Excavator_real_stack/build/excavator_ros2_bridge/ament_cmake_core/excavator_ros2_bridgeConfig.cmake
