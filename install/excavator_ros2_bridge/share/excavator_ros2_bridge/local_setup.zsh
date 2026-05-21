@@ -1,0 +1,1 @@
+/media/mundane/D/Excavator_real_stack/build/excavator_ros2_bridge/ament_cmake_environment_hooks/local_setup.zsh
