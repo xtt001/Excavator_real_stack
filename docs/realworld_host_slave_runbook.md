@@ -1,23 +1,24 @@
 # 真机主从分体运行手册
 
-**当前现场部署约定：真实 CAN bridge + 主端手柄控制/录制 + 主端本地 USB 移动硬盘存 HDF5 + 主端可选 rqt 看图。**
+**当前现场部署约定：真实 CAN bridge + 主端手柄 remote action + 从端本地 USB 移动硬盘存 HDF5 + 主端可选 rqt 看图。**
 
 | 角色 | 机器 | 进程 |
 |------|------|------|
-| 从端 slave | `192.168.31.170` | real CAN bridge、gateway、Orbbec、FPV→SHM（**不**在从端录） |
-| 主端 host | 操作员 PC | 手柄控制 + **录制**（写本地 USB 移动硬盘）、可选 rqt |
+| 从端 slave | `192.168.31.170` | real CAN bridge、gateway、Orbbec、FPV→SHM、`tb-record-real --input remote` |
+| 主端 host | 操作员 PC | 手柄输入、`tb-teleop-remote`、可选 rqt |
 
 | 项目 | 约定 |
 |------|------|
 | 手柄 USB | **主端** |
-| HDF5 物理路径 | **主端** `/media/mundane/EXTERNAL_USB/real_teleop_v1` |
-| 主端录制连 gateway | **`192.168.31.170:8765`** |
+| HDF5 物理路径 | **从端** `/media/mundane/EXTERNAL_USB/real_teleop_v1` |
+| 主端 remote action | **`192.168.31.170:8770`** |
+| 从端 recorder 连 gateway | **`127.0.0.1:8765`** |
 | 从端 bridge 监听 | **`127.0.0.1:8766`**（仅本机 gateway 连） |
 | ROS2 | `ROS_DOMAIN_ID=42`；相机 `/camera/color/image_raw/compressed` |
 
-实现方式：主端 `tb-control-real` 或 `tb-record-real` 读手柄动作，经 TCP 访问从端 gateway 读取真实传感器数据并发送控制命令；只有 `tb-record-real` 会把 HDF5 写入主端 USB 移动硬盘。
+实现方式：主端 `tb-teleop-remote` 只读手柄并发送小 action 包；从端 `tb-record-real --input remote` 本地读取真实传感器/FPV、本地下发控制命令，并把 HDF5 写入从端 USB 移动硬盘。主端 rqt 只用于看 ROS compressed 图像，不参与训练数据写盘。
 
-testbed **只连 gateway `8765`**，不要直连 C++ bridge `8766`。
+从端 recorder **只连本机 gateway `127.0.0.1:8765`**，不要直连 C++ bridge `8766`；主端只连从端 remote action server `8770`。
 
 配置：`configs/deploy_network.yaml`、`scripts/excavator_deploy_network.sh`。
 
@@ -25,22 +26,24 @@ testbed **只连 gateway `8765`**，不要直连 C++ bridge `8766`。
 
 ## 0. 每次来现场录数据 checklist
 
-本节是当前现场的主流程。除非明确要恢复旧的从端落盘方案，否则**不要**执行 SSHFS / `mount_slave_dataset.sh` / `record_host_gamepad_slave_disk.sh`。
+本节是当前现场的主流程。训练数据采集默认从端本地落盘；除非明确要做旧链路对比，否则不要让主端 `tb-record-real` 拉 raw RGB 写 HDF5。
 
 当前真实控制前提：
 
 - 现场人员必须离开作业半径，急停和人工接管可用。
 - 挖机已上电，CAN 线已接好，确认可以进入远程/先导等必要状态。
-- 主端录制使用 `--backend bridge_tcp --state-reader bridge_tcp`：手柄 action 会写入 HDF5，并通过 gateway 发送到真实 CAN bridge。
+- 从端录制使用 `--input remote --backend bridge_tcp --state-reader bridge_tcp`：主端手柄 action 会写入 HDF5，并通过从端本地 gateway 发送到真实 CAN bridge。
 - 第一次动作只做小幅、低速、单轴验证；方向反、错轴、不能停或急停异常时，立即停 bridge。
 
-### 0.1 主端检查 USB 数据盘
+### 0.1 从端检查 USB 数据盘
 
-在主端执行：
+在从端执行。当前现场移动硬盘 label 是 `EXTERNAL_USB`：
 
 ```bash
-cd ~/Excavator_real_stack
-findmnt /media/mundane/EXTERNAL_USB
+lsblk -o NAME,SIZE,FSTYPE,LABEL,MOUNTPOINTS,MODEL
+sudo mkdir -p /media/mundane/EXTERNAL_USB
+findmnt /media/mundane/EXTERNAL_USB || \
+  sudo mount /dev/disk/by-label/EXTERNAL_USB /media/mundane/EXTERNAL_USB
 mkdir -p /media/mundane/EXTERNAL_USB/real_teleop_v1
 test -w /media/mundane/EXTERNAL_USB/real_teleop_v1 && echo USB_WRITE_OK
 ```
@@ -235,7 +238,7 @@ fpv_shape [480, 640, 3]
 
 ### 0.5 主端 rqt 看相机画面（可选但建议）
 
-主端 rqt 需要主端本机安装 ROS2 和 `rqt_image_view`。如果这台主端没有 `/opt/ros/<distro>/setup.bash`，可以跳过本节；录制 HDF5 不依赖主端 ROS2，仍然通过 gateway TCP 获取图像。
+主端 rqt 需要主端本机安装 ROS2 和 `rqt_image_view`。如果这台主端没有 `/opt/ros/<distro>/setup.bash`，可以跳过本节；录制 HDF5 不依赖主端 ROS2，图像由从端 recorder 本地读取 gateway/SHM。
 
 版本约定：
 
@@ -265,7 +268,7 @@ rqt 里选择：
 /camera/color/image_raw
 ```
 
-图像源是从端 Orbbec 发布的 `/camera/color/image_raw/compressed`，主端只用于显示；HDF5 录制里的图像仍然来自 gateway 读取的 SHM。
+图像源是从端 Orbbec 发布的 `/camera/color/image_raw/compressed`，主端只用于显示；HDF5 录制里的图像由从端 recorder 通过本地 gateway/SHM 读取。
 
 如果报错：
 
@@ -303,57 +306,53 @@ conda run -n excavator-real-stack python testbed/scripts/gamepad_probe.py --watc
 
 注意：这是 pygame button index，不一定等于手柄外壳印刷的 A/B/X/Y 名称。
 
-### 0.7 主端只控制，不录制
+### 0.7 主端 remote action， 从端本地录制
 
-如果只是先试手柄控制，不要写 HDF5，用这个命令：
-
-```bash
-conda run -n excavator-real-stack tb-control-real \
-  --config testbed/testbed/configs/teleop_real_v1.yaml \
-  --data-side host \
-  --backend bridge_tcp \
-  --state-reader bridge_tcp \
-  --bridge-host 192.168.31.170 \
-  --bridge-port 8765 \
-  --bridge-timeout 2.0 \
-  --input joystick \
-  --confirm-real-control
-```
-
-说明：
-
-- `tb-control-real` 会读取 gateway 的真实状态，并通过同一条 TCP bridge 下发手柄控制。
-- 不创建 HDF5，不占用 USB 数据盘。
-- 默认一直运行；按 `Ctrl+C` 或在 pygame 窗口按 `q` 停止。
-- 停止时 action pump 会按配置发送零指令。
-- 第一次真机动作建议额外加 `--duration-s 10` 或 `--max-steps 500`，确认方向/轴映射正确后再长时间运行。
-
-### 0.8 主端控制并录制到本地 USB
-
-先做短样本。此命令读取真实传感器数据、记录手柄 action，并通过 gateway 下发控制命令：
+先在从端启动 recorder，等待主端 action。此进程本地连接 gateway
+`127.0.0.1:8765`，并把 HDF5 写到从端 USB：
 
 ```bash
 conda run -n excavator-real-stack tb-record-real \
   --config testbed/testbed/configs/teleop_real_v1.yaml \
-  --data-side host \
+  --data-side slave \
   --backend bridge_tcp \
   --state-reader bridge_tcp \
-  --bridge-host 192.168.31.170 \
+  --bridge-host 127.0.0.1 \
   --bridge-port 8765 \
   --bridge-timeout 2.0 \
-  --input joystick \
+  --input remote \
   --num-episodes 1 \
-  --max-steps 200 \
+  --max-steps 50000 \
   --output-dir /media/mundane/EXTERNAL_USB/real_teleop_v1 \
-  --session-id real_control_joystick_check
+  --session-id remote_teleop_slave_record \
+  --live-action-line
 ```
 
-确认短样本正常后，再把 `--max-steps` 改成正式采集长度，或去掉该参数使用配置默认值。
+再在主端启动手柄 sender。主端只发送 action，不写训练 HDF5：
+
+```bash
+conda run -n excavator-real-stack tb-teleop-remote \
+  --config testbed/testbed/configs/teleop_real_v1.yaml \
+  --host 192.168.31.170 \
+  --port 8770 \
+  --input joystick \
+  --rate-hz 50 \
+  --confirm-remote-control
+```
+
+说明：
+
+- `tb-teleop-remote` 读取主端手柄，向从端 `8770` 发送 50Hz action 小包。
+- `tb-record-real --input remote` 是唯一控制 owner：guard、action pump、gateway 和 HDF5 都在从端。
+- 按 `Ctrl+C` 停止主端 sender；从端 recorder 会收到 quit/零 action，或在 action 超时后自动输出零速。
+
+### 0.8 旧方案：主端控制并录制到本地 USB
+
+仅用于对比旧链路。正式训练采集使用 0.7 的从端本地录制流程。
 
 主端录制全尺寸 FPV 会通过 gateway 把 raw RGB 图像放进每次 `read_state`
 响应。`640x480x3` 经 base64 后约 1.23 MB/帧，现场 Wi-Fi 下无法稳定支撑
-50Hz recorder。用于训练的数据采集优先选择从端落盘，或先把 FPV 数据链路
-改成压缩/降采样；HDF5 的 `camera_width` / `camera_height` 以实际写入图像为准，
+50Hz recorder。用于训练的数据采集优先选择从端落盘；HDF5 的 `camera_width` / `camera_height` 以实际写入图像为准，
 `camera_fps` 在有图像时间戳时按实际记录帧间隔估算，而不是照抄配置值。
 
 ### 0.9 录完做 QC
@@ -372,11 +371,11 @@ MPLCONFIGDIR=/tmp/excavator_mpl conda run -n excavator-real-stack tb-dataset-qc 
 - `controller_fault_code` 应为空或为真实 bridge 返回的状态；不应再是 `noop`。
 - `commanded_action` 应随手柄动作变化。
 - `qpos/qvel/env_state` 取决于真实 CAN 反馈是否已经接入和解析。
-- 主端跨网录 640x480 raw FPV 时，可能出现 `sensor_timeout` guard；这表示记录循环相对 `sensor_timeout_s=1.0` 偏慢，不代表相机没有数据。
+- `remote_action_stale=0` 且 `remote_action_age_ms` 稳定，说明主端手柄 action 正常进入从端 recorder。
 
 ### 0.10 停止真实控制
 
-停止主端 `tb-control-real` / `tb-record-real` 后，再在从端停止 bridge：
+先停止主端 `tb-teleop-remote`，再停止从端 `tb-record-real` 并确认 HDF5 已保存，最后再停从端 bridge：
 
 ```bash
 pkill -f "[e]xcavator_real_bridge" || true
@@ -420,7 +419,7 @@ sudo apt install -y ros-jazzy-ros-base ros-jazzy-rqt-image-view \
   ros-jazzy-cv-bridge ros-jazzy-rmw-cyclonedds-cpp
 ```
 
-说明：主端 ROS2 只用于可视化，不参与 `tb-control-real` / `tb-record-real` 的 TCP 控制/录制主链路。slave 仍以 Ubuntu 22.04 + Humble 为准。
+说明：主端 ROS2 只用于可视化，不参与 `tb-teleop-remote` / `tb-record-real` 的控制和录制主链路。slave 仍以 Ubuntu 22.04 + Humble 为准。
 
 **从端数据目录**（旧 SSHFS 从端落盘流程才需要；当前本地 USB 落盘不需要）：
 
@@ -458,7 +457,7 @@ sudo apt install -y sshfs
 ssh-copy-id "${USER}@192.168.31.170"   # 推荐免密
 ```
 
-网络：从端放行 **TCP 8765**；主端 DDS 组播不通时 `export EXCAVATOR_ROS_PEER_IP=192.168.31.170`。
+网络：从端放行 **TCP 8765** 和 **TCP 8770**；主端 DDS 组播不通时 `export EXCAVATOR_ROS_PEER_IP=192.168.31.170`。
 
 ---
 
@@ -473,7 +472,7 @@ cd /media/mundane/D/Excavator_real_stack
 source .venv/bin/activate
 ```
 
-**不要在从端起 `tb-control-real` 或 `tb-record-real`。** 主端负责读手柄、控制和录制。
+从端需要启动 `tb-record-real --input remote` 作为本地 recorder。不要在从端读取主端手柄；主端只运行 `tb-teleop-remote`。
 
 ### 终端 1 — real CAN bridge
 
@@ -526,40 +525,38 @@ cd ~/Excavator_real_stack
 conda activate excavator-real-stack
 ```
 
-只控制，不录制：
+主端发送 remote action：
 
 ```bash
-tb-control-real \
+tb-teleop-remote \
   --config testbed/testbed/configs/teleop_real_v1.yaml \
-  --data-side host \
-  --backend bridge_tcp \
-  --state-reader bridge_tcp \
-  --bridge-host 192.168.31.170 \
-  --bridge-port 8765 \
-  --bridge-timeout 2.0 \
+  --host 192.168.31.170 \
+  --port 8770 \
   --input joystick \
-  --confirm-real-control
+  --rate-hz 50 \
+  --confirm-remote-control
 ```
 
-控制并录制：
+从端本地录制：
 
 ```bash
 tb-record-real \
   --config testbed/testbed/configs/teleop_real_v1.yaml \
-  --data-side host \
+  --data-side slave \
   --backend bridge_tcp \
   --state-reader bridge_tcp \
-  --bridge-host 192.168.31.170 \
+  --bridge-host 127.0.0.1 \
   --bridge-port 8765 \
   --bridge-timeout 2.0 \
-  --input joystick \
+  --input remote \
   --num-episodes 1 \
-  --max-steps 200 \
+  --max-steps 50000 \
   --output-dir /media/mundane/EXTERNAL_USB/real_teleop_v1 \
-  --session-id real_control_joystick_check
+  --session-id remote_teleop_slave_record \
+  --live-action-line
 ```
 
-录完 QC：
+录完在从端或插回主端后 QC：
 
 ```bash
 MPLCONFIGDIR=/tmp/excavator_mpl tb-dataset-qc \
@@ -574,9 +571,11 @@ MPLCONFIGDIR=/tmp/excavator_mpl tb-dataset-qc \
 
 ```text
 主端手柄
-  -> tb-control-real 或 tb-record-real
-  -> TCP 192.168.31.170:8765
-  -> 从端 gateway
+  -> tb-teleop-remote
+  -> TCP 192.168.31.170:8770
+  -> 从端 tb-record-real --input remote
+  -> 从端 ActionGuard / action pump
+  -> 从端 gateway 127.0.0.1:8765
   -> 127.0.0.1:8766 C++ real CAN bridge
   -> can0/can1
   -> 挖机控制器/传感器
@@ -585,14 +584,11 @@ MPLCONFIGDIR=/tmp/excavator_mpl tb-dataset-qc \
   -> ROS2 compressed image
   -> fpv_subscriber
   -> /dev/shm/excavator_fpv_v1
-  -> gateway read_state（当前会转成 raw RGB/base64）
-  -> 主端 tb-control-real/tb-record-real
-
-tb-control-real:
-  只控制和读状态，不写 HDF5。
+  -> 从端 gateway read_state
+  -> 从端 tb-record-real
 
 tb-record-real:
-  控制、读状态，并把 HDF5 写到 /media/mundane/EXTERNAL_USB/real_teleop_v1。
+  接收 remote action、控制、读状态，并把 HDF5 写到 /media/mundane/EXTERNAL_USB/real_teleop_v1。
 ```
 
 ---
@@ -601,13 +597,14 @@ tb-record-real:
 
 | 用途 | 地址 | 在哪填 |
 |------|------|--------|
-| 主端连从端 gateway | `192.168.31.170:8765` | `--bridge-host 192.168.31.170 --bridge-port 8765` |
+| 主端连从端 remote action | `192.168.31.170:8770` | `tb-teleop-remote --host 192.168.31.170 --port 8770` |
+| 从端 recorder 连本机 gateway | `127.0.0.1:8765` | `tb-record-real --bridge-host 127.0.0.1 --bridge-port 8765` |
 | 从端 gateway 连 C++ bridge | `127.0.0.1:8766` | 仅从端内部使用 |
 | 从端 CAN | `can0` / `can1` | 终端 1 bridge 参数 |
 | 主端 ROS2 peer | `192.168.31.170` | `EXCAVATOR_ROS_PEER_IP` |
 | HDF5 | `/media/mundane/EXTERNAL_USB/real_teleop_v1` | `tb-record-real --output-dir` |
 
-主端不要把 bridge host 填成 `127.0.0.1`，除非 gateway 就运行在主端本机。
+从端 recorder 必须把 bridge host 填成 `127.0.0.1`，否则图像仍会跨网络。
 
 ---
 
@@ -616,10 +613,11 @@ tb-record-real:
 | 现象 | 处理 |
 |------|------|
 | `Address already in use` | 从端已有 bridge/gateway 占用端口；先 `pkill -f "[e]xcavator_real_bridge"` 或 `pkill -f "[g]ateway_server"`，再重启对应终端 |
-| 主端连不上 `8765` | 从端 gateway 未启动、IP 不对、防火墙或网络不通；从端查 `ss -tlnp \| grep 8765`，主端查 `ping 192.168.31.170` |
+| 主端连不上 `8770` | 从端 recorder 未启动、IP 不对、防火墙或网络不通；从端查 `ss -tlnp \| grep 8770`，主端查 `ping 192.168.31.170` |
+| 从端 recorder 连不上 `8765` | 从端 gateway 未启动；从端查 `ss -tlnp \| grep 8765` |
 | gateway 返回 `bridge_placeholder_fpv` | 终端 3 没有创建新鲜 SHM；确认 `/dev/shm/excavator_fpv_v1` 更新时间，再重启 gateway |
-| rqt 灰屏 | 先查从端 Orbbec 和终端 3；rqt 只是可视化，不影响 TCP 控制/录制主链路 |
-| HDF5 出现在主端仓库下 | `--output-dir` 没指到 USB；改为 `/media/mundane/EXTERNAL_USB/real_teleop_v1` |
+| rqt 灰屏 | 先查从端 Orbbec 和终端 3；rqt 只是可视化，不影响 remote action 和从端本地录制 |
+| HDF5 出现在从端仓库下 | `--output-dir` 没指到 USB；改为 `/media/mundane/EXTERNAL_USB/real_teleop_v1` |
 | 机器不动但 `ack=true` | 检查发动机/液压/先导/远程使能状态、status bit 点火、CAN 接线和 bridge 日志 |
 | 机器动作方向或轴不对 | 立即停主端控制，检查 `teleop_real_v1.yaml` 的 `axis_map`、`joystick_ids`、`invert` |
 | 停止后仍担心有输出 | 先停主端命令，再停从端 bridge：`pkill -f "[e]xcavator_real_bridge"` |

@@ -36,7 +36,7 @@ real:
         port: 8765
 
 teleop:
-  input: joystick        # joystick | keyboard | oem_remote | zero
+  input: joystick        # joystick | keyboard | oem_remote | remote | zero
   learning_target: operator_command_from_observation
   num_episodes: 30
   metadata:
@@ -78,6 +78,13 @@ teleop:
     source_id: oem_remote
     interface: ""
     note: "Set allow_stub=true only for local interface checks without the vendor remote reader."
+
+  remote:
+    bind_host: "0.0.0.0"
+    port: 8770
+    timeout_ms: 200
+    rate_hz: 50
+    source_id: "host_joystick"
 
 task:
   task_name: real_excavation_teleop_v1

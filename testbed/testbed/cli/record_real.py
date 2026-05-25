@@ -85,7 +85,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument(
         "--input",
-        choices=["joystick", "keyboard", "oem_remote", "zero"],
+        choices=["joystick", "keyboard", "oem_remote", "remote", "zero"],
         default=None,
     )
     parser.add_argument("--operator-id", type=str, default=None)
@@ -371,7 +371,9 @@ def main() -> None:
                     if abort:
                         break
 
-                    discard, quit_now = _check_pygame_events(enabled=input_device != "zero")
+                    discard, quit_now = _check_pygame_events(
+                        enabled=input_device not in {"zero", "remote"}
+                    )
                     if quit_now:
                         abort = True
                         break
@@ -491,6 +493,10 @@ def _build_action_source(input_device: str, teleop_cfg: dict[str, Any], *, dt: f
         from testbed.actions.oem_remote import OemRemoteActionSource
 
         return OemRemoteActionSource.from_config(teleop_cfg.get("oem_remote", {}))
+    if input_device == "remote":
+        from testbed.actions.remote import RemoteActionSource
+
+        return RemoteActionSource.from_config(teleop_cfg.get("remote", {}))
     if input_device == "zero":
         return ZeroActionSource()
     raise ValueError(f"Unsupported real teleop input {input_device!r}.")
@@ -654,7 +660,29 @@ def _build_step_diagnostics(
         diagnostics[f"image_timestamp_ns_{_sanitize_key(camera_name)}"] = _int_timestamp(
             timestamp_ns
         )
+    _add_remote_action_diagnostics(diagnostics, extras)
     return diagnostics
+
+
+def _add_remote_action_diagnostics(
+    diagnostics: dict[str, Any],
+    extras: dict[str, Any],
+) -> None:
+    if "remote_action_seq" not in extras:
+        return
+    int_keys = (
+        "remote_action_seq",
+        "remote_action_host_sample_ns",
+        "remote_action_receive_ns",
+        "remote_action_stale",
+        "remote_action_drop_count",
+        "remote_action_connected",
+    )
+    for key in int_keys:
+        diagnostics[key] = _int_timestamp(extras.get(key))
+    diagnostics["remote_action_age_ms"] = float(
+        extras.get("remote_action_age_ms", 0.0) or 0.0
+    )
 
 
 def _action_sample_timestamp_ns(action_info) -> int:
@@ -829,6 +857,26 @@ def _build_episode_metadata(
         metadata[ATTR_SESSION_ID] = str(metadata_cfg["session_id"])
     if metadata_cfg.get("notes"):
         metadata[ATTR_NOTES] = str(metadata_cfg["notes"])
+    if input_device == "remote":
+        from testbed.actions.remote import (
+            DEFAULT_REMOTE_ACTION_PORT,
+            DEFAULT_REMOTE_ACTION_TIMEOUT_MS,
+        )
+
+        remote_cfg = dict(teleop_cfg.get("remote", {}) or {})
+        metadata["remote_action_transport"] = "json_tcp"
+        metadata["remote_action_bind_host"] = str(
+            remote_cfg.get("bind_host", "0.0.0.0")
+        )
+        metadata["remote_action_port"] = int(
+            remote_cfg.get("port", DEFAULT_REMOTE_ACTION_PORT)
+        )
+        metadata["remote_action_timeout_ms"] = float(
+            remote_cfg.get("timeout_ms", DEFAULT_REMOTE_ACTION_TIMEOUT_MS)
+        )
+        metadata["remote_action_source_id"] = str(
+            remote_cfg.get("source_id", "remote_teleop")
+        )
     return metadata
 
 

@@ -64,7 +64,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--input",
-        choices=["joystick", "keyboard", "oem_remote", "zero"],
+        choices=["joystick", "keyboard", "oem_remote", "remote", "zero"],
         default=None,
     )
     parser.add_argument("--max-steps", type=int, default=None)
@@ -269,7 +269,9 @@ def main() -> None:
             if args.duration_s > 0.0 and elapsed_s >= args.duration_s:
                 break
 
-            discard_now, quit_now = _check_pygame_events(enabled=input_device != "zero")
+            discard_now, quit_now = _check_pygame_events(
+                enabled=input_device not in {"zero", "remote"}
+            )
             if quit_now:
                 log.info("Quit requested from pygame/q.")
                 break

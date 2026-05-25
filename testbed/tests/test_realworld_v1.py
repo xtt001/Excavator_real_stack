@@ -38,6 +38,13 @@ from testbed.backends.real import (
     action4_to_speed_scalar8,
 )
 from testbed.actions.oem_remote import OemRemoteActionSource, OemRemoteUnavailableError
+from testbed.actions.remote import (
+    RemoteActionClient,
+    RemoteActionProtocolError,
+    RemoteActionSource,
+    decode_remote_action_update,
+    encode_remote_action_update,
+)
 from testbed.backends.real.bridge_protocol import (
     control_result_from_payload,
     control_result_to_payload,
@@ -74,7 +81,156 @@ def _can_bind_loopback_socket() -> bool:
         sock.close()
 
 
+def _wait_for_remote_seq(
+    source: RemoteActionSource,
+    seq: int,
+    *,
+    timeout_s: float = 1.0,
+) -> tuple[np.ndarray, object]:
+    deadline = time.monotonic() + timeout_s
+    last_action: np.ndarray | None = None
+    last_info: object | None = None
+    while time.monotonic() < deadline:
+        last_action, last_info = source.next_action({})
+        extras = getattr(last_info, "extras", {}) or {}
+        if int(extras.get("remote_action_seq", -1)) == int(seq):
+            return last_action, last_info
+        time.sleep(0.01)
+    raise AssertionError(
+        f"timed out waiting for remote_action_seq={seq}; "
+        f"last={getattr(last_info, 'extras', {}) if last_info is not None else None}"
+    )
+
+
 class RealworldV1Tests(unittest.TestCase):
+    def test_remote_action_protocol_round_trip(self) -> None:
+        frame = encode_remote_action_update(
+            seq=7,
+            action=np.array([0.1, -0.2, 0.3, -0.4], dtype=np.float32),
+            host_sample_time_ns=123456,
+            source_id="host_pad",
+            toggle_mask=3,
+            reset_requested=True,
+        )
+
+        packet = decode_remote_action_update(frame)
+        self.assertEqual(packet.seq, 7)
+        np.testing.assert_allclose(
+            packet.action,
+            np.array([0.1, -0.2, 0.3, -0.4], dtype=np.float32),
+        )
+        self.assertEqual(packet.host_sample_time_ns, 123456)
+        self.assertEqual(packet.source_id, "host_pad")
+        self.assertEqual(packet.toggle_mask, 3)
+        self.assertTrue(packet.reset_requested)
+
+    def test_remote_action_protocol_rejects_bad_action_shape(self) -> None:
+        with self.assertRaises(RemoteActionProtocolError):
+            decode_remote_action_update(
+                b'{"version":1,"type":"remote_action.update",'
+                b'"payload":{"seq":0,"action":[1,2],"host_sample_time_ns":1}}'
+            )
+
+    def test_remote_action_source_receives_latest_and_edges_once(self) -> None:
+        if not _can_bind_loopback_socket():
+            self.skipTest("loopback socket bind is blocked in this environment")
+        source = RemoteActionSource(bind_host="127.0.0.1", port=0, timeout_ms=1000)
+        client = RemoteActionClient(host="127.0.0.1", port=source.port, timeout_s=1.0)
+        try:
+            client.send_update(
+                seq=0,
+                action=np.array([0.2, 0.0, -0.3, 0.4], dtype=np.float32),
+                host_sample_time_ns=111,
+                source_id="unit",
+                toggle_mask=5,
+                reset_requested=True,
+            )
+            action, info = _wait_for_remote_seq(source, 0)
+            np.testing.assert_allclose(action, [0.2, 0.0, -0.3, 0.4])
+            extras = info.extras
+            self.assertEqual(extras["toggle_mask"], 5)
+            self.assertTrue(extras["reset_requested"])
+            self.assertEqual(extras["remote_action_host_sample_ns"], 111)
+            self.assertEqual(extras["remote_action_stale"], 0)
+
+            _action_again, info_again = source.next_action({})
+            self.assertEqual(info_again.extras["toggle_mask"], 0)
+            self.assertFalse(info_again.extras["reset_requested"])
+        finally:
+            client.close()
+            source.close()
+
+    def test_remote_action_source_drops_old_seq_and_times_out_to_zero(self) -> None:
+        if not _can_bind_loopback_socket():
+            self.skipTest("loopback socket bind is blocked in this environment")
+        source = RemoteActionSource(bind_host="127.0.0.1", port=0, timeout_ms=20)
+        client = RemoteActionClient(host="127.0.0.1", port=source.port, timeout_s=1.0)
+        try:
+            client.send_update(
+                seq=1,
+                action=np.array([0.1, 0.2, 0.3, 0.4], dtype=np.float32),
+                host_sample_time_ns=1,
+                source_id="unit",
+            )
+            _wait_for_remote_seq(source, 1)
+            client.send_update(
+                seq=1,
+                action=np.array([-1.0, -1.0, -1.0, -1.0], dtype=np.float32),
+                host_sample_time_ns=2,
+                source_id="unit",
+            )
+            time.sleep(0.05)
+            action, info = source.next_action({})
+            np.testing.assert_allclose(action, np.zeros(4, dtype=np.float32))
+            self.assertEqual(info.extras["remote_action_seq"], 1)
+            self.assertEqual(info.extras["remote_action_stale"], 1)
+            self.assertGreaterEqual(info.extras["remote_action_drop_count"], 1)
+        finally:
+            client.close()
+            source.close()
+
+    def test_remote_action_diagnostics_are_recorded(self) -> None:
+        from testbed.cli.record_real import _build_step_diagnostics
+
+        guard = SimpleNamespace(
+            last_info=SimpleNamespace(triggered=False, reasons=()),
+        )
+        action_info = SimpleNamespace(
+            latency_ms=12.5,
+            extras={
+                "remote_action_seq": 4,
+                "remote_action_host_sample_ns": 100,
+                "remote_action_receive_ns": 150,
+                "remote_action_age_ms": 2.5,
+                "remote_action_stale": 0,
+                "remote_action_drop_count": 1,
+                "remote_action_connected": 1,
+            },
+        )
+        diagnostics = _build_step_diagnostics(
+            obs={
+                "timestamp_ns": 1,
+                "sensor_timestamp_ns": 2,
+                "joint_timestamp_ns": 3,
+                "image_timestamp_ns": {"fpv": 4},
+                "sync_timestamp_ns": 5,
+            },
+            raw_action=np.zeros(4, dtype=np.float32),
+            safe_action=np.zeros(4, dtype=np.float32),
+            action_info=action_info,
+            action_sample_timestamp_ns=150,
+            action_send_timestamp_ns=200,
+            guard=guard,
+            control_result={"ack": True, "commanded_action": np.zeros(4)},
+        )
+
+        self.assertEqual(diagnostics["remote_action_seq"], 4)
+        self.assertEqual(diagnostics["remote_action_host_sample_ns"], 100)
+        self.assertEqual(diagnostics["remote_action_receive_ns"], 150)
+        self.assertAlmostEqual(diagnostics["remote_action_age_ms"], 2.5)
+        self.assertEqual(diagnostics["remote_action_stale"], 0)
+        self.assertEqual(diagnostics["remote_action_drop_count"], 1)
+
     def test_action_pump_repeats_latest_action(self) -> None:
         class RecordingController(LowLevelController):
             def __init__(self) -> None:
