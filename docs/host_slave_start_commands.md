@@ -32,7 +32,7 @@ test -w /media/mundane/EXTERNAL_USB/real_teleop_v1 && echo USB_WRITE_OK
 在从端打开 5 个终端。每个终端先执行：
 
 ```bash
-cd /home/mundane/Excavator_real_stack
+cd /media/mundane/D/Excavator_real_stack
 source .venv/bin/activate
 ```
 
@@ -44,7 +44,7 @@ control/setup/setup_can.sh can3 250000
 ip -details link show can2
 ip -details link show can3
 
-./bridge/build_aarch64/excavator_real_bridge \
+./bridge/build/excavator_real_bridge \
   --host 127.0.0.1 \
   --port 8766 \
   --can-if can2 \
@@ -72,7 +72,7 @@ source ./scripts/source_ros_stack.sh
 ```bash
 cd /home/mundane/orbbec_ws/src
 mv excavator_ros2_bridge excavator_ros2_bridge.broken_$(date +%Y%m%d_%H%M%S)
-ln -s /home/mundane/Excavator_real_stack/ros2_bridge/excavator_ros2_bridge excavator_ros2_bridge
+ln -s /media/mundane/D/Excavator_real_stack/ros2_bridge/excavator_ros2_bridge excavator_ros2_bridge
 cd /home/mundane/orbbec_ws
 source /opt/ros/humble/setup.bash
 colcon build --symlink-install --packages-select excavator_ros2_bridge
@@ -103,7 +103,7 @@ excavator_apply_slave_network_defaults
 手柄 action，不再每步拉 raw RGB 图像写盘。
 
 ```bash
-cd /home/mundane/Excavator_real_stack
+cd /media/mundane/D/Excavator_real_stack
 source .venv/bin/activate
 python -m pip install --no-deps -e ./testbed
 python -m testbed.cli.record_real \
@@ -288,7 +288,7 @@ export PYTHONWARNINGS="ignore::UserWarning"
 如果 USB 仍插在从端，直接在从端跑 QC：
 
 ```bash
-cd /home/mundane/Excavator_real_stack
+cd /media/mundane/D/Excavator_real_stack
 source .venv/bin/activate
 MPLCONFIGDIR=/tmp/excavator_mpl python -m testbed.cli.dataset_qc \
   --dataset-dir /media/mundane/EXTERNAL_USB/real_teleop_v1 \
