@@ -7,6 +7,7 @@ import logging
 import socket
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -25,6 +26,7 @@ REMOTE_ACTION_PROTOCOL_VERSION = 1
 REMOTE_ACTION_UPDATE = "remote_action.update"
 DEFAULT_REMOTE_ACTION_PORT = 8770
 DEFAULT_REMOTE_ACTION_TIMEOUT_MS = 200.0
+REMOTE_ACTION_EVENT_QUEUE_LIMIT = 64
 
 
 class RemoteActionProtocolError(RuntimeError):
@@ -46,6 +48,15 @@ class RemoteActionPacket:
 @dataclass
 class _LatestRemoteAction:
     packet: RemoteActionPacket
+    receive_time_ns: int
+
+
+@dataclass(frozen=True)
+class _PendingRemoteEvent:
+    toggle_mask: int
+    reset_requested: bool
+    discard_requested: bool
+    quit_requested: bool
     receive_time_ns: int
 
 
@@ -215,7 +226,7 @@ class RemoteActionSource(ActionSource):
         self._latest: _LatestRemoteAction | None = None
         self._drop_count = 0
         self._connected = False
-        self._consumed_event_seq: int | None = None
+        self._pending_events: deque[_PendingRemoteEvent] = deque()
         self._client_sock: socket.socket | None = None
 
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -254,7 +265,7 @@ class RemoteActionSource(ActionSource):
         with self._lock:
             self._latest = None
             self._drop_count = 0
-            self._consumed_event_seq = None
+            self._clear_pending_events_locked()
 
     def next_action(self, obs: dict) -> tuple[np.ndarray, ActionInfo]:
         now_ns = time.time_ns()
@@ -262,12 +273,6 @@ class RemoteActionSource(ActionSource):
             latest = self._latest
             drop_count = self._drop_count
             connected = self._connected
-            is_new_event = (
-                latest is not None
-                and latest.packet.seq != self._consumed_event_seq
-            )
-            if is_new_event:
-                self._consumed_event_seq = latest.packet.seq
 
         if latest is None:
             extras = self._diagnostic_extras(
@@ -289,12 +294,12 @@ class RemoteActionSource(ActionSource):
         packet = latest.packet
         age_ms = max(0.0, (now_ns - latest.receive_time_ns) / 1_000_000.0)
         stale = age_ms > self.timeout_ms
+        pending_event = self._pop_pending_event(now_ns=now_ns, stale=stale)
         action = (
             np.zeros(REAL_ACTION_DIM, dtype=np.float32)
             if stale
             else packet.action.astype(np.float32, copy=True)
         )
-        emit_edge = bool(is_new_event and not stale)
         extras = self._diagnostic_extras(
             seq=packet.seq,
             host_sample_time_ns=packet.host_sample_time_ns,
@@ -307,12 +312,16 @@ class RemoteActionSource(ActionSource):
         extras.update(
             {
                 "action_timestamp_ns": int(latest.receive_time_ns),
-                "toggle_mask": int(packet.toggle_mask) if emit_edge else 0,
-                "reset_requested": bool(packet.reset_requested) if emit_edge else False,
-                "discard_requested": (
-                    bool(packet.discard_requested) if emit_edge else False
+                "toggle_mask": int(pending_event.toggle_mask) if pending_event else 0,
+                "reset_requested": (
+                    bool(pending_event.reset_requested) if pending_event else False
                 ),
-                "quit_requested": bool(packet.quit_requested) if emit_edge else False,
+                "discard_requested": (
+                    bool(pending_event.discard_requested) if pending_event else False
+                ),
+                "quit_requested": (
+                    bool(pending_event.quit_requested) if pending_event else False
+                ),
             }
         )
         return action, ActionInfo(
@@ -376,7 +385,7 @@ class RemoteActionSource(ActionSource):
                 self._client_sock = client
                 self._connected = True
                 self._latest = None
-                self._consumed_event_seq = None
+                self._clear_pending_events_locked()
             try:
                 self._serve_client(client)
             finally:
@@ -421,11 +430,53 @@ class RemoteActionSource(ActionSource):
                 return last_seq
             if last_seq >= 0 and packet.seq > last_seq + 1:
                 self._drop_count += int(packet.seq - last_seq - 1)
+            receive_time_ns = time.time_ns()
             self._latest = _LatestRemoteAction(
                 packet=packet,
-                receive_time_ns=time.time_ns(),
+                receive_time_ns=receive_time_ns,
             )
+            if (
+                packet.toggle_mask
+                or packet.reset_requested
+                or packet.discard_requested
+                or packet.quit_requested
+            ):
+                if len(self._pending_events) >= REMOTE_ACTION_EVENT_QUEUE_LIMIT:
+                    self._pending_events.popleft()
+                    self._drop_count += 1
+                self._pending_events.append(
+                    _PendingRemoteEvent(
+                        toggle_mask=int(packet.toggle_mask),
+                        reset_requested=bool(packet.reset_requested),
+                        discard_requested=bool(packet.discard_requested),
+                        quit_requested=bool(packet.quit_requested),
+                        receive_time_ns=receive_time_ns,
+                    )
+                )
             return int(packet.seq)
+
+    def _pop_pending_event(
+        self,
+        *,
+        now_ns: int,
+        stale: bool,
+    ) -> _PendingRemoteEvent | None:
+        with self._lock:
+            while self._pending_events:
+                event = self._pending_events[0]
+                event_age_ms = max(
+                    0.0, (int(now_ns) - int(event.receive_time_ns)) / 1_000_000.0
+                )
+                if event_age_ms > self.timeout_ms:
+                    self._pending_events.popleft()
+                    continue
+                if stale:
+                    return None
+                return self._pending_events.popleft()
+        return None
+
+    def _clear_pending_events_locked(self) -> None:
+        self._pending_events.clear()
 
 
 def _normalize_toggle_mask(value: Any) -> int:

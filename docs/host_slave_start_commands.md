@@ -210,6 +210,10 @@ status buttons -> joystick 0
 `--joystick-id`，`--input joystick` 会按配置文件读取两个手柄；训练 HDF5 由
 从端终端 5 写入 USB。
 
+remote action 传输中，连续轴命令只保留最新一帧；`toggle_mask`、reset、
+discard、quit 这类按钮边沿事件会在从端排队，直到 `tb-record-real` 下一次
+读取并消费，避免低频 recorder 漏掉远程模式或先导等状态切换。
+
 ```bash
 cd ~/Excavator_real_stack
 export PYTHON="$HOME/miniforge3/envs/excavator-real-stack/bin/python"

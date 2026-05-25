@@ -301,6 +301,8 @@ conda run -n excavator-real-stack python testbed/scripts/gamepad_probe.py --watc
 
 - `button0` → status bit0 → 点火 ignition
 - `button1` → status bit1 → 熄火 flameout
+- `button4` → status bit4 → 远程模式 remote mode
+- `button5` → status bit5 → 先导 pilot
 - `button10` → status bit10 → 急停 estop
 - `button11` → 控制组切换
 
@@ -343,6 +345,7 @@ conda run -n excavator-real-stack tb-teleop-remote \
 说明：
 
 - `tb-teleop-remote` 读取主端手柄，向从端 `8770` 发送 50Hz action 小包。
+- 从端 remote action 只保留最新连续动作；`toggle_mask` / reset / discard / quit 这类按钮边沿事件会排队到下一次 recorder 消费，避免低频采样时漏掉 `button4` / `button5` 等状态切换。
 - `tb-record-real --input remote` 是唯一控制 owner：guard、action pump、gateway 和 HDF5 都在从端。
 - 按 `Ctrl+C` 停止主端 sender；从端 recorder 会收到 quit/零 action，或在 action 超时后自动输出零速。
 

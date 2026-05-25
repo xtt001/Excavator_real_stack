@@ -102,6 +102,22 @@ def _wait_for_remote_seq(
     )
 
 
+def _wait_until_remote_seq_stored(
+    source: RemoteActionSource,
+    seq: int,
+    *,
+    timeout_s: float = 1.0,
+) -> None:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        with source._lock:  # noqa: SLF001 - white-box race-free protocol test.
+            latest = source._latest  # noqa: SLF001
+        if latest is not None and int(latest.packet.seq) == int(seq):
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"timed out waiting for stored remote_action_seq={seq}")
+
+
 class RealworldV1Tests(unittest.TestCase):
     def test_remote_action_protocol_round_trip(self) -> None:
         frame = encode_remote_action_update(
@@ -156,6 +172,38 @@ class RealworldV1Tests(unittest.TestCase):
             _action_again, info_again = source.next_action({})
             self.assertEqual(info_again.extras["toggle_mask"], 0)
             self.assertFalse(info_again.extras["reset_requested"])
+        finally:
+            client.close()
+            source.close()
+
+    def test_remote_action_source_preserves_edge_when_action_is_overwritten(self) -> None:
+        if not _can_bind_loopback_socket():
+            self.skipTest("loopback socket bind is blocked in this environment")
+        source = RemoteActionSource(bind_host="127.0.0.1", port=0, timeout_ms=1000)
+        client = RemoteActionClient(host="127.0.0.1", port=source.port, timeout_s=1.0)
+        try:
+            client.send_update(
+                seq=0,
+                action=np.array([0.1, 0.0, 0.0, 0.0], dtype=np.float32),
+                host_sample_time_ns=111,
+                source_id="unit",
+                toggle_mask=1 << 4,
+            )
+            client.send_update(
+                seq=1,
+                action=np.array([0.7, 0.2, -0.1, 0.3], dtype=np.float32),
+                host_sample_time_ns=112,
+                source_id="unit",
+            )
+            _wait_until_remote_seq_stored(source, 1)
+
+            action, info = source.next_action({})
+            np.testing.assert_allclose(action, [0.7, 0.2, -0.1, 0.3])
+            self.assertEqual(info.extras["remote_action_seq"], 1)
+            self.assertEqual(info.extras["toggle_mask"], 1 << 4)
+
+            _action_again, info_again = source.next_action({})
+            self.assertEqual(info_again.extras["toggle_mask"], 0)
         finally:
             client.close()
             source.close()
