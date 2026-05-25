@@ -53,9 +53,9 @@ def _fpv_sample_from_shm(
     use_shm = fpv_source in {"auto", "shm"}
     allow_placeholder = fpv_source in {"auto", "placeholder"}
 
-    if use_shm and reader.is_fresh(max_stale_ms):
+    if use_shm:
         frame = reader.read_latest()
-        if frame is not None:
+        if frame is not None and _frame_is_fresh(frame.receive_time_ns, max_stale_ms):
             return {
                 "timestamp_ns": frame.timestamp_ns,
                 "source": "ros2_compressed_fpv",
@@ -77,6 +77,11 @@ def _fpv_sample_from_shm(
         "receive_time_ns": ts,
         "payload": _placeholder_fpv(placeholder_width, placeholder_height, frame_id),
     }
+
+
+def _frame_is_fresh(receive_time_ns: int, max_age_ms: int) -> bool:
+    age_ns = max(0, time.time_ns() - int(receive_time_ns))
+    return age_ns <= int(max_age_ms) * 1_000_000
 
 
 class BridgeGateway:

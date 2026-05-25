@@ -106,6 +106,6 @@ safety:
   deadman_enabled: true
   estop_enabled: true
   manual_override_enabled: true
-  sensor_timeout_s: 0.20
+  sensor_timeout_s: 1.0
   action_clip: 1.0
   max_delta_per_step: 1.0

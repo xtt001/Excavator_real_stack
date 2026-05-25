@@ -14,6 +14,22 @@ COMPRESSED_TOPIC="${EXCAVATOR_FPV_COMPRESSED_TOPIC:-/camera/color/image_raw/comp
 # rqt 看解码后的 /camera/color/image_raw（由 republish 从 compressed 生成）
 RAW_TOPIC="${COMPRESSED_TOPIC%/compressed}"
 
+if [[ -z "${ROS_DISTRO:-}" ]]; then
+  for distro in jazzy humble iron rolling; do
+    if [[ -f "/opt/ros/${distro}/setup.bash" ]]; then
+      export ROS_DISTRO="${distro}"
+      break
+    fi
+  done
+fi
+
+if [[ -z "${ROS_DISTRO:-}" || ! -f "/opt/ros/${ROS_DISTRO}/setup.bash" ]]; then
+  echo "error: no ROS2 setup.bash found under /opt/ros." >&2
+  echo "  Ubuntu 24.04 host: install ROS2 Jazzy packages for optional rqt." >&2
+  echo "  Ubuntu 22.04 slave: keep using ROS2 Humble." >&2
+  exit 1
+fi
+
 if [[ -n "${VIRTUAL_ENV:-}" ]]; then
   export PATH="/usr/bin:/bin:${PATH}"
   unset VIRTUAL_ENV
@@ -22,7 +38,7 @@ fi
 set +u
 # shellcheck disable=SC1091
 source "${ROOT_DIR}/scripts/ros2_multihost_env.sh"
-source "/opt/ros/${ROS_DISTRO:-humble}/setup.bash"
+source "/opt/ros/${ROS_DISTRO}/setup.bash"
 set -u
 
 ros2 daemon stop >/dev/null 2>&1 || true

@@ -34,7 +34,12 @@ from typing import Any
 import numpy as np
 
 from testbed.data.hdf5_io import write_episode
-from testbed.data.schema import ATTR_EPISODE_ID
+from testbed.data.schema import (
+    ATTR_CAMERA_FPS,
+    ATTR_CAMERA_HEIGHT,
+    ATTR_CAMERA_WIDTH,
+    ATTR_EPISODE_ID,
+)
 
 
 class EpisodeRecorder:
@@ -170,6 +175,12 @@ class EpisodeRecorder:
             for key, values in self._diagnostics.items()
             if values
         }
+        _update_image_metadata(
+            meta,
+            images=images,
+            camera_names=self.camera_names,
+            diagnostics=diagnostics,
+        )
 
         write_episode(
             path,
@@ -217,3 +228,54 @@ def _stack_diagnostic(values: list[Any]) -> np.ndarray | list[str]:
     if isinstance(first, (int, float, bool, np.integer, np.floating, np.bool_)):
         return np.asarray(values)
     return np.stack([np.asarray(value) for value in values])
+
+
+def _update_image_metadata(
+    metadata: dict[str, Any],
+    *,
+    images: dict[str, np.ndarray],
+    camera_names: list[str] | None,
+    diagnostics: dict[str, Any],
+) -> None:
+    if not images:
+        return
+
+    camera_name = _primary_camera_name(images, camera_names)
+    frames = np.asarray(images[camera_name])
+    if frames.ndim >= 4:
+        metadata[ATTR_CAMERA_HEIGHT] = int(frames.shape[1])
+        metadata[ATTR_CAMERA_WIDTH] = int(frames.shape[2])
+
+    fps = _estimate_timestamp_fps(diagnostics.get("image_timestamp_ns"))
+    if fps > 0.0:
+        metadata[ATTR_CAMERA_FPS] = fps
+
+
+def _primary_camera_name(
+    images: dict[str, np.ndarray],
+    camera_names: list[str] | None,
+) -> str:
+    for camera_name in camera_names or []:
+        if camera_name in images:
+            return camera_name
+    return next(iter(images))
+
+
+def _estimate_timestamp_fps(value: Any) -> float:
+    if value is None:
+        return 0.0
+    try:
+        timestamps = np.asarray(value, dtype=np.int64).reshape(-1)
+    except (TypeError, ValueError):
+        return 0.0
+    timestamps = timestamps[timestamps > 0]
+    if timestamps.size < 2:
+        return 0.0
+    deltas = np.diff(timestamps)
+    deltas = deltas[deltas > 0]
+    if deltas.size == 0:
+        return 0.0
+    median_delta_ns = float(np.median(deltas))
+    if median_delta_ns <= 0.0:
+        return 0.0
+    return float(1_000_000_000.0 / median_delta_ns)

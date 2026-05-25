@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
+import shutil
 import signal
 import sys
 import time
@@ -118,7 +120,18 @@ def main() -> None:
             "host: run on operator PC, set EXCAVATOR_BRIDGE_HOST to vehicle IP."
         ),
     )
+    parser.add_argument(
+        "--live-action-line",
+        action="store_true",
+        help=(
+            "Refresh one terminal line with the latest action sent to the bridge. "
+            "Normal INFO logs and the pygame support prompt are suppressed."
+        ),
+    )
     args = parser.parse_args()
+    if args.live_action_line:
+        logging.getLogger().setLevel(logging.ERROR)
+        os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 
     cfg = _load_yaml_config(args.config)
 
@@ -295,16 +308,16 @@ def main() -> None:
         recorder: EpisodeRecorder | None,
         *,
         discard: bool,
-    ) -> bool:
+    ) -> Path | None:
         if recorder is None or discard or len(recorder) == 0:
-            return False
+            return None
         try:
             path = recorder.save(success=False)
         except KeyboardInterrupt:
             log.warning("保存 HDF5 被中断，已跳过写入。")
-            return False
+            return None
         log.info("Saved real v1 episode: %d steps -> %s", len(recorder), path)
-        return True
+        return path
 
     def _shutdown() -> None:
         try:
@@ -326,6 +339,8 @@ def main() -> None:
 
     if control_pump is not None:
         control_pump.start()
+
+    live_line = _LiveActionLine(enabled=bool(args.live_action_line))
 
     try:
         while saved < num_episodes and not abort:
@@ -377,7 +392,8 @@ def main() -> None:
 
                     action_sample_ns = _action_sample_timestamp_ns(action_info)
                     safety_state = dict(obs.get("safety_state", {}))
-                    sensor_age_s = _sensor_age_s(obs)
+                    host_now_ns = time.time_ns()
+                    sensor_age_s = _sensor_age_s(obs, now_ns=host_now_ns)
                     safe_action, _triggered = guard.check(
                         raw_action,
                         obs.get("qpos"),
@@ -409,6 +425,14 @@ def main() -> None:
                     else:
                         ts_next = backend.step(safe_action)
                     control_result = dict(ts_next.info.get("control_result", {}))
+                    live_line.update(
+                        step=local_step,
+                        raw_action=raw_action,
+                        safe_action=safe_action,
+                        sensor_age_s=sensor_age_s,
+                        control_result=control_result,
+                        guard_reasons=guard.last_info.reasons,
+                    )
                     recorder.record(
                         obs=obs,
                         action=safe_action,
@@ -433,7 +457,9 @@ def main() -> None:
             except KeyboardInterrupt:
                 abort = True
 
-            if _save_partial_episode(recorder, discard=discard):
+            saved_path = _save_partial_episode(recorder, discard=discard)
+            if saved_path is not None:
+                live_line.message(f"saved steps={len(recorder)} path={saved_path}")
                 saved += 1
                 episode_idx += 1
             elif discard:
@@ -442,6 +468,7 @@ def main() -> None:
         abort = True
     finally:
         _shutdown()
+        live_line.finish()
 
     log.info("Real v1 recording complete: %d / %d episode(s) saved.", saved, num_episodes)
     if abort and sigint_count >= 2:
@@ -528,6 +555,61 @@ class ZeroActionSource:
         pass
 
 
+class _LiveActionLine:
+    def __init__(self, *, enabled: bool) -> None:
+        self.enabled = bool(enabled)
+        self._last_len = 0
+
+    def update(
+        self,
+        *,
+        step: int,
+        raw_action: np.ndarray,
+        safe_action: np.ndarray,
+        sensor_age_s: float | None,
+        control_result: dict[str, Any],
+        guard_reasons: tuple[str, ...],
+    ) -> None:
+        if not self.enabled:
+            return
+        commanded_action = control_result.get("commanded_action")
+        if commanded_action is None:
+            commanded_action = safe_action
+        ack = int(bool(control_result.get("ack", False)))
+        fault = str(control_result.get("fault_code", "") or "-")
+        guard = ",".join(str(reason) for reason in guard_reasons) or "-"
+        age_ms = -1.0 if sensor_age_s is None else float(sensor_age_s) * 1000.0
+        text = (
+            f"last_state step={int(step)} "
+            f"raw={_format_action_line_values(raw_action)} "
+            f"send={_format_action_line_values(commanded_action)} "
+            f"age_ms={age_ms:.1f} "
+            f"ack={ack} fault={fault} guard={guard}"
+        )
+        self.message(text)
+
+    def message(self, text: str) -> None:
+        if not self.enabled:
+            return
+        width = max(20, shutil.get_terminal_size((120, 20)).columns)
+        text = text[: max(1, width - 1)]
+        sys.stdout.write("\r\033[2K" + text)
+        sys.stdout.flush()
+        self._last_len = len(text)
+
+    def finish(self) -> None:
+        if not self.enabled or self._last_len == 0:
+            return
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        self._last_len = 0
+
+
+def _format_action_line_values(action: Any) -> str:
+    values = np.asarray(action, dtype=np.float32).reshape(-1)
+    return "[" + ",".join(f"{float(value):+.3f}" for value in values) + "]"
+
+
 def _build_step_diagnostics(
     *,
     obs: dict[str, Any],
@@ -601,11 +683,12 @@ def _sanitize_key(value: Any) -> str:
     return "".join(ch if str(ch).isalnum() or ch == "_" else "_" for ch in str(value))
 
 
-def _sensor_age_s(obs: dict[str, Any]) -> float | None:
+def _sensor_age_s(obs: dict[str, Any], *, now_ns: int | None = None) -> float | None:
     timestamp_ns = obs.get("sensor_timestamp_ns")
     if timestamp_ns is None:
         return None
-    return max(0.0, (time.time_ns() - int(timestamp_ns)) * 1e-9)
+    current_ns = time.time_ns() if now_ns is None else int(now_ns)
+    return max(0.0, (current_ns - int(timestamp_ns)) * 1e-9)
 
 
 def _action_control_flags(action_info) -> tuple[bool, bool, bool]:

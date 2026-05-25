@@ -65,6 +65,7 @@ def apply_data_side_config(
     cli_output_dir: str | None = None,
     cli_bridge_host: str | None = None,
     cli_bridge_port: int | None = None,
+    log_dataset: bool = True,
 ) -> DataSide:
     """
     按 host/slave 填充 dataset_dir 与 bridge 默认值（CLI 显式参数优先）。
@@ -123,21 +124,35 @@ def apply_data_side_config(
         if port <= 0:
             bridge_cfg["port"] = default_port
 
-    _log_data_side_hints(side, task_cfg, bridge_cfg)
+    _log_data_side_hints(side, task_cfg, bridge_cfg, log_dataset=log_dataset)
     return side
 
 
-def _log_data_side_hints(side: DataSide, task_cfg: dict[str, Any], bridge_cfg: dict[str, Any]) -> None:
+def _log_data_side_hints(
+    side: DataSide,
+    task_cfg: dict[str, Any],
+    bridge_cfg: dict[str, Any],
+    *,
+    log_dataset: bool = True,
+) -> None:
     dataset_dir = task_cfg.get("dataset_dir", "")
     bridge_host = bridge_cfg.get("host", "")
     bridge_port = bridge_cfg.get("port", 0)
-    log.info(
-        "data_side=%s: HDF5 -> %s; bridge %s:%s (run tb-record-real on this machine).",
-        side,
-        dataset_dir,
-        bridge_host,
-        bridge_port,
-    )
+    if log_dataset:
+        log.info(
+            "data_side=%s: HDF5 -> %s; bridge %s:%s (run tb-record-real on this machine).",
+            side,
+            dataset_dir,
+            bridge_host,
+            bridge_port,
+        )
+    else:
+        log.info(
+            "data_side=%s: bridge %s:%s; this command does not write HDF5.",
+            side,
+            bridge_host,
+            bridge_port,
+        )
     if side == DATA_SIDE_SLAVE and not _is_loopback_host(str(bridge_host)):
         log.warning(
             "data_side=slave but bridge host is %s (not loopback). "

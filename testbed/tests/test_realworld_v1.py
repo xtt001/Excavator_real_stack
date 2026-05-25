@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
 import socket
 import struct
+import sys
 import tempfile
 import threading
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -58,7 +61,10 @@ HAS_TORCH = importlib.util.find_spec("torch") is not None
 
 
 def _can_bind_loopback_socket() -> bool:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    except PermissionError:
+        return False
     try:
         sock.bind(("127.0.0.1", 0))
         return True
@@ -591,6 +597,32 @@ class RealworldV1Tests(unittest.TestCase):
         with self.assertRaises(ValueError):
             _build_bridge_client({"bridge": {"port": 0}}, "bridge_tcp", "bridge_tcp")
 
+    def test_record_real_live_action_line_shows_raw_and_send(self) -> None:
+        from testbed.cli.record_real import _LiveActionLine
+
+        stream = io.StringIO()
+        live_line = _LiveActionLine(enabled=True)
+        with patch("sys.stdout", stream):
+            live_line.update(
+                step=3,
+                raw_action=np.array([0.1, -0.2, 0.0, 0.4], dtype=np.float32),
+                safe_action=np.zeros(4, dtype=np.float32),
+                sensor_age_s=0.0123,
+                control_result={
+                    "ack": True,
+                    "fault_code": "",
+                    "commanded_action": np.array([0.1, -0.1, 0.0, 0.2], dtype=np.float32),
+                },
+                guard_reasons=("action_clip",),
+            )
+
+        output = stream.getvalue()
+        self.assertIn("raw=[+0.100,-0.200,+0.000,+0.400]", output)
+        self.assertIn("send=[+0.100,-0.100,+0.000,+0.200]", output)
+        self.assertIn("age_ms=12.3", output)
+        self.assertNotIn("host_now_ns", output)
+        self.assertNotIn("sensor_timestamp_ns", output)
+
     def test_json_tcp_bridge_mock_server_updates_state(self) -> None:
         if not _can_bind_loopback_socket():
             self.skipTest("loopback socket bind is blocked in this environment")
@@ -626,6 +658,43 @@ class RealworldV1Tests(unittest.TestCase):
             thread.join(timeout=2.0)
         self.assertFalse(thread.is_alive())
 
+    def test_gateway_reads_fpv_shm_once_when_fresh(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        ros2_bridge_path = str(repo_root / "ros2_bridge")
+        sys.path.insert(0, ros2_bridge_path)
+        try:
+            from excavator_bridge_gateway.gateway_server import _fpv_sample_from_shm
+        finally:
+            sys.path.remove(ros2_bridge_path)
+
+        class Reader:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def read_latest(self):
+                self.calls += 1
+                return SimpleNamespace(
+                    timestamp_ns=time.time_ns(),
+                    receive_time_ns=time.time_ns(),
+                    height=2,
+                    width=3,
+                    rgb=np.arange(18, dtype=np.uint8).tobytes(),
+                )
+
+        reader = Reader()
+        sample = _fpv_sample_from_shm(
+            reader,
+            max_stale_ms=1000,
+            placeholder_width=8,
+            placeholder_height=6,
+            frame_id=1,
+            fpv_source="auto",
+        )
+
+        self.assertEqual(reader.calls, 1)
+        self.assertEqual(sample["source"], "ros2_compressed_fpv")
+        self.assertEqual(sample["payload"]["shape"], [2, 3, 3])
+
     @unittest.skipUnless(HAS_H5PY, "h5py is required for HDF5 round-trip tests")
     def test_hdf5_real_metadata_and_diagnostics_round_trip(self) -> None:
         from testbed.data.hdf5_io import read_episode, write_episode
@@ -654,6 +723,45 @@ class RealworldV1Tests(unittest.TestCase):
             self.assertEqual(episode["metadata"]["platform"], "real_excavator")
             self.assertEqual(set(episode["diagnostics"]), set(_real_diagnostics(2)))
             self.assertEqual(episode["diagnostics"]["guard_reason"], ["", "action_clip"])
+
+    @unittest.skipUnless(HAS_H5PY, "h5py is required for recorder metadata tests")
+    def test_recorder_metadata_uses_recorded_image_shape_and_timestamps(self) -> None:
+        import h5py
+
+        from testbed.data.recorder import EpisodeRecorder
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            recorder = EpisodeRecorder(
+                output_dir=Path(tmpdir),
+                episode_idx=0,
+                metadata={
+                    "camera_width": 160,
+                    "camera_height": 120,
+                    "camera_fps": 50.0,
+                    "camera_names": "fpv",
+                },
+                camera_names=["fpv"],
+            )
+            for step, timestamp_ns in enumerate(
+                [1_000_000_000, 1_100_000_000, 1_200_000_000]
+            ):
+                recorder.record(
+                    {
+                        "qpos": np.zeros(4, dtype=np.float32),
+                        "qvel": np.zeros(4, dtype=np.float32),
+                        "images": {"fpv": np.zeros((4, 6, 3), dtype=np.uint8)},
+                    },
+                    np.zeros(4, dtype=np.float32),
+                    step_id=step,
+                    diagnostics={"image_timestamp_ns": timestamp_ns},
+                )
+            path = recorder.save(success=True)
+
+            with h5py.File(path, "r") as f:
+                metadata = f["metadata"].attrs
+                self.assertEqual(metadata["camera_width"], 6)
+                self.assertEqual(metadata["camera_height"], 4)
+                self.assertAlmostEqual(float(metadata["camera_fps"]), 10.0)
 
     def test_real_action_maps_to_lower_speed_scalar8(self) -> None:
         action = np.array([0.1, -0.2, 0.3, -0.4], dtype=np.float32)

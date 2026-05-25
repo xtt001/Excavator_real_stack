@@ -43,7 +43,7 @@ echo "ros2_multihost: DOMAIN_ID=${ROS_DOMAIN_ID} RMW=${RMW_IMPLEMENTATION}" >&2
 if [[ "${_rmw}" == "rmw_cyclonedds_cpp" ]]; then
   echo "ros2_multihost: CYCLONEDDS_URI=${CYCLONEDDS_URI}" >&2
 else
-  echo "ros2_multihost: Fast DDS (install ros-humble-rmw-cyclonedds-cpp for Cyclone)" >&2
+  echo "ros2_multihost: Fast DDS (install ros-${ROS_DISTRO:-humble}-rmw-cyclonedds-cpp for Cyclone)" >&2
 fi
 if [[ -n "${EXCAVATOR_ROS_PEER_IP:-}" ]]; then
   echo "ros2_multihost: peer=${EXCAVATOR_ROS_PEER_IP}" >&2

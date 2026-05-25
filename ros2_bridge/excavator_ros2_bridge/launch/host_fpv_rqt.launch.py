@@ -30,6 +30,12 @@ def _setup(context, *args, **kwargs):
     )
     if not os.path.isfile(py_script):
         raise RuntimeError(f"host republisher not found: {py_script}")
+    ros_distro = os.environ.get("ROS_DISTRO", "humble")
+    rqt_executable = os.path.join(
+        "/opt", "ros", ros_distro, "lib", "rqt_image_view", "rqt_image_view"
+    )
+    if not os.path.isfile(rqt_executable):
+        raise RuntimeError(f"rqt_image_view executable not found: {rqt_executable}")
 
     env = dict(os.environ)
     py_path = os.path.join(stack_root, "ros2_bridge")
@@ -56,7 +62,7 @@ def _setup(context, *args, **kwargs):
             ExecuteProcess(
                 cmd=[
                     "/usr/bin/python3",
-                    "/opt/ros/humble/lib/rqt_image_view/rqt_image_view",
+                    rqt_executable,
                     raw,
                 ],
                 output="screen",
