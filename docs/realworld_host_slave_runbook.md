@@ -307,6 +307,9 @@ conda run -n excavator-real-stack python testbed/scripts/gamepad_probe.py --watc
 - `button11` → 控制组切换
 
 注意：这是 pygame button index，不一定等于手柄外壳印刷的 A/B/X/Y 名称。
+`remote_mode`、`ignition`、`pilot` 等 status 位会按请求原样下发到
+`18F021F6`；C++ bridge 不再因为 `pilot=1` 自动清掉 ignition/flameout。
+停止时必须显式关闭 pilot/ignition，并按需要给 flameout 脉冲。
 
 ### 0.7 主端 remote action， 从端本地录制
 

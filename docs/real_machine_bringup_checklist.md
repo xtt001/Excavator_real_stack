@@ -82,6 +82,9 @@ client. The remaining work is hardware validation.
   states match the training contract.
 - Confirm status semantics for deadman, e-stop, remote mode, pilot, stale
   sensor, manual override, and any OEM safety interlock.
+- Confirm discrete status combinations on `18F021F6`. The C++ bridge forwards
+  requested `remote_mode` / `ignition` / `pilot` bits verbatim; it does not
+  automatically clear ignition or flameout when pilot is enabled.
 
 ## 3. Supervised One-Axis Motion Test
 

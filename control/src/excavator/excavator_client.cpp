@@ -114,11 +114,6 @@ void ExcavatorClient::applyStatusToggleMask(std::uint16_t toggle_mask) {
 void ExcavatorClient::applyCachedStatusToRef(ExcavatorState& ref) {
     std::lock_guard<std::mutex> lock(cached_status_mu_);
     ref.status = cached_status_;
-    // 先导开启时，强制下发点火/熄火为 0，避免模式冲突。
-    if (ref.status(5) != 0) {
-        ref.status(0) = 0;
-        ref.status(1) = 0;
-    }
 }
 
 bool ExcavatorClient::takeServoCmd(ExcavatorCommand& out_cmd) {
