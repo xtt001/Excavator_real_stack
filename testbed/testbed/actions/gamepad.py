@@ -64,6 +64,8 @@ class JoystickActionSource(ActionSource):
         reset_button: int | None = None,
         discard_button: int | None = None,
         quit_button: int | None = None,
+        record_start_button: int | None = None,
+        go_home_button: int | None = None,
         button_joystick_ids: Sequence[int] | None = None,
         response_profile: dict | None = None,
         default_dt: float = 0.02,
@@ -108,6 +110,14 @@ class JoystickActionSource(ActionSource):
         self._reset_button = self._normalize_button(reset_button, name="reset_button")
         self._discard_button = self._normalize_button(discard_button, name="discard_button")
         self._quit_button = self._normalize_button(quit_button, name="quit_button")
+        self._record_start_button = self._normalize_button(
+            record_start_button,
+            name="record_start_button",
+        )
+        self._go_home_button = self._normalize_button(
+            go_home_button,
+            name="go_home_button",
+        )
         self._button_states: dict[tuple[int, int], bool] = {}
 
         self._status_button_device = int(status_button_device)
@@ -199,6 +209,8 @@ class JoystickActionSource(ActionSource):
                 "reset_requested": self._button_edge(self._reset_button),
                 "discard_requested": self._button_edge(self._discard_button),
                 "quit_requested": self._button_edge(self._quit_button),
+                "record_start_requested": self._button_edge(self._record_start_button),
+                "go_home_requested": self._button_edge(self._go_home_button),
             },
         )
         return action, info
@@ -228,7 +240,10 @@ class JoystickActionSource(ActionSource):
             for i in range(STATUS_BUTTON_SLOTS)
         ]
         toggle_mask = 0
+        control_buttons = self._status_control_buttons()
         for bit in range(self._status_button_count):
+            if bit in control_buttons:
+                continue
             if self._status_prev_buttons[bit] == 0 and cur[bit] == 1:
                 toggle_mask |= 1 << bit
 
@@ -309,6 +324,8 @@ class JoystickActionSource(ActionSource):
             reset_button=cfg.get("reset_button"),
             discard_button=cfg.get("discard_button"),
             quit_button=cfg.get("quit_button"),
+            record_start_button=cfg.get("record_start_button"),
+            go_home_button=cfg.get("go_home_button"),
             button_joystick_ids=cfg.get("button_joystick_ids"),
             response_profile=cfg.get("response_profile"),
             default_dt=default_dt,
@@ -361,3 +378,16 @@ class JoystickActionSource(ActionSource):
                 triggered = True
 
         return triggered
+
+    def _status_control_buttons(self) -> set[int]:
+        return {
+            int(button)
+            for button in (
+                self._reset_button,
+                self._discard_button,
+                self._quit_button,
+                self._record_start_button,
+                self._go_home_button,
+            )
+            if button is not None
+        }

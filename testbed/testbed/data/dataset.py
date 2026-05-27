@@ -16,7 +16,7 @@ import yaml
 from torch.utils.data import DataLoader, Dataset
 
 from testbed.data.hdf5_io import list_episodes
-from testbed.data.schema import ATTR_IS_REAL
+from testbed.data.schema import ATTR_IS_REAL, GRP_ENCODED_IMAGES
 
 
 SUPPORTED_LOW_DIM_KEYS = ("qpos", "qvel")
@@ -230,7 +230,7 @@ class EpisodicDataset(Dataset):
                 low_dim_keys=self.low_dim_keys,
             )
             image_dict = {
-                cam: f[f"/observations/images/{cam}"][t0]
+                cam: _read_camera_image(f, cam, t0)
                 for cam in self.camera_names
             }
 
@@ -279,6 +279,28 @@ class EpisodicDataset(Dataset):
         ) / torch.from_numpy(self.norm_stats["proprio_std"])
 
         return image_data, proprio_data, action_data, is_pad_t
+
+
+def _read_camera_image(h5_file: Any, camera_name: str, timestep: int) -> np.ndarray:
+    raw_path = f"observations/images/{camera_name}"
+    if raw_path in h5_file:
+        return np.asarray(h5_file[raw_path][timestep], dtype=np.uint8)
+    encoded_path = f"{GRP_ENCODED_IMAGES}/{camera_name}"
+    if encoded_path not in h5_file:
+        raise KeyError(f"Camera {camera_name!r} not found as raw or encoded image data.")
+    encoded = np.asarray(h5_file[encoded_path][timestep], dtype=np.uint8).reshape(-1)
+    return _decode_jpeg_image(encoded)
+
+
+def _decode_jpeg_image(encoded: np.ndarray) -> np.ndarray:
+    try:
+        import cv2
+    except ImportError as exc:
+        raise RuntimeError("opencv-python is required to decode JPEG training images") from exc
+    bgr = cv2.imdecode(np.asarray(encoded, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if bgr is None:
+        raise RuntimeError("failed to decode JPEG training image")
+    return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
 
 # ─── load_data ────────────────────────────────────────────────────────────────

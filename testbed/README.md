@@ -62,12 +62,18 @@ HDF5 episodes use:
 - `/observations/qpos`: `(T, 4)` float32
 - `/observations/qvel`: `(T, 4)` float32
 - `/observations/images/fpv`: `(T, H, W, 3)` uint8 RGB
+- `/observations/encoded_images/fpv`: optional `(T,)` variable-length uint8 JPEG frames
 - `/action`: `(T, 4)` guard-filtered normalized action
 - `/diagnostics/*`: raw action, guard reason, controller ack/fault/timestamp,
   commanded action, action sample/send timestamps, joint/image timestamps, and
   sync skew
 - metadata: `is_real=true`, `platform=real_excavator`, units, axis order,
-  learning target, sync/video hints, and recording config snapshot
+  learning target, sync/video hints, `image_format`, optional `jpeg_quality`,
+  and recording config snapshot
+
+New real recordings can store FPV as per-frame JPEG in
+`/observations/encoded_images/fpv`; training and QC readers decode it back to
+RGB arrays automatically. Older raw RGB episodes remain supported.
 
 ## Learning Target
 
@@ -189,7 +195,8 @@ shutdown.request     -> shutdown.response
 
 The `send_action` payload carries normalized 4D action and a compact state
 summary. The response carries `ControlResult`. The `read_state` response
-carries timestamped joint/status samples and timestamped camera samples.
+carries timestamped joint/status samples, `joint.payload.imu_health`, and
+timestamped camera samples.
 
 This JSON/TCP path is meant for integration testing and bridge bring-up. It is
 not the final low-latency video path; the video stream should still use a
@@ -198,7 +205,7 @@ camera-appropriate transport when the hardware system is assembled.
 ## Current Commands
 
 ```bash
-tb-record-real \
+tb-receiver-real \
   --config testbed/configs/teleop_real_v1.yaml \
   --backend bridge_mock \
   --state-reader bridge_mock \
@@ -223,7 +230,7 @@ For a local external bridge process, use:
 ```bash
 tb-bridge-mock-server --host 127.0.0.1 --port 8765
 
-tb-record-real \
+tb-receiver-real \
   --config testbed/configs/teleop_real_v1.yaml \
   --backend bridge_tcp \
   --state-reader bridge_tcp \

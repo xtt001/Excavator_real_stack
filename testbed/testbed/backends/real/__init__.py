@@ -33,6 +33,7 @@ from testbed.backends.real.control import (
     MockLowLevelController,
     NoopLowLevelController,
 )
+from testbed.backends.real.go_home import GoHomeConfig, GoHomeController, GoHomeResult
 from testbed.backends.real.excavator_api import (
     ExcavatorApiPacketAdapter,
     ServoPacketV3,
@@ -62,6 +63,9 @@ __all__ = [
     "REAL_QPOS_ORDER",
     "REAL_QVEL_ORDER",
     "ControlResult",
+    "GoHomeConfig",
+    "GoHomeController",
+    "GoHomeResult",
     "BridgeLowLevelController",
     "BridgeProtocolError",
     "BridgeStateReader",

@@ -17,6 +17,7 @@ void fill_kinematic_from_imu_hw(const ExcavatorHardwareState& hw, ExcavatorState
     st.position.setZero();
     st.velocity.setZero();
     st.acceleration.setZero();
+    st.imu = hw.imu;
     // 关节1234 <- imu4321，轴向为 z y y y。
     const auto& imu1 = hw.imu.devices[0];
     const auto& imu2 = hw.imu.devices[1];

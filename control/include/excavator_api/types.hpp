@@ -2,7 +2,9 @@
 
 #include <Eigen/Dense>
 
+#include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 
@@ -10,6 +12,7 @@ namespace excavator_api {
 
 using Vector8d = Eigen::Matrix<double, 8, 1>;
 using Vector12i = Eigen::Matrix<int, 12, 1>;
+inline constexpr std::size_t kImuDeviceCount = 4;
 
 enum class ControlMode : std::uint8_t {
     OpenLoopMotorSpeed = 0,
@@ -51,6 +54,15 @@ struct RefState {
     Vector8d plan_rpm = Vector8d::Constant(8190.0);
 };
 
+struct ImuHealth {
+    std::array<std::uint8_t, kImuDeviceCount> online{};
+    std::array<std::uint8_t, kImuDeviceCount> valid_attitude{};
+    std::array<std::uint8_t, kImuDeviceCount> valid_gyro{};
+    std::array<std::uint8_t, kImuDeviceCount> valid_accel{};
+    std::array<std::uint16_t, kImuDeviceCount> packet_loss_count{};
+    std::array<std::uint64_t, kImuDeviceCount> host_rx_time_ns{};
+};
+
 struct RespState {
     Vector8d position = Vector8d::Zero();
     Vector8d velocity = Vector8d::Zero();
@@ -59,6 +71,7 @@ struct RespState {
     Vector12i status = Vector12i::Zero();
     Vector8d motor_rpm = Vector8d::Constant(8190.0);
     Vector8d plan_rpm = Vector8d::Constant(8190.0);
+    ImuHealth imu_health{};
 };
 
 struct SnapshotMeta {

@@ -39,10 +39,13 @@ dev = [
 
 [project.scripts]
 tb-record-real    = "testbed.cli.record_real:main"
+tb-receiver-real  = "testbed.cli.record_real:receiver_main"
 tb-control-real   = "testbed.cli.control_real:main"
 tb-teleop-remote  = "testbed.cli.teleop_remote:main"
 tb-bridge-mock-server = "testbed.cli.bridge_mock_server:main"
 tb-dataset-qc     = "testbed.cli.dataset_qc:main"
+tb-dataset-qc-watch-ssh = "testbed.cli.dataset_qc_watch_ssh:main"
+tb-label-phases   = "testbed.cli.label_phases:main"
 tb-train          = "testbed.cli.train:main"
 tb-dataset-videos = "testbed.cli.dataset_videos:main"
 

@@ -22,6 +22,8 @@ from testbed.backends.real import (
     BridgeStateReader,
     ControlResult,
     ExcavatorApiPacketAdapter,
+    GoHomeConfig,
+    GoHomeController,
     InProcessMockBridgeClient,
     JsonTcpBridgeClient,
     JsonTcpBridgeMockServer,
@@ -65,6 +67,7 @@ from testbed.runtime.guard import ActionGuard
 
 HAS_H5PY = importlib.util.find_spec("h5py") is not None
 HAS_TORCH = importlib.util.find_spec("torch") is not None
+HAS_CV2 = importlib.util.find_spec("cv2") is not None
 
 
 def _can_bind_loopback_socket() -> bool:
@@ -127,6 +130,8 @@ class RealworldV1Tests(unittest.TestCase):
             source_id="host_pad",
             toggle_mask=3,
             reset_requested=True,
+            record_start_requested=True,
+            go_home_requested=True,
         )
 
         packet = decode_remote_action_update(frame)
@@ -139,6 +144,8 @@ class RealworldV1Tests(unittest.TestCase):
         self.assertEqual(packet.source_id, "host_pad")
         self.assertEqual(packet.toggle_mask, 3)
         self.assertTrue(packet.reset_requested)
+        self.assertTrue(packet.record_start_requested)
+        self.assertTrue(packet.go_home_requested)
 
     def test_remote_action_protocol_rejects_bad_action_shape(self) -> None:
         with self.assertRaises(RemoteActionProtocolError):
@@ -146,6 +153,14 @@ class RealworldV1Tests(unittest.TestCase):
                 b'{"version":1,"type":"remote_action.update",'
                 b'"payload":{"seq":0,"action":[1,2],"host_sample_time_ns":1}}'
             )
+
+    def test_remote_action_protocol_defaults_go_home_false_for_old_payloads(self) -> None:
+        packet = decode_remote_action_update(
+            b'{"version":1,"type":"remote_action.update",'
+            b'"payload":{"seq":0,"action":[0,0,0,0],'
+            b'"host_sample_time_ns":1,"source_id":"old"}}'
+        )
+        self.assertFalse(packet.go_home_requested)
 
     def test_remote_action_source_receives_latest_and_edges_once(self) -> None:
         if not _can_bind_loopback_socket():
@@ -160,18 +175,24 @@ class RealworldV1Tests(unittest.TestCase):
                 source_id="unit",
                 toggle_mask=5,
                 reset_requested=True,
+                record_start_requested=True,
+                go_home_requested=True,
             )
             action, info = _wait_for_remote_seq(source, 0)
             np.testing.assert_allclose(action, [0.2, 0.0, -0.3, 0.4])
             extras = info.extras
             self.assertEqual(extras["toggle_mask"], 5)
             self.assertTrue(extras["reset_requested"])
+            self.assertTrue(extras["record_start_requested"])
+            self.assertTrue(extras["go_home_requested"])
             self.assertEqual(extras["remote_action_host_sample_ns"], 111)
             self.assertEqual(extras["remote_action_stale"], 0)
 
             _action_again, info_again = source.next_action({})
             self.assertEqual(info_again.extras["toggle_mask"], 0)
             self.assertFalse(info_again.extras["reset_requested"])
+            self.assertFalse(info_again.extras["record_start_requested"])
+            self.assertFalse(info_again.extras["go_home_requested"])
         finally:
             client.close()
             source.close()
@@ -238,10 +259,29 @@ class RealworldV1Tests(unittest.TestCase):
             source.close()
 
     def test_remote_action_diagnostics_are_recorded(self) -> None:
-        from testbed.cli.record_real import _build_step_diagnostics
+        from testbed.cli.record_real import (
+            ReceiverHealthSnapshot,
+            _build_step_diagnostics,
+        )
 
         guard = SimpleNamespace(
             last_info=SimpleNamespace(triggered=False, reasons=()),
+        )
+        receiver_health = ReceiverHealthSnapshot(
+            ok=True,
+            error_code="",
+            errors=(),
+            imu_summary="1111",
+            diagnostics={
+                "receiver_health_ok": 1,
+                "receiver_health_error_code": "",
+                "imu_online": np.ones(4, dtype=np.int32),
+                "imu_valid_attitude": np.ones(4, dtype=np.int32),
+                "fpv_age_ms": 12.0,
+                "bridge_snapshot_age_ms": 8.0,
+                "remote_action_connected": 1,
+                "controller_ack": 1,
+            },
         )
         action_info = SimpleNamespace(
             latency_ms=12.5,
@@ -262,6 +302,9 @@ class RealworldV1Tests(unittest.TestCase):
                 "joint_timestamp_ns": 3,
                 "image_timestamp_ns": {"fpv": 4},
                 "sync_timestamp_ns": 5,
+                "status": np.arange(12, dtype=np.int32),
+                "motor_rpm": np.arange(8, dtype=np.float32),
+                "plan_rpm": np.arange(8, dtype=np.float32) + 10,
             },
             raw_action=np.zeros(4, dtype=np.float32),
             safe_action=np.zeros(4, dtype=np.float32),
@@ -270,6 +313,7 @@ class RealworldV1Tests(unittest.TestCase):
             action_send_timestamp_ns=200,
             guard=guard,
             control_result={"ack": True, "commanded_action": np.zeros(4)},
+            receiver_health=receiver_health,
         )
 
         self.assertEqual(diagnostics["remote_action_seq"], 4)
@@ -278,6 +322,132 @@ class RealworldV1Tests(unittest.TestCase):
         self.assertAlmostEqual(diagnostics["remote_action_age_ms"], 2.5)
         self.assertEqual(diagnostics["remote_action_stale"], 0)
         self.assertEqual(diagnostics["remote_action_drop_count"], 1)
+        self.assertEqual(diagnostics["receiver_health_ok"], 1)
+        self.assertEqual(diagnostics["receiver_health_error_code"], "")
+        np.testing.assert_array_equal(diagnostics["imu_online"], np.ones(4, dtype=np.int32))
+        np.testing.assert_array_equal(
+            diagnostics["machine_status"], np.arange(12, dtype=np.int32)
+        )
+        np.testing.assert_allclose(diagnostics["motor_rpm"], np.arange(8, dtype=np.float32))
+        np.testing.assert_allclose(
+            diagnostics["plan_rpm"], np.arange(8, dtype=np.float32) + 10
+        )
+
+        diagnostics_with_raw = _build_step_diagnostics(
+            obs={},
+            raw_action=np.zeros(4, dtype=np.float32),
+            safe_action=np.zeros(4, dtype=np.float32),
+            action_info=SimpleNamespace(extras={}),
+            action_sample_timestamp_ns=0,
+            action_send_timestamp_ns=0,
+            guard=guard,
+            control_result={
+                "ack": True,
+                "commanded_action": np.zeros(4),
+                "raw_low_level_command": np.arange(8, dtype=np.float32),
+            },
+        )
+        np.testing.assert_allclose(
+            diagnostics_with_raw["raw_low_level_command"],
+            np.arange(8, dtype=np.float32),
+        )
+
+    def test_receiver_health_evaluator_strict_ok_and_errors(self) -> None:
+        from testbed.cli.record_real import ReceiverHealthEvaluator
+
+        now_ns = 2_000_000_000
+        evaluator = ReceiverHealthEvaluator(
+            require_machine_health=True,
+            require_remote_action=True,
+            bridge_snapshot_timeout_ms=200,
+            fpv_max_stale_ms=1000,
+        )
+
+        def healthy_obs() -> dict:
+            return {
+                "image_timestamp_ns": {"fpv": now_ns - 20_000_000},
+                "sensor_health": {
+                    "bridge_snapshot_age_ms": 10.0,
+                    "imu": {
+                        "online": [1, 1, 1, 1],
+                        "valid_attitude": [1, 1, 1, 1],
+                    },
+                },
+            }
+
+        healthy_info = SimpleNamespace(
+            extras={"remote_action_connected": 1, "remote_action_stale": 0}
+        )
+        healthy_control = {"ack": True, "fault_code": ""}
+        snapshot = evaluator.evaluate(
+            obs=healthy_obs(),
+            action_info=healthy_info,
+            control_result=healthy_control,
+            now_ns=now_ns,
+        )
+        self.assertTrue(snapshot.ok)
+        self.assertEqual(snapshot.error_code, "")
+        self.assertEqual(snapshot.imu_summary, "1111")
+
+        obs = healthy_obs()
+        obs["sensor_health"]["imu"]["online"] = [1, 0, 1, 1]
+        snapshot = evaluator.evaluate(
+            obs=obs,
+            action_info=healthy_info,
+            control_result=healthy_control,
+            now_ns=now_ns,
+        )
+        self.assertFalse(snapshot.ok)
+        self.assertEqual(snapshot.error_code, "imu_missing:1")
+        self.assertEqual(snapshot.imu_summary, "1011")
+
+        cases = [
+            (
+                "fpv_stale",
+                {
+                    **healthy_obs(),
+                    "image_timestamp_ns": {"fpv": now_ns - 2_000_000_000},
+                },
+                healthy_info,
+                healthy_control,
+            ),
+            (
+                "bridge_stale",
+                {
+                    **healthy_obs(),
+                    "sensor_health": {
+                        **healthy_obs()["sensor_health"],
+                        "bridge_snapshot_age_ms": 250.0,
+                    },
+                },
+                healthy_info,
+                healthy_control,
+            ),
+            (
+                "remote_stale",
+                healthy_obs(),
+                SimpleNamespace(
+                    extras={"remote_action_connected": 1, "remote_action_stale": 1}
+                ),
+                healthy_control,
+            ),
+            (
+                "control_fault",
+                healthy_obs(),
+                healthy_info,
+                {"ack": False, "fault_code": "write_failed"},
+            ),
+        ]
+        for expected, obs_case, info_case, control_case in cases:
+            with self.subTest(expected=expected):
+                snapshot = evaluator.evaluate(
+                    obs=obs_case,
+                    action_info=info_case,
+                    control_result=control_case,
+                    now_ns=now_ns,
+                )
+                self.assertFalse(snapshot.ok)
+                self.assertEqual(snapshot.error_code, expected)
 
     def test_action_pump_repeats_latest_action(self) -> None:
         class RecordingController(LowLevelController):
@@ -316,6 +486,222 @@ class RealworldV1Tests(unittest.TestCase):
             actions = list(controller.actions)
         self.assertGreaterEqual(len(actions), 2)
         np.testing.assert_allclose(actions[-1], target)
+
+    def test_go_home_controller_converges_and_rejects_far_start(self) -> None:
+        cfg = GoHomeConfig.from_mapping(
+            {
+                "enabled": True,
+                "home_pose_rad": [0.0, 0.0, 0.0, 0.0],
+                "near_tolerance_rad": [0.5, 0.5, 0.5, 0.5],
+                "success_tolerance_rad": [0.01, 0.01, 0.01, 0.01],
+                "p_gain": [1.0, 1.0, 1.0, 1.0],
+                "max_action": [0.2, 0.2, 0.2, 0.2],
+                "qvel_stable_rad_s": [0.02, 0.02, 0.02, 0.02],
+                "dwell_s": 0.0,
+                "timeout_s": 1.0,
+            }
+        )
+        assert cfg is not None
+        controller = GoHomeController(cfg)
+        controller.start(
+            {
+                "qpos": np.array([0.1, -0.1, 0.05, -0.05], dtype=np.float32),
+                "qvel": np.zeros(4, dtype=np.float32),
+            }
+        )
+        result = controller.update(
+            {
+                "qpos": np.array([0.1, -0.1, 0.05, -0.05], dtype=np.float32),
+                "qvel": np.zeros(4, dtype=np.float32),
+            }
+        )
+        np.testing.assert_allclose(result.action, [-0.1, 0.1, -0.05, 0.05])
+        done = controller.update(
+            {
+                "qpos": np.zeros(4, dtype=np.float32),
+                "qvel": np.zeros(4, dtype=np.float32),
+            }
+        )
+        self.assertTrue(done.done)
+        self.assertEqual(controller.metadata()["go_home_result"], "succeeded")
+
+        far_controller = GoHomeController(cfg)
+        with self.assertRaises(ValueError):
+            far_controller.start(
+                {
+                    "qpos": np.ones(4, dtype=np.float32),
+                    "qvel": np.zeros(4, dtype=np.float32),
+                }
+            )
+
+    def test_go_home_controller_times_out(self) -> None:
+        cfg = GoHomeConfig.from_mapping(
+            {
+                "enabled": True,
+                "home_pose_rad": [0.0, 0.0, 0.0, 0.0],
+                "near_tolerance_rad": [0.5, 0.5, 0.5, 0.5],
+                "success_tolerance_rad": [0.001, 0.001, 0.001, 0.001],
+                "timeout_s": 0.001,
+            }
+        )
+        assert cfg is not None
+        controller = GoHomeController(cfg)
+        obs = {
+            "qpos": np.ones(4, dtype=np.float32) * 0.1,
+            "qvel": np.zeros(4, dtype=np.float32),
+        }
+        controller.start(obs)
+        time.sleep(0.01)
+        result = controller.update(obs)
+        self.assertTrue(result.failed)
+        self.assertEqual(result.reason, "timeout")
+
+    def test_remote_control_loop_polls_action_source_at_control_rate(self) -> None:
+        from testbed.actions.base import ActionInfo
+        from testbed.cli.record_real import _RemoteControlLoop
+        from testbed.runtime.guard import ActionGuard
+
+        class ConstantActionSource:
+            def next_action(self, obs: dict) -> tuple[np.ndarray, ActionInfo]:
+                return (
+                    np.array([0.25, 0.0, 0.0, 0.0], dtype=np.float32),
+                    ActionInfo(
+                        source_type="teleop",
+                        source_id="unit",
+                        extras={"action_timestamp_ns": time.time_ns()},
+                    ),
+                )
+
+        class RecordingPump:
+            def __init__(self) -> None:
+                self.lock = threading.Lock()
+                self.times: list[float] = []
+                self.latest_result = ControlResult(
+                    ack=True,
+                    fault_code="init",
+                    controller_timestamp_ns=time.time_ns(),
+                    commanded_action=np.zeros(4, dtype=np.float32),
+                    raw_low_level_command=np.zeros(4, dtype=np.float32),
+                )
+
+            def update_action(
+                self, action: np.ndarray, *, state: dict | None = None
+            ) -> ControlResult:
+                now_ns = time.time_ns()
+                with self.lock:
+                    self.times.append(time.monotonic())
+                self.latest_result = ControlResult(
+                    ack=True,
+                    fault_code="",
+                    controller_timestamp_ns=now_ns,
+                    commanded_action=np.asarray(action, dtype=np.float32).copy(),
+                    raw_low_level_command=np.asarray(action, dtype=np.float32).copy(),
+                )
+                return self.latest_result
+
+            def apply_status_toggle_mask(self, toggle_mask: int) -> bool:
+                return True
+
+        pump = RecordingPump()
+        loop = _RemoteControlLoop(
+            action_source=ConstantActionSource(),
+            guard=ActionGuard(action_clip=1.0, max_delta=1.0, sensor_timeout_s=1.0),
+            control_pump=pump,
+            rate_hz=50.0,
+            initial_obs={
+                "qpos": np.zeros(4, dtype=np.float32),
+                "safety_state": {},
+                "sensor_timestamp_ns": time.time_ns(),
+            },
+        )
+        loop.start()
+        try:
+            time.sleep(0.16)
+        finally:
+            loop.stop()
+        with pump.lock:
+            times = list(pump.times)
+        self.assertGreaterEqual(len(times), 5)
+
+    def test_remote_control_loop_fault_hold_forces_zero_output(self) -> None:
+        from testbed.actions.base import ActionInfo
+        from testbed.cli.record_real import _RemoteControlLoop
+        from testbed.runtime.guard import ActionGuard
+
+        class ConstantActionSource:
+            def next_action(self, obs: dict) -> tuple[np.ndarray, ActionInfo]:
+                return (
+                    np.array([0.5, -0.5, 0.25, -0.25], dtype=np.float32),
+                    ActionInfo(
+                        source_type="teleop",
+                        source_id="unit",
+                        extras={
+                            "action_timestamp_ns": time.time_ns(),
+                            "toggle_mask": 1 << 5,
+                        },
+                    ),
+                )
+
+        class RecordingPump:
+            def __init__(self) -> None:
+                self.lock = threading.Lock()
+                self.actions: list[np.ndarray] = []
+                self.toggle_masks: list[int] = []
+                self.latest_result = ControlResult(
+                    ack=True,
+                    fault_code="",
+                    controller_timestamp_ns=time.time_ns(),
+                    commanded_action=np.zeros(4, dtype=np.float32),
+                    raw_low_level_command=np.zeros(4, dtype=np.float32),
+                )
+
+            def update_action(
+                self, action: np.ndarray, *, state: dict | None = None
+            ) -> ControlResult:
+                commanded = np.asarray(action, dtype=np.float32).copy()
+                with self.lock:
+                    self.actions.append(commanded)
+                self.latest_result = ControlResult(
+                    ack=True,
+                    fault_code="",
+                    controller_timestamp_ns=time.time_ns(),
+                    commanded_action=commanded,
+                    raw_low_level_command=commanded.copy(),
+                )
+                return self.latest_result
+
+            def apply_status_toggle_mask(self, toggle_mask: int) -> bool:
+                with self.lock:
+                    self.toggle_masks.append(int(toggle_mask))
+                return True
+
+        pump = RecordingPump()
+        loop = _RemoteControlLoop(
+            action_source=ConstantActionSource(),
+            guard=ActionGuard(action_clip=1.0, max_delta=1.0, sensor_timeout_s=1.0),
+            control_pump=pump,
+            rate_hz=50.0,
+            initial_obs={
+                "qpos": np.zeros(4, dtype=np.float32),
+                "safety_state": {},
+                "sensor_timestamp_ns": time.time_ns(),
+            },
+        )
+        loop.set_fault_hold(True)
+        loop.start()
+        try:
+            time.sleep(0.08)
+        finally:
+            loop.stop()
+
+        with pump.lock:
+            actions = list(pump.actions)
+            toggle_masks = list(pump.toggle_masks)
+        self.assertGreaterEqual(len(actions), 2)
+        for action in actions:
+            np.testing.assert_allclose(action, np.zeros(4, dtype=np.float32))
+        self.assertGreaterEqual(len(toggle_masks), 1)
+        self.assertTrue(all(mask == (1 << 5) for mask in toggle_masks))
 
     def test_status_toggle_mask_semantics(self) -> None:
         status11 = [0] * STATUS_TOGGLE_BIT_COUNT
@@ -510,6 +896,14 @@ class RealworldV1Tests(unittest.TestCase):
                     "qvel": np.arange(4, dtype=np.float32) * 0.1,
                     "status": np.arange(6, dtype=np.int32),
                     "env_state": np.arange(8, dtype=np.float32),
+                    "imu_health": {
+                        "online": [1, 0, 1, 1],
+                        "valid_attitude": [1, 1, 1, 1],
+                        "valid_gyro": [1, 1, 1, 1],
+                        "valid_accel": [1, 1, 1, 1],
+                        "packet_loss_count": [0, 3, 0, 0],
+                        "host_rx_age_ms": [5.0, 6.0, 5.5, 4.0],
+                    },
                 },
                 source="joint",
                 receive_time_ns=1_010,
@@ -526,10 +920,46 @@ class RealworldV1Tests(unittest.TestCase):
         decoded_samples = state_samples_from_payload(state_samples_to_payload(samples))
 
         np.testing.assert_allclose(decoded_samples.joint.payload["qpos"], np.arange(4))
+        self.assertEqual(
+            decoded_samples.joint.payload["imu_health"]["online"],
+            [1, 0, 1, 1],
+        )
         np.testing.assert_array_equal(
             decoded_samples.images["fpv"].payload,
             np.arange(18, dtype=np.uint8).reshape(2, 3, 3),
         )
+
+        if HAS_CV2:
+            import cv2
+
+            rgb = np.zeros((4, 5, 3), dtype=np.uint8)
+            rgb[..., 0] = 200
+            ok, jpeg = cv2.imencode(
+                ".jpg",
+                cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR),
+                [int(cv2.IMWRITE_JPEG_QUALITY), 95],
+            )
+            self.assertTrue(ok)
+            jpeg_samples = RealStateSamples(
+                joint=samples.joint,
+                images={
+                    "fpv": TimestampedSample(
+                        timestamp_ns=1_020,
+                        payload={
+                            "encoding": "jpeg",
+                            "shape": rgb.shape,
+                            "data": jpeg.reshape(-1),
+                        },
+                        source="fpv",
+                        receive_time_ns=1_030,
+                    )
+                },
+            )
+            decoded_jpeg = state_samples_from_payload(state_samples_to_payload(jpeg_samples))
+            jpeg_payload = decoded_jpeg.images["fpv"].payload
+            self.assertEqual(jpeg_payload["encoding"], "jpeg")
+            self.assertEqual(jpeg_payload["shape"], (4, 5, 3))
+            self.assertGreater(len(jpeg_payload["data"]), 0)
 
         frame = encode_frame({"type": "ping.request", "payload": {"value": np.int64(7)}})
         self.assertEqual(decode_frame(frame)["payload"]["value"], 7)
@@ -774,8 +1204,36 @@ class RealworldV1Tests(unittest.TestCase):
         with self.assertRaises(ValueError):
             apply_data_side_config({}, data_side="edge")
 
+    def test_ssh_qc_watcher_parses_remote_find_output_and_waits_stable(self) -> None:
+        from testbed.cli import dataset_qc_watch_ssh as watcher
+
+        episodes = watcher.parse_remote_find_output(
+            ".episode_0.hdf5.tmp.1\t10\t1.0\n"
+            "episode_2.hdf5\t20\t2.0\n"
+            "episode_1.hdf5\t10\t1.0\n"
+            "failed_episode_3.hdf5\t30\t3.0\n"
+        )
+        self.assertEqual([episode.name for episode in episodes], ["episode_1.hdf5", "episode_2.hdf5"])
+
+        samples = iter(
+            [
+                watcher.RemoteEpisode("episode_1.hdf5", 10, 1.0),
+                watcher.RemoteEpisode("episode_1.hdf5", 10, 1.0),
+            ]
+        )
+        with patch.object(watcher, "stat_remote_episode", side_effect=lambda **_kwargs: next(samples)):
+            stable = watcher.wait_until_remote_stable(
+                target="host",
+                remote_dir="/data",
+                name="episode_1.hdf5",
+                checks=2,
+                interval_s=0.0,
+            )
+        assert stable is not None
+        self.assertEqual(stable.size, 10)
+
     def test_record_real_builds_bridge_client_from_tcp_config(self) -> None:
-        from testbed.cli.record_real import _build_bridge_client
+        from testbed.cli.record_real import _build_bridge_client, _build_control_pump_client
 
         self.assertIsNone(_build_bridge_client({}, "mock", "mock"))
 
@@ -801,6 +1259,30 @@ class RealworldV1Tests(unittest.TestCase):
         with self.assertRaises(ValueError):
             _build_bridge_client({"bridge": {"port": 0}}, "bridge_tcp", "bridge_tcp")
 
+        pump_client = _build_control_pump_client(
+            {
+                "bridge": {
+                    "host": "127.0.0.1",
+                    "port": 8765,
+                    "timeout_s": 1.0,
+                }
+            },
+            {
+                "bridge": {
+                    "host": "127.0.0.1",
+                    "port": 8766,
+                    "timeout_s": 0.2,
+                }
+            },
+        )
+        try:
+            self.assertIsInstance(pump_client, JsonTcpBridgeClient)
+            self.assertEqual(pump_client.host, "127.0.0.1")
+            self.assertEqual(pump_client.port, 8766)
+            self.assertEqual(pump_client.timeout_s, 0.2)
+        finally:
+            pump_client.close()
+
     def test_record_real_live_action_line_shows_raw_and_send(self) -> None:
         from testbed.cli.record_real import _LiveActionLine
 
@@ -811,6 +1293,7 @@ class RealworldV1Tests(unittest.TestCase):
                 step=3,
                 raw_action=np.array([0.1, -0.2, 0.0, 0.4], dtype=np.float32),
                 safe_action=np.zeros(4, dtype=np.float32),
+                action_info=SimpleNamespace(extras={}),
                 sensor_age_s=0.0123,
                 control_result={
                     "ack": True,
@@ -823,7 +1306,8 @@ class RealworldV1Tests(unittest.TestCase):
         output = stream.getvalue()
         self.assertIn("raw=[+0.100,-0.200,+0.000,+0.400]", output)
         self.assertIn("send=[+0.100,-0.100,+0.000,+0.200]", output)
-        self.assertIn("age_ms=12.3", output)
+        self.assertIn("hz=", output)
+        self.assertIn("ctl_ms=", output)
         self.assertNotIn("host_now_ns", output)
         self.assertNotIn("sensor_timestamp_ns", output)
 
@@ -893,11 +1377,115 @@ class RealworldV1Tests(unittest.TestCase):
             placeholder_height=6,
             frame_id=1,
             fpv_source="auto",
+            fpv_encoding="raw",
+            jpeg_quality=95,
         )
 
         self.assertEqual(reader.calls, 1)
         self.assertEqual(sample["source"], "ros2_compressed_fpv")
         self.assertEqual(sample["payload"]["shape"], [2, 3, 3])
+
+    @unittest.skipUnless(HAS_CV2, "cv2 is required for JPEG gateway tests")
+    def test_gateway_can_return_jpeg_fpv_payload(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        ros2_bridge_path = str(repo_root / "ros2_bridge")
+        sys.path.insert(0, ros2_bridge_path)
+        try:
+            from excavator_bridge_gateway.gateway_server import _fpv_sample_from_shm
+        finally:
+            sys.path.remove(ros2_bridge_path)
+
+        class Reader:
+            def read_latest(self):
+                return SimpleNamespace(
+                    timestamp_ns=time.time_ns(),
+                    receive_time_ns=time.time_ns(),
+                    height=32,
+                    width=32,
+                    rgb=np.arange(32 * 32 * 3, dtype=np.uint8).tobytes(),
+                )
+
+        sample = _fpv_sample_from_shm(
+            Reader(),
+            max_stale_ms=1000,
+            placeholder_width=8,
+            placeholder_height=6,
+            frame_id=1,
+            fpv_source="auto",
+            fpv_encoding="jpeg",
+            jpeg_quality=95,
+        )
+
+        self.assertEqual(sample["payload"]["encoding"], "jpeg")
+        self.assertEqual(sample["payload"]["shape"], [32, 32, 3])
+        self.assertLess(len(sample["payload"]["data_b64"]), 32 * 32 * 3 * 4 // 3)
+
+    @unittest.skipUnless(HAS_CV2, "cv2 is required for JPEG gateway tests")
+    def test_gateway_jpeg_cache_encodes_each_sequence_once(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        ros2_bridge_path = str(repo_root / "ros2_bridge")
+        sys.path.insert(0, ros2_bridge_path)
+        try:
+            import excavator_bridge_gateway.gateway_server as gateway_server
+        finally:
+            sys.path.remove(ros2_bridge_path)
+
+        class Reader:
+            def __init__(self) -> None:
+                self.sequence = 1
+                self.calls = 0
+
+            def read_latest(self):
+                self.calls += 1
+                return SimpleNamespace(
+                    timestamp_ns=time.time_ns(),
+                    receive_time_ns=time.time_ns(),
+                    sequence=self.sequence,
+                    height=4,
+                    width=4,
+                    rgb=np.zeros(4 * 4 * 3, dtype=np.uint8).tobytes(),
+                )
+
+        reader = Reader()
+        encode_count = 0
+        original_fpv_payload = gateway_server._fpv_payload
+
+        def fake_fpv_payload(**kwargs):
+            nonlocal encode_count
+            encode_count += 1
+            return {
+                "encoding": "jpeg",
+                "shape": [kwargs["height"], kwargs["width"], 3],
+                "data_b64": "abcd",
+            }
+
+        cache = gateway_server.FpvPayloadCache(
+            reader,
+            fpv_source="auto",
+            fpv_encoding="jpeg",
+            jpeg_quality=95,
+            max_encode_hz=1000.0,
+        )
+        gateway_server._fpv_payload = fake_fpv_payload
+        try:
+            cache.start()
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline and encode_count < 1:
+                time.sleep(0.01)
+            self.assertEqual(encode_count, 1)
+            time.sleep(0.05)
+            self.assertEqual(encode_count, 1)
+            reader.sequence = 2
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline and encode_count < 2:
+                time.sleep(0.01)
+            self.assertEqual(encode_count, 2)
+            cached = cache.latest(max_stale_ms=1000)
+            self.assertIsNotNone(cached)
+            self.assertEqual(cached["payload"]["encoding"], "jpeg")
+        finally:
+            cache.stop()
+            gateway_server._fpv_payload = original_fpv_payload
 
     @unittest.skipUnless(HAS_H5PY, "h5py is required for HDF5 round-trip tests")
     def test_hdf5_real_metadata_and_diagnostics_round_trip(self) -> None:
@@ -927,6 +1515,49 @@ class RealworldV1Tests(unittest.TestCase):
             self.assertEqual(episode["metadata"]["platform"], "real_excavator")
             self.assertEqual(set(episode["diagnostics"]), set(_real_diagnostics(2)))
             self.assertEqual(episode["diagnostics"]["guard_reason"], ["", "action_clip"])
+
+    @unittest.skipUnless(HAS_H5PY and HAS_CV2, "h5py and cv2 are required for JPEG HDF5 tests")
+    def test_hdf5_encoded_jpeg_images_round_trip_as_rgb_images(self) -> None:
+        import cv2
+        import h5py
+
+        from testbed.data.hdf5_io import read_episode, write_episode
+
+        rgb = np.zeros((2, 6, 8, 3), dtype=np.uint8)
+        rgb[0, ..., 0] = 220
+        rgb[1, ..., 1] = 180
+        encoded_frames = []
+        for frame in rgb:
+            ok, jpeg = cv2.imencode(
+                ".jpg",
+                cv2.cvtColor(frame, cv2.COLOR_RGB2BGR),
+                [int(cv2.IMWRITE_JPEG_QUALITY), 95],
+            )
+            self.assertTrue(ok)
+            encoded_frames.append(jpeg.reshape(-1))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "episode_0.hdf5"
+            write_episode(
+                path,
+                qpos=np.zeros((2, 4), dtype=np.float32),
+                qvel=np.zeros((2, 4), dtype=np.float32),
+                actions=np.zeros((2, 4), dtype=np.float32),
+                encoded_images={"fpv": encoded_frames},
+                rewards=np.zeros(2, dtype=np.float32),
+                metadata={"is_real": True, "image_format": "jpeg", "camera_names": "fpv"},
+                diagnostics=_real_diagnostics(2),
+            )
+
+            with h5py.File(path, "r") as f:
+                self.assertIn("observations/encoded_images/fpv", f)
+                self.assertEqual(f["observations/encoded_images/fpv"].attrs["encoding"], "jpeg")
+                self.assertNotIn("observations/images/fpv", f)
+
+            episode = read_episode(path)
+            self.assertIn("fpv", episode["encoded_images"])
+            self.assertEqual(episode["images"]["fpv"].shape, (2, 6, 8, 3))
+            self.assertGreater(float(episode["images"]["fpv"][0, ..., 0].mean()), 180.0)
 
     @unittest.skipUnless(HAS_H5PY, "h5py is required for recorder metadata tests")
     def test_recorder_metadata_uses_recorded_image_shape_and_timestamps(self) -> None:
@@ -966,6 +1597,125 @@ class RealworldV1Tests(unittest.TestCase):
                 self.assertEqual(metadata["camera_width"], 6)
                 self.assertEqual(metadata["camera_height"], 4)
                 self.assertAlmostEqual(float(metadata["camera_fps"]), 10.0)
+            self.assertFalse(list(Path(tmpdir).glob("*.tmp.*")))
+
+    @unittest.skipUnless(HAS_H5PY, "h5py is required for recorder metadata tests")
+    def test_recorder_saves_encoded_images_and_uses_encoded_shape(self) -> None:
+        import h5py
+
+        from testbed.data.recorder import EpisodeRecorder
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            recorder = EpisodeRecorder(
+                output_dir=Path(tmpdir),
+                episode_idx=0,
+                metadata={
+                    "camera_width": 160,
+                    "camera_height": 120,
+                    "camera_names": "fpv",
+                },
+                camera_names=["fpv"],
+            )
+            recorder.record(
+                {
+                    "qpos": np.zeros(4, dtype=np.float32),
+                    "qvel": np.zeros(4, dtype=np.float32),
+                    "encoded_images": {
+                        "fpv": {
+                            "encoding": "jpeg",
+                            "shape": (480, 640, 3),
+                            "data": np.arange(16, dtype=np.uint8),
+                        }
+                    },
+                },
+                np.zeros(4, dtype=np.float32),
+                diagnostics={"image_timestamp_ns": 1_000_000_000},
+            )
+            path = recorder.save(success=True)
+
+            with h5py.File(path, "r") as f:
+                metadata = f["metadata"].attrs
+                self.assertEqual(metadata["camera_width"], 640)
+                self.assertEqual(metadata["camera_height"], 480)
+                self.assertEqual(metadata["image_format"], "jpeg")
+                self.assertIn("observations/encoded_images/fpv", f)
+
+    @unittest.skipUnless(HAS_H5PY, "h5py is required for recorder save tests")
+    def test_recorder_save_does_not_publish_partial_episode_on_write_error(self) -> None:
+        from testbed.data.recorder import EpisodeRecorder
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            recorder = EpisodeRecorder(output_dir=Path(tmpdir), episode_idx=0)
+            recorder.record(
+                {
+                    "qpos": np.zeros(4, dtype=np.float32),
+                    "qvel": np.zeros(4, dtype=np.float32),
+                },
+                np.zeros(4, dtype=np.float32),
+            )
+
+            def _fail_after_touch(path, **_kwargs):
+                Path(path).write_bytes(b"partial")
+                raise RuntimeError("write failed")
+
+            with patch("testbed.data.recorder.write_episode", side_effect=_fail_after_touch):
+                with self.assertRaises(RuntimeError):
+                    recorder.save(success=False)
+
+            self.assertFalse((Path(tmpdir) / "episode_0.hdf5").exists())
+            self.assertTrue(list(Path(tmpdir).glob(".episode_0.hdf5.tmp.*")))
+
+    @unittest.skipUnless(HAS_H5PY, "h5py is required for record failure tests")
+    def test_record_session_saves_failed_episode_under_failed_dir(self) -> None:
+        import h5py
+
+        from testbed.cli.record_real import RecordSession
+        from testbed.data.recorder import EpisodeRecorder
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            session = RecordSession(
+                recorder_cls=EpisodeRecorder,
+                dataset_dir=root,
+                failed_dir=root / "failed",
+                episode_idx=7,
+                metadata={"task_name": "unit"},
+                camera_names=[],
+            )
+            session.record_step(
+                obs={
+                    "qpos": np.zeros(4, dtype=np.float32),
+                    "qvel": np.zeros(4, dtype=np.float32),
+                },
+                action=np.zeros(4, dtype=np.float32),
+                diagnostics={
+                    "receiver_health_ok": 0,
+                    "receiver_health_error_code": "imu_missing:1",
+                    "imu_online": np.array([1, 0, 1, 1], dtype=np.int32),
+                    "imu_valid_attitude": np.ones(4, dtype=np.int32),
+                    "fpv_age_ms": 12.0,
+                    "bridge_snapshot_age_ms": 10.0,
+                    "remote_action_connected": 1,
+                    "controller_ack": 1,
+                },
+            )
+
+            path = session.save_failed(
+                error_code="imu_missing:1",
+                error_time_ns=123456,
+            )
+
+            assert path is not None
+            self.assertEqual(path.parent.name, "failed")
+            self.assertTrue(path.name.startswith("episode_7_failed_"))
+            self.assertFalse((root / "episode_7.hdf5").exists())
+            with h5py.File(path, "r") as f:
+                metadata = f["metadata"].attrs
+                self.assertEqual(int(metadata["success"]), 0)
+                self.assertEqual(metadata["record_stop_reason"], "sensor_error")
+                self.assertEqual(metadata["record_error_code"], "imu_missing:1")
+                self.assertEqual(int(metadata["record_error_time_ns"]), 123456)
+                self.assertIn("receiver_health_ok", f["diagnostics"])
 
     def test_real_action_maps_to_lower_speed_scalar8(self) -> None:
         action = np.array([0.1, -0.2, 0.3, -0.4], dtype=np.float32)
@@ -1017,6 +1767,44 @@ class RealworldV1Tests(unittest.TestCase):
         self.assertEqual(obs["sync_max_skew_ns"], 30)
         self.assertEqual(result.max_skew_ns, 30)
         self.assertEqual(obs["images"]["fpv"].shape, (4, 5, 3))
+
+    def test_sync_builder_preserves_imu_health_payload(self) -> None:
+        builder = SynchronizedObservationBuilder(max_slop_ns=50)
+        joint = TimestampedSample(
+            timestamp_ns=1_000,
+            payload={
+                "qpos": np.zeros(4, dtype=np.float32),
+                "qvel": np.zeros(4, dtype=np.float32),
+                "imu_health": {
+                    "online": [1, 0, 1, 1],
+                    "valid_attitude": [1, 1, 1, 1],
+                    "valid_gyro": [1, 1, 1, 1],
+                    "valid_accel": [1, 1, 1, 1],
+                    "packet_loss_count": [0, 2, 0, 0],
+                    "host_rx_age_ms": [10.0, 11.0, 10.5, 9.5],
+                },
+                "snapshot_age_ms": 15.0,
+            },
+            source="joint",
+        )
+
+        result = builder.build(
+            joint_sample=joint,
+            image_samples={
+                "fpv": TimestampedSample(
+                    timestamp_ns=1_010,
+                    payload=np.zeros((2, 2, 3), dtype=np.uint8),
+                    source="fpv",
+                )
+            },
+            step_id=1,
+            action_timestamp_ns=900,
+        )
+
+        sensor_health = result.observation["sensor_health"]
+        self.assertEqual(sensor_health["imu"]["online"], [1, 0, 1, 1])
+        self.assertEqual(sensor_health["imu"]["packet_loss_count"], [0, 2, 0, 0])
+        self.assertAlmostEqual(sensor_health["bridge_snapshot_age_ms"], 15.0)
 
     def test_timestamped_buffer_selects_nearest_sample(self) -> None:
         buffer = TimestampedBuffer(maxlen=4)
@@ -1098,6 +1886,96 @@ class RealworldV1Tests(unittest.TestCase):
             self.assertEqual(summary["warnings"]["missing_env_state_ids"], [])
             self.assertEqual(summary["warnings"]["real_diagnostic_missing_ids"], [])
 
+    @unittest.skipUnless(HAS_H5PY, "h5py is required for episode QC tests")
+    def test_episode_qc_detects_black_fpv_frames(self) -> None:
+        from testbed.data.episode_qc import run_episode_qc
+        from testbed.data.hdf5_io import write_episode
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "episode_0.hdf5"
+            write_episode(
+                path,
+                qpos=np.zeros((3, 4), dtype=np.float32),
+                qvel=np.zeros((3, 4), dtype=np.float32),
+                actions=np.zeros((3, 4), dtype=np.float32),
+                images={"fpv": np.zeros((3, 4, 4, 3), dtype=np.uint8)},
+                rewards=np.zeros(3, dtype=np.float32),
+                metadata={
+                    "is_real": True,
+                    "platform": "real_excavator",
+                    "success": 1,
+                    "qpos_units": "rad",
+                    "qvel_units": "rad/s",
+                    "hydraulic_cylinder_available": False,
+                },
+                step_ids=np.arange(3, dtype=np.int64),
+                step_ns=np.arange(1, 4, dtype=np.int64),
+                diagnostics=_real_diagnostics(3),
+            )
+
+            result = run_episode_qc(path, output_dir=Path(tmpdir) / "qc")
+            self.assertFalse(result["ok"])
+            self.assertIn("fpv_black_frames", result["errors"])
+            self.assertTrue((Path(tmpdir) / "qc" / "episode_0.json").exists())
+
+    @unittest.skipUnless(HAS_H5PY, "h5py is required for phase label tests")
+    def test_phase_labeler_generates_monotonic_real_workflow_labels(self) -> None:
+        from testbed.data.hdf5_io import write_episode
+        from testbed.data.phase_labeler import (
+            PhaseLabelConfig,
+            label_episode_phases,
+            write_phase_labels,
+        )
+
+        length = 40
+        qpos = np.zeros((length, 4), dtype=np.float32)
+        qvel = np.zeros((length, 4), dtype=np.float32)
+        qpos[:10, 0] = 0.0
+        qpos[10:20, 0] = np.linspace(0.2, 0.9, 10)
+        qvel[10:20, 0] = 0.1
+        qpos[20:25, 0] = 1.0
+        qvel[20:25, 3] = 0.1
+        qpos[25:, 0] = np.linspace(0.8, 0.0, length - 25)
+        qvel[25:, 0] = -0.1
+        go_home_running = np.zeros(length, dtype=np.int32)
+        go_home_running[35:] = 1
+        diagnostics = _real_diagnostics(length)
+        diagnostics["go_home_running"] = go_home_running
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "episode_0.hdf5"
+            write_episode(
+                path,
+                qpos=qpos,
+                qvel=qvel,
+                actions=np.zeros((length, 4), dtype=np.float32),
+                images={"fpv": np.ones((length, 2, 2, 3), dtype=np.uint8) * 40},
+                metadata={"is_real": True, "success": 1},
+                diagnostics=diagnostics,
+            )
+            result = label_episode_phases(
+                path,
+                config=PhaseLabelConfig.from_mapping(
+                    {
+                        "home_pose_rad": [0, 0, 0, 0],
+                        "near_home_tolerance_rad": [0.1, 0.1, 0.1, 0.1],
+                        "dig_swing_range": [-0.1, 0.1],
+                        "dump_swing_range": [0.9, 1.1],
+                        "swing_velocity_threshold_rad_s": 0.02,
+                        "bucket_velocity_threshold_rad_s": 0.02,
+                        "dwell_steps": 1,
+                    }
+                ),
+            )
+            self.assertIn("SWING_TO_DUMP", result["phases"])
+            self.assertIn("DUMP", result["phases"])
+            self.assertIn("RETURN_NEAR_HOME", result["phases"])
+            self.assertIn("GO_HOME", result["phases"])
+            self.assertEqual(result["phases"][-1], "END")
+            json_path, csv_path = write_phase_labels(result, Path(tmpdir) / "labels")
+            self.assertTrue(json_path.exists())
+            self.assertTrue(csv_path.exists())
+
     @unittest.skipUnless(HAS_H5PY and HAS_TORCH, "h5py and torch are required for ACT data loader tests")
     def test_act_loader_reads_real_style_qpos_plus_qvel_episode(self) -> None:
         from testbed.data.dataset import load_data
@@ -1136,20 +2014,78 @@ class RealworldV1Tests(unittest.TestCase):
             self.assertEqual(action_data.shape[1:], (6, 4))
             self.assertEqual(is_pad.shape[1:], (6,))
 
+    @unittest.skipUnless(
+        HAS_H5PY and HAS_TORCH and HAS_CV2,
+        "h5py, torch, and cv2 are required for JPEG ACT data loader tests",
+    )
+    def test_act_loader_reads_encoded_jpeg_episode(self) -> None:
+        from testbed.data.dataset import load_data
 
-def _write_real_episode(path: Path, *, length: int) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dataset_dir = Path(tmpdir) / "dataset"
+            dataset_dir.mkdir(parents=True)
+            _write_real_episode(dataset_dir / "episode_0.hdf5", length=4, encoded_jpeg=True)
+
+            train_loader, _val_loader, _norm_stats, is_real, _split_info = load_data(
+                dataset_dir=dataset_dir,
+                num_episodes=1,
+                camera_names=["fpv"],
+                episode_len=6,
+                batch_size_train=1,
+                batch_size_val=1,
+                num_workers=0,
+                prefetch_factor=1,
+                persistent_workers=False,
+                pin_memory=False,
+                split_seed=0,
+                train_split_ratio=0.5,
+                reuse_split=False,
+                low_dim_keys=["qpos", "qvel"],
+            )
+
+            image_data, _proprio, _action, _is_pad = next(iter(train_loader))
+            self.assertTrue(is_real)
+            self.assertEqual(image_data.shape[1:], (1, 3, 8, 8))
+
+
+def _write_real_episode(path: Path, *, length: int, encoded_jpeg: bool = False) -> None:
     from testbed.data.hdf5_io import write_episode
+
+    images = None
+    encoded_images = None
+    image_format = "raw_rgb"
+    if encoded_jpeg:
+        import cv2
+
+        frames = []
+        for step in range(length):
+            image = np.zeros((8, 8, 3), dtype=np.uint8)
+            image[..., step % 3] = 180
+            ok, jpeg = cv2.imencode(
+                ".jpg",
+                cv2.cvtColor(image, cv2.COLOR_RGB2BGR),
+                [int(cv2.IMWRITE_JPEG_QUALITY), 95],
+            )
+            if not ok:
+                raise RuntimeError("failed to encode test JPEG")
+            frames.append(jpeg.reshape(-1))
+        encoded_images = {"fpv": frames}
+        image_format = "jpeg"
+    else:
+        images = {"fpv": np.zeros((length, 8, 8, 3), dtype=np.uint8)}
 
     write_episode(
         path,
         qpos=np.linspace(0.0, 0.1, length * 4, dtype=np.float32).reshape(length, 4),
         qvel=np.linspace(0.0, 0.2, length * 4, dtype=np.float32).reshape(length, 4),
         actions=np.zeros((length, 4), dtype=np.float32),
-        images={"fpv": np.zeros((length, 8, 8, 3), dtype=np.uint8)},
+        images=images,
+        encoded_images=encoded_images,
         rewards=np.zeros(length, dtype=np.float32),
         metadata={
             "is_real": True,
             "platform": "real_excavator",
+            "image_format": image_format,
             "success": 0,
             "qpos_units": "rad",
             "qvel_units": "rad/s",

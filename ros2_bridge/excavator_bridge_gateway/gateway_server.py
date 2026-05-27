@@ -12,6 +12,7 @@ import logging
 import socket
 import threading
 import time
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -29,6 +30,12 @@ from excavator_bridge_gateway.fpv_shm import FpvShmReader
 log = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class _CachedFpvSample:
+    sequence: int
+    sample: dict[str, Any]
+
+
 def _placeholder_fpv(width: int, height: int, frame_id: int) -> dict[str, Any]:
     image = np.zeros((height, width, 3), dtype=np.uint8)
     image[..., 0] = (frame_id * 5) % 255
@@ -41,6 +48,110 @@ def _placeholder_fpv(width: int, height: int, frame_id: int) -> dict[str, Any]:
     }
 
 
+class FpvPayloadCache:
+    """Encode FPV frames off the request path and cache the latest payload.
+
+    JPEG encoding is intentionally keyed by the SHM frame sequence.  The
+    recorder can call read_state faster than the camera updates, and encoding
+    the same 640x480 frame repeatedly wastes enough CPU to disturb control.
+    """
+
+    def __init__(
+        self,
+        reader: FpvShmReader,
+        *,
+        fpv_source: str,
+        fpv_encoding: str,
+        jpeg_quality: int,
+        max_encode_hz: float,
+    ) -> None:
+        self.reader = reader
+        self.fpv_source = str(fpv_source)
+        self.fpv_encoding = str(fpv_encoding).lower()
+        self.jpeg_quality = int(jpeg_quality)
+        self.max_encode_hz = float(max_encode_hz)
+        self._lock = threading.Lock()
+        self._latest: _CachedFpvSample | None = None
+        self._last_sequence = -1
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        if self.fpv_encoding != "jpeg" or self.fpv_source not in {"auto", "shm"}:
+            return
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(
+            target=self._run,
+            name="fpv-jpeg-cache",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        thread = self._thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=1.0)
+        self._thread = None
+
+    def latest(self, *, max_stale_ms: int) -> dict[str, Any] | None:
+        with self._lock:
+            cached = self._latest
+        if cached is None:
+            return None
+        receive_time_ns = int(cached.sample.get("receive_time_ns", 0) or 0)
+        if not _frame_is_fresh(receive_time_ns, max_stale_ms):
+            return None
+        return {
+            "timestamp_ns": int(cached.sample["timestamp_ns"]),
+            "source": str(cached.sample["source"]),
+            "receive_time_ns": receive_time_ns,
+            "payload": dict(cached.sample["payload"]),
+        }
+
+    def _run(self) -> None:
+        min_period_s = 0.0
+        if self.max_encode_hz > 0.0:
+            min_period_s = 1.0 / self.max_encode_hz
+        last_encode_s = 0.0
+        while not self._stop.is_set():
+            frame = self.reader.read_latest()
+            if frame is None:
+                self._stop.wait(0.02)
+                continue
+            if int(frame.sequence) == self._last_sequence:
+                self._stop.wait(0.005)
+                continue
+            now_s = time.monotonic()
+            if min_period_s > 0.0 and now_s - last_encode_s < min_period_s:
+                self._stop.wait(min_period_s - (now_s - last_encode_s))
+                continue
+            try:
+                payload = _fpv_payload(
+                    rgb=frame.rgb,
+                    width=frame.width,
+                    height=frame.height,
+                    encoding="jpeg",
+                    jpeg_quality=self.jpeg_quality,
+                )
+            except Exception:
+                log.exception("FPV JPEG cache encode failed")
+                self._stop.wait(0.1)
+                continue
+            sample = {
+                "timestamp_ns": frame.timestamp_ns,
+                "source": "ros2_compressed_fpv",
+                "receive_time_ns": frame.receive_time_ns,
+                "payload": payload,
+            }
+            with self._lock:
+                self._latest = _CachedFpvSample(sequence=int(frame.sequence), sample=sample)
+            self._last_sequence = int(frame.sequence)
+            last_encode_s = time.monotonic()
+
+
 def _fpv_sample_from_shm(
     reader: FpvShmReader,
     *,
@@ -49,6 +160,8 @@ def _fpv_sample_from_shm(
     placeholder_height: int,
     frame_id: int,
     fpv_source: str,
+    fpv_encoding: str,
+    jpeg_quality: int,
 ) -> dict[str, Any]:
     use_shm = fpv_source in {"auto", "shm"}
     allow_placeholder = fpv_source in {"auto", "placeholder"}
@@ -56,15 +169,18 @@ def _fpv_sample_from_shm(
     if use_shm:
         frame = reader.read_latest()
         if frame is not None and _frame_is_fresh(frame.receive_time_ns, max_stale_ms):
+            payload = _fpv_payload(
+                rgb=frame.rgb,
+                width=frame.width,
+                height=frame.height,
+                encoding=fpv_encoding,
+                jpeg_quality=jpeg_quality,
+            )
             return {
                 "timestamp_ns": frame.timestamp_ns,
                 "source": "ros2_compressed_fpv",
                 "receive_time_ns": frame.receive_time_ns,
-                "payload": {
-                    "encoding": "raw_uint8",
-                    "shape": [frame.height, frame.width, 3],
-                    "data_b64": base64.b64encode(frame.rgb).decode("ascii"),
-                },
+                "payload": payload,
             }
 
     if not allow_placeholder:
@@ -76,6 +192,44 @@ def _fpv_sample_from_shm(
         "source": "bridge_placeholder_fpv",
         "receive_time_ns": ts,
         "payload": _placeholder_fpv(placeholder_width, placeholder_height, frame_id),
+    }
+
+
+def _fpv_payload(
+    *,
+    rgb: bytes,
+    width: int,
+    height: int,
+    encoding: str,
+    jpeg_quality: int,
+) -> dict[str, Any]:
+    encoding = str(encoding).lower()
+    if encoding == "raw":
+        return {
+            "encoding": "raw_uint8",
+            "shape": [height, width, 3],
+            "data_b64": base64.b64encode(rgb).decode("ascii"),
+        }
+    if encoding != "jpeg":
+        raise BridgeProtocolError(f"unsupported fpv encoding {encoding!r}")
+    try:
+        import cv2
+    except ImportError as exc:
+        raise BridgeProtocolError("cv2 is required for fpv jpeg encoding") from exc
+    arr = np.frombuffer(rgb, dtype=np.uint8)
+    try:
+        rgb_image = arr.reshape((int(height), int(width), 3))
+    except ValueError as exc:
+        raise BridgeProtocolError("fpv RGB frame size does not match width/height") from exc
+    bgr_image = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR)
+    quality = int(max(1, min(100, int(jpeg_quality))))
+    ok, encoded = cv2.imencode(".jpg", bgr_image, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+    if not ok:
+        raise BridgeProtocolError("cv2.imencode failed for fpv jpeg frame")
+    return {
+        "encoding": "jpeg",
+        "shape": [height, width, 3],
+        "data_b64": base64.b64encode(encoded.tobytes()).decode("ascii"),
     }
 
 
@@ -96,6 +250,9 @@ class BridgeGateway:
         fpv_source: str,
         fpv_shm_name: str,
         fpv_max_stale_ms: int,
+        fpv_encoding: str,
+        fpv_jpeg_quality: int,
+        fpv_jpeg_cache_hz: float,
         placeholder_width: int,
         placeholder_height: int,
     ) -> None:
@@ -107,6 +264,16 @@ class BridgeGateway:
         self.fpv_source = str(fpv_source)
         self.fpv_reader = FpvShmReader(fpv_shm_name)
         self.fpv_max_stale_ms = int(fpv_max_stale_ms)
+        self.fpv_encoding = str(fpv_encoding).lower()
+        self.fpv_jpeg_quality = int(fpv_jpeg_quality)
+        self.fpv_cache = FpvPayloadCache(
+            self.fpv_reader,
+            fpv_source=self.fpv_source,
+            fpv_encoding=self.fpv_encoding,
+            jpeg_quality=self.fpv_jpeg_quality,
+            max_encode_hz=float(fpv_jpeg_cache_hz),
+        )
+        self.fpv_cache.start()
         self.placeholder_width = int(placeholder_width)
         self.placeholder_height = int(placeholder_height)
         self._frame_id = 0
@@ -169,14 +336,7 @@ class BridgeGateway:
                 )
             self._frame_id += 1
             upstream["images"] = {
-                "fpv": _fpv_sample_from_shm(
-                    self.fpv_reader,
-                    max_stale_ms=self.fpv_max_stale_ms,
-                    placeholder_width=self.placeholder_width,
-                    placeholder_height=self.placeholder_height,
-                    frame_id=self._frame_id,
-                    fpv_source=self.fpv_source,
-                )
+                "fpv": self._fpv_sample()
             }
             return response_message("read_state.response", upstream)
 
@@ -185,6 +345,22 @@ class BridgeGateway:
             return self._upstream_response(base, dict(payload))
 
         return response_message("error.response", {}, ok=False, error=f"unsupported type {msg_type}")
+
+    def _fpv_sample(self) -> dict[str, Any]:
+        if self.fpv_encoding == "jpeg":
+            cached = self.fpv_cache.latest(max_stale_ms=self.fpv_max_stale_ms)
+            if cached is not None:
+                return cached
+        return _fpv_sample_from_shm(
+            self.fpv_reader,
+            max_stale_ms=self.fpv_max_stale_ms,
+            placeholder_width=self.placeholder_width,
+            placeholder_height=self.placeholder_height,
+            frame_id=self._frame_id,
+            fpv_source=self.fpv_source,
+            fpv_encoding=self.fpv_encoding,
+            jpeg_quality=self.fpv_jpeg_quality,
+        )
 
     def serve_forever(self) -> None:
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -246,6 +422,14 @@ def main() -> None:
     parser.add_argument("--fpv-source", choices=["auto", "shm", "placeholder"], default="auto")
     parser.add_argument("--fpv-shm-name", default="excavator_fpv_v1")
     parser.add_argument("--fpv-max-stale-ms", type=int, default=500)
+    parser.add_argument("--fpv-encoding", choices=["raw", "jpeg"], default="raw")
+    parser.add_argument("--fpv-jpeg-quality", type=int, default=95)
+    parser.add_argument(
+        "--fpv-jpeg-cache-hz",
+        type=float,
+        default=30.0,
+        help="Maximum JPEG encode rate for the background FPV cache.",
+    )
     parser.add_argument("--placeholder-width", type=int, default=640)
     parser.add_argument("--placeholder-height", type=int, default=480)
     args = parser.parse_args()
@@ -259,6 +443,9 @@ def main() -> None:
         fpv_source=args.fpv_source,
         fpv_shm_name=args.fpv_shm_name,
         fpv_max_stale_ms=args.fpv_max_stale_ms,
+        fpv_encoding=args.fpv_encoding,
+        fpv_jpeg_quality=args.fpv_jpeg_quality,
+        fpv_jpeg_cache_hz=args.fpv_jpeg_cache_hz,
         placeholder_width=args.placeholder_width,
         placeholder_height=args.placeholder_height,
     ).serve_forever()

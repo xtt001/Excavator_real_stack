@@ -17,8 +17,16 @@ real:
     # 这样 read_state、图像和 HDF5 录制变慢时，不会饿死底层 watchdog。
     enabled: true
     hz: 50
-    send_immediately_on_update: true
+    # false: remote 控制线程只更新最新动作，实际发送只由 pump 的 50Hz 线程完成。
+    # 这样控制输入不会被 read_state/FPV/HDF5 的低频循环阻塞。
+    send_immediately_on_update: false
     zero_on_stop: true
+    # 控制指令直连 C++ bridge(8766)，状态/FPV/HDF5 仍走 gateway(8765)。
+    # 这样 send_action 不会和 gateway 里的 read_state/FPV 共享同一条 upstream TCP。
+    bridge:
+      host: "127.0.0.1"
+      port: 8766
+      timeout_s: 0.2
   bridge:
     host: "127.0.0.1"
     port: 0              # required only when backend/state_reader uses bridge_tcp
@@ -51,6 +59,12 @@ teleop:
     invert: [false, false, false, false]
     # reset 勿用 button10：与 excavator_api status bit10（急停）冲突
     reset_button: null
+    # 现场目标映射：左侧手柄从左到右第 2 个按键对应 pygame button index 1；只用于开始写 HDF5
+    record_start_button: 1
+    # go-home 触发按钮必须现场确认后再配置；null 表示禁用，避免误触发。
+    go_home_button: null
+    # 录制开始只认左侧物理摇杆；右侧按钮不参与控制。
+    button_joystick_ids: [0]
     status_button_device: 0
     status_buttons_enabled: true
     status_button_count: 11
@@ -86,6 +100,31 @@ teleop:
     rate_hz: 50
     source_id: "host_joystick"
 
+  recording:
+    wait_for_start: true
+    go_home:
+      enabled: false
+      # 必须现场标定后填写，顺序为 [swing, boom, stick, bucket]，单位 rad。
+      home_pose_rad: null
+      near_tolerance_rad: [0.20, 0.20, 0.20, 0.20]
+      success_tolerance_rad: [0.03, 0.03, 0.03, 0.03]
+      p_gain: [1.2, 1.2, 1.2, 1.2]
+      max_action: [0.20, 0.20, 0.20, 0.20]
+      qvel_stable_rad_s: [0.02, 0.02, 0.02, 0.02]
+      dwell_s: 0.4
+      timeout_s: 8.0
+      runaway_error_factor: 1.5
+
+phase_labeling:
+  # 离线 phase labeler 使用；真实数值必须现场标定后填写。
+  home_pose_rad: null
+  near_home_tolerance_rad: [0.20, 0.20, 0.20, 0.20]
+  dig_swing_range: null
+  dump_swing_range: null
+  swing_velocity_threshold_rad_s: 0.02
+  bucket_velocity_threshold_rad_s: 0.02
+  dwell_steps: 5
+
 task:
   task_name: real_excavation_teleop_v1
   dataset_dir: data/real_teleop_v1
@@ -108,6 +147,17 @@ video:
   target_latency_ms: 120.0
   transport_hint: low_latency
   prefer_compressed_transport: true
+  record_format: jpeg
+  jpeg_quality: 95
+
+receiver:
+  health:
+    mode: strict
+    bridge_snapshot_timeout_ms: 200
+    fpv_max_stale_ms: 1000
+    imu_require_online: true
+    imu_require_valid_attitude: true
+    quarantine_failed_records: true
 
 safety:
   deadman_enabled: true

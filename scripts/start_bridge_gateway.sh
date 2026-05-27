@@ -18,4 +18,7 @@ exec python3 -m excavator_bridge_gateway.gateway_server \
   --port "${EXCAVATOR_GATEWAY_PORT:-8765}" \
   --control-host "${EXCAVATOR_CONTROL_HOST:-127.0.0.1}" \
   --control-port "${EXCAVATOR_CONTROL_PORT:-8766}" \
+  --fpv-encoding "${EXCAVATOR_FPV_ENCODING:-jpeg}" \
+  --fpv-jpeg-quality "${EXCAVATOR_FPV_JPEG_QUALITY:-95}" \
+  --fpv-jpeg-cache-hz "${EXCAVATOR_FPV_JPEG_CACHE_HZ:-30}" \
   "$@"

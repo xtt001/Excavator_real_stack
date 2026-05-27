@@ -75,7 +75,7 @@ sudo apt install -y ros-humble-image-transport \
 ./scripts/start_host_fpv_rqt.sh               # 只订 compressed + rqt
 ```
 
-完整主从命令见 **`docs/realworld_host_slave_runbook.md`**。
+完整主从命令见 **`docs/host_slave_start_commands.md`**。
 
 验证：主端 `ros2 topic hz /camera/color/image_raw/compressed` 有帧率即通。
 

@@ -6,12 +6,16 @@ namespace excavator {
 namespace {
 constexpr int kPidVectorCount = 9;
 
-// 速度标量闭环前馈：|s|∈[0,1] 作 u，幅值 |mag|=t+(1-t)u∈[t,1]；t 由符号取正负阈值
+// 速度标量闭环前馈：s=0 必须保持零输出；非零 |s|∈(0,1] 作 u，
+// 幅值 |mag|=t+(1-t)u∈(t,1]；t 由符号取正负阈值。
 // 前馈原始转速：仅「偏离中性幅值增大」时限制每步变化；回摆靠近中性不限幅
 constexpr double kFfRpmSlewFraction = 0.05;
 constexpr double kFfRpmSlewNeutralEps = 1e-3;
 
 double map_scalar_for_feedforward(double s, double threshold_pos, double threshold_neg) {
+    if (std::abs(s) <= 1e-9) {
+        return 0.0;
+    }
     const double t = std::clamp((s >= 0.0) ? threshold_pos : threshold_neg, 0.0, 1.0);
     const double u = std::abs(s);  // 上游已将标量限制在 [-1,1]
     const double mag = (t <= 1e-15) ? u : (t + (1.0 - t) * u);

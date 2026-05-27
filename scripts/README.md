@@ -97,7 +97,46 @@ the same command line is deliberate when moved to hardware.
 
 ## Data Collection Wrapper
 
-There is intentionally no single "start real collection" script yet. Data
-collection should wait until `docs/real_machine_bringup_checklist.md` is
-complete for the target machine, real camera frames have replaced the
-placeholder `fpv`, and a short real episode passes QC.
+On the slave, use the managed stack script for the current real-machine
+host/slave collection path:
+
+```bash
+scripts/slave_real_stack.sh run
+```
+
+`run` starts the real CAN bridge, Orbbec camera, FPV SHM subscriber, gateway,
+and remote receiver, then follows all logs in the foreground. Press `Ctrl+C` in
+that terminal to stop the managed services in the safe order.
+
+Useful variants:
+
+```bash
+scripts/slave_real_stack.sh start
+scripts/slave_real_stack.sh status
+scripts/slave_real_stack.sh tail receiver
+scripts/slave_real_stack.sh stop
+scripts/slave_real_stack.sh restart --force
+```
+
+Compatibility aliases remain available: `tail recorder` and `--no-recorder`
+map to the receiver service.
+
+The CAN monitor is intentionally separate so the operator can open a dedicated
+`candump` terminal while the managed stack keeps running.
+
+## Host-Side Live QC
+
+When episodes are written on the slave disk, run live QC from the host instead
+of the Jetson:
+
+```bash
+tb-dataset-qc-watch-ssh \
+  --ssh-host "${EXCAVATOR_SLAVE_IP:-192.168.31.170}" \
+  --ssh-user "${EXCAVATOR_SLAVE_SSH_USER:-$USER}" \
+  --remote-dir "${EXCAVATOR_SLAVE_DATASET_DIR:-/media/mundane/EXTERNAL_USB/real_teleop_v1}" \
+  --cache-dir data/qc_cache
+```
+
+The watcher uses SSH for directory/stat checks and copies each completed HDF5
+episode to a host cache before running QC locally. It does not require sshfs
+and does not run Python QC on the slave.

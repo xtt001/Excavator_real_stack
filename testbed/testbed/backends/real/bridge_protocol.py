@@ -166,6 +166,19 @@ def _sample_from_payload(payload: Mapping[str, Any], *, image: bool) -> Timestam
 
 
 def _image_to_payload(value: Any) -> dict[str, Any]:
+    if isinstance(value, Mapping) and str(value.get("encoding", "")) == "jpeg":
+        data = value.get("data", value.get("bytes", b""))
+        if isinstance(data, (bytes, bytearray, memoryview)):
+            raw = bytes(data)
+        else:
+            raw = np.asarray(data, dtype=np.uint8).reshape(-1).tobytes()
+        shape = [int(v) for v in value.get("shape", [])]
+        return {
+            "encoding": "jpeg",
+            "shape": shape,
+            "data_b64": base64.b64encode(raw).decode("ascii"),
+        }
+
     arr = np.asarray(value, dtype=np.uint8)
     if arr.ndim != 3 or arr.shape[-1] not in (1, 3, 4):
         raise BridgeProtocolError(f"image payload must have shape HxWxC, got {arr.shape}")
@@ -176,11 +189,19 @@ def _image_to_payload(value: Any) -> dict[str, Any]:
     }
 
 
-def _image_from_payload(payload: Any) -> np.ndarray:
+def _image_from_payload(payload: Any) -> Any:
     if not isinstance(payload, Mapping):
         raise BridgeProtocolError("image payload must be a mapping")
-    if payload.get("encoding") != "raw_uint8":
-        raise BridgeProtocolError("only raw_uint8 image payloads are supported")
+    encoding = str(payload.get("encoding", ""))
+    if encoding == "jpeg":
+        data = base64.b64decode(str(payload.get("data_b64", "")).encode("ascii"))
+        return {
+            "encoding": "jpeg",
+            "shape": tuple(int(v) for v in payload.get("shape", ())),
+            "data": np.frombuffer(data, dtype=np.uint8).copy(),
+        }
+    if encoding != "raw_uint8":
+        raise BridgeProtocolError("only raw_uint8 and jpeg image payloads are supported")
     shape = tuple(int(v) for v in payload.get("shape", ()))
     data = base64.b64decode(str(payload.get("data_b64", "")).encode("ascii"))
     arr = np.frombuffer(data, dtype=np.uint8)

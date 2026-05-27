@@ -4,7 +4,7 @@ This branch keeps only real-excavator configs.
 
 | Goal | Config | Entry |
 |---|---|---|
-| Safe teleop recording | `testbed/configs/teleop_real_v1.yaml` | `tb-record-real` |
+| Safe teleop receiver/record | `testbed/configs/teleop_real_v1.yaml` | `tb-receiver-real` |
 | Offline ACT training | `testbed/configs/act_real_v1.yaml` | `tb-train` |
 
 ## `teleop_real_v1.yaml`
@@ -16,7 +16,11 @@ Defines:
 - optional JSON/TCP bridge host, port, and timeout
 - control rate and mock image size
 - joystick/keyboard teleop mapping
+- optional `teleop.recording.go_home` near-home feedback settings; keep
+  `enabled: false` until `home_pose_rad` is field-calibrated
+- optional `phase_labeling` ranges for offline coarse phase labels
 - sync and low-latency video metadata
+- receiver health gate defaults and failed-record quarantine
 - dataset output directory
 - safety guard limits and timeout
 - operator/session metadata fields
@@ -24,9 +28,15 @@ Defines:
 The default output is `data/real_teleop_v1/`.
 
 For local bridge development, start `tb-bridge-mock-server --port 8765`, then
-run `tb-record-real --backend bridge_tcp --state-reader bridge_tcp
+run `tb-receiver-real --backend bridge_tcp --state-reader bridge_tcp
 --bridge-port 8765`. The same values can also live in `real.bridge` inside the
 YAML config.
+
+`tb-record-real` is kept as a compatibility alias for the same receiver logic.
+
+`tb-dataset-qc-watch-ssh` is the preferred field watcher when HDF5 is written
+on the slave. It lists and copies completed `episode_*.hdf5` files over SSH,
+then runs QC on the host-side cache so the Jetson does not spend CPU on QC.
 
 ## `act_real_v1.yaml`
 

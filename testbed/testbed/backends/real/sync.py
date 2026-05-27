@@ -154,10 +154,14 @@ class SynchronizedObservationBuilder:
             raise ValueError("at least one image sample is required")
 
         joint_payload = _payload_mapping(joint_sample.payload)
-        image_payloads = {
-            str(name): _image_payload(sample.payload)
-            for name, sample in image_samples.items()
-        }
+        image_payloads: dict[str, np.ndarray] = {}
+        encoded_image_payloads: dict[str, Mapping[str, Any]] = {}
+        for name, sample in image_samples.items():
+            raw_image, encoded_image = _split_image_payload(sample.payload)
+            if raw_image is not None:
+                image_payloads[str(name)] = raw_image
+            if encoded_image is not None:
+                encoded_image_payloads[str(name)] = encoded_image
         image_timestamps = {
             str(name): int(sample.timestamp_ns)
             for name, sample in image_samples.items()
@@ -190,10 +194,12 @@ class SynchronizedObservationBuilder:
             sync_max_skew_ns=max_skew_ns,
             sync_warnings=warnings,
             images=image_payloads,
+            encoded_images=encoded_image_payloads,
             env_state=joint_payload.get("env_state"),
             status=joint_payload.get("status"),
             motor_rpm=joint_payload.get("motor_rpm"),
             plan_rpm=joint_payload.get("plan_rpm"),
+            sensor_health=_sensor_health_from_joint_payload(joint_payload),
         )
         if action_timestamp_ns is not None:
             observation["action_timestamp_ns"] = int(action_timestamp_ns)
@@ -255,6 +261,17 @@ def _payload_mapping(payload: Any) -> Mapping[str, Any]:
     raise TypeError("joint payload must be a mapping with at least qpos and qvel")
 
 
+def _sensor_health_from_joint_payload(joint_payload: Mapping[str, Any]) -> dict[str, Any]:
+    health: dict[str, Any] = {}
+    if "imu_health" in joint_payload:
+        health["imu"] = joint_payload["imu_health"]
+    if "snapshot_age_ms" in joint_payload:
+        health["bridge_snapshot_age_ms"] = float(joint_payload["snapshot_age_ms"])
+    if "state_loop_tick" in joint_payload:
+        health["state_loop_tick"] = int(joint_payload["state_loop_tick"])
+    return health
+
+
 def _required_payload_value(payload: Mapping[str, Any], key: str) -> Any:
     if key not in payload:
         raise KeyError(f"joint payload missing required key {key!r}")
@@ -268,3 +285,18 @@ def _image_payload(payload: Any) -> np.ndarray:
         if "frame" in payload:
             return np.asarray(payload["frame"], dtype=np.uint8)
     return np.asarray(payload, dtype=np.uint8)
+
+
+def _split_image_payload(payload: Any) -> tuple[np.ndarray | None, Mapping[str, Any] | None]:
+    if isinstance(payload, Mapping) and str(payload.get("encoding", "")) == "jpeg":
+        data = payload.get("data", payload.get("bytes", b""))
+        if isinstance(data, (bytes, bytearray, memoryview)):
+            data_array = np.frombuffer(bytes(data), dtype=np.uint8).copy()
+        else:
+            data_array = np.asarray(data, dtype=np.uint8).reshape(-1).copy()
+        return None, {
+            "encoding": "jpeg",
+            "shape": tuple(int(v) for v in payload.get("shape", ())),
+            "data": data_array,
+        }
+    return _image_payload(payload), None

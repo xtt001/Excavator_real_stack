@@ -62,6 +62,63 @@ def main() -> None:
     parser.add_argument("--connect-timeout", type=float, default=2.0)
     parser.add_argument("--source-id", type=str, default=None)
     parser.add_argument(
+        "--record-start-button",
+        type=int,
+        default=None,
+        help=(
+            "Physical one-based joystick button number that sends record_start_requested. "
+            "For left physical button 2, pass 2; this maps to pygame button index 1."
+        ),
+    )
+    parser.add_argument(
+        "--record-start-button-index",
+        type=int,
+        default=None,
+        help=(
+            "Low-level pygame zero-based joystick button index. "
+            "Use only when debugging pygame button numbers."
+        ),
+    )
+    parser.add_argument(
+        "--record-start-physical-button",
+        type=int,
+        default=None,
+        help=(
+            "Physical one-based button number that sends record_start_requested. "
+            "For left physical button 2, pass 2; this maps to pygame button index 1."
+        ),
+    )
+    parser.add_argument(
+        "--record-start-joystick-id",
+        type=int,
+        default=None,
+        help=(
+            "Joystick device id that owns the record-start button. "
+            "Sets joystick.button_joystick_ids to this single device."
+        ),
+    )
+    parser.add_argument(
+        "--go-home-button",
+        type=int,
+        default=None,
+        help=(
+            "Physical one-based joystick button number that sends go_home_requested. "
+            "This asks the slave receiver to run the near-home go-home controller."
+        ),
+    )
+    parser.add_argument(
+        "--go-home-button-index",
+        type=int,
+        default=None,
+        help="Low-level pygame zero-based joystick button index for go_home_requested.",
+    )
+    parser.add_argument(
+        "--status-button-device",
+        type=int,
+        default=None,
+        help="Joystick device id that owns machine status buttons.",
+    )
+    parser.add_argument(
         "--confirm-remote-control",
         action="store_true",
         help="Required because this stream can drive the real machine via the slave.",
@@ -81,6 +138,40 @@ def main() -> None:
     teleop_cfg = cfg.setdefault("teleop", {})
     task_cfg = cfg.setdefault("task", {})
     remote_cfg = dict(teleop_cfg.get("remote", {}) or {})
+    joystick_cfg = teleop_cfg.setdefault("joystick", {})
+    if args.status_button_device is not None:
+        joystick_cfg["status_button_device"] = int(args.status_button_device)
+    record_start_button_args = [
+        args.record_start_button is not None,
+        args.record_start_button_index is not None,
+        args.record_start_physical_button is not None,
+    ]
+    if sum(record_start_button_args) > 1:
+        parser.error(
+            "--record-start-button, --record-start-button-index, and "
+            "--record-start-physical-button are mutually exclusive"
+        )
+    if args.record_start_button is not None or args.record_start_physical_button is not None:
+        physical_button = (
+            args.record_start_button
+            if args.record_start_button is not None
+            else args.record_start_physical_button
+        )
+        if physical_button < 1:
+            parser.error("--record-start-button must be >= 1")
+        joystick_cfg["record_start_button"] = int(physical_button) - 1
+    elif args.record_start_button_index is not None:
+        joystick_cfg["record_start_button"] = int(args.record_start_button_index)
+    if args.record_start_joystick_id is not None:
+        joystick_cfg["button_joystick_ids"] = [int(args.record_start_joystick_id)]
+    if args.go_home_button is not None and args.go_home_button_index is not None:
+        parser.error("--go-home-button and --go-home-button-index are mutually exclusive")
+    if args.go_home_button is not None:
+        if args.go_home_button < 1:
+            parser.error("--go-home-button must be >= 1")
+        joystick_cfg["go_home_button"] = int(args.go_home_button) - 1
+    elif args.go_home_button_index is not None:
+        joystick_cfg["go_home_button"] = int(args.go_home_button_index)
     input_device = args.input or str(teleop_cfg.get("input", "joystick"))
     if input_device == "remote":
         input_device = "joystick"
@@ -118,6 +209,19 @@ def main() -> None:
         rate_hz,
         source_id,
     )
+    if input_device == "joystick":
+        record_start_index = joystick_cfg.get("record_start_button")
+        record_start_physical = (
+            None if record_start_index is None else int(record_start_index) + 1
+        )
+        log.info(
+            "Joystick buttons: status_button_device=%s record_start_button_index=%s "
+            "record_start_physical_button=%s button_joystick_ids=%s",
+            joystick_cfg.get("status_button_device", 0),
+            record_start_index,
+            record_start_physical,
+            joystick_cfg.get("button_joystick_ids"),
+        )
 
     seq = 0
     last_log_s = 0.0
@@ -140,7 +244,28 @@ def main() -> None:
                 reset_requested=bool(extras.get("reset_requested", False)),
                 discard_requested=bool(extras.get("discard_requested", False)),
                 quit_requested=bool(extras.get("quit_requested", False)),
+                record_start_requested=bool(extras.get("record_start_requested", False)),
+                go_home_requested=bool(extras.get("go_home_requested", False)),
             )
+            event_flags = {
+                "toggle_mask": int(extras.get("toggle_mask", 0) or 0),
+                "record_start": bool(extras.get("record_start_requested", False)),
+                "go_home": bool(extras.get("go_home_requested", False)),
+                "reset": bool(extras.get("reset_requested", False)),
+                "discard": bool(extras.get("discard_requested", False)),
+                "quit": bool(extras.get("quit_requested", False)),
+            }
+            if any(event_flags.values()):
+                log.info(
+                    "remote_event seq=%d toggle_mask=%d record_start=%s go_home=%s reset=%s discard=%s quit=%s",
+                    seq,
+                    event_flags["toggle_mask"],
+                    event_flags["record_start"],
+                    event_flags["go_home"],
+                    event_flags["reset"],
+                    event_flags["discard"],
+                    event_flags["quit"],
+                )
             now_s = time.monotonic()
             if now_s - last_log_s >= float(args.log_interval_s):
                 last_log_s = now_s
@@ -196,6 +321,7 @@ def _send_stop(client: RemoteActionClient, *, seq: int, source_id: str) -> None:
             host_sample_time_ns=time.time_ns(),
             source_id=source_id,
             quit_requested=True,
+            go_home_requested=False,
         )
     except Exception:
         pass

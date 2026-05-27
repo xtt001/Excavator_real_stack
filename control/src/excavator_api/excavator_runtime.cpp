@@ -171,6 +171,15 @@ bool fillRespState(const excavator::ExcavatorState& in, RespState& out) {
     out.status = in.status;
     out.motor_rpm = in.motor_rpm;
     out.plan_rpm = in.plan_rpm;
+    for (std::size_t i = 0; i < kImuDeviceCount; ++i) {
+        const auto& src = in.imu.devices[i];
+        out.imu_health.online[i] = src.online;
+        out.imu_health.valid_attitude[i] = src.valid_attitude;
+        out.imu_health.valid_gyro[i] = src.valid_gyro;
+        out.imu_health.valid_accel[i] = src.valid_accel;
+        out.imu_health.packet_loss_count[i] = src.packet_loss_count;
+        out.imu_health.host_rx_time_ns[i] = src.host_rx_time_ns;
+    }
     return true;
 }
 

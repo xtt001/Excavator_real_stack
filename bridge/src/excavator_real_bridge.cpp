@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <cstring>
 #include <exception>
+#include <fstream>
 #include <iostream>
 #include <mutex>
 #include <netinet/in.h>
@@ -52,6 +53,7 @@ struct Options {
     int read_timeout_ms{100};
     int image_width{160};
     int image_height{120};
+    std::string pid_yaml{};
     bool one_shot{false};
     excavator_api::ControlMode control_mode{excavator_api::ControlMode::ClosedLoopVelocityScalar};
 };
@@ -59,6 +61,12 @@ struct Options {
 std::uint64_t nowNs() {
     const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
         clock_t::now().time_since_epoch());
+    return static_cast<std::uint64_t>(ns.count());
+}
+
+std::uint64_t steadyNs() {
+    const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch());
     return static_cast<std::uint64_t>(ns.count());
 }
 
@@ -111,8 +119,72 @@ void printHelp(const char* prog) {
         << "  --read-timeout-ms <ms>              receive timeout for read_state (default 100)\n"
         << "  --image-width <px>                  placeholder fpv width (default 160)\n"
         << "  --image-height <px>                 placeholder fpv height (default 120)\n"
+        << "  --pid-yaml <path>                   load 9x8 PID/feedforward vectors\n"
         << "  --one-shot                          stop after one client disconnects\n"
         << "  --help                              show this message\n";
+}
+
+bool parseVector8Values(const std::string& line, std::vector<double>& out_values) {
+    const std::size_t l = line.find('[');
+    const std::size_t r = line.find(']');
+    if (l == std::string::npos || r == std::string::npos || r <= l) {
+        return false;
+    }
+    std::string body = line.substr(l + 1, r - l - 1);
+    for (char& c : body) {
+        if (c == ',') c = ' ';
+    }
+    std::istringstream iss(body);
+    out_values.clear();
+    double v = 0.0;
+    while (iss >> v) {
+        out_values.push_back(v);
+    }
+    return out_values.size() == kLowerAxisCount;
+}
+
+bool loadPidVectorsFromYaml(const std::string& yaml_path,
+                            std::vector<std::vector<double>>& pid_vectors) {
+    std::ifstream fin(yaml_path);
+    if (!fin.is_open()) {
+        return false;
+    }
+    const std::vector<std::string> keys = {
+        "position_kp",
+        "position_ki",
+        "position_kd",
+        "velocity_kp",
+        "velocity_ki",
+        "velocity_kd",
+        "velocity_scalar_max",
+        "feedforward_scalar_threshold_pos",
+        "feedforward_scalar_threshold_neg",
+    };
+    pid_vectors.assign(keys.size(), std::vector<double>{});
+    std::string line;
+    while (std::getline(fin, line)) {
+        const std::size_t hash_pos = line.find('#');
+        if (hash_pos != std::string::npos) {
+            line = line.substr(0, hash_pos);
+        }
+        for (std::size_t i = 0; i < keys.size(); ++i) {
+            const std::string key = keys[i] + ":";
+            if (line.find(key) == std::string::npos) {
+                continue;
+            }
+            std::vector<double> vals;
+            if (!parseVector8Values(line, vals)) {
+                return false;
+            }
+            pid_vectors[i] = std::move(vals);
+        }
+    }
+    for (const auto& vals : pid_vectors) {
+        if (vals.size() != kLowerAxisCount) {
+            return false;
+        }
+    }
+    return true;
 }
 
 std::string nextArgValue(int& i, int argc, char** argv, const std::string& key) {
@@ -183,6 +255,8 @@ Options parseArgs(int argc, char** argv) {
             opt.image_width = parseInt(valueOrNext(), "image-width", 1, 4096);
         } else if (arg == "--image-height") {
             opt.image_height = parseInt(valueOrNext(), "image-height", 1, 4096);
+        } else if (arg == "--pid-yaml") {
+            opt.pid_yaml = valueOrNext();
         } else if (arg == "--one-shot") {
             opt.one_shot = true;
         } else {
@@ -257,6 +331,36 @@ json vector12Json(const excavator_api::Vector12i& v) {
     return out;
 }
 
+json imuHealthJson(const excavator_api::ImuHealth& h, std::uint64_t steady_now_ns) {
+    json online = json::array();
+    json valid_attitude = json::array();
+    json valid_gyro = json::array();
+    json valid_accel = json::array();
+    json packet_loss_count = json::array();
+    json host_rx_age_ms = json::array();
+    for (std::size_t i = 0; i < excavator_api::kImuDeviceCount; ++i) {
+        online.push_back(static_cast<int>(h.online[i]));
+        valid_attitude.push_back(static_cast<int>(h.valid_attitude[i]));
+        valid_gyro.push_back(static_cast<int>(h.valid_gyro[i]));
+        valid_accel.push_back(static_cast<int>(h.valid_accel[i]));
+        packet_loss_count.push_back(static_cast<int>(h.packet_loss_count[i]));
+        if (h.host_rx_time_ns[i] == 0U || h.host_rx_time_ns[i] > steady_now_ns) {
+            host_rx_age_ms.push_back(-1.0);
+        } else {
+            host_rx_age_ms.push_back(
+                static_cast<double>(steady_now_ns - h.host_rx_time_ns[i]) / 1000000.0);
+        }
+    }
+    return json{
+        {"online", online},
+        {"valid_attitude", valid_attitude},
+        {"valid_gyro", valid_gyro},
+        {"valid_accel", valid_accel},
+        {"packet_loss_count", packet_loss_count},
+        {"host_rx_age_ms", host_rx_age_ms},
+    };
+}
+
 std::array<double, kActionDim> parseAction4(const json& payload) {
     if (!payload.contains("action") || !payload.at("action").is_array()) {
         throw std::runtime_error("send_action payload missing array field 'action'");
@@ -324,6 +428,16 @@ public:
         if (!control_.setControlMode(options_.control_mode)) {
             std::cerr << "failed to set control mode: " << control_.lastError() << "\n";
             return false;
+        }
+        if (!options_.pid_yaml.empty()) {
+            std::vector<std::vector<double>> pid_vectors;
+            if (!loadPidVectorsFromYaml(options_.pid_yaml, pid_vectors) ||
+                !control_.setPidVectors(pid_vectors)) {
+                std::cerr << "failed to load PID YAML: " << options_.pid_yaml
+                          << " error=" << control_.lastError() << "\n";
+                return false;
+            }
+            std::cerr << "loaded PID YAML: " << options_.pid_yaml << "\n";
         }
         (void)sendZeroCommand("startup");
 
@@ -615,6 +729,7 @@ private:
             {"env_state", env_state},
             {"snapshot_age_ms", snapshot_age_ms},
             {"state_loop_tick", snap.meta.loop_tick},
+            {"imu_health", imuHealthJson(snap.resp.imu_health, steadyNs())},
         };
         json joint_sample{
             {"timestamp_ns", ts},

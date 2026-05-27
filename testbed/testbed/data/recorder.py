@@ -28,6 +28,7 @@ Usage
 from __future__ import annotations
 
 import datetime
+import os
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,7 @@ from testbed.data.schema import (
     ATTR_CAMERA_HEIGHT,
     ATTR_CAMERA_WIDTH,
     ATTR_EPISODE_ID,
+    ATTR_IMAGE_FORMAT,
 )
 
 
@@ -73,6 +75,8 @@ class EpisodeRecorder:
         self._actions: list[np.ndarray] = []
         self._rewards: list[float]      = []
         self._images:  dict[str, list[np.ndarray]] = {}
+        self._encoded_images: dict[str, list[np.ndarray]] = {}
+        self._encoded_image_shapes: dict[str, tuple[int, int, int]] = {}
 
         # ── Optional per-step buffers ────────────────────────────────────────
         self._step_ids:        list[int]        = []
@@ -129,16 +133,32 @@ class EpisodeRecorder:
             self._env_states.append(np.array(env_s, dtype=np.float32))
 
         images: dict = obs.get("images", {})
+        encoded_images: dict = obs.get("encoded_images", {})
         cams = self.camera_names if self.camera_names else list(images.keys())
+        if not cams and encoded_images:
+            cams = list(encoded_images.keys())
         for cam in cams:
             if cam in images:
                 if cam not in self._images:
                     self._images[cam] = []
                 self._images[cam].append(np.array(images[cam], dtype=np.uint8))
+            if cam in encoded_images:
+                if cam not in self._encoded_images:
+                    self._encoded_images[cam] = []
+                data, shape = _encoded_image_to_data_and_shape(encoded_images[cam])
+                self._encoded_images[cam].append(data)
+                if shape is not None:
+                    self._encoded_image_shapes[cam] = shape
 
     # ── Save ─────────────────────────────────────────────────────────────────
 
-    def save(self, success: bool = False) -> Path:
+    def save(
+        self,
+        success: bool = False,
+        *,
+        path: Path | str | None = None,
+        metadata_updates: dict[str, Any] | None = None,
+    ) -> Path:
         """
         Flush buffers to disk as episode_{episode_idx}.hdf5.
 
@@ -149,13 +169,21 @@ class EpisodeRecorder:
         if not self._qpos:
             raise RuntimeError("EpisodeRecorder.save() called on an empty buffer.")
 
-        path = self.output_dir / f"episode_{self.episode_idx}.hdf5"
+        path = (
+            Path(path)
+            if path is not None
+            else self.output_dir / f"episode_{self.episode_idx}.hdf5"
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_name(f".{path.name}.tmp.{os.getpid()}")
 
         meta = dict(self.metadata)
         meta.setdefault(ATTR_EPISODE_ID, f"episode_{self.episode_idx}")
         meta["success"]   = int(success)
         meta["timestamp"] = datetime.datetime.utcnow().isoformat()
         meta["n_steps"]   = len(self._qpos)
+        if metadata_updates:
+            meta.update(metadata_updates)
 
         qpos    = np.stack(self._qpos)
         qvel    = np.stack(self._qvel)
@@ -164,6 +192,9 @@ class EpisodeRecorder:
 
         images: dict[str, np.ndarray] = {
             cam: np.stack(frames) for cam, frames in self._images.items()
+        }
+        encoded_images: dict[str, list[np.ndarray]] = {
+            cam: list(frames) for cam, frames in self._encoded_images.items()
         }
 
         env_state = (
@@ -178,16 +209,21 @@ class EpisodeRecorder:
         _update_image_metadata(
             meta,
             images=images,
+            encoded_images=encoded_images,
+            encoded_image_shapes=self._encoded_image_shapes,
             camera_names=self.camera_names,
             diagnostics=diagnostics,
         )
 
+        if tmp_path.exists():
+            tmp_path.unlink()
         write_episode(
-            path,
+            tmp_path,
             qpos=qpos,
             qvel=qvel,
             actions=actions,
             images=images if images else None,
+            encoded_images=encoded_images if encoded_images else None,
             rewards=rewards,
             metadata=meta,
             env_state=env_state,
@@ -197,6 +233,7 @@ class EpisodeRecorder:
             action_src_ids=self._action_src_ids if self._action_src_ids else None,
             diagnostics=diagnostics if diagnostics else None,
         )
+        tmp_path.replace(path)
         return path
 
     # ── Convenience ──────────────────────────────────────────────────────────
@@ -213,6 +250,8 @@ class EpisodeRecorder:
         self._actions.clear()
         self._rewards.clear()
         self._images.clear()
+        self._encoded_images.clear()
+        self._encoded_image_shapes.clear()
         self._step_ids.clear()
         self._step_ns.clear()
         self._env_states.clear()
@@ -230,21 +269,47 @@ def _stack_diagnostic(values: list[Any]) -> np.ndarray | list[str]:
     return np.stack([np.asarray(value) for value in values])
 
 
+def _encoded_image_to_data_and_shape(value: Any) -> tuple[np.ndarray, tuple[int, int, int] | None]:
+    shape: tuple[int, int, int] | None = None
+    if isinstance(value, dict):
+        raw_shape = value.get("shape")
+        if raw_shape:
+            parsed_shape = tuple(int(v) for v in raw_shape)
+            if len(parsed_shape) == 3:
+                shape = parsed_shape  # type: ignore[assignment]
+        value = value.get("data", value.get("bytes", b""))
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        data = np.frombuffer(bytes(value), dtype=np.uint8).copy()
+    else:
+        data = np.asarray(value, dtype=np.uint8).reshape(-1).copy()
+    return data, shape
+
+
 def _update_image_metadata(
     metadata: dict[str, Any],
     *,
     images: dict[str, np.ndarray],
+    encoded_images: dict[str, list[np.ndarray]],
+    encoded_image_shapes: dict[str, tuple[int, int, int]],
     camera_names: list[str] | None,
     diagnostics: dict[str, Any],
 ) -> None:
-    if not images:
+    if not images and not encoded_images:
         return
 
-    camera_name = _primary_camera_name(images, camera_names)
-    frames = np.asarray(images[camera_name])
-    if frames.ndim >= 4:
-        metadata[ATTR_CAMERA_HEIGHT] = int(frames.shape[1])
-        metadata[ATTR_CAMERA_WIDTH] = int(frames.shape[2])
+    if images:
+        camera_name = _primary_camera_name(images, camera_names)
+        frames = np.asarray(images[camera_name])
+        if frames.ndim >= 4:
+            metadata[ATTR_CAMERA_HEIGHT] = int(frames.shape[1])
+            metadata[ATTR_CAMERA_WIDTH] = int(frames.shape[2])
+    else:
+        camera_name = _primary_camera_name(encoded_images, camera_names)
+        shape = encoded_image_shapes.get(camera_name)
+        if shape is not None:
+            metadata[ATTR_CAMERA_HEIGHT] = int(shape[0])
+            metadata[ATTR_CAMERA_WIDTH] = int(shape[1])
+        metadata[ATTR_IMAGE_FORMAT] = "jpeg"
 
     fps = _estimate_timestamp_fps(diagnostics.get("image_timestamp_ns"))
     if fps > 0.0:

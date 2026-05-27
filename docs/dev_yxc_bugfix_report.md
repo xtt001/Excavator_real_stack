@@ -55,7 +55,7 @@
 
 ### 修改
 
-- 清理 `docs/dev_yxc_changelog.md` 与 `docs/realworld_host_slave_runbook.md` 中的行尾空格。
+- 清理 `docs/dev_yxc_changelog.md` 与旧主从 runbook 文档中的行尾空格；旧 runbook 后续并入 `docs/host_slave_start_commands.md`。
 
 ## 修复 4：gateway 因 `read_state` 业务失败反复断开 C++ bridge
 

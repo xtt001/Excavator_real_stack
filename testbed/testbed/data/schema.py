@@ -20,7 +20,7 @@ Schema v1.2 layout
 │   ├── dt                    float
 │   ├── action_semantics      "normalized_teleop_cmd_v1"
 │   ├── camera_names          comma-separated str
-│   ├── image_format          "raw_rgb"
+│   ├── image_format          "raw_rgb" | "jpeg"
 │   ├── action_order          "swing,boom,stick,bucket"
 │   ├── qpos_order            "swing,boom,stick,bucket"
 │   └── qvel_order            "swing,boom,stick,bucket"
@@ -28,7 +28,8 @@ Schema v1.2 layout
 │   ├── qpos                  (T, 4) float32, rad
 │   ├── qvel                  (T, 4) float32, rad/s
 │   ├── env_state             (T, M) float32, optional task state
-│   └── images/<camera>       (T, H, W, 3) uint8 RGB
+│   ├── images/<camera>       (T, H, W, 3) uint8 RGB, optional
+│   └── encoded_images/<camera> (T,) variable-length uint8 JPEG bytes, optional
 ├── action                    (T, 4) float32, guard-filtered normalized command
 ├── rewards                   (T,) float32, optional
 ├── timestamps/
@@ -47,6 +48,7 @@ SCHEMA_VERSION = "1.2"
 GRP_METADATA      = "metadata"
 GRP_OBS           = "observations"
 GRP_IMAGES        = "observations/images"
+GRP_ENCODED_IMAGES = "observations/encoded_images"
 GRP_TIMESTAMPS    = "timestamps"
 GRP_ACTION_SOURCE = "action_source"
 GRP_DIAGNOSTICS   = "diagnostics"

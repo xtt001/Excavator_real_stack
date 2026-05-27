@@ -93,4 +93,8 @@ add_dependencies(sync_compile_commands excavator_api_tcp_client)
 if(BUILD_TESTING)
     # Visual Studio 等多配置生成器需展开可执行文件路径，否则 ctest 显示 NOT_AVAILABLE
     add_test(NAME excavator_api_tcp_client_help COMMAND $<TARGET_FILE:excavator_api_tcp_client> --help)
+
+    add_executable(imu_canlib_parser_test tests/imu_canlib_parser_test.cpp)
+    target_link_libraries(imu_canlib_parser_test PRIVATE robot_control_canlib)
+    add_test(NAME imu_canlib_parser_test COMMAND $<TARGET_FILE:imu_canlib_parser_test>)
 endif()

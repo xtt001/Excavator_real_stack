@@ -5,6 +5,7 @@
 #include <hal/data_types.hpp>
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 
@@ -84,6 +85,7 @@ public:
     Vector12i status = Vector12i::Zero();
     Vector8d motor_rpm = Vector8d::Constant(kMotorSpeedRawZero);
     Vector8d plan_rpm = Vector8d::Constant(kMotorSpeedRawZero);
+    ExcavatorImuHardwareState imu{};
 
     std::unique_ptr<AbstractType> clone() const override {
         return std::make_unique<ExcavatorState>(*this);

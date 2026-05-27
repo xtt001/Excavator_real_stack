@@ -105,7 +105,9 @@ class RealMachineState:
     sync_max_skew_ns: int = 0
     sync_warnings: tuple[str, ...] = ()
     images: Mapping[str, np.ndarray] = field(default_factory=dict)
+    encoded_images: Mapping[str, Any] = field(default_factory=dict)
     env_state: np.ndarray | None = None
+    sensor_health: Mapping[str, Any] = field(default_factory=dict)
     safety: RealSafetyState = field(default_factory=RealSafetyState)
 
     def to_observation(self, *, step_id: int = 0) -> dict[str, Any]:
@@ -124,13 +126,20 @@ class RealMachineState:
             str(name): np.asarray(image, dtype=np.uint8).copy()
             for name, image in dict(self.images).items()
         }
+        encoded_images = {
+            str(name): _copy_encoded_image_payload(payload)
+            for name, payload in dict(self.encoded_images).items()
+        }
         for name in images:
+            image_ts_ns.setdefault(name, int(self.sensor_timestamp_ns or joint_ts_ns))
+        for name in encoded_images:
             image_ts_ns.setdefault(name, int(self.sensor_timestamp_ns or joint_ts_ns))
         sync_ts_ns = int(self.sync_timestamp_ns or self.sensor_timestamp_ns or joint_ts_ns)
         obs: dict[str, Any] = {
             "qpos": as_real_vector4(self.qpos, name="qpos"),
             "qvel": as_real_vector4(self.qvel, name="qvel"),
             "images": images,
+            "encoded_images": encoded_images,
             "env_state": (
                 None
                 if self.env_state is None
@@ -144,6 +153,7 @@ class RealMachineState:
             "sync_timestamp_ns": sync_ts_ns,
             "sync_max_skew_ns": int(self.sync_max_skew_ns),
             "sync_warnings": list(self.sync_warnings),
+            "sensor_health": _copy_sensor_health(self.sensor_health),
             "safety_state": self.safety.to_dict(),
             "qpos_order": REAL_QPOS_ORDER,
             "qvel_order": REAL_QVEL_ORDER,
@@ -257,10 +267,12 @@ def observation_from_real_vectors(
     sync_max_skew_ns: int = 0,
     sync_warnings: Sequence[str] | None = None,
     images: Mapping[str, np.ndarray] | None = None,
+    encoded_images: Mapping[str, Any] | None = None,
     env_state: np.ndarray | Sequence[float] | None = None,
     status: np.ndarray | Sequence[int] | None = None,
     motor_rpm: np.ndarray | Sequence[float] | None = None,
     plan_rpm: np.ndarray | Sequence[float] | None = None,
+    sensor_health: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a testbed observation from real-machine vector fields."""
 
@@ -281,7 +293,45 @@ def observation_from_real_vectors(
         sync_max_skew_ns=int(sync_max_skew_ns),
         sync_warnings=tuple(str(warning) for warning in (sync_warnings or ())),
         images=dict(images or {}),
+        encoded_images=dict(encoded_images or {}),
         env_state=None if env_state is None else np.asarray(env_state, dtype=np.float32),
+        sensor_health=dict(sensor_health or {}),
         safety=safety_state_from_status(status),
     )
     return machine_state.to_observation(step_id=step_id)
+
+
+def _copy_sensor_health(value: Mapping[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, item in dict(value).items():
+        if isinstance(item, Mapping):
+            out[str(key)] = _copy_sensor_health(item)
+        elif isinstance(item, (list, tuple)):
+            out[str(key)] = [
+                _copy_sensor_health(v) if isinstance(v, Mapping) else v
+                for v in item
+            ]
+        elif isinstance(item, np.ndarray):
+            out[str(key)] = item.copy()
+        else:
+            out[str(key)] = item
+    return out
+
+
+def _copy_encoded_image_payload(payload: Any) -> dict[str, Any]:
+    if isinstance(payload, Mapping):
+        data = payload.get("data", payload.get("bytes", b""))
+        if isinstance(data, (bytes, bytearray, memoryview)):
+            data_array = np.frombuffer(bytes(data), dtype=np.uint8).copy()
+        else:
+            data_array = np.asarray(data, dtype=np.uint8).reshape(-1).copy()
+        return {
+            "encoding": str(payload.get("encoding", "jpeg")),
+            "shape": tuple(int(v) for v in payload.get("shape", ())),
+            "data": data_array,
+        }
+    return {
+        "encoding": "jpeg",
+        "shape": (),
+        "data": np.asarray(payload, dtype=np.uint8).reshape(-1).copy(),
+    }

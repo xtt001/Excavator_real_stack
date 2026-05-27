@@ -117,7 +117,7 @@ lower command  = [swing, boom, stick, bucket, left_track, right_track, boom_offs
   - 将 4D `[swing, boom, stick, bucket]` 映射到 8D `SpeedScalarCmd`。
   - 默认 `ClosedLoopVelocityScalar`、`can_simulation=true`、`imu_simulation=true`、`can_bus_enabled=false`。
   - 带 heartbeat watchdog，超时强制下发零命令。
-  - `read_state` 返回 control snapshot 和内置 RGB placeholder `fpv` 图像，方便 recorder/QC smoke test。
+  - `read_state` 返回 control snapshot、`joint.payload.imu_health` 和内置 RGB placeholder `fpv` 图像，方便 receiver/QC smoke test。
 
 ### 已验证
 
@@ -127,7 +127,7 @@ lower command  = [swing, boom, stick, bucket, left_track, right_track, boom_offs
 testbed 单元测试：22 个测试通过
 git diff --check：通过
 C++ bridge CMake configure/build：通过（conda Eigen）
-bridge_tcp smoke test：C++ bridge + tb-record-real + tb-dataset-qc 通过
+bridge_tcp smoke test：C++ bridge + tb-receiver-real + tb-dataset-qc 通过
 协议错误响应与 watchdog 零命令验证：通过
 ```
 
@@ -186,7 +186,7 @@ scripts/smoke_real_bridge.sh
 另开终端运行：
 
 ```bash
-tb-record-real \
+tb-receiver-real \
   --config testbed/testbed/configs/teleop_real_v1.yaml \
   --backend bridge_tcp \
   --state-reader bridge_tcp \
@@ -218,7 +218,7 @@ tb-dataset-qc --dataset-dir data/real_teleop_v1 --profile real
 - 真实相机低延迟链路；当前 C++ bridge 的 `fpv` 仍是 smoke-test 占位图，不能用于训练。
 - OEM 遥控器读取；如果演示必须来自厂家遥控器，还需要实现遥控器 command stream。
 
-详细现场流程见 [docs/real_machine_bringup_checklist.md](docs/real_machine_bringup_checklist.md)。
+详细现场流程见 [docs/host_slave_start_commands.md](docs/host_slave_start_commands.md)。
 
 ## 已讨论需求与当前决策
 
@@ -336,7 +336,7 @@ ACT 可以学到数据中稳定、重复出现的一部分滞后和动态响应�
 从 `testbed/` 目录运行 mock 录制：
 
 ```bash
-tb-record-real \
+tb-receiver-real \
   --config testbed/configs/teleop_real_v1.yaml \
   --backend bridge_mock \
   --state-reader bridge_mock \
@@ -353,17 +353,17 @@ tb-bridge-mock-server --port 8765
 连接本地 mock bridge：
 
 ```bash
-tb-record-real \
+tb-receiver-real \
   --config testbed/configs/teleop_real_v1.yaml \
   --backend bridge_tcp \
   --state-reader bridge_tcp \
   --bridge-port 8765
 ```
 
-从 `control/` 或 `bridge/` 编译和上机前，请先在目标机器安装 CMake、CAN 工具和 Eigen，并确认安全 checklist。
+从 `control/` 或 `bridge/` 编译和上机前，请先在目标机器安装 CMake、CAN 工具和 Eigen，并确认 `docs/host_slave_start_commands.md` 中的现场安全和启动检查。
 
-更多上机检查见：
+更多上机检查和当前主从命令见：
 
 ```text
-docs/real_machine_bringup_checklist.md
+docs/host_slave_start_commands.md
 ```

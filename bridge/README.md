@@ -31,7 +31,9 @@ shutdown.request     -> shutdown.response
 It receives normalized 4D commands `[swing, boom, stick, bucket]`, maps them to
 the lower 8-axis `SpeedScalarCmd`, returns controller acknowledgement/fault
 diagnostics, and returns timestamped joint/status samples plus an internal RGB
-placeholder `fpv` image.
+placeholder `fpv` image. `read_state.response` also exposes
+`joint.payload.imu_health` with four-device online/validity bits, packet-loss
+counts, and receiver-side IMU age so the Python receiver can gate recording.
 
 This first bridge does not implement ROS, real camera transport, or OEM remote
 decoding. The placeholder image exists only so recorder/QC smoke tests can run
@@ -82,13 +84,14 @@ For manual debugging, start the bridge directly:
   --port 8765 \
   --can-bus-enabled false \
   --can-simulation true \
-  --imu-simulation true
+  --imu-simulation true \
+  --pid-yaml control/config/joint_pid.yaml
 ```
 
 In another shell:
 
 ```bash
-tb-record-real \
+tb-receiver-real \
   --config testbed/testbed/configs/teleop_real_v1.yaml \
   --backend bridge_tcp \
   --state-reader bridge_tcp \
@@ -100,6 +103,8 @@ tb-record-real \
 
 tb-dataset-qc --dataset-dir data/real_teleop_v1 --profile real
 ```
+
+`tb-record-real` remains a compatibility entry point for the same receiver.
 
 Only enable real CAN with explicit operator safety checks, verified interface
 names, and one-axis low-speed testing.

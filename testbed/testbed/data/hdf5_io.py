@@ -26,6 +26,7 @@ from testbed.data.schema import (
     DS_STEP_NS,
     DS_ACTION_SRC_TYPE,
     DS_ACTION_SRC_ID,
+    GRP_ENCODED_IMAGES,
     GRP_DIAGNOSTICS,
     GRP_METADATA,
     GRP_TIMESTAMPS,
@@ -43,6 +44,7 @@ def write_episode(
     qvel: np.ndarray,
     actions: np.ndarray,
     images: dict[str, np.ndarray] | None = None,
+    encoded_images: dict[str, Any] | None = None,
     rewards: np.ndarray | None = None,
     metadata: dict[str, Any] | None = None,
     compress: bool = True,
@@ -98,6 +100,11 @@ def write_episode(
                     cam, data=arr.astype(np.uint8), **kwargs
                 )
 
+        if encoded_images:
+            encoded_grp = obs_grp.create_group("encoded_images")
+            for cam, frames in encoded_images.items():
+                _write_encoded_image_dataset(encoded_grp, str(cam), frames)
+
         # ── action ───────────────────────────────────────────────────────────
         f.create_dataset("action", data=actions.astype(np.float32))
 
@@ -145,6 +152,7 @@ def read_episode(path: str | Path) -> dict[str, Any]:
       "qvel":             (T, Nq) float32,
       "actions":          (T, Na) float32,
       "images":           {cam: (T, H, W, 3) uint8},
+      "encoded_images":   {cam: list[(N,) uint8]},
       "rewards":          (T,) float32 | None,
       "env_state":        (T, M) float32 | None,
       "step_ids":         (T,) int64 | None,
@@ -170,6 +178,20 @@ def read_episode(path: str | Path) -> dict[str, Any]:
             for cam in f["observations/images"]:
                 images[cam] = f[f"observations/images/{cam}"][()]
         result["images"] = images
+
+        encoded_images: dict[str, list[np.ndarray]] = {}
+        if GRP_ENCODED_IMAGES in f:
+            for cam in f[GRP_ENCODED_IMAGES]:
+                dataset = f[f"{GRP_ENCODED_IMAGES}/{cam}"]
+                encoded_images[cam] = [
+                    np.asarray(dataset[i], dtype=np.uint8).reshape(-1).copy()
+                    for i in range(dataset.shape[0])
+                ]
+                if cam not in images:
+                    images[cam] = np.stack(
+                        [_decode_image_bytes(frame) for frame in encoded_images[cam]]
+                    )
+        result["encoded_images"] = encoded_images
 
         # rewards (optional)
         result["rewards"] = f[DS_REWARDS][()] if DS_REWARDS in f else None
@@ -239,6 +261,35 @@ def _write_optional_dataset(
         return
 
     group.create_dataset(name, data=arr)
+
+
+def _write_encoded_image_dataset(group: h5py.Group, name: str, frames: Any) -> None:
+    frame_list = list(frames)
+    dtype = h5py.vlen_dtype(np.dtype("uint8"))
+    ds = group.create_dataset(name, (len(frame_list),), dtype=dtype)
+    ds.attrs["encoding"] = "jpeg"
+    for i, frame in enumerate(frame_list):
+        ds[i] = _encoded_frame_to_uint8(frame)
+
+
+def _encoded_frame_to_uint8(frame: Any) -> np.ndarray:
+    if isinstance(frame, dict):
+        frame = frame.get("data", frame.get("bytes", b""))
+    if isinstance(frame, (bytes, bytearray, memoryview)):
+        return np.frombuffer(bytes(frame), dtype=np.uint8).copy()
+    return np.asarray(frame, dtype=np.uint8).reshape(-1).copy()
+
+
+def _decode_image_bytes(frame: Any) -> np.ndarray:
+    try:
+        import cv2
+    except ImportError as exc:
+        raise RuntimeError("opencv-python is required to decode JPEG images") from exc
+    encoded = _encoded_frame_to_uint8(frame)
+    bgr = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+    if bgr is None:
+        raise RuntimeError("failed to decode JPEG image from HDF5")
+    return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
 
 def _read_optional_dataset(dataset: h5py.Dataset) -> np.ndarray | list[str]:
