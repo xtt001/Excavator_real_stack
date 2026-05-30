@@ -60,6 +60,107 @@ from testbed.data.schema import (
 
 log = logging.getLogger(__name__)
 
+_REAL_AXIS_NAMES = ("swing", "boom", "stick", "bucket")
+
+
+def _go_home_start_context(receiver_mode: str, has_record_session: bool) -> str | None:
+    """Return the active context if go-home may start from this receiver state."""
+    if receiver_mode == "armed" and not has_record_session:
+        return "armed"
+    if receiver_mode == "recording" and has_record_session:
+        return "recording"
+    return None
+
+
+def _publish_remote_receiver_status(
+    action_source: Any,
+    *,
+    receiver_mode: str,
+    episode_idx: int,
+    saved: int,
+    record_session: Any | None,
+    go_home_update: Any | None = None,
+    receiver_health: Any | None = None,
+    record_steps: int | None = None,
+    saved_path: Any | None = None,
+    message: str = "",
+) -> None:
+    publish = getattr(action_source, "publish_status", None)
+    if not callable(publish):
+        return
+    steps = (
+        int(record_steps)
+        if record_steps is not None
+        else int(len(record_session)) if record_session is not None else 0
+    )
+    go_home_result = ""
+    if go_home_update is not None:
+        if bool(getattr(go_home_update, "failed", False)):
+            go_home_result = (
+                "failed:" + str(getattr(go_home_update, "reason", "") or "unknown")
+            )
+        elif bool(getattr(go_home_update, "done", False)):
+            go_home_result = "done"
+        elif receiver_mode == "go_home":
+            go_home_result = "running"
+    elif receiver_mode == "go_home":
+        go_home_result = "running"
+    health_ok = True if receiver_health is None else bool(receiver_health.ok)
+    health_error = (
+        ""
+        if receiver_health is None
+        else str(getattr(receiver_health, "error_code", "") or "")
+    )
+    payload = {
+        "timestamp_ns": int(time.time_ns()),
+        "receiver_mode": str(receiver_mode),
+        "episode_idx": int(episode_idx),
+        "saved": int(saved),
+        "recording": int(record_session is not None),
+        "record_steps": steps,
+        "go_home_running": int(receiver_mode == "go_home"),
+        "go_home_result": go_home_result,
+        "receiver_health_ok": int(health_ok),
+        "receiver_health_error": health_error,
+        "message": str(message),
+    }
+    if saved_path is not None:
+        payload["saved_path"] = str(saved_path)
+    publish(payload)
+
+
+def _hold_remote_control_zero(remote_control_loop: Any | None) -> None:
+    if remote_control_loop is None:
+        return
+    remote_control_loop.set_scripted_action(np.zeros(4, dtype=np.float32))
+    remote_control_loop.set_fault_hold(True)
+
+
+def _release_remote_control(remote_control_loop: Any | None) -> None:
+    if remote_control_loop is None:
+        return
+    remote_control_loop.set_scripted_action(None)
+    remote_control_loop.set_fault_hold(False)
+
+
+def _receiver_health_blocks_control(
+    receiver_health: Any,
+    *,
+    receiver_mode: str,
+    has_record_session: bool,
+) -> bool:
+    if bool(getattr(receiver_health, "ok", False)):
+        return False
+    errors = set(str(error) for error in getattr(receiver_health, "errors", ()) or ())
+    if (
+        errors
+        and errors <= {"fpv_stale"}
+        and not has_record_session
+        and receiver_mode in {"armed", "go_home"}
+    ):
+        return False
+    return True
+
 
 def main(prog: str = "tb-record-real") -> None:
     logging.basicConfig(
@@ -501,6 +602,9 @@ def main(prog: str = "tb-record-real") -> None:
 
                     record_start_requested = False
                     go_home_requested = False
+                    go_home_start_accepted = False
+                    go_home_start_rejected = False
+                    go_home_start_reject_reason = ""
                     go_home_update = None
                     if receiver_mode == "go_home" and go_home_controller is not None:
                         go_home_update = go_home_controller.update(obs)
@@ -516,8 +620,10 @@ def main(prog: str = "tb-record-real") -> None:
                             quit_now,
                         ) = remote_control_loop.consume_requests()
                         if quit_now:
-                            abort = True
-                            break
+                            log.info(
+                                "Remote sender quit requested; receiver remains alive and waits for reconnect."
+                            )
+                            live_line.message("remote_sender_quit wait_reconnect=1")
                         if reset_now or discard_now:
                             discard = True
                             log.info("Episode discarded by action-source request.")
@@ -635,11 +741,14 @@ def main(prog: str = "tb-record-real") -> None:
                         action_info=action_info,
                         control_result=control_result,
                     )
+                    health_blocks_control = _receiver_health_blocks_control(
+                        receiver_health,
+                        receiver_mode=receiver_mode,
+                        has_record_session=record_session is not None,
+                    )
                     if receiver_mode == "fault" and receiver_health.ok:
                         receiver_mode = "armed"
-                        if remote_control_loop is not None:
-                            remote_control_loop.set_fault_hold(False)
-                            remote_control_loop.set_scripted_action(None)
+                        _release_remote_control(remote_control_loop)
                         log.info("Receiver health recovered; mode=armed.")
                         live_line.message("mode=armed health=OK")
 
@@ -664,7 +773,7 @@ def main(prog: str = "tb-record-real") -> None:
                                     f"err={receiver_health.error_code}"
                                 )
 
-                    if not receiver_health.ok:
+                    if not receiver_health.ok and health_blocks_control:
                         error_time_ns = time.time_ns()
                         if remote_control_loop is not None:
                             remote_control_loop.set_fault_hold(True)
@@ -718,9 +827,15 @@ def main(prog: str = "tb-record-real") -> None:
                         receiver_mode = "fault"
                         record_start_pending = False
 
-                    if receiver_health.ok and go_home_requested:
-                        if receiver_mode == "recording" and record_session is not None:
+                    if (receiver_health.ok or not health_blocks_control) and go_home_requested:
+                        go_home_context = _go_home_start_context(
+                            receiver_mode,
+                            record_session is not None,
+                        )
+                        if go_home_context is not None:
                             if go_home_config is None:
+                                go_home_start_rejected = True
+                                go_home_start_reject_reason = "config_missing"
                                 log.warning(
                                     "go-home requested but teleop.recording.go_home.enabled/home_pose_rad is not configured."
                                 )
@@ -730,9 +845,12 @@ def main(prog: str = "tb-record-real") -> None:
                                 try:
                                     controller.start(ts_next.observation)
                                 except ValueError as exc:
+                                    go_home_start_rejected = True
+                                    go_home_start_reject_reason = str(exc)
                                     log.warning("go-home start rejected: %s", exc)
                                     live_line.message(f"go_home_blocked {exc}")
                                 else:
+                                    go_home_start_accepted = True
                                     go_home_controller = controller
                                     receiver_mode = "go_home"
                                     guard.reset()
@@ -741,13 +859,21 @@ def main(prog: str = "tb-record-real") -> None:
                                             np.zeros(4, dtype=np.float32)
                                         )
                                     log.info(
-                                        "go-home started for episode %d.",
+                                        "go-home started in %s mode for episode %d.",
+                                        go_home_context,
                                         episode_idx,
                                     )
+                                    record_label = (
+                                        f" episode={episode_idx}"
+                                        if go_home_context == "recording"
+                                        else ""
+                                    )
                                     live_line.message(
-                                        f"mode=go_home episode={episode_idx}"
+                                        f"mode=go_home context={go_home_context}{record_label}"
                                     )
                         elif receiver_mode != "go_home":
+                            go_home_start_rejected = True
+                            go_home_start_reject_reason = f"ignored_mode:{receiver_mode}"
                             log.info(
                                 "go-home request ignored in receiver mode %s.",
                                 receiver_mode,
@@ -763,7 +889,68 @@ def main(prog: str = "tb-record-real") -> None:
                         control_result=control_result,
                         guard_reasons=guard_info.reasons,
                         receiver_health=receiver_health,
+                        go_home_update=go_home_update,
                     )
+                    _publish_remote_receiver_status(
+                        action_source,
+                        receiver_mode=receiver_mode,
+                        episode_idx=episode_idx,
+                        saved=saved,
+                        record_session=record_session,
+                        go_home_update=go_home_update,
+                        receiver_health=receiver_health,
+                    )
+                    if (
+                        receiver_mode == "go_home"
+                        and record_session is None
+                        and go_home_update is not None
+                    ):
+                        if go_home_update.failed:
+                            _force_zero_control(obs)
+                            _release_remote_control(remote_control_loop)
+                            log.warning(
+                                "go-home failed while armed: %s; no record is saved.",
+                                go_home_update.reason,
+                            )
+                            live_line.message(
+                                "mode=armed go_home_failed "
+                                f"err={go_home_update.reason or 'unknown'} "
+                                f"final_err={_format_go_home_final_error(go_home_controller)}"
+                            )
+                            go_home_controller = None
+                            receiver_mode = "armed"
+                            guard.reset()
+                            _publish_remote_receiver_status(
+                                action_source,
+                                receiver_mode=receiver_mode,
+                                episode_idx=episode_idx,
+                                saved=saved,
+                                record_session=record_session,
+                                go_home_update=go_home_update,
+                                receiver_health=receiver_health,
+                                message="go_home_failed_armed",
+                            )
+                        elif go_home_update.done:
+                            _force_zero_control(obs)
+                            _release_remote_control(remote_control_loop)
+                            log.info("go-home completed while armed; no record is saved.")
+                            live_line.message(
+                                "mode=armed go_home_done "
+                                f"final_err={_format_go_home_final_error(go_home_controller)}"
+                            )
+                            go_home_controller = None
+                            receiver_mode = "armed"
+                            guard.reset()
+                            _publish_remote_receiver_status(
+                                action_source,
+                                receiver_mode=receiver_mode,
+                                episode_idx=episode_idx,
+                                saved=saved,
+                                record_session=record_session,
+                                go_home_update=go_home_update,
+                                receiver_health=receiver_health,
+                                message="go_home_done_armed",
+                            )
                     if receiver_mode in {"recording", "go_home"} and record_session is not None:
                         step_diagnostics = _build_step_diagnostics(
                             obs=obs,
@@ -776,8 +963,18 @@ def main(prog: str = "tb-record-real") -> None:
                             control_result=control_result,
                             receiver_health=receiver_health,
                         )
+                        _ensure_go_home_step_diagnostics(step_diagnostics)
                         if go_home_update is not None:
                             step_diagnostics.update(go_home_update.diagnostics)
+                        step_diagnostics["go_home_start_accepted"] = int(
+                            go_home_start_accepted
+                        )
+                        step_diagnostics["go_home_start_rejected"] = int(
+                            go_home_start_rejected
+                        )
+                        step_diagnostics["go_home_start_reject_reason"] = (
+                            go_home_start_reject_reason
+                        )
                         record_session.record_step(
                             obs=obs,
                             action=safe_action,
@@ -789,12 +986,9 @@ def main(prog: str = "tb-record-real") -> None:
                             diagnostics=step_diagnostics,
                         )
                         if go_home_update is not None and go_home_update.failed:
-                            if remote_control_loop is not None:
-                                remote_control_loop.set_scripted_action(
-                                    np.zeros(4, dtype=np.float32)
-                                )
-                                remote_control_loop.set_fault_hold(True)
+                            _hold_remote_control_zero(remote_control_loop)
                             _force_zero_control(obs)
+                            failed_steps = len(record_session)
                             failed_path = record_session.save_failed(
                                 error_code=go_home_update.reason or "go_home_failed",
                                 error_time_ns=time.time_ns(),
@@ -812,19 +1006,39 @@ def main(prog: str = "tb-record-real") -> None:
                                     go_home_update.reason,
                                     failed_path,
                                 )
+                                live_line.message(
+                                    "mode=armed go_home_failed "
+                                    f"err={go_home_update.reason or 'unknown'} "
+                                    f"final_err={_format_go_home_final_error(go_home_controller)} "
+                                    f"failed={failed_path} ready_next=1"
+                                )
                             record_session = None
                             go_home_controller = None
-                            receiver_mode = "fault"
                             episode_idx += 1
-                            break
+                            guard.reset()
+                            _release_remote_control(remote_control_loop)
+                            receiver_mode = "armed"
+                            record_start_pending = False
+                            _publish_remote_receiver_status(
+                                action_source,
+                                receiver_mode=receiver_mode,
+                                episode_idx=episode_idx,
+                                saved=saved,
+                                record_session=record_session,
+                                go_home_update=go_home_update,
+                                receiver_health=receiver_health,
+                                record_steps=failed_steps,
+                                saved_path=failed_path,
+                                message="go_home_failed_record_saved",
+                            )
+                            ts = ts_next
+                            local_step += 1
+                            continue
                         if go_home_update is not None and go_home_update.done:
-                            if remote_control_loop is not None:
-                                remote_control_loop.set_scripted_action(
-                                    np.zeros(4, dtype=np.float32)
-                                )
-                                remote_control_loop.set_fault_hold(True)
+                            _hold_remote_control_zero(remote_control_loop)
                             _force_zero_control(obs)
                             receiver_mode = "saving"
+                            saved_steps = len(record_session)
                             saved_path = record_session.save_success(
                                 metadata_updates=(
                                     go_home_controller.metadata()
@@ -834,17 +1048,45 @@ def main(prog: str = "tb-record-real") -> None:
                             )
                             log.info(
                                 "Saved go-home completed record: %d steps -> %s",
-                                len(record_session),
+                                saved_steps,
                                 saved_path,
                             )
                             live_line.message(
-                                f"saved steps={len(record_session)} path={saved_path}"
+                                "go_home_done "
+                                f"final_err={_format_go_home_final_error(go_home_controller)} "
+                                f"saved steps={saved_steps} path={saved_path}"
                             )
                             record_session = None
                             go_home_controller = None
                             saved += 1
                             episode_idx += 1
-                            break
+                            guard.reset()
+                            _release_remote_control(remote_control_loop)
+                            receiver_mode = (
+                                "complete" if saved >= num_episodes else "armed"
+                            )
+                            record_start_pending = False
+                            if receiver_mode == "armed":
+                                live_line.message(
+                                    f"mode=armed saved_episode={episode_idx - 1} ready_next=1"
+                                )
+                            _publish_remote_receiver_status(
+                                action_source,
+                                receiver_mode=receiver_mode,
+                                episode_idx=episode_idx,
+                                saved=saved,
+                                record_session=record_session,
+                                go_home_update=go_home_update,
+                                receiver_health=receiver_health,
+                                record_steps=saved_steps,
+                                saved_path=saved_path,
+                                message="go_home_done_record_saved",
+                            )
+                            if saved >= num_episodes:
+                                break
+                            ts = ts_next
+                            local_step += 1
+                            continue
                         if len(record_session) >= max_steps:
                             receiver_mode = "saving"
                             saved_path = record_session.save_success()
@@ -1406,6 +1648,7 @@ class _LiveActionLine:
         control_result: dict[str, Any],
         guard_reasons: tuple[str, ...],
         receiver_health: ReceiverHealthSnapshot | None = None,
+        go_home_update: Any | None = None,
     ) -> None:
         if not self.enabled:
             return
@@ -1448,6 +1691,7 @@ class _LiveActionLine:
         )
         text = (
             f"mode={mode} health={health_text} err={err_text} imu={imu_text} "
+            f"{_format_go_home_live_status(mode, go_home_update)}"
             f"hz={hz_text} ctl_ms={control_age_text} "
             f"raw={_format_action_line_values(raw_action)} "
             f"send={_format_action_line_values(commanded_action)} "
@@ -1479,6 +1723,112 @@ class _LiveActionLine:
 def _format_action_line_values(action: Any) -> str:
     values = np.asarray(action, dtype=np.float32).reshape(-1)
     return "[" + ",".join(f"{float(value):+.3f}" for value in values) + "]"
+
+
+def _format_go_home_live_status(mode: str, go_home_update: Any | None) -> str:
+    if mode != "go_home" or go_home_update is None:
+        return ""
+    diagnostics = getattr(go_home_update, "diagnostics", {}) or {}
+    if bool(getattr(go_home_update, "failed", False)):
+        state = f"failed:{getattr(go_home_update, 'reason', '') or 'unknown'}"
+    elif bool(getattr(go_home_update, "done", False)):
+        state = "reached"
+    elif int(diagnostics.get("go_home_in_position", 0) or 0):
+        state = "settling"
+    else:
+        state = "going_home"
+    elapsed = _float_or_default(diagnostics.get("go_home_elapsed_s"), 0.0)
+    error = diagnostics.get("go_home_error")
+    raw_error = diagnostics.get("go_home_raw_error")
+    qvel = diagnostics.get("go_home_qvel")
+    command = diagnostics.get("go_home_commanded_action")
+    scheduled = diagnostics.get("go_home_axis_scheduled")
+    center_approach = diagnostics.get("go_home_center_approach_axis")
+    stalled = diagnostics.get("go_home_axis_stalled")
+    wrong_direction = diagnostics.get("go_home_axis_wrong_direction")
+    boost = diagnostics.get("go_home_stall_action_boost")
+    reversal_blocked = diagnostics.get("go_home_sign_reversal_blocked")
+    max_error = _max_abs_or_default(error, 0.0)
+    raw_max_error = _max_abs_or_default(raw_error, 0.0)
+    max_axis = _max_abs_axis_name(error)
+    stalled_axes = _axis_mask_names(stalled)
+    scheduled_axes = _axis_mask_names(scheduled)
+    center_approach_axes = _axis_mask_names(center_approach)
+    in_position = int(diagnostics.get("go_home_in_position", 0) or 0)
+    stable = int(diagnostics.get("go_home_stable_velocity", 0) or 0)
+    parts = [
+        f"home={state}",
+        f"t={elapsed:.1f}s",
+        f"maxerr={max_error:.3f}",
+        f"rawmaxerr={raw_max_error:.3f}",
+        f"maxaxis={max_axis}",
+        f"inpos={in_position}",
+        f"stable={stable}",
+    ]
+    if stalled_axes:
+        parts.append(f"stalled={stalled_axes}")
+        parts.append(
+            f"boost={_format_action_line_values(boost if boost is not None else np.zeros(4))}"
+        )
+    if scheduled_axes:
+        parts.append(f"target={scheduled_axes}")
+    if center_approach_axes:
+        parts.append(f"fine={center_approach_axes}")
+    wrong_direction_axes = _axis_mask_names(wrong_direction)
+    if wrong_direction_axes:
+        parts.append(f"wrongdir={wrong_direction_axes}")
+    reversal_blocked_axes = _axis_mask_names(reversal_blocked)
+    if reversal_blocked_axes:
+        parts.append(f"revblk={reversal_blocked_axes}")
+    parts.extend(
+        [
+            f"herr={_format_action_line_values(error if error is not None else np.zeros(4))}",
+            f"hrawerr={_format_action_line_values(raw_error if raw_error is not None else np.zeros(4))}",
+            f"hcmd={_format_action_line_values(command if command is not None else np.zeros(4))}",
+            f"hqvel={_format_action_line_values(qvel if qvel is not None else np.zeros(4))}",
+        ]
+    )
+    return " ".join(parts) + " "
+
+
+def _format_go_home_final_error(controller: Any | None) -> str:
+    if controller is None:
+        return "-"
+    return _format_action_line_values(getattr(controller, "final_error", np.zeros(4)))
+
+
+def _max_abs_axis_name(value: Any) -> str:
+    if value is None:
+        return "-"
+    arr = np.asarray(value, dtype=np.float32).reshape(-1)
+    if arr.size == 0:
+        return "-"
+    idx = int(np.argmax(np.abs(arr)))
+    if idx >= len(_REAL_AXIS_NAMES):
+        return str(idx)
+    return _REAL_AXIS_NAMES[idx]
+
+
+def _axis_mask_names(value: Any) -> str:
+    if value is None:
+        return ""
+    arr = np.asarray(value, dtype=np.int32).reshape(-1)
+    names = [
+        _REAL_AXIS_NAMES[idx] if idx < len(_REAL_AXIS_NAMES) else str(idx)
+        for idx, flag in enumerate(arr)
+        if int(flag) != 0
+    ]
+    return ",".join(names)
+
+
+def _max_abs_or_default(value: Any, default: float) -> float:
+    try:
+        values = np.asarray(value, dtype=np.float32).reshape(-1)
+    except (TypeError, ValueError):
+        return float(default)
+    if values.size == 0:
+        return float(default)
+    return float(np.max(np.abs(values)))
 
 
 def _health_bits(value: Any, *, size: int) -> np.ndarray:
@@ -1585,6 +1935,37 @@ def _build_step_diagnostics(
         )
     _add_remote_action_diagnostics(diagnostics, extras)
     return diagnostics
+
+
+def _ensure_go_home_step_diagnostics(diagnostics: dict[str, Any]) -> None:
+    diagnostics.setdefault("go_home_running", 0)
+    diagnostics.setdefault("go_home_result_code", "")
+    diagnostics.setdefault("go_home_error", np.zeros(4, dtype=np.float32))
+    diagnostics.setdefault("go_home_raw_error", np.zeros(4, dtype=np.float32))
+    diagnostics.setdefault("go_home_qvel", np.zeros(4, dtype=np.float32))
+    diagnostics.setdefault("go_home_raw_qvel", np.zeros(4, dtype=np.float32))
+    diagnostics.setdefault("go_home_filtered_qpos", np.zeros(4, dtype=np.float32))
+    diagnostics.setdefault("go_home_filtered_qvel", np.zeros(4, dtype=np.float32))
+    diagnostics.setdefault("go_home_commanded_action", np.zeros(4, dtype=np.float32))
+    diagnostics.setdefault("go_home_unsmoothed_action", np.zeros(4, dtype=np.float32))
+    diagnostics.setdefault("go_home_axis_active", np.zeros(4, dtype=np.int32))
+    diagnostics.setdefault("go_home_axis_scheduled", np.zeros(4, dtype=np.int32))
+    diagnostics.setdefault("go_home_center_approach_axis", np.zeros(4, dtype=np.int32))
+    diagnostics.setdefault("go_home_axis_stalled", np.zeros(4, dtype=np.int32))
+    diagnostics.setdefault("go_home_axis_wrong_direction", np.zeros(4, dtype=np.int32))
+    diagnostics.setdefault("go_home_stall_action_boost", np.zeros(4, dtype=np.float32))
+    diagnostics.setdefault("go_home_effective_min_action", np.zeros(4, dtype=np.float32))
+    diagnostics.setdefault("go_home_action_limit", np.zeros(4, dtype=np.float32))
+    diagnostics.setdefault("go_home_action_ramp_limit", np.zeros(4, dtype=np.float32))
+    diagnostics.setdefault("go_home_control_signs", np.zeros(4, dtype=np.float32))
+    diagnostics.setdefault("go_home_command_sign", np.zeros(4, dtype=np.float32))
+    diagnostics.setdefault("go_home_sign_reversal_blocked", np.zeros(4, dtype=np.int32))
+    diagnostics.setdefault("go_home_decision_updated", 0)
+    diagnostics.setdefault("go_home_control_decision_period_s", 0.0)
+    diagnostics.setdefault("go_home_in_position", 0)
+    diagnostics.setdefault("go_home_acceptable_position", 0)
+    diagnostics.setdefault("go_home_stable_velocity", 0)
+    diagnostics.setdefault("go_home_elapsed_s", 0.0)
 
 
 def _add_remote_action_diagnostics(

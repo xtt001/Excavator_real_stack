@@ -45,7 +45,9 @@ from testbed.actions.remote import (
     RemoteActionProtocolError,
     RemoteActionSource,
     decode_remote_action_update,
+    decode_remote_receiver_status,
     encode_remote_action_update,
+    encode_remote_receiver_status,
 )
 from testbed.backends.real.bridge_protocol import (
     control_result_from_payload,
@@ -162,6 +164,24 @@ class RealworldV1Tests(unittest.TestCase):
         )
         self.assertFalse(packet.go_home_requested)
 
+    def test_remote_receiver_status_protocol_round_trip(self) -> None:
+        frame = encode_remote_receiver_status(
+            {
+                "receiver_mode": "armed",
+                "recording": 0,
+                "episode_idx": 3,
+                "saved": 2,
+                "go_home_result": "done",
+            }
+        )
+
+        payload = decode_remote_receiver_status(frame)
+        self.assertEqual(payload["receiver_mode"], "armed")
+        self.assertEqual(payload["recording"], 0)
+        self.assertEqual(payload["episode_idx"], 3)
+        self.assertEqual(payload["saved"], 2)
+        self.assertEqual(payload["go_home_result"], "done")
+
     def test_remote_action_source_receives_latest_and_edges_once(self) -> None:
         if not _can_bind_loopback_socket():
             self.skipTest("loopback socket bind is blocked in this environment")
@@ -193,6 +213,47 @@ class RealworldV1Tests(unittest.TestCase):
             self.assertFalse(info_again.extras["reset_requested"])
             self.assertFalse(info_again.extras["record_start_requested"])
             self.assertFalse(info_again.extras["go_home_requested"])
+        finally:
+            client.close()
+            source.close()
+
+    def test_remote_receiver_status_feedback_reaches_client(self) -> None:
+        if not _can_bind_loopback_socket():
+            self.skipTest("loopback socket bind is blocked in this environment")
+        source = RemoteActionSource(bind_host="127.0.0.1", port=0, timeout_ms=1000)
+        client = RemoteActionClient(host="127.0.0.1", port=source.port, timeout_s=1.0)
+        try:
+            client.connect()
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline:
+                with source._lock:  # noqa: SLF001 - white-box connection test.
+                    connected = source._connected  # noqa: SLF001
+                if connected:
+                    break
+                time.sleep(0.01)
+            source.publish_status(
+                {
+                    "receiver_mode": "armed",
+                    "recording": 0,
+                    "episode_idx": 4,
+                    "saved": 3,
+                    "go_home_result": "done",
+                }
+            )
+            deadline = time.monotonic() + 1.0
+            status = None
+            while time.monotonic() < deadline:
+                status = client.latest_status()
+                if status is not None:
+                    break
+                time.sleep(0.01)
+            self.assertIsNotNone(status)
+            assert status is not None
+            self.assertEqual(status.payload["receiver_mode"], "armed")
+            self.assertEqual(status.payload["recording"], 0)
+            self.assertEqual(status.payload["episode_idx"], 4)
+            self.assertEqual(status.payload["saved"], 3)
+            self.assertEqual(status.payload["go_home_result"], "done")
         finally:
             client.close()
             source.close()
@@ -556,6 +617,806 @@ class RealworldV1Tests(unittest.TestCase):
         self.assertTrue(result.failed)
         self.assertEqual(result.reason, "timeout")
 
+    def test_go_home_controller_allows_dwell_to_complete_after_timeout_if_centered(
+        self,
+    ) -> None:
+        cfg = GoHomeConfig.from_mapping(
+            {
+                "enabled": True,
+                "home_pose_rad": [0.0, 0.0, 0.0, 0.0],
+                "near_tolerance_rad": [0.5, 0.5, 0.5, 0.5],
+                "success_tolerance_rad": [0.01, 0.01, 0.01, 0.01],
+                "center_tolerance_rad": [0.01, 0.01, 0.01, 0.01],
+                "qvel_stable_rad_s": [0.02, 0.02, 0.02, 0.02],
+                "dwell_s": 0.2,
+                "timeout_s": 0.1,
+            }
+        )
+        assert cfg is not None
+        controller = GoHomeController(cfg)
+        start_obs = {
+            "qpos": np.ones(4, dtype=np.float32) * 0.1,
+            "qvel": np.zeros(4, dtype=np.float32),
+        }
+        controller.start(start_obs)
+        centered_obs = {
+            "qpos": np.zeros(4, dtype=np.float32),
+            "qvel": np.zeros(4, dtype=np.float32),
+        }
+
+        settling = controller.update(centered_obs, now_s=controller._start_s + 0.11)
+        self.assertFalse(settling.failed)
+        self.assertFalse(settling.done)
+        np.testing.assert_allclose(settling.action, np.zeros(4, dtype=np.float32))
+
+        done = controller.update(centered_obs, now_s=controller._start_s + 0.32)
+        self.assertTrue(done.done)
+        self.assertEqual(controller.metadata()["go_home_result"], "succeeded")
+
+    def test_go_home_controller_accepts_stable_success_band_outside_center(
+        self,
+    ) -> None:
+        cfg = GoHomeConfig.from_mapping(
+            {
+                "enabled": True,
+                "home_pose_rad": [0.0, 0.0, 0.0, 0.0],
+                "near_tolerance_rad": [0.5, 0.5, 0.5, 0.5],
+                "success_tolerance_rad": [0.08, 0.08, 0.08, 0.08],
+                "center_tolerance_rad": [0.02, 0.02, 0.02, 0.02],
+                "qvel_stable_rad_s": [0.02, 0.02, 0.02, 0.02],
+                "dwell_s": 0.2,
+                "timeout_s": 0.1,
+            }
+        )
+        assert cfg is not None
+        controller = GoHomeController(cfg)
+        start_obs = {
+            "qpos": np.ones(4, dtype=np.float32) * 0.1,
+            "qvel": np.zeros(4, dtype=np.float32),
+        }
+        controller.start(start_obs)
+        acceptable_obs = {
+            "qpos": np.ones(4, dtype=np.float32) * 0.05,
+            "qvel": np.zeros(4, dtype=np.float32),
+        }
+
+        settling = controller.update(acceptable_obs, now_s=controller._start_s + 0.11)
+        self.assertFalse(settling.failed)
+        self.assertFalse(settling.done)
+        self.assertEqual(settling.diagnostics["go_home_acceptable_position"], 1)
+        self.assertEqual(settling.diagnostics["go_home_in_position"], 0)
+
+        done = controller.update(acceptable_obs, now_s=controller._start_s + 0.32)
+        self.assertTrue(done.done)
+        self.assertEqual(controller.metadata()["go_home_result"], "succeeded")
+
+    def test_go_home_controller_applies_min_action_per_axis(self) -> None:
+        cfg = GoHomeConfig.from_mapping(
+            {
+                "enabled": True,
+                "home_pose_rad": [0.0, 0.0, 0.0, 0.0],
+                "near_tolerance_rad": [0.5, 0.5, 0.5, 0.5],
+                "success_tolerance_rad": [0.01, 0.01, 0.01, 0.01],
+                "p_gain": [1.0, 1.0, 1.0, 1.0],
+                "min_action": [0.05, 0.05, 0.05, 0.05],
+                "max_action": [0.2, 0.2, 0.2, 0.2],
+                "qvel_stable_rad_s": [0.02, 0.02, 0.02, 0.02],
+                "dwell_s": 0.0,
+                "timeout_s": 1.0,
+            }
+        )
+        assert cfg is not None
+        controller = GoHomeController(cfg)
+        obs = {
+            "qpos": np.array([0.02, 0.005, -0.02, 0.0], dtype=np.float32),
+            "qvel": np.zeros(4, dtype=np.float32),
+        }
+        controller.start(obs)
+        result = controller.update(obs)
+        np.testing.assert_allclose(result.action, [-0.05, 0.0, 0.05, 0.0])
+
+    def test_go_home_controller_applies_directional_min_action(self) -> None:
+        cfg = GoHomeConfig.from_mapping(
+            {
+                "enabled": True,
+                "home_pose_rad": [0.0, 0.0, 0.0, 0.0],
+                "near_tolerance_rad": [0.5, 0.5, 0.5, 0.5],
+                "success_tolerance_rad": [0.01, 0.01, 0.01, 0.01],
+                "p_gain": [1.0, 1.0, 1.0, 1.0],
+                "min_action": [0.05, 0.05, 0.05, 0.05],
+                "min_action_positive": [0.08, 0.08, 0.08, 0.08],
+                "min_action_negative": [0.04, 0.04, 0.04, 0.04],
+                "max_action": [0.2, 0.2, 0.2, 0.2],
+                "qvel_stable_rad_s": [0.02, 0.02, 0.02, 0.02],
+                "dwell_s": 0.0,
+                "timeout_s": 1.0,
+            }
+        )
+        assert cfg is not None
+        controller = GoHomeController(cfg)
+        obs = {
+            "qpos": np.array([-0.02, 0.02, 0.0, 0.0], dtype=np.float32),
+            "qvel": np.zeros(4, dtype=np.float32),
+        }
+        controller.start(obs)
+        result = controller.update(obs)
+        np.testing.assert_allclose(result.action[:2], [0.08, -0.04])
+
+    def test_go_home_controller_serializes_axes_by_configured_order(self) -> None:
+        cfg = GoHomeConfig.from_mapping(
+            {
+                "enabled": True,
+                "home_pose_rad": [0.0, 0.0, 0.0, 0.0],
+                "near_tolerance_rad": [0.5, 0.5, 0.5, 0.5],
+                "success_tolerance_rad": [0.01, 0.01, 0.01, 0.01],
+                "p_gain": [1.0, 1.0, 1.0, 1.0],
+                "min_action": [0.05, 0.05, 0.05, 0.05],
+                "max_action": [0.2, 0.2, 0.2, 0.2],
+                "axis_order": ["boom", "stick", "bucket", "swing"],
+                "max_active_axes": 1,
+                "qvel_stable_rad_s": [0.02, 0.02, 0.02, 0.02],
+                "dwell_s": 10.0,
+                "timeout_s": 5.0,
+            }
+        )
+        assert cfg is not None
+        controller = GoHomeController(cfg)
+        obs = {
+            "qpos": np.array([0.10, 0.10, 0.10, 0.10], dtype=np.float32),
+            "qvel": np.zeros(4, dtype=np.float32),
+        }
+        controller.start(obs)
+
+        first = controller.update(obs)
+        np.testing.assert_allclose(first.action, [0.0, -0.10, 0.0, 0.0])
+        np.testing.assert_allclose(
+            first.diagnostics["go_home_axis_scheduled"],
+            [0, 1, 0, 0],
+        )
+
+        boom_centered = controller.update(
+            {
+                "qpos": np.array([0.10, 0.0, 0.10, 0.10], dtype=np.float32),
+                "qvel": np.zeros(4, dtype=np.float32),
+            }
+        )
+        np.testing.assert_allclose(boom_centered.action, [0.0, 0.0, -0.10, 0.0])
+        np.testing.assert_allclose(
+            boom_centered.diagnostics["go_home_axis_scheduled"],
+            [0, 0, 1, 0],
+        )
+
+    def test_go_home_controller_gradually_boosts_stalled_axis(self) -> None:
+        cfg = GoHomeConfig.from_mapping(
+            {
+                "enabled": True,
+                "home_pose_rad": [0.0, 0.0, 0.0, 0.0],
+                "near_tolerance_rad": [0.5, 0.5, 0.5, 0.5],
+                "success_tolerance_rad": [0.05, 0.05, 0.05, 0.05],
+                "center_tolerance_rad": [0.01, 0.01, 0.01, 0.01],
+                "resume_tolerance_rad": [0.02, 0.02, 0.02, 0.02],
+                "p_gain": [0.1, 0.1, 0.1, 0.1],
+                "min_action": [0.10, 0.10, 0.10, 0.10],
+                "max_action": [0.30, 0.30, 0.30, 0.30],
+                "near_max_action": [0.12, 0.12, 0.12, 0.12],
+                "stall_detection_s": 0.5,
+                "stall_boost_interval_s": 0.5,
+                "stall_action_step": [0.05, 0.0, 0.0, 0.0],
+                "stall_error_progress_rad": [0.001, 0.001, 0.001, 0.001],
+                "stall_qvel_threshold_rad_s": [0.01, 0.01, 0.01, 0.01],
+                "qvel_stable_rad_s": [0.001, 0.001, 0.001, 0.001],
+                "dwell_s": 0.0,
+                "timeout_s": 5.0,
+            }
+        )
+        assert cfg is not None
+        controller = GoHomeController(cfg)
+        obs = {
+            "qpos": np.array([0.08, 0.0, 0.0, 0.0], dtype=np.float32),
+            "qvel": np.zeros(4, dtype=np.float32),
+        }
+        controller.start(obs)
+        start = controller._start_s
+
+        first = controller.update(obs, now_s=start)
+        np.testing.assert_allclose(first.action, [-0.10, 0.0, 0.0, 0.0])
+        self.assertEqual(first.diagnostics["go_home_axis_stalled"][0], 0)
+
+        boosted_once = controller.update(obs, now_s=start + 0.6)
+        np.testing.assert_allclose(boosted_once.action, [-0.15, 0.0, 0.0, 0.0])
+        self.assertEqual(boosted_once.diagnostics["go_home_axis_stalled"][0], 1)
+        np.testing.assert_allclose(
+            boosted_once.diagnostics["go_home_stall_action_boost"],
+            [0.05, 0.0, 0.0, 0.0],
+        )
+
+        boosted_twice = controller.update(obs, now_s=start + 1.2)
+        np.testing.assert_allclose(boosted_twice.action, [-0.20, 0.0, 0.0, 0.0])
+        np.testing.assert_allclose(
+            boosted_twice.diagnostics["go_home_stall_action_boost"],
+            [0.10, 0.0, 0.0, 0.0],
+        )
+
+    def test_go_home_controller_cools_down_wrong_direction_axis(self) -> None:
+        cfg = GoHomeConfig.from_mapping(
+            {
+                "enabled": True,
+                "home_pose_rad": [0.0, 0.0, 0.0, 0.0],
+                "near_tolerance_rad": [0.5, 0.5, 0.5, 0.5],
+                "success_tolerance_rad": [0.01, 0.01, 0.01, 0.01],
+                "p_gain": [1.0, 1.0, 1.0, 1.0],
+                "max_action": [0.3, 0.3, 0.3, 0.3],
+                "wrong_direction_detection_s": 0.2,
+                "wrong_direction_error_increase_rad": [0.02, 999.0, 999.0, 999.0],
+                "wrong_direction_cooldown_s": [0.5, 0.0, 0.0, 0.0],
+                "qvel_stable_rad_s": [0.02, 0.02, 0.02, 0.02],
+                "dwell_s": 10.0,
+                "timeout_s": 5.0,
+            }
+        )
+        assert cfg is not None
+        controller = GoHomeController(cfg)
+        start_obs = {
+            "qpos": np.array([0.10, 0.0, 0.0, 0.0], dtype=np.float32),
+            "qvel": np.zeros(4, dtype=np.float32),
+        }
+        controller.start(start_obs)
+        start = controller._start_s
+
+        first = controller.update(start_obs, now_s=start)
+        self.assertLess(first.action[0], 0.0)
+
+        worsening = controller.update(
+            {
+                "qpos": np.array([0.14, 0.0, 0.0, 0.0], dtype=np.float32),
+                "qvel": np.zeros(4, dtype=np.float32),
+            },
+            now_s=start + 0.3,
+        )
+        np.testing.assert_allclose(worsening.action, np.zeros(4, dtype=np.float32))
+        self.assertEqual(worsening.diagnostics["go_home_axis_wrong_direction"][0], 1)
+
+        cooling_down = controller.update(
+            {
+                "qpos": np.array([0.20, 0.0, 0.0, 0.0], dtype=np.float32),
+                "qvel": np.zeros(4, dtype=np.float32),
+            },
+            now_s=start + 0.6,
+        )
+        np.testing.assert_allclose(cooling_down.action, np.zeros(4, dtype=np.float32))
+
+    def test_go_home_controller_ramps_from_min_action_not_zero(self) -> None:
+        cfg = GoHomeConfig.from_mapping(
+            {
+                "enabled": True,
+                "home_pose_rad": [0.0, 0.0, 0.0, 0.0],
+                "near_tolerance_rad": [0.5, 0.5, 0.5, 0.5],
+                "success_tolerance_rad": [0.01, 0.01, 0.01, 0.01],
+                "p_gain": [10.0, 10.0, 10.0, 10.0],
+                "min_action": [0.10, 0.10, 0.10, 0.10],
+                "max_action": [0.30, 0.30, 0.30, 0.30],
+                "action_ramp_rate": [0.10, 0.10, 0.10, 0.10],
+                "qvel_stable_rad_s": [0.02, 0.02, 0.02, 0.02],
+                "dwell_s": 0.0,
+                "timeout_s": 5.0,
+            }
+        )
+        assert cfg is not None
+        controller = GoHomeController(cfg)
+        obs = {
+            "qpos": np.array([0.20, 0.0, 0.0, 0.0], dtype=np.float32),
+            "qvel": np.zeros(4, dtype=np.float32),
+        }
+        controller.start(obs)
+        start = controller._start_s
+
+        first = controller.update(obs, now_s=start)
+        np.testing.assert_allclose(first.action, [-0.10, 0.0, 0.0, 0.0])
+        np.testing.assert_allclose(
+            first.diagnostics["go_home_action_ramp_limit"],
+            [0.10, 0.0, 0.0, 0.0],
+        )
+
+        ramped = controller.update(obs, now_s=start + 0.5)
+        np.testing.assert_allclose(ramped.action, [-0.15, 0.0, 0.0, 0.0])
+        np.testing.assert_allclose(
+            ramped.diagnostics["go_home_action_ramp_limit"],
+            [0.15, 0.0, 0.0, 0.0],
+            atol=1e-6,
+        )
+
+        capped = controller.update(obs, now_s=start + 3.0)
+        np.testing.assert_allclose(capped.action, [-0.30, 0.0, 0.0, 0.0])
+
+    def test_go_home_controller_coasts_when_moving_toward_center(self) -> None:
+        cfg = GoHomeConfig.from_mapping(
+            {
+                "enabled": True,
+                "home_pose_rad": [0.0, 0.0, 0.0, 0.0],
+                "near_tolerance_rad": [0.5, 0.5, 0.5, 0.5],
+                "success_tolerance_rad": [0.08, 0.08, 0.08, 0.08],
+                "center_tolerance_rad": [0.02, 0.02, 0.02, 0.02],
+                "resume_tolerance_rad": [0.06, 0.06, 0.06, 0.06],
+                "p_gain": [1.0, 1.0, 1.0, 1.0],
+                "max_action": [0.2, 0.2, 0.2, 0.2],
+                "coast_stop_time_s": [0.5, 0.5, 0.5, 0.5],
+                "qvel_stable_rad_s": [0.2, 0.2, 0.2, 0.2],
+                "dwell_s": 10.0,
+                "timeout_s": 20.0,
+            }
+        )
+        assert cfg is not None
+        controller = GoHomeController(cfg)
+        controller.start(
+            {
+                "qpos": np.array([0.10, 0.0, 0.0, 0.0], dtype=np.float32),
+                "qvel": np.zeros(4, dtype=np.float32),
+            }
+        )
+        start = controller._start_s
+        result = controller.update(
+            {
+                "qpos": np.array([0.04, 0.0, 0.0, 0.0], dtype=np.float32),
+                "qvel": np.array([-0.05, 0.0, 0.0, 0.0], dtype=np.float32),
+            },
+            now_s=start + 0.1,
+        )
+        np.testing.assert_allclose(result.action, np.zeros(4, dtype=np.float32))
+        self.assertEqual(result.diagnostics["go_home_axis_active"][0], 0)
+
+        stalled = controller.update(
+            {
+                "qpos": np.array([0.04, 0.0, 0.0, 0.0], dtype=np.float32),
+                "qvel": np.zeros(4, dtype=np.float32),
+            },
+            now_s=start + 0.2,
+        )
+        self.assertLess(stalled.action[0], 0.0)
+
+    def test_go_home_controller_uses_low_speed_center_approach(self) -> None:
+        cfg = GoHomeConfig.from_mapping(
+            {
+                "enabled": True,
+                "home_pose_rad": [0.0, 0.0, 0.0, 0.0],
+                "near_tolerance_rad": [0.5, 0.5, 0.5, 0.5],
+                "success_tolerance_rad": [0.08, 0.08, 0.08, 0.08],
+                "center_tolerance_rad": [0.02, 0.02, 0.02, 0.02],
+                "resume_tolerance_rad": [0.06, 0.06, 0.06, 0.06],
+                "p_gain": [1.0, 1.0, 1.0, 1.0],
+                "min_action": [0.10, 0.10, 0.10, 0.10],
+                "max_action": [0.2, 0.2, 0.2, 0.2],
+                "coast_stop_time_s": [0.5, 0.5, 0.5, 0.5],
+                "center_approach_action": [0.03, 0.0, 0.0, 0.0],
+                "qvel_stable_rad_s": [0.2, 0.2, 0.2, 0.2],
+                "dwell_s": 10.0,
+                "timeout_s": 20.0,
+            }
+        )
+        assert cfg is not None
+        controller = GoHomeController(cfg)
+        controller.start(
+            {
+                "qpos": np.array([0.10, 0.0, 0.0, 0.0], dtype=np.float32),
+                "qvel": np.zeros(4, dtype=np.float32),
+            }
+        )
+        result = controller.update(
+            {
+                "qpos": np.array([0.04, 0.0, 0.0, 0.0], dtype=np.float32),
+                "qvel": np.array([-0.05, 0.0, 0.0, 0.0], dtype=np.float32),
+            },
+            now_s=controller._start_s + 0.1,
+        )
+        np.testing.assert_allclose(result.action, [-0.03, 0.0, 0.0, 0.0])
+        np.testing.assert_allclose(
+            result.diagnostics["go_home_center_approach_axis"],
+            [1, 0, 0, 0],
+        )
+
+    def test_go_home_controller_filters_noisy_feedback_for_decisions(self) -> None:
+        cfg = GoHomeConfig.from_mapping(
+            {
+                "enabled": True,
+                "home_pose_rad": [0.0, 0.0, 0.0, 0.0],
+                "near_tolerance_rad": [0.5, 0.5, 0.5, 0.5],
+                "success_tolerance_rad": [0.1, 0.1, 0.1, 0.1],
+                "center_tolerance_rad": [0.05, 0.05, 0.05, 0.05],
+                "p_gain": [1.0, 1.0, 1.0, 1.0],
+                "max_action": [0.2, 0.2, 0.2, 0.2],
+                "qpos_filter_tau_s": [0.2, 0.2, 0.2, 0.2],
+                "qvel_filter_tau_s": [0.2, 0.2, 0.2, 0.2],
+                "qvel_stable_rad_s": [0.1, 0.1, 0.1, 0.1],
+                "dwell_s": 10.0,
+                "timeout_s": 20.0,
+            }
+        )
+        assert cfg is not None
+        controller = GoHomeController(cfg)
+        start_obs = {
+            "qpos": np.array([0.04, 0.0, 0.0, 0.0], dtype=np.float32),
+            "qvel": np.zeros(4, dtype=np.float32),
+        }
+        controller.start(start_obs)
+        result = controller.update(
+            {
+                "qpos": np.array([0.20, 0.0, 0.0, 0.0], dtype=np.float32),
+                "qvel": np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+            },
+            now_s=controller._start_s + 0.02,
+        )
+
+        self.assertLess(abs(result.diagnostics["go_home_error"][0]), 0.06)
+        self.assertGreater(abs(result.diagnostics["go_home_raw_error"][0]), 0.19)
+
+    def test_go_home_controller_delays_reactivation_after_coast_stop(self) -> None:
+        cfg = GoHomeConfig.from_mapping(
+            {
+                "enabled": True,
+                "home_pose_rad": [0.0, 0.0, 0.0, 0.0],
+                "near_tolerance_rad": [0.5, 0.5, 0.5, 0.5],
+                "success_tolerance_rad": [0.08, 0.08, 0.08, 0.08],
+                "center_tolerance_rad": [0.02, 0.02, 0.02, 0.02],
+                "resume_tolerance_rad": [0.06, 0.06, 0.06, 0.06],
+                "p_gain": [1.0, 1.0, 1.0, 1.0],
+                "max_action": [0.2, 0.2, 0.2, 0.2],
+                "coast_stop_time_s": [0.5, 0.5, 0.5, 0.5],
+                "coast_reactivation_delay_s": [0.3, 0.3, 0.3, 0.3],
+                "qvel_stable_rad_s": [0.01, 0.01, 0.01, 0.01],
+                "dwell_s": 10.0,
+                "timeout_s": 20.0,
+            }
+        )
+        assert cfg is not None
+        controller = GoHomeController(cfg)
+        controller.start(
+            {
+                "qpos": np.array([0.10, 0.0, 0.0, 0.0], dtype=np.float32),
+                "qvel": np.zeros(4, dtype=np.float32),
+            }
+        )
+        start = controller._start_s
+        coasting = controller.update(
+            {
+                "qpos": np.array([0.04, 0.0, 0.0, 0.0], dtype=np.float32),
+                "qvel": np.array([-0.05, 0.0, 0.0, 0.0], dtype=np.float32),
+            },
+            now_s=start + 0.1,
+        )
+        np.testing.assert_allclose(coasting.action, np.zeros(4, dtype=np.float32))
+        waiting = controller.update(
+            {
+                "qpos": np.array([0.04, 0.0, 0.0, 0.0], dtype=np.float32),
+                "qvel": np.zeros(4, dtype=np.float32),
+            },
+            now_s=start + 0.2,
+        )
+        np.testing.assert_allclose(waiting.action, np.zeros(4, dtype=np.float32))
+
+        reactivated = controller.update(
+            {
+                "qpos": np.array([0.04, 0.0, 0.0, 0.0], dtype=np.float32),
+                "qvel": np.zeros(4, dtype=np.float32),
+            },
+            now_s=start + 0.5,
+        )
+        self.assertLess(reactivated.action[0], 0.0)
+
+    def test_go_home_controller_pd_damps_motion_toward_home(self) -> None:
+        cfg = GoHomeConfig.from_mapping(
+            {
+                "enabled": True,
+                "home_pose_rad": [0.0, 0.0, 0.0, 0.0],
+                "near_tolerance_rad": [0.5, 0.5, 0.5, 0.5],
+                "success_tolerance_rad": [0.01, 0.01, 0.01, 0.01],
+                "p_gain": [1.0, 1.0, 1.0, 1.0],
+                "d_gain": [0.5, 0.5, 0.5, 0.5],
+                "max_action": [0.2, 0.2, 0.2, 0.2],
+                "qvel_stable_rad_s": [0.02, 0.02, 0.02, 0.02],
+                "dwell_s": 0.0,
+                "timeout_s": 1.0,
+            }
+        )
+        assert cfg is not None
+        controller = GoHomeController(cfg)
+        obs = {
+            "qpos": np.array([-0.1, 0.1, 0.0, 0.0], dtype=np.float32),
+            "qvel": np.array([0.1, -0.1, 0.0, 0.0], dtype=np.float32),
+        }
+        controller.start(obs)
+        result = controller.update(obs)
+        np.testing.assert_allclose(result.action[:2], [0.05, -0.05], atol=1e-6)
+
+    def test_go_home_controller_applies_control_signs(self) -> None:
+        cfg = GoHomeConfig.from_mapping(
+            {
+                "enabled": True,
+                "home_pose_rad": [0.0, 0.0, 0.0, 0.0],
+                "near_tolerance_rad": [0.5, 0.5, 0.5, 0.5],
+                "success_tolerance_rad": [0.01, 0.01, 0.01, 0.01],
+                "control_signs": [1.0, 1.0, -1.0, 1.0],
+                "p_gain": [1.0, 1.0, 1.0, 1.0],
+                "min_action": [0.05, 0.05, 0.05, 0.05],
+                "max_action": [0.2, 0.2, 0.2, 0.2],
+                "qvel_stable_rad_s": [0.02, 0.02, 0.02, 0.02],
+                "dwell_s": 0.0,
+                "timeout_s": 1.0,
+            }
+        )
+        assert cfg is not None
+        controller = GoHomeController(cfg)
+        obs = {
+            "qpos": np.array([0.0, 0.0, 0.2, 0.0], dtype=np.float32),
+            "qvel": np.zeros(4, dtype=np.float32),
+        }
+        controller.start(obs)
+        result = controller.update(obs)
+        self.assertGreater(result.action[2], 0.0)
+        np.testing.assert_allclose(
+            result.diagnostics["go_home_control_signs"],
+            [1.0, 1.0, -1.0, 1.0],
+        )
+
+    def test_go_home_controller_uses_axis_hysteresis(self) -> None:
+        cfg = GoHomeConfig.from_mapping(
+            {
+                "enabled": True,
+                "home_pose_rad": [0.0, 0.0, 0.0, 0.0],
+                "near_tolerance_rad": [0.5, 0.5, 0.5, 0.5],
+                "success_tolerance_rad": [0.08, 0.08, 0.08, 0.08],
+                "center_tolerance_rad": [0.02, 0.02, 0.02, 0.02],
+                "resume_tolerance_rad": [0.06, 0.06, 0.06, 0.06],
+                "p_gain": [1.0, 1.0, 1.0, 1.0],
+                "max_action": [0.2, 0.2, 0.2, 0.2],
+                "qvel_stable_rad_s": [0.02, 0.02, 0.02, 0.02],
+                "dwell_s": 10.0,
+                "timeout_s": 20.0,
+            }
+        )
+        assert cfg is not None
+        controller = GoHomeController(cfg)
+        controller.start(
+            {
+                "qpos": np.array([0.05, 0.0, 0.0, 0.0], dtype=np.float32),
+                "qvel": np.zeros(4, dtype=np.float32),
+            }
+        )
+        still_active = controller.update(
+            {
+                "qpos": np.array([0.03, 0.0, 0.0, 0.0], dtype=np.float32),
+                "qvel": np.zeros(4, dtype=np.float32),
+            }
+        )
+        self.assertLess(still_active.action[0], 0.0)
+        centered = controller.update(
+            {
+                "qpos": np.array([0.01, 0.0, 0.0, 0.0], dtype=np.float32),
+                "qvel": np.zeros(4, dtype=np.float32),
+            }
+        )
+        np.testing.assert_allclose(centered.action, np.zeros(4, dtype=np.float32))
+        held_while_other_axis_active = controller.update(
+            {
+                "qpos": np.array([0.04, 0.07, 0.0, 0.0], dtype=np.float32),
+                "qvel": np.zeros(4, dtype=np.float32),
+            }
+        )
+        self.assertEqual(
+            held_while_other_axis_active.diagnostics["go_home_axis_active"][0], 0
+        )
+        self.assertLess(held_while_other_axis_active.action[1], 0.0)
+        reactivated_to_avoid_deadlock = controller.update(
+            {
+                "qpos": np.array([0.04, 0.0, 0.0, 0.0], dtype=np.float32),
+                "qvel": np.zeros(4, dtype=np.float32),
+            }
+        )
+        self.assertLess(reactivated_to_avoid_deadlock.action[0], 0.0)
+        resumed = controller.update(
+            {
+                "qpos": np.array([0.07, 0.0, 0.0, 0.0], dtype=np.float32),
+                "qvel": np.zeros(4, dtype=np.float32),
+            }
+        )
+        self.assertLess(resumed.action[0], 0.0)
+
+    def test_go_home_controller_slew_limits_action_changes(self) -> None:
+        cfg = GoHomeConfig.from_mapping(
+            {
+                "enabled": True,
+                "home_pose_rad": [0.0, 0.0, 0.0, 0.0],
+                "near_tolerance_rad": [0.5, 0.5, 0.5, 0.5],
+                "success_tolerance_rad": [0.01, 0.01, 0.01, 0.01],
+                "p_gain": [10.0, 10.0, 10.0, 10.0],
+                "max_action": [1.0, 1.0, 1.0, 1.0],
+                "action_slew_rate": [1.0, 1.0, 1.0, 1.0],
+                "qvel_stable_rad_s": [0.02, 0.02, 0.02, 0.02],
+                "dwell_s": 0.0,
+                "timeout_s": 1.0,
+            }
+        )
+        assert cfg is not None
+        controller = GoHomeController(cfg)
+        obs = {
+            "qpos": np.array([0.2, 0.0, 0.0, 0.0], dtype=np.float32),
+            "qvel": np.zeros(4, dtype=np.float32),
+        }
+        controller.start(obs)
+        result = controller.update(obs, now_s=controller._start_s)
+        np.testing.assert_allclose(result.action, [-0.02, 0.0, 0.0, 0.0])
+        np.testing.assert_allclose(
+            result.diagnostics["go_home_unsmoothed_action"],
+            [-1.0, 0.0, 0.0, 0.0],
+        )
+
+    def test_go_home_controller_holds_control_decision_between_periods(self) -> None:
+        cfg = GoHomeConfig.from_mapping(
+            {
+                "enabled": True,
+                "home_pose_rad": [0.0, 0.0, 0.0, 0.0],
+                "near_tolerance_rad": [0.5, 0.5, 0.5, 0.5],
+                "success_tolerance_rad": [0.01, 0.01, 0.01, 0.01],
+                "p_gain": [1.0, 1.0, 1.0, 1.0],
+                "max_action": [0.3, 0.3, 0.3, 0.3],
+                "control_decision_period_s": 0.1,
+                "qvel_stable_rad_s": [0.02, 0.02, 0.02, 0.02],
+                "dwell_s": 10.0,
+                "timeout_s": 5.0,
+            }
+        )
+        assert cfg is not None
+        controller = GoHomeController(cfg)
+        start_obs = {
+            "qpos": np.array([0.20, 0.0, 0.0, 0.0], dtype=np.float32),
+            "qvel": np.zeros(4, dtype=np.float32),
+        }
+        controller.start(start_obs)
+        start = controller._start_s
+
+        first = controller.update(start_obs, now_s=start)
+        np.testing.assert_allclose(first.action, [-0.20, 0.0, 0.0, 0.0])
+        self.assertEqual(first.diagnostics["go_home_decision_updated"], 1)
+
+        closer_obs = {
+            "qpos": np.array([0.05, 0.0, 0.0, 0.0], dtype=np.float32),
+            "qvel": np.zeros(4, dtype=np.float32),
+        }
+        held = controller.update(closer_obs, now_s=start + 0.05)
+        np.testing.assert_allclose(held.action, [-0.20, 0.0, 0.0, 0.0])
+        self.assertEqual(held.diagnostics["go_home_decision_updated"], 0)
+
+        refreshed = controller.update(closer_obs, now_s=start + 0.11)
+        np.testing.assert_allclose(refreshed.action, [-0.05, 0.0, 0.0, 0.0])
+        self.assertEqual(refreshed.diagnostics["go_home_decision_updated"], 1)
+
+    def test_go_home_controller_blocks_small_rapid_sign_reversals(self) -> None:
+        cfg = GoHomeConfig.from_mapping(
+            {
+                "enabled": True,
+                "home_pose_rad": [0.0, 0.0, 0.0, 0.0],
+                "near_tolerance_rad": [0.5, 0.5, 0.5, 0.5],
+                "success_tolerance_rad": [0.2, 0.2, 0.2, 0.2],
+                "center_tolerance_rad": [0.01, 0.01, 0.01, 0.01],
+                "resume_tolerance_rad": [0.02, 0.02, 0.02, 0.02],
+                "p_gain": [10.0, 10.0, 10.0, 10.0],
+                "max_action": [0.3, 0.3, 0.3, 0.3],
+                "sign_reversal_delay_s": [0.5, 0.0, 0.0, 0.0],
+                "sign_reversal_min_error_rad": [0.08, 0.0, 0.0, 0.0],
+                "qvel_stable_rad_s": [0.02, 0.02, 0.02, 0.02],
+                "dwell_s": 10.0,
+                "timeout_s": 5.0,
+            }
+        )
+        assert cfg is not None
+        controller = GoHomeController(cfg)
+        start_obs = {
+            "qpos": np.array([0.10, 0.0, 0.0, 0.0], dtype=np.float32),
+            "qvel": np.zeros(4, dtype=np.float32),
+        }
+        controller.start(start_obs)
+        start = controller._start_s
+
+        lowering = controller.update(start_obs, now_s=start)
+        self.assertLess(lowering.action[0], 0.0)
+        self.assertEqual(lowering.diagnostics["go_home_command_sign"][0], -1.0)
+
+        small_rapid_reverse = controller.update(
+            {
+                "qpos": np.array([-0.05, 0.0, 0.0, 0.0], dtype=np.float32),
+                "qvel": np.zeros(4, dtype=np.float32),
+            },
+            now_s=start + 0.1,
+        )
+        np.testing.assert_allclose(
+            small_rapid_reverse.action,
+            np.zeros(4, dtype=np.float32),
+        )
+        self.assertEqual(
+            small_rapid_reverse.diagnostics["go_home_sign_reversal_blocked"][0],
+            1,
+        )
+
+        same_direction_during_valve_settle = controller.update(
+            {
+                "qpos": np.array([0.10, 0.0, 0.0, 0.0], dtype=np.float32),
+                "qvel": np.zeros(4, dtype=np.float32),
+            },
+            now_s=start + 0.4,
+        )
+        np.testing.assert_allclose(
+            same_direction_during_valve_settle.action,
+            np.zeros(4, dtype=np.float32),
+        )
+
+        small_late_reverse = controller.update(
+            {
+                "qpos": np.array([-0.05, 0.0, 0.0, 0.0], dtype=np.float32),
+                "qvel": np.zeros(4, dtype=np.float32),
+            },
+            now_s=start + 0.6,
+        )
+        np.testing.assert_allclose(
+            small_late_reverse.action,
+            np.zeros(4, dtype=np.float32),
+        )
+
+        large_late_reverse = controller.update(
+            {
+                "qpos": np.array([-0.10, 0.0, 0.0, 0.0], dtype=np.float32),
+                "qvel": np.zeros(4, dtype=np.float32),
+            },
+            now_s=start + 1.2,
+        )
+        self.assertGreater(large_late_reverse.action[0], 0.0)
+        self.assertEqual(
+            large_late_reverse.diagnostics["go_home_sign_reversal_blocked"][0],
+            0,
+        )
+
+    def test_go_home_may_start_from_armed_or_recording(self) -> None:
+        from testbed.cli.record_real import _go_home_start_context
+
+        self.assertEqual(_go_home_start_context("armed", False), "armed")
+        self.assertEqual(_go_home_start_context("recording", True), "recording")
+        self.assertIsNone(_go_home_start_context("armed", True))
+        self.assertIsNone(_go_home_start_context("recording", False))
+        self.assertIsNone(_go_home_start_context("go_home", True))
+        self.assertIsNone(_go_home_start_context("fault", False))
+
+    def test_go_home_step_diagnostics_have_full_episode_defaults(self) -> None:
+        from testbed.cli.record_real import _ensure_go_home_step_diagnostics
+
+        diagnostics: dict[str, object] = {}
+        _ensure_go_home_step_diagnostics(diagnostics)
+
+        self.assertEqual(diagnostics["go_home_running"], 0)
+        self.assertEqual(diagnostics["go_home_result_code"], "")
+        np.testing.assert_allclose(
+            diagnostics["go_home_error"], np.zeros(4, dtype=np.float32)
+        )
+        np.testing.assert_allclose(
+            diagnostics["go_home_commanded_action"], np.zeros(4, dtype=np.float32)
+        )
+        np.testing.assert_allclose(
+            diagnostics["go_home_stall_action_boost"], np.zeros(4, dtype=np.float32)
+        )
+        np.testing.assert_allclose(
+            diagnostics["go_home_axis_stalled"], np.zeros(4, dtype=np.int32)
+        )
+        np.testing.assert_allclose(
+            diagnostics["go_home_axis_wrong_direction"],
+            np.zeros(4, dtype=np.int32),
+        )
+        np.testing.assert_allclose(
+            diagnostics["go_home_sign_reversal_blocked"],
+            np.zeros(4, dtype=np.int32),
+        )
+        self.assertEqual(diagnostics["go_home_decision_updated"], 0)
+        self.assertEqual(diagnostics["go_home_control_decision_period_s"], 0.0)
+
+        diagnostics["go_home_running"] = 1
+        _ensure_go_home_step_diagnostics(diagnostics)
+        self.assertEqual(diagnostics["go_home_running"], 1)
+
     def test_remote_control_loop_polls_action_source_at_control_rate(self) -> None:
         from testbed.actions.base import ActionInfo
         from testbed.cli.record_real import _RemoteControlLoop
@@ -702,6 +1563,145 @@ class RealworldV1Tests(unittest.TestCase):
             np.testing.assert_allclose(action, np.zeros(4, dtype=np.float32))
         self.assertGreaterEqual(len(toggle_masks), 1)
         self.assertTrue(all(mask == (1 << 5) for mask in toggle_masks))
+
+    def test_remote_control_loop_releases_scripted_zero_hold(self) -> None:
+        from testbed.actions.base import ActionInfo
+        from testbed.cli.record_real import _RemoteControlLoop
+        from testbed.runtime.guard import ActionGuard
+
+        class ConstantActionSource:
+            def next_action(self, obs: dict) -> tuple[np.ndarray, ActionInfo]:
+                return (
+                    np.array([0.5, -0.25, 0.0, 0.0], dtype=np.float32),
+                    ActionInfo(
+                        source_type="teleop",
+                        source_id="unit",
+                        extras={"action_timestamp_ns": time.time_ns()},
+                    ),
+                )
+
+        class RecordingPump:
+            def __init__(self) -> None:
+                self.lock = threading.Lock()
+                self.actions: list[np.ndarray] = []
+                self.latest_result = ControlResult(
+                    ack=True,
+                    fault_code="",
+                    controller_timestamp_ns=time.time_ns(),
+                    commanded_action=np.zeros(4, dtype=np.float32),
+                    raw_low_level_command=np.zeros(4, dtype=np.float32),
+                )
+
+            def update_action(
+                self, action: np.ndarray, *, state: dict | None = None
+            ) -> ControlResult:
+                commanded = np.asarray(action, dtype=np.float32).copy()
+                with self.lock:
+                    self.actions.append(commanded)
+                self.latest_result = ControlResult(
+                    ack=True,
+                    fault_code="",
+                    controller_timestamp_ns=time.time_ns(),
+                    commanded_action=commanded,
+                    raw_low_level_command=commanded.copy(),
+                )
+                return self.latest_result
+
+            def apply_status_toggle_mask(self, toggle_mask: int) -> bool:
+                return True
+
+        pump = RecordingPump()
+        loop = _RemoteControlLoop(
+            action_source=ConstantActionSource(),
+            guard=ActionGuard(action_clip=1.0, max_delta=1.0, sensor_timeout_s=1.0),
+            control_pump=pump,
+            rate_hz=50.0,
+            initial_obs={
+                "qpos": np.zeros(4, dtype=np.float32),
+                "safety_state": {},
+                "sensor_timestamp_ns": time.time_ns(),
+            },
+        )
+        loop.set_scripted_action(np.zeros(4, dtype=np.float32))
+        loop.set_fault_hold(True)
+        loop.start()
+        try:
+            time.sleep(0.06)
+            loop.set_scripted_action(None)
+            loop.set_fault_hold(False)
+            time.sleep(0.08)
+        finally:
+            loop.stop()
+
+        with pump.lock:
+            actions = list(pump.actions)
+        self.assertTrue(any(np.allclose(action, 0.0) for action in actions))
+        self.assertTrue(
+            any(np.allclose(action, [0.5, -0.25, 0.0, 0.0]) for action in actions)
+        )
+
+    def test_record_real_remote_control_hold_helpers_release_zero_hold(self) -> None:
+        from testbed.cli.record_real import (
+            _hold_remote_control_zero,
+            _release_remote_control,
+        )
+
+        class FakeRemoteLoop:
+            def __init__(self) -> None:
+                self.scripted_action: np.ndarray | None = None
+                self.fault_hold = False
+
+            def set_scripted_action(self, action: np.ndarray | None) -> None:
+                self.scripted_action = None if action is None else action.copy()
+
+            def set_fault_hold(self, enabled: bool) -> None:
+                self.fault_hold = bool(enabled)
+
+        loop = FakeRemoteLoop()
+        _hold_remote_control_zero(loop)
+        self.assertTrue(loop.fault_hold)
+        np.testing.assert_allclose(
+            loop.scripted_action, np.zeros(4, dtype=np.float32)
+        )
+
+        _release_remote_control(loop)
+        self.assertFalse(loop.fault_hold)
+        self.assertIsNone(loop.scripted_action)
+
+    def test_receiver_health_fpv_stale_does_not_block_armed_control(self) -> None:
+        from testbed.cli.record_real import _receiver_health_blocks_control
+
+        fpv_stale = SimpleNamespace(ok=False, errors=("fpv_stale",))
+        remote_stale = SimpleNamespace(ok=False, errors=("remote_stale",))
+
+        self.assertFalse(
+            _receiver_health_blocks_control(
+                fpv_stale,
+                receiver_mode="armed",
+                has_record_session=False,
+            )
+        )
+        self.assertFalse(
+            _receiver_health_blocks_control(
+                fpv_stale,
+                receiver_mode="go_home",
+                has_record_session=False,
+            )
+        )
+        self.assertTrue(
+            _receiver_health_blocks_control(
+                fpv_stale,
+                receiver_mode="recording",
+                has_record_session=True,
+            )
+        )
+        self.assertTrue(
+            _receiver_health_blocks_control(
+                remote_stale,
+                receiver_mode="armed",
+                has_record_session=False,
+            )
+        )
 
     def test_status_toggle_mask_semantics(self) -> None:
         status11 = [0] * STATUS_TOGGLE_BIT_COUNT
@@ -1178,7 +2178,7 @@ class RealworldV1Tests(unittest.TestCase):
             side = apply_data_side_config(cfg, data_side=None)
         self.assertEqual(side, "host")
         self.assertEqual(cfg["task"]["dataset_dir"], "data/real_teleop_v1")
-        self.assertEqual(cfg["real"]["bridge"]["host"], "192.168.31.170")
+        self.assertEqual(cfg["real"]["bridge"]["host"], "192.168.100.1")
 
     def test_apply_data_side_uses_env_when_cli_and_yaml_unset(self) -> None:
         from testbed.cli.data_side import apply_data_side_config
@@ -1310,6 +2310,47 @@ class RealworldV1Tests(unittest.TestCase):
         self.assertIn("ctl_ms=", output)
         self.assertNotIn("host_now_ns", output)
         self.assertNotIn("sensor_timestamp_ns", output)
+
+    def test_record_real_live_action_line_shows_go_home_status(self) -> None:
+        from testbed.cli.record_real import _LiveActionLine
+
+        stream = io.StringIO()
+        live_line = _LiveActionLine(enabled=True)
+        go_home_update = SimpleNamespace(
+            done=False,
+            failed=False,
+            reason="",
+            diagnostics={
+                "go_home_error": np.array([0.1, -0.2, 0.3, -0.4], dtype=np.float32),
+                "go_home_qvel": np.array([0.0, 0.01, 0.0, -0.01], dtype=np.float32),
+                "go_home_commanded_action": np.array(
+                    [0.12, -0.2, 0.2, -0.2], dtype=np.float32
+                ),
+                "go_home_elapsed_s": 2.5,
+                "go_home_in_position": 0,
+                "go_home_stable_velocity": 1,
+            },
+        )
+        with patch("sys.stdout", stream):
+            live_line.update(
+                step=4,
+                mode="go_home",
+                raw_action=np.zeros(4, dtype=np.float32),
+                safe_action=np.zeros(4, dtype=np.float32),
+                action_info=SimpleNamespace(extras={}),
+                sensor_age_s=0.01,
+                control_result={"ack": True, "fault_code": ""},
+                guard_reasons=(),
+                go_home_update=go_home_update,
+            )
+
+        output = stream.getvalue()
+        self.assertIn("home=going_home", output)
+        self.assertIn("t=2.5s", output)
+        self.assertIn("maxerr=0.400", output)
+        self.assertIn("maxaxis=bucket", output)
+        self.assertIn("inpos=0", output)
+        self.assertIn("stable=1", output)
 
     def test_json_tcp_bridge_mock_server_updates_state(self) -> None:
         if not _can_bind_loopback_socket():

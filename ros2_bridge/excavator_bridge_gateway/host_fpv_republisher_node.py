@@ -5,8 +5,9 @@ from __future__ import annotations
 
 import rclpy
 from cv_bridge import CvBridge
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import CompressedImage, Image
 
 
@@ -18,7 +19,8 @@ class HostFpvRepublisherNode(Node):
         ).value
         raw = self.declare_parameter("raw_topic", "/camera/color/image_raw").value
         self._bridge = CvBridge()
-        self._pub = self.create_publisher(Image, str(raw), qos_profile_sensor_data)
+        raw_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
+        self._pub = self.create_publisher(Image, str(raw), raw_qos)
         self.create_subscription(
             CompressedImage,
             str(compressed),
@@ -55,9 +57,12 @@ def main() -> None:
     node = HostFpvRepublisherNode()
     try:
         rclpy.spin(node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

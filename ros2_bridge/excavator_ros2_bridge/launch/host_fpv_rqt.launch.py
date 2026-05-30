@@ -63,6 +63,7 @@ def _setup(context, *args, **kwargs):
                 cmd=[
                     "/usr/bin/python3",
                     rqt_executable,
+                    "--clear-config",
                     raw,
                 ],
                 output="screen",

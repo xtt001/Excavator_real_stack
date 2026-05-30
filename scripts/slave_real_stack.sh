@@ -21,13 +21,16 @@ DATASET_DIR="${EXCAVATOR_DATASET_DIR:-${USB_MOUNT}/real_teleop_v1}"
 CONFIG_PATH="${EXCAVATOR_TELEOP_CONFIG:-${ROOT_DIR}/testbed/testbed/configs/teleop_real_v1.yaml}"
 PID_YAML_PATH="${EXCAVATOR_PID_YAML:-${ROOT_DIR}/control/config/joint_pid.yaml}"
 SESSION_ID="${EXCAVATOR_SESSION_ID:-remote_teleop_slave_record}"
+NUM_EPISODES="${EXCAVATOR_NUM_EPISODES:-1000000}"
 MAX_STEPS="${EXCAVATOR_MAX_STEPS:-50000}"
 BRIDGE_TIMEOUT="${EXCAVATOR_BRIDGE_TIMEOUT:-2.0}"
+CONTROL_MODE="${EXCAVATOR_CONTROL_MODE:-open_loop_motor_speed}"
 FPV_MAX_STALE_MS="${EXCAVATOR_FPV_MAX_STALE_MS:-1000}"
 FPV_SHM_NAME="${EXCAVATOR_FPV_SHM_NAME:-excavator_fpv_v1}"
 FPV_SHM_TIMEOUT_S="${EXCAVATOR_FPV_SHM_TIMEOUT_S:-45}"
-STARTUP_TIMEOUT_S="${EXCAVATOR_STARTUP_TIMEOUT_S:-12}"
+STARTUP_TIMEOUT_S="${EXCAVATOR_STARTUP_TIMEOUT_S:-45}"
 RECEIVER_STOP_TIMEOUT_S="${EXCAVATOR_RECEIVER_STOP_TIMEOUT_S:-${EXCAVATOR_RECORDER_STOP_TIMEOUT_S:-180}}"
+EXCAVATOR_SKIP_PIP_INSTALL="${EXCAVATOR_SKIP_PIP_INSTALL:-1}"
 
 SERVICES=(bridge orbbec fpv gateway receiver)
 STOP_ORDER=(receiver gateway fpv orbbec bridge)
@@ -36,8 +39,8 @@ STARTED_SERVICES=()
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/slave_real_stack.sh start [--force] [--no-camera] [--no-receiver] [--skip-usb] [--skip-can] [--skip-pip-install]
-  scripts/slave_real_stack.sh run [--force] [--no-camera] [--no-receiver] [--skip-usb] [--skip-can] [--skip-pip-install]
+  scripts/slave_real_stack.sh start [--force] [--no-camera] [--no-receiver] [--skip-usb] [--skip-can] [--install-python-package]
+  scripts/slave_real_stack.sh run [--force] [--no-camera] [--no-receiver] [--skip-usb] [--skip-can] [--install-python-package]
   scripts/slave_real_stack.sh stop [--force]
   scripts/slave_real_stack.sh restart [--force] [start options]
   scripts/slave_real_stack.sh status
@@ -57,10 +60,14 @@ Common environment overrides:
   EXCAVATOR_ROS_WS=/home/mundane/orbbec_ws
   EXCAVATOR_CAN_IF=can2 EXCAVATOR_IMU_IF=can3
   EXCAVATOR_PID_YAML=/media/mundane/D/Excavator_real_stack/control/config/joint_pid.yaml
+  EXCAVATOR_CONTROL_MODE=open_loop_motor_speed
+  EXCAVATOR_NUM_EPISODES=1000000
   EXCAVATOR_RECEIVER_STOP_TIMEOUT_S=180
+  EXCAVATOR_SKIP_PIP_INSTALL=1
 
 Compatibility:
   --no-recorder and "tail recorder" remain aliases for receiver.
+  --skip-pip-install remains accepted; receiver already skips pip by default.
 EOF
 }
 
@@ -306,7 +313,7 @@ start_stack() {
   local no_receiver="$3"
   local skip_usb="$4"
   local skip_can="$5"
-  local skip_pip="$6"
+  local skip_pip="${6:-${EXCAVATOR_SKIP_PIP_INSTALL}}"
 
   if [[ "${force}" == "1" ]]; then
     stop_stack 1
@@ -320,7 +327,8 @@ start_stack() {
 
   prepare_start
   export ROOT_DIR CONTROL_HOST CONTROL_PORT GATEWAY_HOST GATEWAY_PORT RECEIVER_PORT
-  export CAN_IF IMU_IF DATASET_DIR CONFIG_PATH PID_YAML_PATH SESSION_ID MAX_STEPS BRIDGE_TIMEOUT
+  export CAN_IF IMU_IF DATASET_DIR CONFIG_PATH PID_YAML_PATH SESSION_ID NUM_EPISODES MAX_STEPS BRIDGE_TIMEOUT CONTROL_MODE
+  export EXCAVATOR_SKIP_PIP_INSTALL
   export FPV_MAX_STALE_MS FPV_SHM_NAME
   export EXCAVATOR_ORBBEC_WS="${EXCAVATOR_ORBBEC_WS:-${HOME}/orbbec_ws}"
   export EXCAVATOR_ROS_WS="${EXCAVATOR_ROS_WS:-${EXCAVATOR_ORBBEC_WS}}"
@@ -344,6 +352,7 @@ start_stack() {
       --can-simulation false \
       --imu-simulation false \
       --create-mapping true \
+      --control-mode "${CONTROL_MODE}" \
       --pid-yaml "${PID_YAML_PATH}" \
       --heartbeat-timeout-ms 800
   '
@@ -376,7 +385,7 @@ start_stack() {
         source .venv/bin/activate
       fi
       if [[ "${EXCAVATOR_SKIP_PIP_INSTALL}" != "1" ]]; then
-        python -m pip install --no-deps -e ./testbed
+        python -m pip install --no-build-isolation --no-deps -e ./testbed
       fi
       exec tb-receiver-real \
         --config "${CONFIG_PATH}" \
@@ -388,7 +397,7 @@ start_stack() {
         --bridge-timeout "${BRIDGE_TIMEOUT}" \
         --input remote \
         --remote-port "${RECEIVER_PORT}" \
-        --num-episodes 1 \
+        --num-episodes "${NUM_EPISODES}" \
         --max-steps "${MAX_STEPS}" \
         --output-dir "${DATASET_DIR}" \
         --session-id "${SESSION_ID}" \
@@ -467,7 +476,7 @@ run_stack() {
 
 main() {
   local command="${1:-}"
-  local force=0 no_camera=0 no_receiver=0 skip_usb=0 skip_can=0 skip_pip=0
+  local force=0 no_camera=0 no_receiver=0 skip_usb=0 skip_can=0 skip_pip="${EXCAVATOR_SKIP_PIP_INSTALL}"
   local tail_service=""
   if [[ -z "${command}" ]]; then
     usage
@@ -498,6 +507,9 @@ main() {
         ;;
       --skip-pip-install)
         skip_pip=1
+        ;;
+      --install-python-package)
+        skip_pip=0
         ;;
       -h|--help)
         usage

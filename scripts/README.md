@@ -95,6 +95,35 @@ python scripts/one_axis_bringup.py \
 The confirmation flag is required for non-zero commands even in simulation, so
 the same command line is deliberate when moved to hardware.
 
+## Axis Response Calibration
+
+Before increasing go-home speed or timeout, measure the hydraulic dead zone and
+latency one axis at a time. Run this on the slave while the bridge is already
+running:
+
+```bash
+python3 scripts/calibrate_axis_response.py \
+  --host 127.0.0.1 \
+  --port 8766 \
+  --axis boom \
+  --direction both \
+  --amplitudes 0.03,0.05,0.07,0.10,0.12 \
+  --duration-s 0.45 \
+  --settle-s 0.80 \
+  --abort-delta-rad 0.05 \
+  --confirm-hardware-motion
+```
+
+The script writes JSONL trials under `artifacts/axis_response/` and prints the
+first responsive command per direction. Use those measurements to tune
+go-home `min_action`, `max_action`, and `p_gain`; do not tune them from timeout
+alone.
+
+Go-home completion uses `success_tolerance_rad` plus stable velocity and
+`dwell_s`; `center_tolerance_rad` remains the tighter control target for fine
+positioning. If a joint consistently stalls just outside center, widen only that
+joint's success tolerance and keep the center band as the preferred target.
+
 ## Data Collection Wrapper
 
 On the slave, use the managed stack script for the current real-machine
@@ -107,6 +136,9 @@ scripts/slave_real_stack.sh run
 `run` starts the real CAN bridge, Orbbec camera, FPV SHM subscriber, gateway,
 and remote receiver, then follows all logs in the foreground. Press `Ctrl+C` in
 that terminal to stop the managed services in the safe order.
+The receiver starts from the already installed local environment by default; add
+`--install-python-package` only when the editable testbed package must be
+reinstalled on the slave.
 
 Useful variants:
 
@@ -131,8 +163,8 @@ of the Jetson:
 
 ```bash
 tb-dataset-qc-watch-ssh \
-  --ssh-host "${EXCAVATOR_SLAVE_IP:-192.168.31.170}" \
-  --ssh-user "${EXCAVATOR_SLAVE_SSH_USER:-$USER}" \
+  --ssh-host "${EXCAVATOR_SLAVE_SSH_HOST:-slave-jetson}" \
+  --ssh-user "${EXCAVATOR_SLAVE_SSH_USER:-mundane}" \
   --remote-dir "${EXCAVATOR_SLAVE_DATASET_DIR:-/media/mundane/EXTERNAL_USB/real_teleop_v1}" \
   --cache-dir data/qc_cache
 ```

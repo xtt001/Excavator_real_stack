@@ -3,7 +3,64 @@
 本文作为当前现场主从分体测试和录制的主文档，集中记录应启动的命令、链路检查、
 QC 和停止顺序。历史 runbook/checklist 已并入本页。
 
+当前主端 SSH 配置使用：
+
+```sshconfig
+Host slave-jetson
+  HostName 192.168.100.1
+  User mundane
+  ConnectTimeout 5
+```
+
+本文中的 SSH 命令优先使用 `slave-jetson`；非 SSH 的 TCP 控制链路使用
+`192.168.100.1`。
+
+当前现场以太网直连地址：
+
+| 设备 | 接口 | 地址 | 用途 |
+|------|------|------|------|
+| 主端 | `enx9c69d36f2e8b` | `192.168.100.2/24` | SSH/TCP 客户端 |
+| Jetson 从端 | `eno1` | `192.168.100.1/24` | SSH/TCP 服务端 |
+
+主端验证直连链路：
+
+```bash
+ip route get 192.168.100.1
+ping -c 3 192.168.100.1
+ssh slave-jetson 'hostname; ip -br addr show dev eno1'
+```
+
+如果本机有线口丢失静态地址，主端重新启用连接：
+
+```bash
+nmcli connection up '有线连接 1'
+```
+
+从主端查看 Jetson 温度：
+
+```bash
+ssh slave-jetson 'timeout 2s tegrastats --interval 1000 || true'
+```
+
 ## 最简现场流程
+
+### 0. 按需标定当前姿态为 home
+
+只在本次需要重标 home pose 时执行。先人工把机器开到正确 home 位，然后在主端执行：
+
+```bash
+cd ~/Excavator_real_stack
+./scripts/calibrate_home_pose_from_current.sh \
+  --ssh-host slave-jetson \
+  --ssh-user mundane
+```
+
+脚本会通过 SSH 读取从端 bridge 当前 4 轴 `qpos`，写入主端和从端的
+`testbed/testbed/configs/teleop_real_v1.yaml`。如果从端 bridge 没有运行，脚本会临时启动
+bridge/gateway 采样，完成后自动停止；如果 bridge 已经在运行，脚本只采样，不会停现场链路。
+重标 home 后需要重新启动 receiver，已经运行中的 receiver 不会自动重读配置。
+
+如果从端 CAN 尚未配置，可加 `--setup-can`；如果端口上有旧进程占用，可加 `--force-start`。
 
 ### 1. 从端启动全链路
 
@@ -14,6 +71,8 @@ cd /media/mundane/D/Excavator_real_stack
 
 该命令会启动 bridge、Orbbec、FPV SHM、gateway 和 receiver，并在当前终端持续显示日志。
 receiver 会立即接收主端 action、读取传感器并下发控制；只有按 record start 后才开始写 HDF5。
+从端 receiver 默认直接使用已安装的本地环境，不在启动路径里联网跑 `pip install`；只有确认需要重装
+editable package 时才加 `--install-python-package`。
 按一次 `Ctrl+C` 会先让 receiver 下发零命令并保存当前失败/中断片段，然后停止 gateway、FPV、
 Orbbec 和 bridge。不要连续按两次，除非必须立即放弃保存。
 默认 FPV 录制使用逐帧 JPEG Q95 写入 HDF5，训练读取时会自动解码成 RGB tensor。
@@ -22,6 +81,13 @@ Orbbec 和 bridge。不要连续按两次，除非必须立即放弃保存。
 
 ```bash
 candump -ta can2,18F021F6:1FFFFFFF
+```
+
+另开一个从端终端检查 `can3` 上 4 个 IMU 是否都在线：
+
+```bash
+cd /media/mundane/D/Excavator_real_stack
+./scripts/imu_can_probe.py --interface can3 --duration-s 3 --require-four
 ```
 
 ### 3. 主端 rqt 看图
@@ -50,10 +116,10 @@ rqt 里选择：
 cd ~/Excavator_real_stack
 export PYTHON="$HOME/miniforge3/envs/excavator-real-stack/bin/python"
 export GO_HOME_BUTTON=3
-"${PYTHON}" -m pip install --no-deps -e ./testbed
+"${PYTHON}" -m pip install --no-build-isolation --no-deps -e ./testbed
 "${PYTHON}" -m testbed.cli.teleop_remote \
   --config testbed/testbed/configs/teleop_real_v1.yaml \
-  --host 192.168.31.170 \
+  --host 192.168.100.1 \
   --port 8770 \
   --input joystick \
   --rate-hz 50 \
@@ -66,6 +132,13 @@ export GO_HOME_BUTTON=3
 `GO_HOME_BUTTON=3` 表示左侧物理摇杆从左到右数第 `3` 个按钮，和
 `--record-start-button 2` 一样使用真实外壳编号，不是 pygame 的零基 index。
 按钮 `3` 现在用于 go-home，不再发送原来的 crush 状态位。
+
+主端 sender 在交互式终端中默认显示固定刷新监控面板，类似 `top`：`action`、
+`status11`、`record_start`、`go_home` 和最近事件会停留在固定位置刷新，避免
+record/go-home 的单帧请求被周期 action 输出刷掉。若需要恢复旧的滚动日志输出，
+启动命令增加 `--no-monitor`；也可以用 `--monitor-interval-s` 调整刷新间隔。
+从端 receiver 会通过同一条 remote TCP 连接回传真实状态；go-home 成功保存后，主端面板应显示
+`receiver_mode=armed recording=no go_home=done saved=...`，而不是继续按本地按键推断录制中。
 
 ### 5. 点火和开始录制
 
@@ -83,32 +156,144 @@ export GO_HOME_BUTTON=3
 00 00 -> 00 01 -> 01 01 -> 01 05
 ```
 
-确认可以点火/控制后，按左侧手柄按钮 `2` 开始正式录制。按 `2` 之前，receiver 只接收并下发控制，
-不会写 HDF5 step。启用 go-home 后，episode 结束方式改为：人工先开到 home 附近，再按
-go-home 按钮；go-home 成功时 receiver 自动保存成功 episode，失败时保存到 `failed/`。
+确认可以点火/控制后，按左侧手柄按钮 `2` 开始正式录制。按 `2` 之前，receiver 处于
+receive/armed 状态：会接收主端 action 并下发控制，但不会写 HDF5 step。按钮 `3` 的
+go-home 在 receive/armed 和 recording 两种状态都可用：
+
+- receive/armed 时按 `3`：只做回 home 精调，不保存 HDF5，完成或失败后回到 receive/armed。
+- recording 时按 `3`：作为本 episode 的结束动作；go-home 成功时 receiver 自动保存成功
+  episode，然后回到 receive/armed 等下一次按钮 `2`；失败时保存到 `failed/`。
+
+主端 `teleop_remote` 退出或重启只会让从端 receiver 等待重连，不再停止从端 receiver 或把
+已 go-home 成功的 episode 改写成 `interrupted failed`。要停止从端全链路，回到从端运行
+`slave_real_stack.sh run --force` 的终端按一次 `Ctrl+C`。
+
+当前为 go-home 功能测试，启动门限临时设为
+`near_tolerance_rad: [999.0, 999.0, 999.0, 999.0]`，相当于暂时关闭
+near-home 启动门禁。测试区域后必须恢复为现场标定的有限范围；这个临时配置不代表
+可以安全地从任意远的位置自主回 home。
+
+不要直接把 go-home 速度调大。液压系统有死区和延迟时，先用单轴响应标定找每个轴的
+有效低速范围。该脚本每次只给一个轴一个小幅度命令，自动回零，并把 qpos/qvel 响应写到
+`artifacts/axis_response/*.jsonl`：
+
+```bash
+cd /media/mundane/D/Excavator_real_stack
+python3 scripts/calibrate_axis_response.py \
+  --host 127.0.0.1 \
+  --port 8766 \
+  --axis boom \
+  --direction both \
+  --amplitudes 0.03,0.05,0.07,0.10,0.12 \
+  --duration-s 0.45 \
+  --settle-s 0.80 \
+  --abort-delta-rad 0.05 \
+  --confirm-hardware-motion
+```
+
+确认 boom 安全后，再分别测 `stick`、`bucket`。用“刚能稳定产生正确方向 qpos/qvel”的
+最小幅度作为 go-home `min_action` 候选；用现场认为运动仍足够慢的幅度作为
+`max_action` 上限候选。
+
+如果现场认为“铲斗在 dig/dump 区域上方”都应该允许 go-home，需要先人工移动到几个边界姿态，
+用只读采样脚本记录关节范围：
+
+```bash
+cd ~/Excavator_real_stack
+./scripts/record_go_home_region_sample.sh --label dig_above --note "bucket above dig area left edge"
+./scripts/record_go_home_region_sample.sh --label dump_above --note "bucket above dump area"
+./scripts/record_go_home_region_sample.sh --label unsafe_too_far --note "do not allow go-home here"
+```
+
+脚本只通过 SSH 读取从端 bridge 的 `qpos/qvel`，不会下发动作。
 
 ### 6. 主端实时 QC
 
-正式录制时建议另开主端终端运行 SSH watcher。它只从从端拉取已经原子提交的
-`episode_*.hdf5` 到主端缓存，并在主端本地跑 QC，不在 Jetson 上跑 QC：
+正式录制时建议另开主端终端运行“今日在线 QC watcher”。它按主端当天日期筛选从端
+`episode_*.hdf5`，确认文件大小和 mtime 稳定后复制到主端
+`data/qc_today_${DAY}/episodes`，然后在主端重跑当天 dataset QC。日志会持续打印
+`QC OK/BAD` 和从指定 episode 开始的历史结果，例如：
+
+```text
+QC OK: success=4/4 rate=1.0 warnings=none
+QC episodes: episode_13:OK:steps=3980; episode_14:OK:steps=3764; episode_15:OK:steps=3873; episode_16:OK:steps=3897
+```
+
+这里的 `QC OK` 表示数据质量和录制结构检查通过：HDF5 可读、step 单调、shape/metadata/units/
+diagnostics 合法、没有 NaN/Inf、没有 QC warning/error。它不是“自动确认完成 dig-carry-dump
+任务”的语义成功判断；dig/carry/dump 需要另外配置 `phase_labeling.dig_swing_range` 和
+`phase_labeling.dump_swing_range` 后再做 phase label 检查。
 
 ```bash
 cd ~/Excavator_real_stack
 export PYTHON="$HOME/miniforge3/envs/excavator-real-stack/bin/python"
-"${PYTHON}" -m pip install --no-deps -e ./testbed
+"${PYTHON}" -m pip install --no-build-isolation --no-deps -e ./testbed
+chmod +x scripts/watch_today_qc_from_slave.sh
+
+DAY="$(date +%F)"
+BASE="data/qc_today_${DAY}"
+mkdir -p "${BASE}"
+
+setsid bash -c "cd ~/Excavator_real_stack || exit 1; \
+  echo \$\$ > '${BASE}/qc_watch.pid'; \
+  exec ./scripts/watch_today_qc_from_slave.sh \
+    --ssh-host slave-jetson \
+    --ssh-user mundane \
+    --remote-dir /media/mundane/EXTERNAL_USB/real_teleop_v1 \
+    --day '${DAY}' \
+    --base-dir '${BASE}' \
+    --history-from 13 \
+    >> '${BASE}/qc_watch.log' 2>&1" \
+  </dev/null >/dev/null 2>&1 &
+
+tail -f "${BASE}/qc_watch.log"
+```
+
+停止今日在线 QC watcher：
+
+```bash
+cd ~/Excavator_real_stack
+DAY="$(date +%F)"
+kill "$(cat "data/qc_today_${DAY}/qc_watch.pid")"
+```
+
+如果只需要旧的单 episode SSH watcher，不需要当天历史摘要，可以直接运行：
+
+```bash
+cd ~/Excavator_real_stack
+export PYTHON="$HOME/miniforge3/envs/excavator-real-stack/bin/python"
 MPLCONFIGDIR=/tmp/excavator_mpl "${PYTHON}" -m testbed.cli.dataset_qc_watch_ssh \
-  --ssh-host 192.168.31.170 \
+  --ssh-host slave-jetson \
   --ssh-user mundane \
   --remote-dir /media/mundane/EXTERNAL_USB/real_teleop_v1 \
   --cache-dir data/qc_cache \
   --output-dir data/qc_live
 ```
 
+如果今日在线 QC 已在后台运行，只看日志：
+
+```bash
+cd ~/Excavator_real_stack
+DAY="$(date +%F)"
+tail -f "data/qc_today_${DAY}/qc_watch.log"
+```
+
+手动核对从端今天实际有哪些 episode：
+
+```bash
+DAY="$(date +%F)"
+NEXT_DAY="$(date -d "${DAY} +1 day" +%F)"
+ssh slave-jetson \
+  "find /media/mundane/EXTERNAL_USB/real_teleop_v1 -maxdepth 1 -type f -name 'episode_*.hdf5' \
+   -newermt '${DAY} 00:00:00' ! -newermt '${NEXT_DAY} 00:00:00' \
+   -printf '%f\t%s\t%TY-%Tm-%Td %TH:%TM:%TS\n' | sort -V"
+```
+
 ## 运行分工
 
 | 端 | 负责内容 | 不应启动 |
 |----|----------|----------|
-| 从端 `192.168.31.170` | real CAN bridge、Orbbec、FPV 到 SHM、gateway、`tb-receiver-real` 本地写 USB | 主端手柄读取 |
+| 从端 `slave-jetson` / `192.168.100.1` | real CAN bridge、Orbbec、FPV 到 SHM、gateway、`tb-receiver-real` 本地写 USB | 主端手柄读取 |
 | 主端 | `tb-teleop-remote` 摇杆控制、QC | C++ real CAN bridge、训练 HDF5 写盘 |
 
 关键端口：
@@ -116,7 +301,7 @@ MPLCONFIGDIR=/tmp/excavator_mpl "${PYTHON}" -m testbed.cli.dataset_qc_watch_ssh 
 - 从端 receiver 连接本机 gateway：`127.0.0.1:8765`
 - 从端 control pump 直连本机 C++ bridge：`127.0.0.1:8766`
 - 从端 gateway 也连接本机 C++ bridge：`127.0.0.1:8766`，用于 `read_state` 和 FPV
-- 主端 remote action 连接从端 receiver：`192.168.31.170:8770`
+- 主端 remote action 连接从端 receiver：`192.168.100.1:8770`
 
 ## 从端启动命令
 
@@ -131,6 +316,10 @@ cd /media/mundane/D/Excavator_real_stack
 `tb-receiver-real --wait-for-record-start`，并在当前终端持续显示各服务日志。
 按一次 `Ctrl+C` 时脚本会先让 receiver 下发零命令并保存当前片段，再停止 gateway、
 FPV、Orbbec 和 bridge。不要连续按两次，除非必须立即放弃保存。
+
+统一脚本默认使用 `EXCAVATOR_CONTROL_MODE=open_loop_motor_speed` 启动 bridge。现场不要在
+未重新验证前切回 `closed_loop_velocity_scalar`：该模式在摇杆零输入时仍会用 IMU qvel
+跑底层速度 PID，可能导致 boom 在无摇杆输入时自运动。
 
 如果不想占住终端，也可以后台启动后按需看日志：
 
@@ -165,7 +354,7 @@ IMU 四个传感器地址检查。这个检查是只读的，只监听 `can3` �
 从主端一键检查从端 Jetson：
 
 ```bash
-ssh mundane@192.168.31.170 \
+ssh slave-jetson \
   'cd /media/mundane/D/Excavator_real_stack && \
    ./scripts/imu_can_probe.py --interface can3 --duration-s 3 --require-four'
 ```
@@ -228,6 +417,7 @@ ip -details link show can3
   --can-simulation false \
   --imu-simulation false \
   --create-mapping true \
+  --control-mode open_loop_motor_speed \
   --pid-yaml control/config/joint_pid.yaml \
   --heartbeat-timeout-ms 800
 ```
@@ -332,7 +522,7 @@ FAULT_HOLD 只把四维速度 action 钳成零；点火、remote mode、pilot �
 ```bash
 cd /media/mundane/D/Excavator_real_stack
 source .venv/bin/activate
-python -m pip install --no-deps -e ./testbed
+python -m pip install --no-build-isolation --no-deps -e ./testbed
 tb-receiver-real \
   --config testbed/testbed/configs/teleop_real_v1.yaml \
   --data-side slave \
@@ -342,7 +532,7 @@ tb-receiver-real \
   --bridge-port 8765 \
   --bridge-timeout 2.0 \
   --input remote \
-  --num-episodes 1 \
+  --num-episodes 1000000 \
   --max-steps 50000 \
   --output-dir /media/mundane/EXTERNAL_USB/real_teleop_v1 \
   --session-id remote_teleop_slave_record \
@@ -379,29 +569,37 @@ rqt 里选择：
 ## 主端摇杆控制命令
 
 当前 `testbed/testbed/configs/teleop_real_v1.yaml` 使用双手柄映射。
-现场只读测试确认：先操作的右侧物理摇杆对应 pygame `joystick 1`，
-后操作的左侧物理摇杆对应 pygame `joystick 0`。
+2026-05-28 现场只读 pygame 测试确认：
 
-| 关节 | pygame 设备/轴 | 手柄动作 | 说明 |
-|------|----------------|----------|------|
-| swing 回转 | `joystick 1 axis 0` | 1 号手柄左右推 | `axis 0` 是左右轴 |
-| boom 大臂 | `joystick 0 axis 1` | 0 号手柄前后推 | `axis 1` 是前后轴 |
-| stick 小臂 | `joystick 1 axis 1` | 1 号手柄前后推 | `axis 1` 是前后轴 |
-| bucket 铲斗 | `joystick 0 axis 0` | 0 号手柄左右推 | `axis 0` 是左右轴 |
-| 状态按钮 | `joystick 0` | 0 号手柄按钮 | remote mode、ignition、pilot 等状态位 |
+- 左侧物理摇杆对应 pygame `joystick 0`。
+- 右侧物理摇杆对应 pygame `joystick 1`。
+- 两个摇杆的 `axis 0` 都是左右 X 轴：左推为负，右推为正。
+- 两个摇杆的 `axis 1` 都是前后 Y 轴：前推为负，后拉为正。
 
-按当前配置 `invert: [false, false, false, false]`，左右摇杆动作对应的软件控制语义如下：
+2026-05-28 已按真实挖掘机习惯置换左右手柄控制：左手柄控制 `swing/stick`，
+右手柄控制 `boom/bucket`。现场确认左手柄前后用于 `swing`、左右用于 `stick`；
+只置换轴控制，不置换状态/录制/go-home 按钮。
 
-| 物理摇杆 | 操作方向 | 控制关节 | 当前软件输入 |
-|----------|----------|-------------|--------------|
-| 右侧摇杆 | 左推 | 回转 `swing` | `joystick 1 axis 0` 左方向 |
-| 右侧摇杆 | 右推 | 回转 `swing` | `joystick 1 axis 0` 右方向 |
-| 右侧摇杆 | 前推/上推 | 小臂 `stick` | `joystick 1 axis 1` 上方向 |
-| 右侧摇杆 | 后拉/下拉 | 小臂 `stick` | `joystick 1 axis 1` 下方向 |
-| 左侧摇杆 | 左推 | 铲斗 `bucket` | `joystick 0 axis 0` 左方向 |
-| 左侧摇杆 | 右推 | 铲斗 `bucket` | `joystick 0 axis 0` 右方向 |
-| 左侧摇杆 | 前推/上推 | 大臂 `boom` | `joystick 0 axis 1` 上方向 |
-| 左侧摇杆 | 后拉/下拉 | 大臂 `boom` | `joystick 0 axis 1` 下方向 |
+| 软件动作 | action index | pygame 设备/轴 | 当前 action 正方向 |
+|----------|--------------|----------------|--------------------|
+| swing 回转 | `action[0]` | `joystick 0 axis 1` + invert | 左侧物理摇杆前推为正，后拉为负 |
+| boom 大臂 | `action[1]` | `joystick 1 axis 1` | 右侧物理摇杆后拉为正，前推为负 |
+| stick 小臂 | `action[2]` | `joystick 0 axis 0` + invert | 左侧物理摇杆左推为正，右推为负 |
+| bucket 铲斗 | `action[3]` | `joystick 1 axis 0` | 右侧物理摇杆右推为正，左推为负 |
+| 状态按钮 | - | `joystick 0` | 左侧物理摇杆按钮发送 remote mode、ignition、pilot 等状态位 |
+
+按当前配置 `invert: [true, false, true, false]`，左右摇杆动作对应的软件控制语义如下：
+
+| 物理摇杆 | 操作方向 | 当前软件动作 | 当前 action |
+|----------|----------|----------------|-------------|
+| 左侧摇杆 | 前推 | 回转 `swing` 向左 | `action[0] > 0` |
+| 左侧摇杆 | 后拉 | 回转 `swing` 向右 | `action[0] < 0` |
+| 左侧摇杆 | 左推 | 小臂 `stick` 向上 | `action[2] > 0` |
+| 左侧摇杆 | 右推 | 小臂 `stick` 向下 | `action[2] < 0` |
+| 右侧摇杆 | 左推 | 铲斗 `bucket` | `action[3] < 0` |
+| 右侧摇杆 | 右推 | 铲斗 `bucket` | `action[3] > 0` |
+| 右侧摇杆 | 前推 | 大臂 `boom` | `action[1] < 0` |
+| 右侧摇杆 | 后拉 | 大臂 `boom` | `action[1] > 0` |
 
 `joystick 0/1` 是 pygame 启动日志里的设备编号，例如：
 
@@ -410,9 +608,66 @@ Joystick ready: [0 -> 0] ...
 Joystick ready: [1 -> 1] ...
 ```
 
-上表只说明“摇杆往哪个方向推，会控制哪个关节”。真机实际运动方向，例如回转向左还是向右、
-大臂上升还是下降、小臂伸出还是收回、铲斗收斗还是放斗，还需要第一次真机动作时做小幅单轴验证；
-如果某个关节方向反了，再改配置里的 `invert`。
+上表只说明“摇杆输入如何变成软件 action”。真机实际运动方向，例如回转向左还是向右、
+大臂上升还是下降、小臂伸出还是收回、铲斗收斗还是放斗，需要用真机小幅单轴动作观察
+`qpos/qvel` 正负号后再确认；如果某个输入方向反了，再改配置里的 `invert` 或底层轴映射。
+
+2026-05-28 置换左右手柄前，现场手动记录
+`artifacts/manual_response/20260528_143227.jsonl` 的初步现象：
+
+- `action[1]`/boom 对 `qpos[2]` 响应最明显，同时会影响 `qpos[1]`。
+- `action[2]`/stick 对 `qpos[3]` 响应最明显。
+- `action[3]`/bucket 在该次测试里没有明显带动 `qpos[3]`。
+- `action[0]`/swing 在该次测试里没有看到 `qpos[0]` 变化。
+
+这些现象说明当前 action 名称与真实 qpos 维度可能仍有错位；go-home 参数不能按名称直接调，
+必须先完成“action 维度 -> qpos 维度/方向”的小幅单轴验证。
+
+2026-05-28 置换左右手柄前，后续遥操作 qpos 正负号观察记录：
+`artifacts/manual_response/20260528_144354.jsonl`。全程 controller ack 正常，无 fault。
+
+| 软件动作 | 输入方向 | 主要 qpos 响应 | 当前判断 |
+|----------|----------|----------------|----------|
+| `action[1]` boom | 当时为左侧 Y 前推，`action[1] < 0` | `qpos[2]` 明显减小，`qpos[1]` 有耦合变化 | `action[1]` 正负号与 `qpos[2]` 同号，可先用于分析 |
+| `action[1]` boom | 当时为左侧 Y 后拉，`action[1] > 0` | `qpos[2]` 明显增大 | `action[1]` 正负号与 `qpos[2]` 同号 |
+| `action[2]` stick | 当时为右侧 Y 前推，`action[2] < 0` | `qpos[3]` 明显减小 | `action[2]` 正负号与 `qpos[3]` 同号，可先用于分析 |
+| `action[2]` stick | 当时为右侧 Y 后拉，`action[2] > 0` | `qpos[3]` 明显增大 | `action[2]` 正负号与 `qpos[3]` 同号 |
+| `action[3]` bucket | 当时为左侧 X 左/右 | `qpos[3]` 变化很小，响应不稳定 | 暂不能作为 bucket go-home 控制依据 |
+| `action[0]` swing | 当时为右侧 X 左/右 | `qpos[0]` 一直为 0；现场确认当时 swing IMU 掉线 | 暂不能判断 swing 方向，需单独重测或检查 swing qpos 反馈 |
+
+当前结论：`action[1] -> qpos[2]`、`action[2] -> qpos[3]` 的响应最清楚；
+`action[0]` 的 qpos 反馈和 `action[3]` 的真实动作链路仍需单独排查。
+
+2026-05-28 置换左右手柄后、但左手柄 X/Y 尚未按现场习惯旋转前，重新遥操作 qpos 观察记录：
+`artifacts/manual_response/20260528_145235.jsonl`。全程 controller ack 正常，无 fault；
+本次 swing IMU 已恢复，`qpos[0]` 有有效读数。
+
+| 软件动作 | 当前输入方向 | 主要 qpos/qvel 响应 | 当前判断 |
+|----------|--------------|---------------------|----------|
+| `action[0]` swing | 当时为左侧 X 左/右 | 最强相关为 `action[0] -> qvel[0]`，corr 约 `+0.67` | swing 反馈恢复，方向初步为同号；该物理输入方向已被后续配置改为左侧 Y 前/后 |
+| `action[1]` boom | 右侧 Y 前/后 | 最强相关为 `action[1] -> qvel[1]`，corr 约 `+0.76`；前推负时 `qpos[1]` 减小，后拉正时 `qpos[1]` 增大 | 同名、同号 |
+| `action[2]` stick | 当时为左侧 Y 前/后 | 最强相关为 `action[2] -> qvel[2]`，corr 约 `+0.69`；前推负时 `qpos[2]` 减小，后拉正时 `qpos[2]` 增大 | 同名、同号；该物理输入方向已被后续配置改为左侧 X 左/右 |
+| `action[3]` bucket | 右侧 X 左/右 | 最强相关为 `action[3] -> qvel[3]`，corr 约 `+0.62`；左推负时 `qpos[3]` 减小，右推正时 `qpos[3]` 增大 | 同名、同号 |
+
+2026-05-28 当前最终左手柄修正：`axis_map: [1, 1, 0, 0]`、
+`invert: [true, false, true, false]`，即左手柄 Y 控制 `action[0]`/swing，
+左手柄 X 控制 `action[2]`/stick，并且左手柄 X/Y 正负都已按现场观察反向。后续调
+go-home 时，应基于当前配置重新做一段短的单轴验证，不再使用置换前或左手柄 X/Y 旋转前的
+物理输入结论。
+
+2026-05-28 手动液压响应记录
+`artifacts/manual_response/20260528_150222.jsonl`。这次不是自动脉冲，而是人工从零逐渐推杆；
+统计只用于估计“能稳定产生运动”的控制幅度。当前建议 go-home 测试参数：
+
+| 轴 | 建议 `min_action` | 建议 `max_action` | 依据 |
+|----|-------------------|-------------------|------|
+| swing | `0.50` | `0.70` | swing qpos 噪声较大，约 `0.5+` 才有可见响应；需再用 go-home 实测确认 |
+| boom | `0.35` | `0.45` | `|action|≈0.40` 可产生约 `0.05 rad/s` 量级运动 |
+| stick | `0.42` | `0.55` | `|action|≈0.47` 可产生约 `0.07-0.15 rad/s` 运动 |
+| bucket | `0.50` | `0.60` | 负向约 `0.57` 稳定，正向约 `0.40-0.53` 已明显运动；取对称保守值 |
+
+当前 qvel 在零输入时有固定偏置，因此 go-home 的稳定速度阈值临时放宽为
+`qvel_stable_rad_s: [0.10, 0.30, 0.50, 0.35]`。这是现场测试配置，不代表最终安全参数。
 
 从端 `8770` 已经监听后，在主端启动 remote action sender。这里不用额外写两个
 `--joystick-id`，`--input joystick` 会按配置文件读取两个手柄。
@@ -426,10 +681,10 @@ Joystick ready: [1 -> 1] ...
 cd ~/Excavator_real_stack
 export PYTHON="$HOME/miniforge3/envs/excavator-real-stack/bin/python"
 export GO_HOME_BUTTON=3
-"${PYTHON}" -m pip install --no-deps -e ./testbed
+"${PYTHON}" -m pip install --no-build-isolation --no-deps -e ./testbed
 "${PYTHON}" -m testbed.cli.teleop_remote \
   --config testbed/testbed/configs/teleop_real_v1.yaml \
-  --host 192.168.31.170 \
+  --host 192.168.100.1 \
   --port 8770 \
   --input joystick \
   --rate-hz 50 \
@@ -438,6 +693,9 @@ export GO_HOME_BUTTON=3
   --go-home-button "${GO_HOME_BUTTON}" \
   --confirm-remote-control
 ```
+
+交互式终端会默认进入固定刷新监控面板，并显示从端 receiver 回传的真实
+`receiver_mode/recording/go_home/saved` 状态；如需旧的滚动日志输出，追加 `--no-monitor`。
 
 主端启动控制后，依次按下左侧摇杆从左到右编号的 `5`、`1`、`6`，观察 `candump` 里
 `18F021F6` 前两字节是否变化：
@@ -471,7 +729,8 @@ bridge 和 `can2`。
 紧急停止优先级：
 
 1. 第一优先级永远是机器实体急停、人工接管或现场电源/液压安全手段，不要只依赖软件按钮。
-2. 主端松开摇杆会发送零 action；按 `Ctrl+C` 停止 `teleop_remote` 时 sender 会尽量发送零 action/quit。
+2. 主端松开摇杆会发送零 action；按 `Ctrl+C` 停止 `teleop_remote` 时 sender 会尽量发送零 action，
+   从端 receiver 会等待主端重连。
 3. 从端可停止 receiver 或 bridge；必要时执行：
 
    ```bash
@@ -481,16 +740,80 @@ bridge 和 `can2`。
 4. 软件 estop 的手柄外壳按键尚未现场确认，本文档不写具体按键号。确认前不要把它当作
    唯一急停手段。
 
-确认点火/CAN 正常后，按左侧手柄按钮 `2` 开始正式录制。按键 `2` 之前的控制
-只会用于点火和 CAN 确认，不会写入 HDF5。录制过程中按一次 `Ctrl+C`，程序会
-先下发零命令，再停止当前 episode 并保存已有数据。
+确认点火/CAN 正常后，按左侧手柄按钮 `2` 开始正式录制。按键 `2` 之前 receiver
+仍处于 receive/armed 状态，会接收和下发控制，但不会写入 HDF5。从端
+`slave_real_stack.sh run --force` 终端按一次 `Ctrl+C` 时，程序会先下发零命令，再停止
+当前 episode 并保存已有数据；主端 `teleop_remote` 的 `Ctrl+C` 只断开主端 sender。
 
 go-home 第一版只用于 home pose 附近精调。启用前必须先在
 `testbed/testbed/configs/teleop_real_v1.yaml` 中填好
 `teleop.recording.go_home.home_pose_rad`，并把 `enabled` 改成 `true`；
-主端 sender 需要额外传 `--go-home-button 3`。go-home
-成功后 receiver 会自动保存成功 episode；go-home 失败会把当前片段保存到
-`failed/` 并写入失败原因。
+也可以用 `./scripts/calibrate_home_pose_from_current.sh` 在当前姿态采样并自动写入。
+主端 sender 需要额外传 `--go-home-button 3`。
+
+按钮 `3` 在 receive/armed 和 recording 两种状态都可用。receive/armed 时按 `3` 只做
+go-home，不保存 HDF5，完成或失败后回到 receive/armed；recording 时按 `3` 才作为
+episode 收尾，成功后 receiver 自动保存成功 episode，然后回到 receive/armed，继续允许
+joystick 控制并等待下一次按钮 `2`；失败时把当前片段保存到 `failed/` 并写入失败原因，
+然后也回到 receive/armed，不再因为 go-home timeout 锁死 joystick 控制。只有 receiver
+health 真实报错时才进入 `fault` 零输出保持。
+
+现场统一脚本默认 `EXCAVATOR_NUM_EPISODES=1000000`，避免完成一个 episode 后 receiver
+退出导致 joystick 失效。要临时只录固定数量，可启动前显式设置该环境变量。
+
+当前为 go-home 功能测试，启动门限临时设为
+`near_tolerance_rad: [999.0, 999.0, 999.0, 999.0]`，相当于暂时关闭
+near-home 启动门禁。测试区域后必须恢复为现场标定的有限范围。
+每次 go-home 失败后，先在从端用最近 HDF5 自动判断方向，不要凭观察直接改符号：
+
+```bash
+cd /media/mundane/D/Excavator_real_stack
+source .venv/bin/activate
+./scripts/analyze_go_home_direction.py
+```
+
+输出里 `recommendation=flip` 表示该轴在 go-home 段主动下发时 `|error|` 平均增大，
+需要检查或翻转 `control_signs` 对应轴。
+2026-05-28 现场测试中多次失败的末端误差主要卡在 bucket，swing 已在当前阈值内；
+一次失败停在 bucket 约 `0.1003 rad`，刚好超过 `0.10 rad` 临时阈值。因此测试阶段
+临时把 bucket 成功阈值放宽到 `0.12 rad`，并把 `timeout_s` 延长到 `40.0`，后续应根据
+最终接近速度重新收紧。
+当前 go-home 控制器是有界 PD，不再是纯 P：`p_gain * error - d_gain * qvel`。
+实际下发前会再乘 `control_signs`，用于处理 qpos 误差方向和底层液压 action 方向不一致的问题；
+这只影响 go-home，不改人工摇杆映射。2026-05-28 `episode_3_failed_20260528T081331`
+显示临时反向后的 `stick/action[2] > 0` 会让 `|error[2]|` 从约 `0.210` 增到 `0.685`，
+因此当前 4 轴 go-home 符号回到 `control_signs: [1.0, 1.0, 1.0, 1.0]`。
+控制目标是更小的 `center_tolerance_rad`，不是停在 `success_tolerance_rad` 边界；
+`resume_tolerance_rad` 提供轴级 hysteresis，只有误差重新超过 resume 才再次启轴，避免进出阈值
+时脉冲式抖动。当前现场测试按“直接从 `min_action` 起步”处理，`action_slew_rate` 设为
+`[0.0, 0.0, 0.0, 0.0]`，不再把速度拆成阶梯爬升；这个状态下的稳定性由 D 阻尼、
+`near_max_action` 和 hysteresis 控制。`episode_3_failed_20260528T082026` 里 swing 使用
+`|cmd|=0.50` 仍卡在约 `0.051 rad`，而手动响应记录
+`artifacts/manual_response/20260528_150222.csv` 显示 swing 在 `0.65-0.75` 区间响应更稳定、
+`0.75+` 开始明显偏快。2026-05-28 后续数据里，bucket 曾经先到 `0.0006 rad`
+附近又漂到 `0.056 rad`；这说明问题主要是液压延迟/过冲，不是简单放宽成功阈值。
+因此当前 4 轴现场测试参数为
+`p_gain: [0.60, 0.60, 0.60, 0.55]`、
+`d_gain: [0.12, 0.10, 0.10, 0.10]`、
+`center_tolerance_rad: [0.025, 0.030, 0.035, 0.050]`、
+`resume_tolerance_rad: [0.040, 0.045, 0.055, 0.075]`、
+`min_action_positive: [0.65, 0.35, 0.42, 0.50]`、
+`min_action_negative: [0.65, 0.22, 0.42, 0.50]`、
+`max_action: [0.80, 0.45, 0.55, 0.60]`、
+`near_max_action: [0.70, 0.38, 0.48, 0.55]`、
+`coast_stop_time_s: [0.25, 0.35, 0.30, 0.45]`。
+`coast_stop_time_s` 表示关节已经朝 home 移动且预计会进入 center 时提前停指令；
+如果停住后仍在 center 外，控制器会重新激活最大误差轴。`action[1] < 0` 是当前大臂下压方向，
+因此只把该方向的 boom 最小动作降到 `0.22`；bucket 仍保持原来的 `0.50`。
+receive/armed 或非录制 go-home 下，`fpv_stale` 只作为图像链路告警，不再触发控制 fault；
+recording 中仍会按数据质量问题处理。
+go-home 速度参数不要凭感觉直接调大；先运行
+`scripts/calibrate_axis_response.py` 做单轴响应标定，确认每个轴在小幅度命令下的死区、
+延迟、qpos 方向和 qvel 峰值，再回填
+`control_signs/min_action_positive/min_action_negative/max_action/near_max_action/p_gain/d_gain/coast_stop_time_s/action_slew_rate/timeout_s`。
+如果要把“dig/dump 区域上方”纳入允许范围，
+先用 `./scripts/record_go_home_region_sample.sh --label dig_above|dump_above|unsafe_too_far`
+采样边界姿态，再按样本范围调整配置。该采样脚本只读 qpos/qvel，不会下发动作。
 
 说明：当前 record 会先把本 episode 缓存在内存里，episode 结束时再写 HDF5；
 `--max-steps 50000` 是“足够大、靠手动结束”的现场用法，不建议单个 episode 连续录很久。
@@ -498,20 +821,16 @@ go-home 第一版只用于 home pose 附近精调。启用前必须先在
 
 ## 录完做 QC
 
-正式长时间录制建议优先用主端 SSH watcher 做实时 QC。watcher 只通过 SSH 列目录和拉取
-已完成的 `episode_*.hdf5`，QC 计算在主端本地缓存上执行，不占用从端 Jetson 的 Python/QC
-资源，也不依赖 sshfs 随机读 HDF5。
+正式长时间录制建议优先使用上文“主端实时 QC”的今日在线 QC watcher。watcher 只通过 SSH
+列目录和拉取已完成的 `episode_*.hdf5`，QC 计算在主端本地缓存上执行，不占用从端 Jetson
+的 Python/QC 资源，也不依赖 sshfs 随机读 HDF5。
+
+录制期间或录完后查看线上 QC 历史：
 
 ```bash
 cd ~/Excavator_real_stack
-export PYTHON="$HOME/miniforge3/envs/excavator-real-stack/bin/python"
-"${PYTHON}" -m pip install --no-deps -e ./testbed
-MPLCONFIGDIR=/tmp/excavator_mpl "${PYTHON}" -m testbed.cli.dataset_qc_watch_ssh \
-  --ssh-host 192.168.31.170 \
-  --ssh-user mundane \
-  --remote-dir /media/mundane/EXTERNAL_USB/real_teleop_v1 \
-  --cache-dir data/qc_cache \
-  --output-dir data/qc_live
+DAY="$(date +%F)"
+tail -f "data/qc_today_${DAY}/qc_watch.log"
 ```
 
 如果只是录制结束后的整包检查，也可以把 USB 拔回主端再跑完整 dataset QC：
@@ -519,7 +838,7 @@ MPLCONFIGDIR=/tmp/excavator_mpl "${PYTHON}" -m testbed.cli.dataset_qc_watch_ssh 
 ```bash
 cd ~/Excavator_real_stack
 export PYTHON="$HOME/miniforge3/envs/excavator-real-stack/bin/python"
-"${PYTHON}" -m pip install --no-deps -e ./testbed
+"${PYTHON}" -m pip install --no-build-isolation --no-deps -e ./testbed
 MPLCONFIGDIR=/tmp/excavator_mpl "${PYTHON}" -m testbed.cli.dataset_qc \
   --dataset-dir /media/mundane/EXTERNAL_USB/real_teleop_v1 \
   --output-dir /tmp/excavator_dataset_qc_$(date +%Y%m%d_%H%M%S) \

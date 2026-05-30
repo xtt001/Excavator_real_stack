@@ -24,6 +24,7 @@ log = logging.getLogger(__name__)
 
 REMOTE_ACTION_PROTOCOL_VERSION = 1
 REMOTE_ACTION_UPDATE = "remote_action.update"
+REMOTE_ACTION_STATUS = "remote_action.status"
 DEFAULT_REMOTE_ACTION_PORT = 8770
 DEFAULT_REMOTE_ACTION_TIMEOUT_MS = 200.0
 REMOTE_ACTION_EVENT_QUEUE_LIMIT = 64
@@ -45,6 +46,12 @@ class RemoteActionPacket:
     quit_requested: bool = False
     record_start_requested: bool = False
     go_home_requested: bool = False
+
+
+@dataclass(frozen=True)
+class RemoteReceiverStatus:
+    payload: dict[str, Any]
+    receive_time_ns: int
 
 
 @dataclass
@@ -96,6 +103,39 @@ def encode_remote_action_update(
         "payload": payload,
     }
     return json.dumps(message, separators=(",", ":"), sort_keys=True).encode("utf-8") + b"\n"
+
+
+def encode_remote_receiver_status(payload: Mapping[str, Any]) -> bytes:
+    message = {
+        "version": REMOTE_ACTION_PROTOCOL_VERSION,
+        "type": REMOTE_ACTION_STATUS,
+        "payload": dict(payload),
+    }
+    return json.dumps(message, separators=(",", ":"), sort_keys=True).encode("utf-8") + b"\n"
+
+
+def decode_remote_receiver_status(frame: bytes | str) -> dict[str, Any]:
+    text = frame.decode("utf-8") if isinstance(frame, bytes) else str(frame)
+    try:
+        message = json.loads(text.strip())
+    except json.JSONDecodeError as exc:
+        raise RemoteActionProtocolError(f"invalid remote status JSON: {exc}") from exc
+    if not isinstance(message, Mapping):
+        raise RemoteActionProtocolError("remote status frame must be a JSON object")
+    version = int(message.get("version", -1))
+    if version != REMOTE_ACTION_PROTOCOL_VERSION:
+        raise RemoteActionProtocolError(
+            f"unsupported remote action protocol version {version}; "
+            f"expected {REMOTE_ACTION_PROTOCOL_VERSION}"
+        )
+    if message.get("type") != REMOTE_ACTION_STATUS:
+        raise RemoteActionProtocolError(
+            f"unexpected remote status message type {message.get('type')!r}"
+        )
+    payload = message.get("payload", {})
+    if not isinstance(payload, Mapping):
+        raise RemoteActionProtocolError("remote status payload must be a JSON object")
+    return dict(payload)
 
 
 def decode_remote_action_update(frame: bytes | str) -> RemoteActionPacket:
@@ -162,6 +202,9 @@ class RemoteActionClient:
         self.timeout_s = float(timeout_s)
         self._sock: socket.socket | None = None
         self._lock = threading.RLock()
+        self._reader_stop = threading.Event()
+        self._reader_thread: threading.Thread | None = None
+        self._latest_status: RemoteReceiverStatus | None = None
 
     def connect(self) -> None:
         with self._lock:
@@ -170,6 +213,14 @@ class RemoteActionClient:
             sock = socket.create_connection((self.host, self.port), timeout=self.timeout_s)
             sock.settimeout(self.timeout_s)
             self._sock = sock
+            self._reader_stop.clear()
+            self._reader_thread = threading.Thread(
+                target=self._read_status_loop,
+                args=(sock,),
+                name="remote-action-status-reader",
+                daemon=True,
+            )
+            self._reader_thread.start()
 
     def send_update(
         self,
@@ -204,6 +255,7 @@ class RemoteActionClient:
 
     def close(self) -> None:
         with self._lock:
+            self._reader_stop.set()
             if self._sock is not None:
                 try:
                     self._sock.shutdown(socket.SHUT_RDWR)
@@ -211,6 +263,41 @@ class RemoteActionClient:
                     pass
                 self._sock.close()
                 self._sock = None
+            reader_thread = self._reader_thread
+            self._reader_thread = None
+        if reader_thread is not None:
+            reader_thread.join(timeout=1.0)
+
+    def latest_status(self) -> RemoteReceiverStatus | None:
+        with self._lock:
+            return self._latest_status
+
+    def _read_status_loop(self, sock: socket.socket) -> None:
+        buffer = b""
+        while not self._reader_stop.is_set():
+            try:
+                chunk = sock.recv(4096)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            if not chunk:
+                break
+            buffer += chunk
+            while b"\n" in buffer:
+                line, buffer = buffer.split(b"\n", 1)
+                if not line.strip():
+                    continue
+                try:
+                    payload = decode_remote_receiver_status(line)
+                except RemoteActionProtocolError as exc:
+                    log.debug("Ignoring non-status remote frame on client: %s", exc)
+                    continue
+                with self._lock:
+                    self._latest_status = RemoteReceiverStatus(
+                        payload=payload,
+                        receive_time_ns=time.time_ns(),
+                    )
 
     def __enter__(self) -> "RemoteActionClient":
         self.connect()
@@ -242,6 +329,7 @@ class RemoteActionSource(ActionSource):
         self._connected = False
         self._pending_events: deque[_PendingRemoteEvent] = deque()
         self._client_sock: socket.socket | None = None
+        self._send_lock = threading.RLock()
 
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -369,6 +457,18 @@ class RemoteActionSource(ActionSource):
             except OSError:
                 pass
         self._thread.join(timeout=1.0)
+
+    def publish_status(self, payload: Mapping[str, Any]) -> None:
+        frame = encode_remote_receiver_status(payload)
+        with self._lock:
+            client = self._client_sock
+        if client is None:
+            return
+        with self._send_lock:
+            try:
+                client.sendall(frame)
+            except OSError:
+                return
 
     @staticmethod
     def _diagnostic_extras(

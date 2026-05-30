@@ -35,7 +35,7 @@ real:
     host:
       dataset_dir: data/real_teleop_v1
       bridge:
-        host: "192.168.31.170"   # 从端固定 IP；覆盖: EXCAVATOR_BRIDGE_HOST
+        host: "192.168.100.1"    # 从端控制链路 IP；覆盖: EXCAVATOR_BRIDGE_HOST
         port: 8765
     slave:
       dataset_dir: /data/real_teleop_v1
@@ -54,9 +54,13 @@ teleop:
 
   joystick:
     joystick_id: 0
-    joystick_ids: [1, 0, 1, 0]
-    axis_map: [0, 1, 1, 0]
-    invert: [false, false, false, false]
+    # 2026-05-28 现场置换为真实挖机习惯：
+    # left joystick(0): Y=swing, X=stick; right joystick(1): Y=boom, X=bucket.
+    # Buttons stay on left joystick via button_joystick_ids/status_button_device below.
+    joystick_ids: [0, 1, 0, 1]
+    axis_map: [1, 1, 0, 0]
+    # Left joystick sign is inverted after 2026-05-28 manual validation.
+    invert: [true, false, true, false]
     # reset 勿用 button10：与 excavator_api status bit10（急停）冲突
     reset_button: null
     # 现场目标映射：左侧手柄从左到右第 2 个按键对应 pygame button index 1；只用于开始写 HDF5
@@ -103,22 +107,111 @@ teleop:
   recording:
     wait_for_start: true
     go_home:
-      enabled: false
+      enabled: true
       # 必须现场标定后填写，顺序为 [swing, boom, stick, bucket]，单位 rad。
-      home_pose_rad: null
-      near_tolerance_rad: [0.20, 0.20, 0.20, 0.20]
-      success_tolerance_rad: [0.03, 0.03, 0.03, 0.03]
-      p_gain: [1.2, 1.2, 1.2, 1.2]
-      max_action: [0.20, 0.20, 0.20, 0.20]
-      qvel_stable_rad_s: [0.02, 0.02, 0.02, 0.02]
+      home_pose_rad: [2.559211, -0.011737, -0.458603, -0.852192]
+      # TEMP for go-home function testing: disables the near-home start gate.
+      # Restore to a calibrated finite region after area testing.
+      near_tolerance_rad: [999.0, 999.0, 999.0, 999.0]
+      # TEMP for go-home function testing: bucket ended at ~0.091 rad error in the
+      # 20260528 field run while still moving slowly, so keep bucket tolerance
+      # wider until the final approach speed is re-tuned. Stick is allowed a
+      # slightly wider success band because field runs can stall near center.
+      success_tolerance_rad: [0.05, 0.05, 0.08, 0.12]
+      # Controller still aims at the tighter center tolerance, but go-home may
+      # finish once the wider success tolerance and stable dwell are satisfied.
+      # Resume tolerance adds hysteresis to prevent on/off pulsing near home.
+      center_tolerance_rad: [0.025, 0.030, 0.035, 0.050]
+      resume_tolerance_rad: [0.040, 0.045, 0.055, 0.075]
+      # PD control; D term damps motion that is already moving toward home.
+      # Go-home qpos error to low-level action sign.
+      # 20260528T081331 failed HDF5 showed stick/action[2] moving away from home
+      # after the temporary inverted sign, so current go-home signs are all same-sign.
+      control_signs: [1.0, 1.0, 1.0, 1.0]
+      p_gain: [0.60, 0.60, 0.60, 0.55]
+      d_gain: [0.12, 0.10, 0.10, 0.10]
+      # From artifacts/manual_response/20260528_150222.jsonl plus
+      # episode_3_failed_20260528T082026 swing timeout analysis.
+      # [swing, boom, stick, bucket]; compensates hydraulic dead-zone.
+      min_action: [0.65, 0.35, 0.46, 0.60]
+      # Optional directional overrides. Boom lowering is action[1] < 0 in the
+      # current joystick mapping and showed visible jitter, so lower only that
+      # side first.
+      min_action_positive: [0.65, 0.30, 0.46, 0.60]
+      min_action_negative: [0.65, 0.24, 0.46, 0.60]
+      max_action: [0.80, 0.45, 0.60, 0.60]
+      near_max_action: [0.70, 0.38, 0.52, 0.60]
+      # Stop sending command early when the joint is already moving toward the
+      # center. This compensates hydraulic delay without accepting a larger
+      # final error; if the joint stalls outside center, the controller
+      # reactivates the largest remaining error.
+      coast_stop_time_s: [0.25, 1.20, 0.30, 0.45]
+      # After a coast stop, wait briefly before reactivating the same axis. This
+      # gives the hydraulic response time to appear in qpos/qvel and avoids
+      # 50Hz on/off pulsing near the center boundary.
+      coast_reactivation_delay_s: [0.20, 1.20, 0.25, 0.35]
+      # Keep global slew disabled so each active axis starts immediately at
+      # dead-zone-compensating min_action, instead of ramping from zero.
+      action_slew_rate: [0.0, 0.0, 0.0, 0.0]
+      # Once active, cap the command at min_action first, then let the cap grow
+      # smoothly toward max_action. This avoids an initial max-action step while
+      # still starting above the hydraulic dead-zone.
+      action_ramp_rate: [0.30, 0.15, 0.20, 0.20]
+      # Run one joint at a time to avoid hydraulic flow sharing and axis
+      # coupling. Current field order: boom first, then stick, bucket, swing.
+      axis_order: [boom, stick, bucket, swing]
+      max_active_axes: 1
+      # Near the center, boom should keep a small continuous command instead of
+      # dropping to zero and restarting. This reduces the visible down/stop/down
+      # valve chatter while keeping the final approach slow.
+      center_approach_action: [0.0, 0.18, 0.0, 0.0]
+      # Recompute the outer PD/dead-zone decision at 10Hz and hold the command
+      # between decisions. This avoids 50Hz threshold chatter from hydraulic
+      # delay and IMU vibration.
+      control_decision_period_s: 0.10
+      # Boom hydraulic valve response lags command reversals. Do not switch
+      # directly from lowering to lifting unless the valve has had time to
+      # settle and the reverse error is clearly outside the center band.
+      sign_reversal_delay_s: [0.0, 1.50, 0.0, 0.0]
+      sign_reversal_min_error_rad: [0.0, 0.120, 0.0, 0.0]
+      # Control uses filtered feedback to avoid IMU vibration feeding directly
+      # back into PD and threshold decisions. Raw qpos/qvel are still recorded
+      # in diagnostics for later inspection.
+      qpos_filter_tau_s: [0.10, 0.10, 0.10, 0.12]
+      qvel_filter_tau_s: [0.18, 0.18, 0.18, 0.20]
+      # An axis must stay inside center for this long before its active latch is
+      # released. Episode success still uses the global dwell_s below.
+      axis_center_hold_s: [0.10, 0.10, 0.10, 0.15]
+      # If an active axis receives at least min_action but qpos/qvel show no
+      # effective progress, gradually raise that axis command toward max_action.
+      # This is different from action_slew_rate: normal go-home still starts
+      # directly at min_action, and only stalled axes are boosted.
+      stall_detection_s: 1.0
+      stall_boost_interval_s: 0.8
+      stall_action_step: [0.03, 0.02, 0.03, 0.03]
+      stall_error_progress_rad: [0.004, 0.004, 0.004, 0.003]
+      # Latest go-home data showed boom can report ~0.06 rad/s filtered qvel
+      # while making almost no position progress. Use a wider boom threshold so
+      # stall boost is driven by lack of error progress, not blocked by IMU bias.
+      stall_qvel_threshold_rad_s: [0.012, 0.080, 0.012, 0.010]
+      # If an active axis moves farther from home, stop pushing it and let
+      # other axes continue. This protects against physical limits and wrong
+      # effective direction under load; currently enabled only for bucket.
+      wrong_direction_detection_s: 0.4
+      wrong_direction_error_increase_rad: [999.0, 999.0, 999.0, 0.08]
+      wrong_direction_cooldown_s: [0.0, 0.0, 0.0, 2.0]
+      # Current qvel has non-zero bias at zero command, so these are intentionally wider.
+      qvel_stable_rad_s: [0.10, 0.30, 0.50, 0.35]
       dwell_s: 0.4
-      timeout_s: 8.0
+      # Latest field run still had bucket error decreasing at 40s; keep a
+      # larger timeout while using conservative bucket commands.
+      timeout_s: 100.0
       runaway_error_factor: 1.5
 
 phase_labeling:
   # 离线 phase labeler 使用；真实数值必须现场标定后填写。
-  home_pose_rad: null
-  near_home_tolerance_rad: [0.20, 0.20, 0.20, 0.20]
+  home_pose_rad: [2.559211, -0.011737, -0.458603, -0.852192]
+  near_home_tolerance_rad: [0.25, 0.25, 0.45, 0.25]
   dig_swing_range: null
   dump_swing_range: null
   swing_velocity_threshold_rad_s: 0.02

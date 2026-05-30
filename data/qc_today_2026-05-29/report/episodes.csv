@@ -1,0 +1,10 @@
+episode_id,path,n_steps,success,has_images,has_env_state,env_state_dim,step_ids_monotonic,has_step_ns,action_dim,qpos_dim,qvel_dim,timestamp,operator_id,session_id,profile,is_real,platform,guard_trigger_rate,controller_ack_rate,warnings,error
+episode_13,data/qc_today_2026-05-29/episodes/episode_13.hdf5,3980,1,1,1,8,1,1,4,4,4,2026-05-29T05:06:14.917215,,remote_teleop_slave_record,real,1,real_excavator,0.0,1.0,,
+episode_14,data/qc_today_2026-05-29/episodes/episode_14.hdf5,3764,1,1,1,8,1,1,4,4,4,2026-05-29T05:12:23.806492,,remote_teleop_slave_record,real,1,real_excavator,0.0,1.0,,
+episode_15,data/qc_today_2026-05-29/episodes/episode_15.hdf5,3873,1,1,1,8,1,1,4,4,4,2026-05-29T05:33:14.992410,,remote_teleop_slave_record,real,1,real_excavator,0.0,1.0,,
+episode_16,data/qc_today_2026-05-29/episodes/episode_16.hdf5,3897,1,1,1,8,1,1,4,4,4,2026-05-29T05:35:48.771367,,remote_teleop_slave_record,real,1,real_excavator,0.0,1.0,,
+episode_17,data/qc_today_2026-05-29/episodes/episode_17.hdf5,4654,1,1,1,8,1,1,4,4,4,2026-05-29T05:46:32.709660,,remote_teleop_slave_record,real,1,real_excavator,0.0,1.0,,
+episode_18,data/qc_today_2026-05-29/episodes/episode_18.hdf5,3901,1,1,1,8,1,1,4,4,4,2026-05-29T05:49:10.467727,,remote_teleop_slave_record,real,1,real_excavator,0.0,1.0,,
+episode_19,data/qc_today_2026-05-29/episodes/episode_19.hdf5,3551,1,1,1,8,1,1,4,4,4,2026-05-29T05:51:55.608989,,remote_teleop_slave_record,real,1,real_excavator,0.0,1.0,,
+episode_20,data/qc_today_2026-05-29/episodes/episode_20.hdf5,2975,1,1,1,8,1,1,4,4,4,2026-05-29T05:54:15.495480,,remote_teleop_slave_record,real,1,real_excavator,0.0,1.0,,
+episode_21,data/qc_today_2026-05-29/episodes/episode_21.hdf5,5567,1,1,1,8,1,1,4,4,4,2026-05-29T05:57:13.260082,,remote_teleop_slave_record,real,1,real_excavator,0.0,1.0,,

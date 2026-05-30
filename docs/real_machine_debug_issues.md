@@ -88,7 +88,7 @@
 在主端执行，检查 Jetson 是否识别到磁盘：
 
 ```bash
-ssh mundane@192.168.31.170 \
+ssh slave-jetson \
   'lsblk -e7 -o NAME,PATH,SIZE,TYPE,FSTYPE,LABEL,UUID,MOUNTPOINTS,MODEL'
 ```
 
@@ -101,19 +101,19 @@ nvme0n1 /dev/nvme0n1 953.9G disk ext4 D 8f5abb03-6257-4003-b99f-731521214775
 检查挂载状态：
 
 ```bash
-ssh mundane@192.168.31.170 'findmnt /media/mundane/D || true'
+ssh slave-jetson 'findmnt /media/mundane/D || true'
 ```
 
 检查挂载点是否只是空目录：
 
 ```bash
-ssh mundane@192.168.31.170 'ls -la /media/mundane/D'
+ssh slave-jetson 'ls -la /media/mundane/D'
 ```
 
 检查仓库是否可见：
 
 ```bash
-ssh mundane@192.168.31.170 \
+ssh slave-jetson \
   'find /media/mundane/D -maxdepth 5 -type d -name Excavator_real_stack 2>/dev/null'
 ```
 
@@ -122,7 +122,7 @@ ssh mundane@192.168.31.170 \
 手动挂载 1TB NVMe：
 
 ```bash
-ssh mundane@192.168.31.170
+ssh slave-jetson
 sudo mkdir -p /media/mundane/D
 sudo mount /dev/disk/by-label/D /media/mundane/D
 ```
@@ -209,7 +209,7 @@ ls /media/mundane/D/Excavator_real_stack
 
 ### 关联文件/配置
 
-- Jetson 从端：`192.168.31.170`
+- Jetson 从端：SSH `slave-jetson`，控制链路 `192.168.100.1`
 - 1TB NVMe：`/dev/nvme0n1`
 - 挂载点：`/media/mundane/D`
 - 仓库路径：`/media/mundane/D/Excavator_real_stack`

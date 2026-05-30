@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import logging
+import shutil
 import signal
 import sys
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -127,7 +129,27 @@ def main() -> None:
         "--log-interval-s",
         type=float,
         default=1.0,
-        help="Interval for action sender status logs.",
+        help="Interval for action sender status logs when the fixed monitor is disabled.",
+    )
+    monitor_group = parser.add_mutually_exclusive_group()
+    monitor_group.add_argument(
+        "--monitor",
+        dest="monitor",
+        action="store_true",
+        default=None,
+        help="Show a fixed top-like sender status monitor. Defaults to on for TTY stdout.",
+    )
+    monitor_group.add_argument(
+        "--no-monitor",
+        dest="monitor",
+        action="store_false",
+        help="Disable the fixed monitor and use periodic log lines instead.",
+    )
+    parser.add_argument(
+        "--monitor-interval-s",
+        type=float,
+        default=0.1,
+        help="Minimum redraw interval for the fixed sender status monitor.",
     )
     args = parser.parse_args()
 
@@ -225,9 +247,19 @@ def main() -> None:
 
     seq = 0
     last_log_s = 0.0
+    monitor_enabled = sys.stdout.isatty() if args.monitor is None else bool(args.monitor)
+    monitor = _RemoteTeleopMonitor(
+        enabled=monitor_enabled,
+        target=f"{args.host}:{port}",
+        input_device=input_device,
+        rate_hz=rate_hz,
+        source_id=source_id,
+        min_interval_s=float(args.monitor_interval_s),
+    )
     try:
         client.connect()
         action_source.reset()
+        monitor.start()
         while not abort:
             action, info = action_source.next_action({})
             extras = getattr(info, "extras", {}) or {}
@@ -256,18 +288,31 @@ def main() -> None:
                 "quit": bool(extras.get("quit_requested", False)),
             }
             if any(event_flags.values()):
-                log.info(
-                    "remote_event seq=%d toggle_mask=%d record_start=%s go_home=%s reset=%s discard=%s quit=%s",
-                    seq,
-                    event_flags["toggle_mask"],
-                    event_flags["record_start"],
-                    event_flags["go_home"],
-                    event_flags["reset"],
-                    event_flags["discard"],
-                    event_flags["quit"],
-                )
+                if not monitor.enabled:
+                    log.info(
+                        "remote_event seq=%d toggle_mask=%d record_start=%s go_home=%s reset=%s discard=%s quit=%s",
+                        seq,
+                        event_flags["toggle_mask"],
+                        event_flags["record_start"],
+                        event_flags["go_home"],
+                        event_flags["reset"],
+                        event_flags["discard"],
+                        event_flags["quit"],
+                    )
             now_s = time.monotonic()
-            if now_s - last_log_s >= float(args.log_interval_s):
+            if monitor.enabled:
+                monitor.update(
+                    seq=seq,
+                    action=action,
+                    info=info,
+                    extras=extras,
+                    event_flags=event_flags,
+                    receiver_status=client.latest_status(),
+                )
+            elif (
+                float(args.log_interval_s) > 0.0
+                and now_s - last_log_s >= float(args.log_interval_s)
+            ):
                 last_log_s = now_s
                 log.info(
                     "remote_action seq=%d action=%s toggle_mask=%d",
@@ -282,6 +327,7 @@ def main() -> None:
     except KeyboardInterrupt:
         abort = True
     finally:
+        monitor.finish()
         _send_stop(client, seq=seq, source_id=source_id)
         action_source.close()
         client.close()
@@ -335,6 +381,283 @@ def _sleep_to_rate(rate_hz: float) -> None:
 def _format_action(action: Any) -> str:
     values = np.asarray(action, dtype=np.float32).reshape(-1)
     return "[" + ",".join(f"{float(value):+.3f}" for value in values) + "]"
+
+
+class _RemoteTeleopMonitor:
+    def __init__(
+        self,
+        *,
+        enabled: bool,
+        target: str,
+        input_device: str,
+        rate_hz: float,
+        source_id: str,
+        min_interval_s: float,
+    ) -> None:
+        self.enabled = bool(enabled)
+        self.target = str(target)
+        self.input_device = str(input_device)
+        self.rate_hz = float(rate_hz)
+        self.source_id = str(source_id)
+        self.min_interval_s = max(0.02, float(min_interval_s))
+        self._started = False
+        self._start_s = 0.0
+        self._last_update_s: float | None = None
+        self._last_draw_s = 0.0
+        self._hz_ema: float | None = None
+        self._event_history: deque[str] = deque(maxlen=8)
+        self._event_counts = {
+            "toggle": 0,
+            "record_start": 0,
+            "go_home": 0,
+            "reset": 0,
+            "discard": 0,
+            "quit": 0,
+        }
+        self._last_event_by_name: dict[str, tuple[int, float]] = {}
+        self._last_receiver_key: tuple[str, int, int, int, str, str] | None = None
+
+    def start(self) -> None:
+        if not self.enabled:
+            return
+        self._started = True
+        self._start_s = time.monotonic()
+        sys.stdout.write("\033[?25l\033[2J\033[H")
+        sys.stdout.flush()
+
+    def update(
+        self,
+        *,
+        seq: int,
+        action: Any,
+        info: ActionInfo,
+        extras: dict[str, Any],
+        event_flags: dict[str, Any],
+        receiver_status: Any | None,
+    ) -> None:
+        if not self.enabled:
+            return
+        now_s = time.monotonic()
+        if self._last_update_s is not None:
+            dt_s = max(1e-6, now_s - self._last_update_s)
+            inst_hz = 1.0 / dt_s
+            self._hz_ema = (
+                inst_hz
+                if self._hz_ema is None
+                else (0.85 * self._hz_ema + 0.15 * inst_hz)
+            )
+        self._last_update_s = now_s
+        self._record_events(seq=seq, now_s=now_s, event_flags=event_flags)
+        self._record_receiver_status(now_s=now_s, receiver_status=receiver_status)
+        if now_s - self._last_draw_s < self.min_interval_s and not any(
+            event_flags.values()
+        ):
+            return
+        self._last_draw_s = now_s
+        self._draw(
+            seq=seq,
+            action=action,
+            info=info,
+            extras=extras,
+            now_s=now_s,
+            receiver_status=receiver_status,
+        )
+
+    def finish(self) -> None:
+        if not self.enabled or not self._started:
+            return
+        sys.stdout.write("\033[?25h\n")
+        sys.stdout.flush()
+        self._started = False
+
+    def _record_events(
+        self,
+        *,
+        seq: int,
+        now_s: float,
+        event_flags: dict[str, Any],
+    ) -> None:
+        names: list[str] = []
+        toggle_mask = int(event_flags.get("toggle_mask", 0) or 0)
+        if toggle_mask:
+            names.append(f"toggle_mask=0x{toggle_mask:x}")
+            self._event_counts["toggle"] += 1
+            self._last_event_by_name["toggle"] = (int(seq), now_s)
+        for key, label in (
+            ("record_start", "record_start_requested"),
+            ("go_home", "go_home_requested"),
+            ("reset", "reset_requested"),
+            ("discard", "discard_requested"),
+            ("quit", "quit_requested"),
+        ):
+            if bool(event_flags.get(key, False)):
+                names.append(label)
+                self._event_counts[key] += 1
+                self._last_event_by_name[key] = (int(seq), now_s)
+        if names:
+            stamp = time.strftime("%H:%M:%S")
+            self._event_history.appendleft(
+                f"{stamp} seq={int(seq)} " + " ".join(names)
+            )
+
+    def _record_receiver_status(
+        self,
+        *,
+        now_s: float,
+        receiver_status: Any | None,
+    ) -> None:
+        if receiver_status is None:
+            return
+        payload = dict(getattr(receiver_status, "payload", {}) or {})
+        key = (
+            str(payload.get("receiver_mode", "")),
+            int(payload.get("recording", 0) or 0),
+            int(payload.get("episode_idx", -1) or -1),
+            int(payload.get("saved", -1) or -1),
+            str(payload.get("go_home_result", "")),
+            str(payload.get("message", "")),
+        )
+        if getattr(self, "_last_receiver_key", None) == key:
+            return
+        self._last_receiver_key = key
+        stamp = time.strftime("%H:%M:%S")
+        rec = "yes" if key[1] else "no"
+        go_home = key[4] or "-"
+        message = f" msg={key[5]}" if key[5] else ""
+        self._event_history.appendleft(
+            f"{stamp} receiver mode={key[0] or '-'} rec={rec} "
+            f"episode={key[2]} saved={key[3]} go_home={go_home}{message}"
+        )
+
+    def _draw(
+        self,
+        *,
+        seq: int,
+        action: Any,
+        info: ActionInfo,
+        extras: dict[str, Any],
+        now_s: float,
+        receiver_status: Any | None,
+    ) -> None:
+        width = max(60, _terminal_width())
+        hz_text = "-" if self._hz_ema is None else f"{self._hz_ema:.1f}"
+        uptime_s = max(0.0, now_s - self._start_s)
+        latency = getattr(info, "latency_ms", None)
+        latency_text = "-" if latency is None else f"{float(latency):.2f}"
+        status11 = extras.get("status11")
+        status_text = _format_status_bits(status11)
+        toggle_mask = int(extras.get("toggle_mask", 0) or 0)
+        record_last = self._format_last_event("record_start", now_s)
+        go_home_last = self._format_last_event("go_home", now_s)
+        source = getattr(info, "source_id", "") or self.source_id
+        lines = [
+            "Remote Teleop Sender Monitor",
+            (
+                f"target={self.target} input={self.input_device} "
+                f"source={self.source_id} configured_hz={self.rate_hz:.1f}"
+            ),
+            (
+                f"seq={int(seq)} measured_hz={hz_text} uptime={uptime_s:.1f}s "
+                f"joystick_latency_ms={latency_text}"
+            ),
+            f"action={_format_action(action)} source_info={source}",
+            f"status11={status_text} toggle_mask=0x{toggle_mask:x}",
+            _format_receiver_status(receiver_status),
+            (
+                "record_start: "
+                f"pulse={_yes_no(extras.get('record_start_requested', False))} "
+                f"count={self._event_counts['record_start']} last={record_last}"
+            ),
+            (
+                "go_home:      "
+                f"pulse={_yes_no(extras.get('go_home_requested', False))} "
+                f"count={self._event_counts['go_home']} last={go_home_last}"
+            ),
+            (
+                "other events: "
+                f"toggle={self._event_counts['toggle']} "
+                f"reset={self._event_counts['reset']} "
+                f"discard={self._event_counts['discard']} "
+                f"quit={self._event_counts['quit']}"
+            ),
+            "",
+            "Recent events:",
+        ]
+        if self._event_history:
+            lines.extend(f"  {item}" for item in self._event_history)
+        else:
+            lines.append("  -")
+        rendered = "\n".join(_fit_line(line, width) for line in lines)
+        sys.stdout.write("\033[H" + rendered + "\033[J")
+        sys.stdout.flush()
+
+    def _format_last_event(self, name: str, now_s: float) -> str:
+        item = self._last_event_by_name.get(name)
+        if item is None:
+            return "-"
+        seq, event_s = item
+        return f"seq={seq} age={max(0.0, now_s - event_s):.1f}s"
+
+
+def _terminal_width() -> int:
+    try:
+        return int(shutil.get_terminal_size((120, 20)).columns)
+    except Exception:
+        return 120
+
+
+def _fit_line(text: str, width: int) -> str:
+    if len(text) >= width:
+        return text[: max(1, width - 1)]
+    return text.ljust(width - 1)
+
+
+def _format_status_bits(status: Any) -> str:
+    if status is None:
+        return "-"
+    try:
+        values = [int(bool(value)) for value in status]
+    except TypeError:
+        return "-"
+    return "[" + "".join(str(value) for value in values) + "]"
+
+
+def _yes_no(value: Any) -> str:
+    return "YES" if bool(value) else "no"
+
+
+def _format_receiver_status(receiver_status: Any | None) -> str:
+    if receiver_status is None:
+        return "receiver=waiting_for_status"
+    payload = dict(getattr(receiver_status, "payload", {}) or {})
+    receive_time_ns = int(getattr(receiver_status, "receive_time_ns", 0) or 0)
+    age_ms = (
+        "-"
+        if receive_time_ns <= 0
+        else f"{max(0.0, (time.time_ns() - receive_time_ns) / 1_000_000.0):.0f}"
+    )
+    mode = str(payload.get("receiver_mode", "-") or "-")
+    recording = "yes" if int(payload.get("recording", 0) or 0) else "no"
+    episode = int(payload.get("episode_idx", -1) or -1)
+    saved = int(payload.get("saved", 0) or 0)
+    steps = int(payload.get("record_steps", 0) or 0)
+    health = "OK" if int(payload.get("receiver_health_ok", 1) or 0) else "ERR"
+    health_error = str(payload.get("receiver_health_error", "") or "-")
+    go_home = str(payload.get("go_home_result", "") or "-")
+    message = str(payload.get("message", "") or "")
+    saved_path = str(payload.get("saved_path", "") or "")
+    saved_name = Path(saved_path).name if saved_path else ""
+    suffix_parts = []
+    if message:
+        suffix_parts.append(f"msg={message}")
+    if saved_name:
+        suffix_parts.append(f"file={saved_name}")
+    suffix = "" if not suffix_parts else " " + " ".join(suffix_parts)
+    return (
+        f"receiver_mode={mode} recording={recording} episode={episode} "
+        f"steps={steps} saved={saved} go_home={go_home} "
+        f"health={health}:{health_error} status_age_ms={age_ms}{suffix}"
+    )
 
 
 if __name__ == "__main__":

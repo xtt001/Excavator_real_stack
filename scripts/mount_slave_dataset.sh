@@ -9,10 +9,10 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck disable=SC1091
 source "${ROOT_DIR}/scripts/excavator_deploy_network.sh"
 
-SLAVE_IP="${EXCAVATOR_SLAVE_IP:-192.168.31.170}"
+SLAVE_SSH_HOST="${EXCAVATOR_SLAVE_SSH_HOST:-slave-jetson}"
 REMOTE_DIR="${EXCAVATOR_SLAVE_DATASET_DIR:-/data/real_teleop_v1}"
 LOCAL_MOUNT="${EXCAVATOR_SLAVE_DATASET_MOUNT:-${HOME}/mnt/slave_real_teleop}"
-SSH_USER="${EXCAVATOR_SLAVE_SSH_USER:-${USER}}"
+SSH_USER="${EXCAVATOR_SLAVE_SSH_USER:-mundane}"
 
 mkdir -p "${LOCAL_MOUNT}"
 if mountpoint -q "${LOCAL_MOUNT}" 2>/dev/null; then
@@ -20,6 +20,6 @@ if mountpoint -q "${LOCAL_MOUNT}" 2>/dev/null; then
   exit 0
 fi
 
-echo "挂载 ${SSH_USER}@${SLAVE_IP}:${REMOTE_DIR} -> ${LOCAL_MOUNT}"
-exec sshfs "${SSH_USER}@${SLAVE_IP}:${REMOTE_DIR}" "${LOCAL_MOUNT}" \
+echo "挂载 ${SSH_USER}@${SLAVE_SSH_HOST}:${REMOTE_DIR} -> ${LOCAL_MOUNT}"
+exec sshfs "${SSH_USER}@${SLAVE_SSH_HOST}:${REMOTE_DIR}" "${LOCAL_MOUNT}" \
   -o reconnect,ServerAliveInterval=15,ServerAliveCountMax=3

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 主端：订阅从端 compressed（BEST_EFFORT）-> republish raw -> rqt
+# 主端低延迟看图：直接订阅 compressed，丢旧帧，不走 rqt/raw republish。
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -9,10 +9,6 @@ excavator_apply_host_network_defaults
 
 # shellcheck disable=SC1091
 source "${ROOT_DIR}/scripts/ros2_fpv_env.sh"
-
-COMPRESSED_TOPIC="${EXCAVATOR_FPV_COMPRESSED_TOPIC:-/camera/color/image_raw/compressed}"
-# rqt 看解码后的 /camera/color/image_raw（由 republish 从 compressed 生成）
-RAW_TOPIC="${COMPRESSED_TOPIC%/compressed}"
 
 if [[ -z "${ROS_DISTRO:-}" ]]; then
   for distro in jazzy humble iron rolling; do
@@ -25,8 +21,6 @@ fi
 
 if [[ -z "${ROS_DISTRO:-}" || ! -f "/opt/ros/${ROS_DISTRO}/setup.bash" ]]; then
   echo "error: no ROS2 setup.bash found under /opt/ros." >&2
-  echo "  Ubuntu 24.04 host: install ROS2 Jazzy packages for optional rqt." >&2
-  echo "  Ubuntu 22.04 slave: keep using ROS2 Humble." >&2
   exit 1
 fi
 
@@ -86,17 +80,17 @@ source "${ROOT_DIR}/scripts/ros2_multihost_env.sh"
 source "/opt/ros/${ROS_DISTRO}/setup.bash"
 set -u
 
-ros2 daemon stop >/dev/null 2>&1 || true
+export PYTHONPATH="${ROOT_DIR}/ros2_bridge${PYTHONPATH:+:${PYTHONPATH}}"
+TOPIC="${EXCAVATOR_FPV_COMPRESSED_TOPIC:-/camera/color/image_raw/compressed}"
+MAX_DISPLAY_HZ="${EXCAVATOR_FPV_VIEWER_MAX_HZ:-60}"
+SCALE="${EXCAVATOR_FPV_VIEWER_SCALE:-1.0}"
 
-LAUNCH_FILE="${ROOT_DIR}/ros2_bridge/excavator_ros2_bridge/launch/host_fpv_rqt.launch.py"
-echo "【主端】图源: ${COMPRESSED_TOPIC}（ros2 topic list 里能看到）"
-echo "  解码发布: ${RAW_TOPIC}；rqt 下拉里只有 ${RAW_TOPIC}（无 compressed 是类型限制）"
-echo "  ROS_DOMAIN_ID=${ROS_DOMAIN_ID} RMW=${RMW_IMPLEMENTATION} peer=${EXCAVATOR_ROS_PEER_IP:-未设置}"
-echo "  QoS: compressed subscription best_effort；raw publish reliable（兼容 rqt 默认订阅）"
-if [[ -z "${EXCAVATOR_ROS_PEER_IP:-}" ]]; then
-  echo "warn: 未设置 EXCAVATOR_ROS_PEER_IP，主端可能发现不了从端话题；请先:" >&2
-  echo "  export EXCAVATOR_SLAVE_IP=192.168.100.1" >&2
-  echo "  source scripts/excavator_deploy_network.sh && excavator_apply_host_network_defaults" >&2
-fi
+echo "【主端低延迟看图】topic=${TOPIC}"
+echo "  ROS_DOMAIN_ID=${ROS_DOMAIN_ID} RMW=${RMW_IMPLEMENTATION} peer=${EXCAVATOR_ROS_PEER_IP:-未设置} bind=${EXCAVATOR_ROS_BIND_IP:-auto}"
+echo "  QoS: best_effort depth=1；直接显示 compressed 最新帧"
 
-exec ros2 launch "${LAUNCH_FILE}" compressed_topic:="${COMPRESSED_TOPIC}"
+exec /usr/bin/python3 "${ROOT_DIR}/ros2_bridge/excavator_bridge_gateway/host_fpv_low_latency_viewer.py" \
+  --topic "${TOPIC}" \
+  --max-display-hz "${MAX_DISPLAY_HZ}" \
+  --scale "${SCALE}" \
+  "$@"

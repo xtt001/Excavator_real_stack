@@ -1,0 +1,2 @@
+episode_id,path,n_steps,success,has_images,has_env_state,env_state_dim,step_ids_monotonic,has_step_ns,action_dim,qpos_dim,qvel_dim,timestamp,operator_id,session_id,profile,is_real,platform,guard_trigger_rate,controller_ack_rate,warnings,error
+episode_12,data/qc_cache/latest_episode/episode_12.hdf5,1295,1,1,1,8,1,1,4,4,4,2026-05-28T11:02:23.006017,,remote_teleop_slave_record,real,1,real_excavator,0.0,1.0,,
