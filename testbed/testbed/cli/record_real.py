@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import json
 import logging
 import os
 import shutil
@@ -192,8 +193,23 @@ def main(prog: str = "tb-record-real") -> None:
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument(
         "--input",
-        choices=["joystick", "keyboard", "oem_remote", "remote", "zero"],
+        choices=["joystick", "keyboard", "oem_remote", "remote", "policy", "zero"],
         default=None,
+    )
+    parser.add_argument(
+        "--policy-output-mode",
+        choices=["shadow_zero", "control"],
+        default=None,
+        help=(
+            "Override teleop.policy.output_mode for policy tests. shadow_zero logs "
+            "predictions but sends zero; control sends the scaled policy action."
+        ),
+    )
+    parser.add_argument(
+        "--policy-action-scale",
+        type=float,
+        default=None,
+        help="Override scalar teleop.policy.action_scale for policy control tests.",
     )
     parser.add_argument("--operator-id", type=str, default=None)
     parser.add_argument("--session-id", type=str, default=None)
@@ -249,6 +265,29 @@ def main(prog: str = "tb-record-real") -> None:
             "steps until the action source reports record_start_requested."
         ),
     )
+    record_mode = parser.add_mutually_exclusive_group()
+    record_mode.add_argument(
+        "--record",
+        action="store_true",
+        help="Enable HDF5 record sessions even if the config sets recording.enabled=false.",
+    )
+    record_mode.add_argument(
+        "--no-record",
+        action="store_true",
+        help=(
+            "Run the receiver/control loop without opening HDF5 record sessions. "
+            "Use this for policy control tests where data should not be saved."
+        ),
+    )
+    parser.add_argument(
+        "--test-log-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Directory for lightweight JSONL receiver test logs. This is separate "
+            "from HDF5 dataset output and is useful with --no-record."
+        ),
+    )
     args = parser.parse_args()
     if args.live_action_line:
         logging.getLogger().setLevel(logging.ERROR)
@@ -267,7 +306,10 @@ def main(prog: str = "tb-record-real") -> None:
     receiver_health_cfg = receiver_cfg.setdefault("health", {})
     teleop_meta_cfg = teleop_cfg.setdefault("metadata", {})
 
-    from testbed.cli.data_side import apply_data_side_config, validate_data_side_for_bridge_tcp
+    from testbed.cli.data_side import (
+        apply_data_side_config,
+        validate_data_side_for_bridge_tcp,
+    )
 
     resolved_data_side = apply_data_side_config(
         cfg,
@@ -291,11 +333,25 @@ def main(prog: str = "tb-record-real") -> None:
         task_cfg["seed"] = int(args.seed)
     if args.input is not None:
         teleop_cfg["input"] = args.input
+    if args.policy_output_mode is not None:
+        policy_cfg = teleop_cfg.setdefault("policy", {})
+        policy_cfg["output_mode"] = args.policy_output_mode
+    if args.policy_action_scale is not None:
+        policy_cfg = teleop_cfg.setdefault("policy", {})
+        policy_cfg["action_scale"] = float(args.policy_action_scale)
     if args.remote_port is not None:
         remote_cfg = teleop_cfg.setdefault("remote", {})
         remote_cfg["port"] = int(args.remote_port)
     if args.wait_for_record_start:
         recording_cfg["wait_for_start"] = True
+    if args.record:
+        recording_cfg["enabled"] = True
+    elif args.no_record:
+        recording_cfg["enabled"] = False
+    if args.test_log_dir is not None:
+        test_log_cfg = teleop_cfg.setdefault("test_log", {})
+        test_log_cfg["enabled"] = True
+        test_log_cfg["output_dir"] = str(args.test_log_dir)
     if args.operator_id is not None:
         teleop_meta_cfg["operator_id"] = args.operator_id
     if args.session_id is not None:
@@ -323,7 +379,10 @@ def main(prog: str = "tb-record-real") -> None:
     record_hz = float(task_cfg.get("record_hz", control_hz))
     dt = float(task_cfg.get("dt", 1.0 / record_hz))
     input_device = str(teleop_cfg.get("input", "joystick"))
+    recording_enabled = bool(recording_cfg.get("enabled", True))
     wait_for_record_start = bool(recording_cfg.get("wait_for_start", False))
+    test_log_cfg = dict(teleop_cfg.get("test_log", {}) or {})
+    test_log_enabled = bool(test_log_cfg.get("enabled", not recording_enabled))
     backend_mode = str(real_cfg.get("backend", "mock"))
     state_reader_mode = str(real_cfg.get("state_reader", "mock"))
     health_evaluator = ReceiverHealthEvaluator.from_config(
@@ -419,6 +478,14 @@ def main(prog: str = "tb-record-real") -> None:
         max_steps,
         dataset_dir,
     )
+    test_logger = None
+    if test_log_enabled:
+        test_logger = ReceiverTestLogger.from_config(
+            test_log_cfg,
+            metadata=base_meta,
+            record_config_yaml=record_config_yaml,
+        )
+        log.info("Receiver test log enabled: %s", test_logger.run_dir)
 
     abort = False
     sigint_count = 0
@@ -437,8 +504,11 @@ def main(prog: str = "tb-record-real") -> None:
 
     signal.signal(signal.SIGINT, _sigint)
 
-    dataset_dir.mkdir(parents=True, exist_ok=True)
-    episode_idx = _next_episode_idx(dataset_dir)
+    if recording_enabled:
+        dataset_dir.mkdir(parents=True, exist_ok=True)
+        episode_idx = _next_episode_idx(dataset_dir)
+    else:
+        episode_idx = 0
     saved = 0
     control_output_stopped = False
 
@@ -543,10 +613,15 @@ def main(prog: str = "tb-record-real") -> None:
             guard.reset()
             discard = False
             receiver_mode = "armed"
-            record_start_pending = not wait_for_record_start
+            record_start_pending = recording_enabled and not wait_for_record_start
             record_session: RecordSession | None = None
             go_home_controller: GoHomeController | None = None
-            if wait_for_record_start:
+            if not recording_enabled:
+                log.info(
+                    "Receiver is in no-record test mode for episode window %d.",
+                    episode_idx,
+                )
+            elif wait_for_record_start:
                 log.info(
                     "Receiver armed for episode %d; waiting for record_start_requested.",
                     episode_idx,
@@ -752,7 +827,7 @@ def main(prog: str = "tb-record-real") -> None:
                         log.info("Receiver health recovered; mode=armed.")
                         live_line.message("mode=armed health=OK")
 
-                    if wait_for_record_start and record_start_requested:
+                    if recording_enabled and wait_for_record_start and record_start_requested:
                         if receiver_mode == "armed" and record_session is None:
                             if receiver_health.ok:
                                 record_start_pending = True
@@ -900,6 +975,23 @@ def main(prog: str = "tb-record-real") -> None:
                         go_home_update=go_home_update,
                         receiver_health=receiver_health,
                     )
+                    if test_logger is not None:
+                        test_logger.record_step(
+                            local_step=local_step,
+                            receiver_mode=receiver_mode,
+                            obs=obs,
+                            raw_action=raw_action,
+                            safe_action=safe_action,
+                            action_info=action_info,
+                            action_sample_timestamp_ns=action_sample_ns,
+                            action_send_timestamp_ns=action_send_ns,
+                            guard=guard_info,
+                            control_result=control_result,
+                            receiver_health=receiver_health,
+                            record_start_requested=record_start_requested,
+                            go_home_requested=go_home_requested,
+                            go_home_update=go_home_update,
+                        )
                     if (
                         receiver_mode == "go_home"
                         and record_session is None
@@ -1102,6 +1194,10 @@ def main(prog: str = "tb-record-real") -> None:
                             saved += 1
                             episode_idx += 1
                             break
+                    if not recording_enabled and max_steps > 0 and local_step + 1 >= max_steps:
+                        log.info("No-record receiver test reached max_steps=%d.", max_steps)
+                        saved = num_episodes
+                        break
                     ts = ts_next
                     local_step += 1
                     _sleep_to_rate(record_hz, should_stop=lambda: abort)
@@ -1127,9 +1223,14 @@ def main(prog: str = "tb-record-real") -> None:
         abort = True
     finally:
         _shutdown()
+        if test_logger is not None:
+            test_logger.close(stop_reason="aborted" if abort else "complete")
         live_line.finish()
 
-    log.info("Real v1 recording complete: %d / %d episode(s) saved.", saved, num_episodes)
+    if recording_enabled:
+        log.info("Real v1 recording complete: %d / %d episode(s) saved.", saved, num_episodes)
+    else:
+        log.info("Real v1 no-record receiver test complete.")
     if abort and sigint_count >= 2:
         sys.exit(130)
 
@@ -1158,6 +1259,10 @@ def _build_action_source(input_device: str, teleop_cfg: dict[str, Any], *, dt: f
         from testbed.actions.remote import RemoteActionSource
 
         return RemoteActionSource.from_config(teleop_cfg.get("remote", {}))
+    if input_device == "policy":
+        from testbed.actions.policy import PolicyActionSource
+
+        return PolicyActionSource.from_config(teleop_cfg.get("policy", {}))
     if input_device == "zero":
         return ZeroActionSource()
     raise ValueError(f"Unsupported real teleop input {input_device!r}.")
@@ -1269,7 +1374,7 @@ class ReceiverHealthEvaluator:
         *,
         input_device: str,
         state_reader_mode: str,
-    ) -> "ReceiverHealthEvaluator":
+    ) -> ReceiverHealthEvaluator:
         cfg = dict(cfg or {})
         return cls(
             mode=str(cfg.get("mode", "strict")),
@@ -1427,6 +1532,153 @@ class RecordSession:
             path=path,
             metadata_updates=updates,
         )
+
+
+class ReceiverTestLogger:
+    """Lightweight JSONL logger for receiver/control tests without HDF5 data."""
+
+    def __init__(
+        self,
+        *,
+        run_dir: Path,
+        metadata: dict[str, Any],
+        record_config_yaml: str,
+    ) -> None:
+        self.run_dir = Path(run_dir)
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+        self.steps_path = self.run_dir / "steps.jsonl"
+        self.summary_path = self.run_dir / "summary.json"
+        self.metadata_path = self.run_dir / "metadata.json"
+        self._started_ns = time.time_ns()
+        self._steps = 0
+        self._closed = False
+        self._fh = self.steps_path.open("w", encoding="utf-8")
+        metadata_payload = {
+            "started_at_ns": self._started_ns,
+            "metadata": metadata,
+            "record_config_yaml": record_config_yaml,
+        }
+        self.metadata_path.write_text(
+            json.dumps(_jsonable(metadata_payload), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    @classmethod
+    def from_config(
+        cls,
+        cfg: dict[str, Any],
+        *,
+        metadata: dict[str, Any],
+        record_config_yaml: str,
+    ) -> ReceiverTestLogger:
+        cfg = dict(cfg or {})
+        root = Path(cfg.get("output_dir", "runs/receiver_tests"))
+        run_name = str(cfg.get("run_name", "") or "")
+        if not run_name:
+            stamp = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%S.%fZ")
+            task_name = str(metadata.get(ATTR_TASK_NAME, "receiver_test"))
+            run_name = f"{_sanitize_key(task_name)}_{stamp}"
+        return cls(
+            run_dir=root / run_name,
+            metadata=metadata,
+            record_config_yaml=record_config_yaml,
+        )
+
+    def record_step(
+        self,
+        *,
+        local_step: int,
+        receiver_mode: str,
+        obs: dict[str, Any],
+        raw_action: np.ndarray,
+        safe_action: np.ndarray,
+        action_info: Any,
+        action_sample_timestamp_ns: int,
+        action_send_timestamp_ns: int,
+        guard: Any,
+        control_result: dict[str, Any],
+        receiver_health: ReceiverHealthSnapshot,
+        record_start_requested: bool,
+        go_home_requested: bool,
+        go_home_update: Any | None = None,
+    ) -> None:
+        if self._closed:
+            return
+        extras = getattr(action_info, "extras", {}) or {}
+        payload = {
+            "wall_time_ns": time.time_ns(),
+            "local_step": int(local_step),
+            "receiver_mode": str(receiver_mode),
+            "observation_step_id": int(obs.get("step_id", local_step)),
+            "qpos": np.asarray(obs.get("qpos", np.zeros(4)), dtype=np.float32),
+            "qvel": np.asarray(obs.get("qvel", np.zeros(4)), dtype=np.float32),
+            "raw_action": np.asarray(raw_action, dtype=np.float32),
+            "safe_action": np.asarray(safe_action, dtype=np.float32),
+            "commanded_action": np.asarray(
+                control_result.get("commanded_action", safe_action),
+                dtype=np.float32,
+            ),
+            "action_source_type": str(getattr(action_info, "source_type", "")),
+            "action_source_id": str(getattr(action_info, "source_id", "")),
+            "action_source_latency_ms": float(
+                getattr(action_info, "latency_ms", 0.0) or 0.0
+            ),
+            "action_sample_timestamp_ns": int(action_sample_timestamp_ns),
+            "action_send_timestamp_ns": int(action_send_timestamp_ns),
+            "observation_timestamp_ns": _int_timestamp(obs.get("timestamp_ns")),
+            "joint_timestamp_ns": _int_timestamp(obs.get("joint_timestamp_ns")),
+            "image_timestamp_ns": _jsonable(obs.get("image_timestamp_ns", {})),
+            "record_start_requested": int(bool(record_start_requested)),
+            "go_home_requested": int(bool(go_home_requested)),
+            "guard_triggered": int(bool(getattr(guard, "triggered", False))),
+            "guard_reasons": list(getattr(guard, "reasons", ()) or ()),
+            "controller_ack": int(bool(control_result.get("ack", False))),
+            "controller_fault_code": str(control_result.get("fault_code", "")),
+            "controller_timestamp_ns": _int_timestamp(
+                control_result.get("controller_timestamp_ns")
+            ),
+            "receiver_health_ok": int(bool(receiver_health.ok)),
+            "receiver_health_error_code": str(receiver_health.error_code),
+            "receiver_health_errors": list(receiver_health.errors),
+            "policy_action": extras.get("policy_action"),
+            "policy_scaled_action": extras.get("policy_scaled_action"),
+            "policy_returned_action": extras.get("policy_returned_action"),
+            "policy_output_mode": str(extras.get("policy_output_mode", "")),
+            "policy_error": str(extras.get("policy_error", "")),
+            "policy_inference_latency_ms": float(
+                extras.get("policy_inference_latency_ms", 0.0) or 0.0
+            ),
+        }
+        if go_home_update is not None:
+            payload["go_home_done"] = int(bool(getattr(go_home_update, "done", False)))
+            payload["go_home_failed"] = int(
+                bool(getattr(go_home_update, "failed", False))
+            )
+            payload["go_home_reason"] = str(getattr(go_home_update, "reason", "") or "")
+        self._fh.write(json.dumps(_jsonable(payload), ensure_ascii=False) + "\n")
+        self._fh.flush()
+        self._steps += 1
+
+    def close(self, *, stop_reason: str = "complete") -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._fh.close()
+        finally:
+            finished_ns = time.time_ns()
+            summary = {
+                "started_at_ns": self._started_ns,
+                "finished_at_ns": finished_ns,
+                "duration_s": (finished_ns - self._started_ns) / 1_000_000_000.0,
+                "steps": self._steps,
+                "stop_reason": str(stop_reason),
+                "steps_path": str(self.steps_path),
+            }
+            self.summary_path.write_text(
+                json.dumps(_jsonable(summary), ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
 
 
 @dataclass(frozen=True)
@@ -1934,6 +2186,7 @@ def _build_step_diagnostics(
             timestamp_ns
         )
     _add_remote_action_diagnostics(diagnostics, extras)
+    _add_policy_action_diagnostics(diagnostics, extras)
     return diagnostics
 
 
@@ -1989,6 +2242,38 @@ def _add_remote_action_diagnostics(
     )
 
 
+def _add_policy_action_diagnostics(
+    diagnostics: dict[str, Any],
+    extras: dict[str, Any],
+) -> None:
+    if "policy_action" not in extras:
+        return
+    diagnostics["policy_action"] = np.asarray(
+        extras.get("policy_action", np.zeros(4)),
+        dtype=np.float32,
+    )
+    diagnostics["policy_scaled_action"] = np.asarray(
+        extras.get("policy_scaled_action", np.zeros(4)),
+        dtype=np.float32,
+    )
+    diagnostics["policy_returned_action"] = np.asarray(
+        extras.get("policy_returned_action", np.zeros(4)),
+        dtype=np.float32,
+    )
+    diagnostics["policy_action_scale"] = np.asarray(
+        extras.get("policy_action_scale", np.ones(4)),
+        dtype=np.float32,
+    )
+    diagnostics["policy_output_mode"] = str(extras.get("policy_output_mode", ""))
+    diagnostics["policy_error"] = str(extras.get("policy_error", ""))
+    diagnostics["policy_step"] = _int_timestamp(extras.get("policy_step"))
+    diagnostics["policy_inference_latency_ms"] = float(
+        extras.get("policy_inference_latency_ms", 0.0) or 0.0
+    )
+    if "policy_bundle_dir" in extras:
+        diagnostics["policy_bundle_dir"] = str(extras.get("policy_bundle_dir", ""))
+
+
 def _action_sample_timestamp_ns(action_info) -> int:
     extras = getattr(action_info, "extras", {}) or {}
     return _int_timestamp(extras.get("action_timestamp_ns"), default=time.time_ns())
@@ -2013,6 +2298,22 @@ def _int_timestamp(value: Any, *, default: int = 0) -> int:
 
 def _sanitize_key(value: Any) -> str:
     return "".join(ch if str(ch).isalnum() or ch == "_" else "_" for ch in str(value))
+
+
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
 
 
 def _sensor_age_s(obs: dict[str, Any], *, now_ns: int | None = None) -> float | None:

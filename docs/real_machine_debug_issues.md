@@ -32,6 +32,80 @@
 ### 关联文件/配置
 ```
 
+## 2026-05-28 摇杆映射和 go-home 方向排查记录
+
+### 现象
+
+真机启动手册曾混入 pygame 轴测试、手动响应记录和 go-home 调参过程。启动流程已精简，
+这里只保留后续排查仍有价值的结论。
+
+### 影响
+
+如果引用了置换左右手柄前、左手柄 X/Y 旋转前的记录，可能误判 action 轴名、qpos 维度或
+go-home 控制方向。
+
+### 出现原因
+
+2026-05-28 现场先确认 pygame 设备编号和轴方向，再把摇杆习惯调整为左手柄 `swing/stick`、
+右手柄 `boom/bucket`，随后用手动动作和失败 HDF5 片段排查 go-home。
+
+### 触发场景
+
+- 修改 `axis_map/invert` 后，动作方向和实际挖机动作不一致。
+- go-home 某个轴越控越远、卡在阈值附近，或看起来有液压死区/过冲。
+- 需要解释某些旧参数为什么存在。
+
+### 诊断命令
+
+```bash
+cd ~/Excavator_real_stack
+rg -n "joystick_ids|axis_map|invert|control_signs|min_action|max_action" \
+  testbed/testbed/configs/teleop_real_v1.yaml
+```
+
+```bash
+cd /media/mundane/D/Excavator_real_stack
+source .venv/bin/activate
+./scripts/analyze_go_home_direction.py
+```
+
+### 短期解决
+
+当前配置以 `testbed/testbed/configs/teleop_real_v1.yaml` 为准；下面只是历史排查线索：
+
+- pygame 只读测试确认：左侧物理摇杆是 `joystick 0`，右侧物理摇杆是 `joystick 1`；
+  `axis 0` 左推为负、右推为正，`axis 1` 前推为负、后拉为正。
+- 当前最终摇杆配置来自现场修正：`axis_map: [1, 1, 0, 0]`、
+  `invert: [true, false, true, false]`。
+- `artifacts/manual_response/20260528_145235.jsonl` 是置换左右手柄后较有参考价值的一次记录：
+  swing/boom/stick/bucket 分别和 qvel `[0,1,2,3]` 同名相关，bucket 只确认了正负同名关系，
+  收斗/开斗语义仍应现场确认。
+- `artifacts/manual_response/20260528_150222.jsonl` 用于估计液压死区：当时大致认为 swing 需要
+  `0.5+` 才明显响应，boom 约 `0.35-0.45`，stick 约 `0.42-0.55`，bucket 约 `0.50-0.60`。
+- `recommendation=flip` 表示该轴在 go-home 段主动下发时 `|error|` 平均增大，需要检查或翻转
+  `control_signs`。
+- 曾经为 go-home 功能测试把 `near_tolerance_rad` 临时设为 `[999.0, 999.0, 999.0, 999.0]`；
+  这个只代表关闭 near-home 启动门禁做测试，不代表允许任意位置自主回 home。
+
+### 长期解决
+
+- 启动手册只保留当前可执行流程和当前映射。
+- 每次现场改 `axis_map/invert/control_signs/min_action/max_action` 后，重新做短的单轴验证。
+- 最终参数只以当前配置文件为准，本文档只解释历史来源。
+
+### 验证方式
+
+- `docs/host_slave_start_commands.md` 不应再出现长段历史调参记录。
+- 当前映射表应明确物理方向、pygame 原始正负、`action[i]` 正负和实际动作。
+- 真机变更后，确认 qpos/qvel 与预期一致再更新文档。
+
+### 关联文件/配置
+
+- 当前现场流程：`docs/host_slave_start_commands.md`
+- 当前真机控制配置：`testbed/testbed/configs/teleop_real_v1.yaml`
+- 历史手动响应：`artifacts/manual_response/20260528_145235.jsonl`
+- 历史手动响应：`artifacts/manual_response/20260528_150222.jsonl`
+
 ## 2026-05-26 Jetson 1TB NVMe 存在但 `/media/mundane/D` 为空
 
 ### 现象

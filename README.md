@@ -2,7 +2,7 @@
 
 真实挖机模仿学习、数据采集、底层控制和桥接进程的一体化仓库。
 
-当前状态日期：2026-05-10。
+当前状态日期：2026-06-01。
 
 这个仓库把之前两个代码库合并成一个面向真机部署的 monorepo：
 
@@ -93,6 +93,8 @@ lower command  = [swing, boom, stick, bucket, left_track, right_track, boom_offs
 - 已新增 `SynchronizedObservationBuilder` 和 `TimestampedBuffer`，用于无 ROS 环境下测试关节数据和视觉数据的时间对齐逻辑。
 - 已新增 OEM 遥控器输入边界 `OemRemoteActionSource`，当前是 import-safe adapter/stub，后续需要接厂家遥控器真实数据源。
 - 已更新 HDF5 记录字段，包含 raw action、guarded action、controller ack/fault、时间戳、同步偏差等诊断信息。
+- 已新增 ACT policy action source，用于 one-dig checkpoint 的本地 shadow/control 链路验证。默认配置
+  `testbed/testbed/configs/policy_real_one_dig_v1.yaml` 只记录 policy 输出，不下发策略动作。
 - 已更新 README、配置文档、realworld plan 和 bring-up checklist。
 
 ### control 侧
@@ -197,6 +199,45 @@ tb-receiver-real \
   --max-steps 3
 tb-dataset-qc --dataset-dir data/real_teleop_v1 --profile real
 ```
+
+## One-Dig Policy Shadow
+
+当前分支可以在开发机先打通：
+
+```text
+real observation(FPV + qpos + qvel) -> ACT checkpoint -> policy_action diagnostics
+```
+
+本地 checkpoint bundle 放在 `policy_bundles/real_one_dig_v1/`，该目录不会提交到 git。最小文件为：
+
+```text
+policy_best.ckpt
+dataset_stats.pkl
+resolved_config.yaml
+run_metadata.json  # optional
+```
+
+安全 smoke test：
+
+```bash
+tb-receiver-real \
+  --config testbed/testbed/configs/policy_real_one_dig_v1.yaml \
+  --backend mock \
+  --state-reader mock \
+  --input policy \
+  --num-episodes 1 \
+  --max-steps 5 \
+  --test-log-dir /tmp/real_one_dig_policy_shadow_smoke
+```
+
+默认 `teleop.recording.enabled: false`，因此不会生成训练 HDF5 episode；
+`teleop.test_log.enabled: true` 会保存轻量 `steps.jsonl` 和 `summary.json`。
+默认 `teleop.policy.output_mode: shadow_zero`，实际返回给 backend 的 action 是零。
+真机上也应先用 shadow 模式检查方向、幅度、延迟和安全链路，再把
+`output_mode` 改为 `control` 跑完整 one-dig 测试窗口。需要继续录制训练数据时，
+继续使用 `teleop_real_v1.yaml` 和按键 2；或者显式加 `--record` 覆盖测试配置。
+详细流程见
+`docs/real_one_dig_policy_control.md`。
 
 ## 真机连接前状态
 

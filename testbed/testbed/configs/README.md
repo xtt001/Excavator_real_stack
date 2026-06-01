@@ -5,6 +5,7 @@ This branch keeps only real-excavator configs.
 | Goal | Config | Entry |
 |---|---|---|
 | Safe teleop receiver/record | `testbed/configs/teleop_real_v1.yaml` | `tb-receiver-real` |
+| One-dig policy shadow/control | `testbed/configs/policy_real_one_dig_v1.yaml` | `tb-receiver-real --input policy` |
 | Offline ACT training | `testbed/configs/act_real_v1.yaml` | `tb-train` |
 
 ## `teleop_real_v1.yaml`
@@ -37,6 +38,39 @@ YAML config.
 `tb-dataset-qc-watch-ssh` is the preferred field watcher when HDF5 is written
 on the slave. It lists and copies completed `episode_*.hdf5` files over SSH,
 then runs QC on the host-side cache so the Jetson does not spend CPU on QC.
+
+## `policy_real_one_dig_v1.yaml`
+
+Defines a policy-backed receiver for the real one-dig checkpoint. The expected
+local bundle is `policy_bundles/real_one_dig_v1/` with:
+
+- `policy_best.ckpt`
+- `dataset_stats.pkl`
+- `resolved_config.yaml`
+- optional `run_metadata.json`
+
+The default `teleop.recording.enabled` is `false`, so policy tests do not create
+HDF5 training episodes and do not depend on the record-start button. Lightweight
+test logs are written under `teleop.test_log.output_dir`.
+
+The default `teleop.policy.output_mode` is `shadow_zero`, so the model output is
+written to JSONL logs while the command sent to the backend remains zero. After
+shadow checks pass, use `output_mode: control` for the full one-dig test window.
+Normal data collection remains on `teleop_real_v1.yaml`; use
+`--record` only when you intentionally want HDF5 sessions from this config.
+
+Local dry run:
+
+```bash
+tb-receiver-real \
+  --config testbed/testbed/configs/policy_real_one_dig_v1.yaml \
+  --backend mock \
+  --state-reader mock \
+  --input policy \
+  --num-episodes 1 \
+  --max-steps 5 \
+  --test-log-dir /tmp/real_one_dig_policy_shadow_smoke
+```
 
 ## `act_real_v1.yaml`
 

@@ -26,6 +26,7 @@ dependencies = [
     # Utils
     "einops>=0.7",
     "tqdm>=4.65",
+    "IPython>=8.0",
 ]
 
 [project.optional-dependencies]

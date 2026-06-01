@@ -37,8 +37,8 @@ Current module roles:
 - `testbed/backends/real/`: `RealBackend`, mock/noop controllers, state
   readers, shared bridge-client adapters, packet adapters, timestamp sync
   helpers, and optional ROS/CAN stubs.
-- `testbed/actions/`: joystick, keyboard, OEM remote boundary, and zero-action
-  teleop sources.
+- `testbed/actions/`: joystick, keyboard, OEM remote boundary, policy, and
+  zero-action teleop sources.
 - `testbed/data/`: HDF5 writer/reader, recorder, dataset loader, QC, videos.
 - `testbed/policies/`: ACT and policy adapters for offline training.
 - `testbed/runtime/`: safety guard, training helper, run metadata.
@@ -102,6 +102,23 @@ the real command-to-hydraulic conversion and safety-critical limits. The
 testbed should record enough signals to debug the delay: raw operator command,
 guarded command, command send time, joint state time, image time, status, and
 controller acknowledgement time.
+
+## Policy Shadow And Control
+
+`PolicyActionSource` wraps a trained ACT checkpoint as an `ActionSource`. It
+expects a local bundle containing `policy_best.ckpt`, `dataset_stats.pkl`, and
+`resolved_config.yaml`; by convention this lives under
+`policy_bundles/real_one_dig_v1/`, which is ignored by git.
+
+The safe first mode is `output_mode: shadow_zero`: the policy consumes real
+`FPV + qpos + qvel`, writes lightweight JSONL test logs, but returns zero
+control to the backend. `output_mode: control` returns the scaled policy action
+and must only be used after offline and live shadow checks.
+
+Use `testbed/testbed/configs/policy_real_one_dig_v1.yaml` for local smoke tests
+and one-dig shadow/control tests. Its default `recording.enabled: false` keeps
+policy tests out of the HDF5 training dataset; normal data collection still uses
+`teleop_real_v1.yaml` and the record-start button.
 
 ## Sync And Video Requirements
 

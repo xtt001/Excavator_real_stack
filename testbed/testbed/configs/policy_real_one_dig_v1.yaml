@@ -1,0 +1,109 @@
+# Real one-dig ACT policy receiver config.
+# Default mode is shadow-only: the policy is evaluated and recorded, while the
+# command returned to the backend stays zero. Switch to output_mode: control
+# only after offline and live shadow checks are accepted.
+
+real:
+  backend: mock
+  state_reader: mock
+  data_side: host
+  control_hz: 50
+  image_width: 160
+  image_height: 120
+  mock_velocity_scale_rad_s: 0.5
+  control_pump:
+    enabled: false
+    hz: 50
+    send_immediately_on_update: false
+    zero_on_stop: true
+    bridge:
+      host: "127.0.0.1"
+      port: 8766
+      timeout_s: 0.2
+  bridge:
+    host: "127.0.0.1"
+    port: 0
+    timeout_s: 1.0
+  data_side_defaults:
+    host:
+      dataset_dir: data/policy_shadow_real_one_dig_v1
+      bridge:
+        host: "192.168.100.1"
+        port: 8765
+    slave:
+      dataset_dir: /data/policy_shadow_real_one_dig_v1
+      bridge:
+        host: "127.0.0.1"
+        port: 8765
+
+teleop:
+  input: policy
+  learning_target: policy_shadow_from_real_observation
+  num_episodes: 1
+  metadata:
+    operator_id: ""
+    session_id: ""
+    notes: "real one-dig policy shadow/control smoke"
+
+  policy:
+    bundle_dir: policy_bundles/real_one_dig_v1
+    source_id: policy:act:real_one_dig_v1
+    camera: fpv
+    temporal_agg: true
+    output_mode: shadow_zero
+    action_scale: 1.0
+    clip: 1.0
+    fail_safe_zero: true
+    record_start_on_reset: false
+
+  recording:
+    enabled: false
+    wait_for_start: true
+    go_home:
+      enabled: false
+
+  test_log:
+    enabled: true
+    output_dir: runs/policy_control_tests
+
+task:
+  task_name: real_one_dig_v1_policy_shadow
+  dataset_dir: data/policy_shadow_real_one_dig_v1
+  camera_names: ["fpv"]
+  max_steps: 4000
+  control_hz: 50
+  record_hz: 50
+  dt: 0.02
+  seed: -1
+  param_version: real_one_dig_v1_policy_shadow
+
+sync:
+  time_source: sensor_or_ros_header_stamp
+  max_observation_skew_ms: 40.0
+  required_cameras: ["fpv"]
+  record_action_sample_time: true
+  record_action_send_time: true
+
+video:
+  target_latency_ms: 120.0
+  transport_hint: low_latency
+  prefer_compressed_transport: true
+  record_format: jpeg
+  jpeg_quality: 95
+
+receiver:
+  health:
+    mode: strict
+    bridge_snapshot_timeout_ms: 200
+    fpv_max_stale_ms: 1000
+    imu_require_online: true
+    imu_require_valid_attitude: true
+    quarantine_failed_records: true
+
+safety:
+  deadman_enabled: true
+  estop_enabled: true
+  manual_override_enabled: true
+  sensor_timeout_s: 1.0
+  action_clip: 0.2
+  max_delta_per_step: 0.02
