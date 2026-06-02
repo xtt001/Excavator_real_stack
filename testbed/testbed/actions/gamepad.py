@@ -65,6 +65,7 @@ class JoystickActionSource(ActionSource):
         discard_button: int | None = None,
         quit_button: int | None = None,
         record_start_button: int | None = None,
+        policy_start_button: int | None = None,
         go_home_button: int | None = None,
         button_joystick_ids: Sequence[int] | None = None,
         response_profile: dict | None = None,
@@ -113,6 +114,10 @@ class JoystickActionSource(ActionSource):
         self._record_start_button = self._normalize_button(
             record_start_button,
             name="record_start_button",
+        )
+        self._policy_start_button = self._normalize_button(
+            policy_start_button,
+            name="policy_start_button",
         )
         self._go_home_button = self._normalize_button(
             go_home_button,
@@ -210,6 +215,7 @@ class JoystickActionSource(ActionSource):
                 "discard_requested": self._button_edge(self._discard_button),
                 "quit_requested": self._button_edge(self._quit_button),
                 "record_start_requested": self._button_edge(self._record_start_button),
+                "policy_start_requested": self._button_edge(self._policy_start_button),
                 "go_home_requested": self._button_edge(self._go_home_button),
             },
         )
@@ -325,6 +331,7 @@ class JoystickActionSource(ActionSource):
             discard_button=cfg.get("discard_button"),
             quit_button=cfg.get("quit_button"),
             record_start_button=cfg.get("record_start_button"),
+            policy_start_button=cfg.get("policy_start_button"),
             go_home_button=cfg.get("go_home_button"),
             button_joystick_ids=cfg.get("button_joystick_ids"),
             response_profile=cfg.get("response_profile"),
@@ -387,6 +394,7 @@ class JoystickActionSource(ActionSource):
                 self._discard_button,
                 self._quit_button,
                 self._record_start_button,
+                self._policy_start_button,
                 self._go_home_button,
             )
             if button is not None

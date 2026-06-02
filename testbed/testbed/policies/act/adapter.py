@@ -70,12 +70,14 @@ class ACTAdapter(Policy):
 
         model, optimizer = build_ACT_model_and_optimizer(policy_config)
         self._model     = model.to(self.device)
+        self._model.eval()
         self._optimizer = optimizer
 
         # temporal aggregation state
         self._num_queries: int  = policy_config["num_queries"]
         self._t: int            = 0
         self._all_time_actions: torch.Tensor | None = None
+        self._temporal_weight_cache: dict[int, torch.Tensor] = {}
         self._max_episode_len = int(policy_config.get("max_episode_len", 400))
 
         self._normalize  = transforms.Normalize(
@@ -83,6 +85,8 @@ class ACTAdapter(Policy):
             std=[0.229, 0.224, 0.225],
         )
         self._proprio_mean, self._proprio_std = self._resolve_proprio_norm_stats()
+        if self.device.type == "cuda":
+            torch.backends.cudnn.benchmark = True
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
 
@@ -123,7 +127,8 @@ class ACTAdapter(Policy):
                 raise ValueError(
                     f"ACTAdapter.predict(): missing required camera input {key!r}."
                 )
-            cam_img = np.asarray(obs[key], dtype=np.float32)
+            raw_cam_img = np.asarray(obs[key])
+            cam_img = np.asarray(raw_cam_img, dtype=np.float32)
             if cam_img.ndim != 3:
                 raise ValueError(
                     f"ACTAdapter.predict(): expected {key!r} to be rank-3, got shape {cam_img.shape}."
@@ -133,7 +138,9 @@ class ACTAdapter(Policy):
                 pass
             elif cam_img.shape[-1] == 3:
                 cam_img = np.transpose(cam_img, (2, 0, 1))
-                if cam_img.max() > 1.0:
+                if raw_cam_img.dtype == np.uint8:
+                    cam_img = cam_img / 255.0
+                elif cam_img.max() > 1.0:
                     cam_img = cam_img / 255.0
             else:
                 raise ValueError(
@@ -144,12 +151,13 @@ class ACTAdapter(Policy):
         if not cam_images:
             raise ValueError("ACTAdapter.predict(): no camera inputs configured.")
 
-        img = np.stack(cam_images, axis=0)                 # (n_cams, C, H, W)
+        img = np.ascontiguousarray(np.stack(cam_images, axis=0))  # (n_cams, C, H, W)
         image = torch.from_numpy(img).float().to(self.device).unsqueeze(0)  # (1, n_cams, C, H, W)
         image = self._normalize(image)
 
-        self._model.eval()
-        with torch.no_grad():
+        if self._model.training:
+            self._model.eval()
+        with torch.inference_mode():
             a_hat, _, _ = self._model(proprio, image, None)   # (1, C, Na)
 
         if self.temporal_agg:
@@ -240,10 +248,15 @@ class ACTAdapter(Policy):
         actions_for_curr_step = self._all_time_actions[:t + 1, t]  # (t+1, Na)
         actions_populated = torch.all(actions_for_curr_step != 0, dim=1)
         actions_for_curr_step = actions_for_curr_step[actions_populated]
-        k = 0.01
-        exp_weights = np.exp(-k * np.arange(len(actions_for_curr_step)))
-        exp_weights = exp_weights / exp_weights.sum()
-        exp_weights = torch.from_numpy(exp_weights).float().to(self.device).unsqueeze(1)
+        num_actions = int(len(actions_for_curr_step))
+        exp_weights = self._temporal_weight_cache.get(num_actions)
+        if exp_weights is None:
+            k = 0.01
+            exp_weights = torch.exp(
+                -k * torch.arange(num_actions, dtype=torch.float32, device=self.device)
+            )
+            exp_weights = (exp_weights / exp_weights.sum()).unsqueeze(1)
+            self._temporal_weight_cache[num_actions] = exp_weights
         action = (actions_for_curr_step * exp_weights).sum(0).cpu().numpy()
         return action
 

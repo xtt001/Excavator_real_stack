@@ -193,7 +193,15 @@ def main(prog: str = "tb-record-real") -> None:
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument(
         "--input",
-        choices=["joystick", "keyboard", "oem_remote", "remote", "policy", "zero"],
+        choices=[
+            "joystick",
+            "keyboard",
+            "oem_remote",
+            "remote",
+            "policy",
+            "policy_remote",
+            "zero",
+        ],
         default=None,
     )
     parser.add_argument(
@@ -1263,6 +1271,10 @@ def _build_action_source(input_device: str, teleop_cfg: dict[str, Any], *, dt: f
         from testbed.actions.policy import PolicyActionSource
 
         return PolicyActionSource.from_config(teleop_cfg.get("policy", {}))
+    if input_device == "policy_remote":
+        from testbed.actions.policy_remote import RemoteArmedPolicyActionSource
+
+        return RemoteArmedPolicyActionSource.from_config(teleop_cfg)
     if input_device == "zero":
         return ZeroActionSource()
     raise ValueError(f"Unsupported real teleop input {input_device!r}.")
@@ -1543,12 +1555,14 @@ class ReceiverTestLogger:
         run_dir: Path,
         metadata: dict[str, Any],
         record_config_yaml: str,
+        flush_every_steps: int = 1,
     ) -> None:
         self.run_dir = Path(run_dir)
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.steps_path = self.run_dir / "steps.jsonl"
         self.summary_path = self.run_dir / "summary.json"
         self.metadata_path = self.run_dir / "metadata.json"
+        self.flush_every_steps = max(1, int(flush_every_steps))
         self._started_ns = time.time_ns()
         self._steps = 0
         self._closed = False
@@ -1582,6 +1596,7 @@ class ReceiverTestLogger:
             run_dir=root / run_name,
             metadata=metadata,
             record_config_yaml=record_config_yaml,
+            flush_every_steps=int(cfg.get("flush_every_steps", 1)),
         )
 
     def record_step(
@@ -1629,6 +1644,9 @@ class ReceiverTestLogger:
             "joint_timestamp_ns": _int_timestamp(obs.get("joint_timestamp_ns")),
             "image_timestamp_ns": _jsonable(obs.get("image_timestamp_ns", {})),
             "record_start_requested": int(bool(record_start_requested)),
+            "policy_start_requested": int(
+                bool(extras.get("policy_start_requested", False))
+            ),
             "go_home_requested": int(bool(go_home_requested)),
             "guard_triggered": int(bool(getattr(guard, "triggered", False))),
             "guard_reasons": list(getattr(guard, "reasons", ()) or ()),
@@ -1648,6 +1666,13 @@ class ReceiverTestLogger:
             "policy_inference_latency_ms": float(
                 extras.get("policy_inference_latency_ms", 0.0) or 0.0
             ),
+            "policy_remote_mode": str(extras.get("policy_remote_mode", "")),
+            "policy_remote_activated": int(
+                extras.get("policy_remote_activated", 0) or 0
+            ),
+            "policy_remote_activation_step": int(
+                extras.get("policy_remote_activation_step", -1) or -1
+            ),
         }
         if go_home_update is not None:
             payload["go_home_done"] = int(bool(getattr(go_home_update, "done", False)))
@@ -1656,14 +1681,16 @@ class ReceiverTestLogger:
             )
             payload["go_home_reason"] = str(getattr(go_home_update, "reason", "") or "")
         self._fh.write(json.dumps(_jsonable(payload), ensure_ascii=False) + "\n")
-        self._fh.flush()
         self._steps += 1
+        if self._steps % self.flush_every_steps == 0:
+            self._fh.flush()
 
     def close(self, *, stop_reason: str = "complete") -> None:
         if self._closed:
             return
         self._closed = True
         try:
+            self._fh.flush()
             self._fh.close()
         finally:
             finished_ns = time.time_ns()
@@ -1674,6 +1701,7 @@ class ReceiverTestLogger:
                 "steps": self._steps,
                 "stop_reason": str(stop_reason),
                 "steps_path": str(self.steps_path),
+                "flush_every_steps": self.flush_every_steps,
             }
             self.summary_path.write_text(
                 json.dumps(_jsonable(summary), ensure_ascii=False, indent=2),
@@ -2083,6 +2111,12 @@ def _max_abs_or_default(value: Any, default: float) -> float:
     return float(np.max(np.abs(values)))
 
 
+def _optional_float_metadata(value: Any) -> float | None:
+    if value is None:
+        return None
+    return float(value)
+
+
 def _health_bits(value: Any, *, size: int) -> np.ndarray:
     bits = np.zeros(size, dtype=np.int32)
     if value is None:
@@ -2152,6 +2186,7 @@ def _build_step_diagnostics(
         "toggle_mask": int(extras.get("toggle_mask", 0) or 0),
         "status11": np.asarray(extras.get("status11", []), dtype=np.int32),
         "record_start_requested": int(bool(extras.get("record_start_requested", False))),
+        "policy_start_requested": int(bool(extras.get("policy_start_requested", False))),
         "go_home_requested": int(bool(extras.get("go_home_requested", False))),
         "guard_triggered": int(bool(guard_info.triggered)),
         "guard_reason": ",".join(str(reason) for reason in guard_info.reasons),
@@ -2187,6 +2222,7 @@ def _build_step_diagnostics(
         )
     _add_remote_action_diagnostics(diagnostics, extras)
     _add_policy_action_diagnostics(diagnostics, extras)
+    _add_policy_remote_diagnostics(diagnostics, extras)
     return diagnostics
 
 
@@ -2272,6 +2308,26 @@ def _add_policy_action_diagnostics(
     )
     if "policy_bundle_dir" in extras:
         diagnostics["policy_bundle_dir"] = str(extras.get("policy_bundle_dir", ""))
+
+
+def _add_policy_remote_diagnostics(
+    diagnostics: dict[str, Any],
+    extras: dict[str, Any],
+) -> None:
+    if "policy_remote_mode" not in extras:
+        return
+    diagnostics["policy_remote_mode"] = str(extras.get("policy_remote_mode", ""))
+    diagnostics["policy_remote_activated"] = int(
+        extras.get("policy_remote_activated", 0) or 0
+    )
+    diagnostics["policy_remote_activation_step"] = int(
+        extras.get("policy_remote_activation_step", -1) or -1
+    )
+    if "policy_remote_remote_action" in extras:
+        diagnostics["policy_remote_remote_action"] = np.asarray(
+            extras.get("policy_remote_remote_action", np.zeros(4)),
+            dtype=np.float32,
+        )
 
 
 def _action_sample_timestamp_ns(action_info) -> int:
@@ -2458,7 +2514,9 @@ def _build_episode_metadata(
             bool(safety_cfg.get("manual_override_enabled", True))
         ),
         "safety_action_clip": float(safety_cfg.get("action_clip", 0.20)),
-        "safety_max_delta_per_step": float(safety_cfg.get("max_delta_per_step", 0.02)),
+        "safety_max_delta_per_step": _optional_float_metadata(
+            safety_cfg.get("max_delta_per_step", 0.02)
+        ),
         "safety_sensor_timeout_s": float(safety_cfg.get("sensor_timeout_s", 0.20)),
     }
 
@@ -2469,7 +2527,7 @@ def _build_episode_metadata(
         metadata[ATTR_SESSION_ID] = str(metadata_cfg["session_id"])
     if metadata_cfg.get("notes"):
         metadata[ATTR_NOTES] = str(metadata_cfg["notes"])
-    if input_device == "remote":
+    if input_device in {"remote", "policy_remote"}:
         from testbed.actions.remote import (
             DEFAULT_REMOTE_ACTION_PORT,
             DEFAULT_REMOTE_ACTION_TIMEOUT_MS,

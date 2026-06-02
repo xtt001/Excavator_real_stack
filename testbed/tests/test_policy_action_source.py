@@ -15,6 +15,7 @@ from testbed.actions.policy import (
     _policy_obs_from_real_obs,
     load_act_policy_from_bundle,
 )
+from testbed.actions.policy_remote import RemoteArmedPolicyActionSource
 from testbed.cli.record_real import (
     ReceiverHealthSnapshot,
     ReceiverTestLogger,
@@ -36,6 +37,32 @@ class DummyPolicy:
         return self.action.copy()
 
 
+class DummyActionSource:
+    def __init__(self, samples: list[tuple[np.ndarray, ActionInfo]]):
+        self.samples = list(samples)
+        self.reset_count = 0
+        self.closed = False
+        self.published: list[dict] = []
+
+    def reset(self) -> None:
+        self.reset_count += 1
+
+    def next_action(self, obs: dict) -> tuple[np.ndarray, ActionInfo]:
+        if self.samples:
+            return self.samples.pop(0)
+        return np.zeros(4, dtype=np.float32), ActionInfo(
+            source_type="teleop",
+            source_id="remote:idle",
+            extras={"remote_action_connected": 1},
+        )
+
+    def close(self) -> None:
+        self.closed = True
+
+    def publish_status(self, payload: dict) -> None:
+        self.published.append(dict(payload))
+
+
 def _obs() -> dict:
     return {
         "qpos": np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float32),
@@ -47,6 +74,62 @@ def _obs() -> dict:
 
 
 class PolicyActionSourceTests(unittest.TestCase):
+    def test_remote_armed_policy_switches_on_record_start(self) -> None:
+        remote = DummyActionSource(
+            [
+                (
+                    np.array([0.1, 0.0, 0.0, 0.0], dtype=np.float32),
+                    ActionInfo(
+                        source_type="teleop",
+                        source_id="remote:unit",
+                        latency_ms=3.0,
+                        extras={"remote_action_connected": 1},
+                    ),
+                ),
+                (
+                    np.array([0.2, 0.0, 0.0, 0.0], dtype=np.float32),
+                    ActionInfo(
+                        source_type="teleop",
+                        source_id="remote:unit",
+                        latency_ms=4.0,
+                        extras={
+                            "remote_action_connected": 1,
+                            "policy_start_requested": True,
+                            "toggle_mask": 1,
+                        },
+                    ),
+                ),
+            ]
+        )
+        policy = PolicyActionSource(
+            policy=DummyPolicy([0.5, -0.25, 0.1, -0.9]),
+            source_id="policy:unit",
+            output_mode="control",
+            action_scale=0.2,
+        )
+        source = RemoteArmedPolicyActionSource(
+            remote=remote,
+            policy=policy,
+            source_id="policy_remote",
+        )
+
+        manual_action, manual_info = source.next_action(_obs())
+        policy_action, policy_info = source.next_action(_obs())
+
+        np.testing.assert_allclose(manual_action, [0.1, 0.0, 0.0, 0.0])
+        self.assertEqual(manual_info.extras["policy_remote_mode"], "manual")
+        np.testing.assert_allclose(policy_action, [0.1, -0.05, 0.02, -0.18])
+        self.assertEqual(policy_info.source_type, "policy")
+        self.assertEqual(policy_info.extras["policy_remote_mode"], "policy")
+        self.assertEqual(policy_info.extras["policy_remote_activated"], 1)
+        self.assertTrue(policy_info.extras["policy_start_requested"])
+        self.assertFalse(policy_info.extras["record_start_requested"])
+        self.assertEqual(policy_info.extras["toggle_mask"], 1)
+        np.testing.assert_allclose(
+            policy_info.extras["policy_remote_remote_action"],
+            [0.2, 0.0, 0.0, 0.0],
+        )
+
     def test_shadow_zero_records_policy_action_but_returns_zero(self) -> None:
         policy = DummyPolicy([0.5, -0.25, 0.1, -0.9])
         source = PolicyActionSource(

@@ -133,6 +133,7 @@ class RealworldV1Tests(unittest.TestCase):
             toggle_mask=3,
             reset_requested=True,
             record_start_requested=True,
+            policy_start_requested=True,
             go_home_requested=True,
         )
 
@@ -147,6 +148,7 @@ class RealworldV1Tests(unittest.TestCase):
         self.assertEqual(packet.toggle_mask, 3)
         self.assertTrue(packet.reset_requested)
         self.assertTrue(packet.record_start_requested)
+        self.assertTrue(packet.policy_start_requested)
         self.assertTrue(packet.go_home_requested)
 
     def test_remote_action_protocol_rejects_bad_action_shape(self) -> None:
@@ -163,6 +165,7 @@ class RealworldV1Tests(unittest.TestCase):
             b'"host_sample_time_ns":1,"source_id":"old"}}'
         )
         self.assertFalse(packet.go_home_requested)
+        self.assertFalse(packet.policy_start_requested)
 
     def test_remote_receiver_status_protocol_round_trip(self) -> None:
         frame = encode_remote_receiver_status(

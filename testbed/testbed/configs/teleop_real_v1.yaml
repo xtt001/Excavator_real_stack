@@ -65,6 +65,8 @@ teleop:
     reset_button: null
     # 现场目标映射：左侧手柄从左到右第 2 个按键对应 pygame button index 1；只用于开始写 HDF5
     record_start_button: 1
+    # 左侧手柄物理 4 号键对应 pygame button index 3；用于 policy_remote 切到模型控制。
+    policy_start_button: 3
     # go-home 触发按钮必须现场确认后再配置；null 表示禁用，避免误触发。
     go_home_button: null
     # 录制开始只认左侧物理摇杆；右侧按钮不参与控制。

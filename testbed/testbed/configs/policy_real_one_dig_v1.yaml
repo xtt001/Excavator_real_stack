@@ -12,7 +12,7 @@ real:
   image_height: 120
   mock_velocity_scale_rad_s: 0.5
   control_pump:
-    enabled: false
+    enabled: true
     hz: 50
     send_immediately_on_update: false
     zero_on_stop: true
@@ -56,6 +56,17 @@ teleop:
     fail_safe_zero: true
     record_start_on_reset: false
 
+  remote:
+    bind_host: "0.0.0.0"
+    port: 8770
+    timeout_ms: 200
+    rate_hz: 50
+    source_id: "host_joystick"
+
+  policy_remote:
+    source_id: "policy_remote"
+    start_in_policy: false
+
   recording:
     enabled: false
     wait_for_start: true
@@ -65,9 +76,10 @@ teleop:
   test_log:
     enabled: true
     output_dir: runs/policy_control_tests
+    flush_every_steps: 20
 
 task:
-  task_name: real_one_dig_v1_policy_shadow
+  task_name: real_one_dig_v1_policy_test
   dataset_dir: data/policy_shadow_real_one_dig_v1
   camera_names: ["fpv"]
   max_steps: 4000
@@ -75,7 +87,7 @@ task:
   record_hz: 50
   dt: 0.02
   seed: -1
-  param_version: real_one_dig_v1_policy_shadow
+  param_version: real_one_dig_v1_policy_test
 
 sync:
   time_source: sensor_or_ros_header_stamp
@@ -105,5 +117,5 @@ safety:
   estop_enabled: true
   manual_override_enabled: true
   sensor_timeout_s: 1.0
-  action_clip: 0.2
-  max_delta_per_step: 0.02
+  action_clip: 1.0
+  max_delta_per_step: null

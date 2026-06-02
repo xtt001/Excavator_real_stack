@@ -104,6 +104,7 @@ export GO_HOME_BUTTON=3
   --rate-hz 50 \
   --record-start-button 2 \
   --record-start-joystick-id 0 \
+  --policy-start-button 4 \
   --go-home-button "${GO_HOME_BUTTON}" \
   --confirm-remote-control
 ```
@@ -164,26 +165,54 @@ kill "$(cat "data/qc_today_${DAY}/qc_watch.pid")"
 
 ## 测试现场最简流程
 
-### 0. 确认 checkpoint bundle
+本节是 policy 现场测试流程。先用 `shadow_zero` 确认模型能读取真实观测并稳定输出；
+shadow 阶段 policy action 只写入 `steps.jsonl`，下发给底层的动作保持零。确认通过后，
+进入 `policy_remote + 物理 4 号键` 的模型接管。
+
+### 0. 从端启动底层链路
 
 ```bash
 cd /media/mundane/D/Excavator_real_stack
-ls -lh policy_bundles/real_one_dig_v1/
+./scripts/slave_real_stack.sh start --force --no-receiver
 ```
 
-### 1. 从端启动底层链路但不启动默认 receiver
+这里的 `--no-receiver` 只是不启动脚本默认的 remote 录制 receiver，避免占用
+`8770` 或启动错误模式；底层 real CAN bridge、相机、FPV、gateway 仍会启动。
+后面的 shadow 和 `policy_remote` 控制 receiver 会由本节命令显式启动。
+
+### 1. 检查 bundle 并跑 shadow
 
 ```bash
 cd /media/mundane/D/Excavator_real_stack
-./scripts/slave_real_stack.sh run --force --no-receiver
+export PYTHON="$PWD/.venv/bin/python"
+export PYTHONPATH="$PWD/testbed"
+export LD_LIBRARY_PATH="$PWD/.venv/lib/python3.10/site-packages/nvidia/cu12/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+./scripts/run_policy_shadow_check.sh
 ```
 
-### 2. Shadow 测试
+脚本会先确认 `policy_bundles/real_one_dig_v1/` 下的 `policy_best.ckpt`、
+`dataset_stats.pkl`、`resolved_config.yaml` 是否存在，然后跑 `shadow_zero`，
+最后打印方便现场判断的关键数据：
+
+- `Bundle verdict`
+- `Verdict`
+- `steps / stop_reason / effective_hz`
+- `policy latency mean/p50/p95/max`
+- `policy_action mean/max_abs`
+- `returned/raw/safe/commanded max_abs`
+- `policy_errors / health_bad / ack_bad / fault_codes`
+
+看到 `Bundle verdict: OK` 且 `Verdict: OK` 后，再继续下一步。如果是 `NOT OK`，
+不要进入 policy control。
+
+### 2. 从端启动 policy receiver，等待手动点火和 4 号键接管
 
 ```bash
 cd /media/mundane/D/Excavator_real_stack
-export PYTHON="${PYTHON:-python3}"
-"${PYTHON}" -m pip install --no-build-isolation --no-deps -e ./testbed
+export PYTHON="$PWD/.venv/bin/python"
+export PYTHONPATH="$PWD/testbed"
+export LD_LIBRARY_PATH="$PWD/.venv/lib/python3.10/site-packages/nvidia/cu12/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 "${PYTHON}" -m testbed.cli.record_real \
   --config testbed/testbed/configs/policy_real_one_dig_v1.yaml \
@@ -193,30 +222,7 @@ export PYTHON="${PYTHON:-python3}"
   --bridge-host 127.0.0.1 \
   --bridge-port 8765 \
   --bridge-timeout 2.0 \
-  --input policy \
-  --no-record \
-  --policy-output-mode shadow_zero \
-  --num-episodes 1 \
-  --max-steps 500 \
-  --test-log-dir /media/mundane/EXTERNAL_USB/policy_control_tests \
-  --live-action-line
-```
-
-### 3. 完整 control 测试
-
-```bash
-cd /media/mundane/D/Excavator_real_stack
-export PYTHON="${PYTHON:-python3}"
-
-"${PYTHON}" -m testbed.cli.record_real \
-  --config testbed/testbed/configs/policy_real_one_dig_v1.yaml \
-  --data-side slave \
-  --backend bridge_tcp \
-  --state-reader bridge_tcp \
-  --bridge-host 127.0.0.1 \
-  --bridge-port 8765 \
-  --bridge-timeout 2.0 \
-  --input policy \
+  --input policy_remote \
   --no-record \
   --policy-output-mode control \
   --policy-action-scale 1.0 \
@@ -226,17 +232,66 @@ export PYTHON="${PYTHON:-python3}"
   --live-action-line
 ```
 
-### 4. 查看日志和切回录制
+这个 receiver 只有一个进程：按 4 号前四维 action 来自主端 remote；按 4 号后四维
+action 来自 policy。remote 的状态按钮、go-home、reset/discard/quit 事件仍会被
+receiver 消费。此流程默认 `--no-record`，只写 `/media/mundane/EXTERNAL_USB/policy_control_tests`
+下的 JSONL 日志。
+
+### 3. 主端启动 sender
 
 ```bash
-ls -td /media/mundane/EXTERNAL_USB/policy_control_tests/* | head -1
-tail -n 5 /media/mundane/EXTERNAL_USB/policy_control_tests/*/steps.jsonl
-cat /media/mundane/EXTERNAL_USB/policy_control_tests/*/summary.json
+cd ~/Excavator_real_stack
+export PYTHON="$HOME/miniforge3/envs/excavator-real-stack/bin/python"
+export GO_HOME_BUTTON=3
+
+"${PYTHON}" -m testbed.cli.teleop_remote \
+  --config testbed/testbed/configs/teleop_real_v1.yaml \
+  --host 192.168.100.1 \
+  --port 8770 \
+  --input joystick \
+  --rate-hz 50 \
+  --record-start-button 2 \
+  --record-start-joystick-id 0 \
+  --policy-start-button 4 \
+  --go-home-button "${GO_HOME_BUTTON}" \
+  --confirm-remote-control
+```
+
+`--policy-start-button 4` 是左侧物理 4 号键；代码内部会换算成 pygame index 3。
+2 号键保留给录制流程，本 policy 测试流程不要按 2 号键。
+
+### 4. 现场操作顺序
+
+1. 先用摇杆手动摆位。
+2. 按 `5 -> 1 -> 6` 点火，从端 `candump` 确认 `18F021F6` 前两字节到 `01 05`。
+3. 确认急停、人工接管和现场安全手段都可用。
+4. 按左侧物理 `4` 号键，receiver 在同一进程内切到 policy control。
+5. 测试结束后停止主端 sender，再停止从端 policy receiver。
+
+`steps.jsonl` 中：
+
+- `policy_remote_mode=manual` 表示仍是手动 remote 阶段。
+- `policy_remote_mode=policy` 表示已进入 policy 控制。
+- `policy_remote_activated=1` 是切换发生的那一步。
+- `policy_start_requested=1` 是主端物理 4 号键发出的切换事件。
+
+### 5. 查看 control 测试日志
+
+```bash
+cd /media/mundane/D/Excavator_real_stack
+export PYTHON="$PWD/.venv/bin/python"
+
+"${PYTHON}" scripts/summarize_policy_test_log.py \
+  --latest /media/mundane/EXTERNAL_USB/policy_control_tests \
+  --expect-output-mode control \
+  --expect-policy-remote \
+  --allow-stop-reason aborted \
+  --warmup-steps 1
 ```
 
 ```text
 Ctrl+C policy receiver
-Ctrl+C slave_real_stack --no-receiver terminal
+./scripts/slave_real_stack.sh stop
 ```
 
 ## 运行分工
@@ -535,13 +590,15 @@ export GO_HOME_BUTTON=3
   --rate-hz 50 \
   --record-start-button 2 \
   --record-start-joystick-id 0 \
+  --policy-start-button 4 \
   --go-home-button "${GO_HOME_BUTTON}" \
   --confirm-remote-control
 ```
 
 交互式终端默认显示从端回传的 `receiver_mode/recording/go_home/saved` 状态；需要滚动日志时追加
 `--no-monitor`。`--record-start-button 2` 和 `--record-start-joystick-id 0` 表示只接收左侧摇杆按钮
-`2` 作为正式录制开始键，右侧按钮不参与录制控制。
+`2` 作为正式录制开始键；`--policy-start-button 4` 表示左侧物理 4 号键在
+`policy_remote` receiver 中切到模型控制。右侧按钮不参与录制/policy 切换控制。
 
 | 软件动作 | action index | pygame 设备/轴 | 当前 action 正方向 |
 |----------|--------------|----------------|--------------------|
@@ -576,7 +633,7 @@ export GO_HOME_BUTTON=3
 | `1` | ignition 点火 |
 | `2` | 开始正式录制 HDF5 |
 | `3` | go-home；启用后不再发送 crush 破碎 |
-| `4` | chassis_light 底盘灯 |
+| `4` | policy_start；在 `policy_remote` receiver 中切到模型控制 |
 | `5` | remote_mode 遥控模式 |
 | `6` | pilot 先导使能 |
 | `7` | high_speed 高速 |

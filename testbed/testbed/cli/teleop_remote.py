@@ -109,10 +109,25 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--policy-start-button",
+        type=int,
+        default=None,
+        help=(
+            "Physical one-based joystick button number that sends policy_start_requested. "
+            "For left physical button 4, pass 4; this maps to pygame button index 3."
+        ),
+    )
+    parser.add_argument(
         "--go-home-button-index",
         type=int,
         default=None,
         help="Low-level pygame zero-based joystick button index for go_home_requested.",
+    )
+    parser.add_argument(
+        "--policy-start-button-index",
+        type=int,
+        default=None,
+        help="Low-level pygame zero-based joystick button index for policy_start_requested.",
     )
     parser.add_argument(
         "--status-button-device",
@@ -194,6 +209,16 @@ def main() -> None:
         joystick_cfg["go_home_button"] = int(args.go_home_button) - 1
     elif args.go_home_button_index is not None:
         joystick_cfg["go_home_button"] = int(args.go_home_button_index)
+    if args.policy_start_button is not None and args.policy_start_button_index is not None:
+        parser.error(
+            "--policy-start-button and --policy-start-button-index are mutually exclusive"
+        )
+    if args.policy_start_button is not None:
+        if args.policy_start_button < 1:
+            parser.error("--policy-start-button must be >= 1")
+        joystick_cfg["policy_start_button"] = int(args.policy_start_button) - 1
+    elif args.policy_start_button_index is not None:
+        joystick_cfg["policy_start_button"] = int(args.policy_start_button_index)
     input_device = args.input or str(teleop_cfg.get("input", "joystick"))
     if input_device == "remote":
         input_device = "joystick"
@@ -236,12 +261,19 @@ def main() -> None:
         record_start_physical = (
             None if record_start_index is None else int(record_start_index) + 1
         )
+        policy_start_index = joystick_cfg.get("policy_start_button")
+        policy_start_physical = (
+            None if policy_start_index is None else int(policy_start_index) + 1
+        )
         log.info(
             "Joystick buttons: status_button_device=%s record_start_button_index=%s "
-            "record_start_physical_button=%s button_joystick_ids=%s",
+            "record_start_physical_button=%s policy_start_button_index=%s "
+            "policy_start_physical_button=%s button_joystick_ids=%s",
             joystick_cfg.get("status_button_device", 0),
             record_start_index,
             record_start_physical,
+            policy_start_index,
+            policy_start_physical,
             joystick_cfg.get("button_joystick_ids"),
         )
 
@@ -277,11 +309,13 @@ def main() -> None:
                 discard_requested=bool(extras.get("discard_requested", False)),
                 quit_requested=bool(extras.get("quit_requested", False)),
                 record_start_requested=bool(extras.get("record_start_requested", False)),
+                policy_start_requested=bool(extras.get("policy_start_requested", False)),
                 go_home_requested=bool(extras.get("go_home_requested", False)),
             )
             event_flags = {
                 "toggle_mask": int(extras.get("toggle_mask", 0) or 0),
                 "record_start": bool(extras.get("record_start_requested", False)),
+                "policy_start": bool(extras.get("policy_start_requested", False)),
                 "go_home": bool(extras.get("go_home_requested", False)),
                 "reset": bool(extras.get("reset_requested", False)),
                 "discard": bool(extras.get("discard_requested", False)),
@@ -290,10 +324,11 @@ def main() -> None:
             if any(event_flags.values()):
                 if not monitor.enabled:
                     log.info(
-                        "remote_event seq=%d toggle_mask=%d record_start=%s go_home=%s reset=%s discard=%s quit=%s",
+                        "remote_event seq=%d toggle_mask=%d record_start=%s policy_start=%s go_home=%s reset=%s discard=%s quit=%s",
                         seq,
                         event_flags["toggle_mask"],
                         event_flags["record_start"],
+                        event_flags["policy_start"],
                         event_flags["go_home"],
                         event_flags["reset"],
                         event_flags["discard"],
@@ -409,6 +444,7 @@ class _RemoteTeleopMonitor:
         self._event_counts = {
             "toggle": 0,
             "record_start": 0,
+            "policy_start": 0,
             "go_home": 0,
             "reset": 0,
             "discard": 0,
@@ -485,6 +521,7 @@ class _RemoteTeleopMonitor:
             self._last_event_by_name["toggle"] = (int(seq), now_s)
         for key, label in (
             ("record_start", "record_start_requested"),
+            ("policy_start", "policy_start_requested"),
             ("go_home", "go_home_requested"),
             ("reset", "reset_requested"),
             ("discard", "discard_requested"),
@@ -548,6 +585,7 @@ class _RemoteTeleopMonitor:
         status_text = _format_status_bits(status11)
         toggle_mask = int(extras.get("toggle_mask", 0) or 0)
         record_last = self._format_last_event("record_start", now_s)
+        policy_last = self._format_last_event("policy_start", now_s)
         go_home_last = self._format_last_event("go_home", now_s)
         source = getattr(info, "source_id", "") or self.source_id
         lines = [
@@ -572,6 +610,11 @@ class _RemoteTeleopMonitor:
                 "go_home:      "
                 f"pulse={_yes_no(extras.get('go_home_requested', False))} "
                 f"count={self._event_counts['go_home']} last={go_home_last}"
+            ),
+            (
+                "policy_start: "
+                f"pulse={_yes_no(extras.get('policy_start_requested', False))} "
+                f"count={self._event_counts['policy_start']} last={policy_last}"
             ),
             (
                 "other events: "
