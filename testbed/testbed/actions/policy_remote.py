@@ -35,6 +35,7 @@ class RemoteArmedPolicyActionSource(ActionSource):
         self._policy_active = bool(start_in_policy)
         self._step = 0
         self._activation_step: int | None = 0 if start_in_policy else None
+        self._toggle_count = 0
 
     @classmethod
     def from_config(
@@ -55,6 +56,7 @@ class RemoteArmedPolicyActionSource(ActionSource):
         self._policy_active = self._start_in_policy
         self._step = 0
         self._activation_step = 0 if self._start_in_policy else None
+        self._toggle_count = 0
 
     def next_action(self, obs: dict[str, Any]) -> tuple[np.ndarray, ActionInfo]:
         remote_action, remote_info = self._remote.next_action(obs)
@@ -64,10 +66,11 @@ class RemoteArmedPolicyActionSource(ActionSource):
             remote_extras.get("record_start_requested", False)
         )
         activated_now = False
+        deactivated_now = False
         if start_requested and not self._policy_active:
-            self._policy_active = True
-            self._activation_step = self._step
-            activated_now = True
+            activated_now = self.set_policy_active(True)
+        elif start_requested and self._policy_active:
+            deactivated_now = self.set_policy_active(False)
 
         if self._policy_active:
             policy_action, policy_info = self._policy.next_action(obs)
@@ -81,9 +84,12 @@ class RemoteArmedPolicyActionSource(ActionSource):
             extras["policy_start_requested"] = start_requested
             extras["policy_remote_mode"] = "policy"
             extras["policy_remote_activated"] = int(activated_now)
+            extras["policy_remote_deactivated"] = int(deactivated_now)
             extras["policy_remote_activation_step"] = int(
                 -1 if self._activation_step is None else self._activation_step
             )
+            extras["policy_remote_toggle_count"] = int(self._toggle_count)
+            extras["model_control"] = 1
             extras["policy_remote_remote_action"] = np.asarray(
                 remote_action, dtype=np.float32
             ).copy()
@@ -99,7 +105,10 @@ class RemoteArmedPolicyActionSource(ActionSource):
         extras = dict(remote_extras)
         extras["policy_remote_mode"] = "manual"
         extras["policy_remote_activated"] = 0
+        extras["policy_remote_deactivated"] = int(deactivated_now)
         extras["policy_remote_activation_step"] = -1
+        extras["policy_remote_toggle_count"] = int(self._toggle_count)
+        extras["model_control"] = 0
         info = ActionInfo(
             source_type=getattr(remote_info, "source_type", "teleop"),
             source_id=f"{getattr(remote_info, 'source_id', 'remote')}:{self._source_id}",
@@ -119,3 +128,28 @@ class RemoteArmedPolicyActionSource(ActionSource):
         publish = getattr(self._remote, "publish_status", None)
         if callable(publish):
             publish(payload)
+
+    def set_policy_active(self, active: bool) -> bool:
+        active = bool(active)
+        if self._policy_active == active:
+            return False
+        self._policy_active = active
+        self._toggle_count += 1
+        if active:
+            self._activation_step = self._step
+            if hasattr(self._policy, "reset"):
+                self._policy.reset()
+        else:
+            self._activation_step = None
+        return True
+
+    def policy_status(self) -> dict[str, Any]:
+        mode = "policy" if self._policy_active else "manual"
+        return {
+            "policy_remote_mode": mode,
+            "model_control": int(self._policy_active),
+            "policy_remote_activation_step": int(
+                -1 if self._activation_step is None else self._activation_step
+            ),
+            "policy_remote_toggle_count": int(self._toggle_count),
+        }

@@ -42,7 +42,7 @@ nmcli connection up '有线连接 1'
 ssh slave-jetson 'timeout 2s tegrastats --interval 1000 || true'
 ```
 
-## 录制最简现场流程
+## 现场最简流程（录制和 policy 共用）
 
 ### 0. 按需标定当前姿态为 home
 
@@ -53,12 +53,17 @@ cd ~/Excavator_real_stack
   --ssh-user mundane
 ```
 
-### 1. 从端启动全链路
+### 1. 从端启动全链路和唯一 receiver
 
 ```bash
 cd /media/mundane/D/Excavator_real_stack
-./scripts/slave_real_stack.sh run --force
+./scripts/slave_real_stack.sh run --force --policy-remote
 ```
+
+这个终端同时托管底层链路和唯一的 `policy_remote` receiver。按一次 `Ctrl+C`
+会先停止 receiver，再停止 gateway、FPV、相机和 bridge。
+`--policy-remote` 会自动使用 `policy_real_one_dig_v1.yaml`、`policy_remote` input、
+`control` output、`action_scale=1.0`、USB HDF5 目录和 policy test log 目录。
 
 ### 2. 从端另开终端看 CAN
 
@@ -109,7 +114,7 @@ export GO_HOME_BUTTON=3
   --confirm-remote-control
 ```
 
-### 5. 点火和开始录制
+### 5. 点火、go-home、录制和模型控制
 
 ```text
 5 -> remote mode
@@ -126,7 +131,12 @@ export GO_HOME_BUTTON=3
 ```text
 button 2 -> start HDF5 recording
 button 3 -> go-home
+button 4 -> manual/model control toggle
 ```
+
+推荐顺序：先手动摆位并点火；每次进入模型控制前先按 `3` 跑 go-home，等 receiver
+显示 go-home done；然后按 `4` 切到 model control。需要回到人操作时再按一次 `4`。
+需要写 HDF5 时按 `2`；不需要录制就不要按 `2`。
 
 ### 6. 主端实时 QC
 
@@ -163,24 +173,25 @@ DAY="$(date +%F)"
 kill "$(cat "data/qc_today_${DAY}/qc_watch.pid")"
 ```
 
-## 测试现场最简流程
+## 附录：policy shadow 检查命令（不属于现场流程）
 
-本节是 policy 现场测试流程。先用 `shadow_zero` 确认模型能读取真实观测并稳定输出；
-shadow 阶段 policy action 只写入 `steps.jsonl`，下发给底层的动作保持零。确认通过后，
-进入 `policy_remote + 物理 4 号键` 的模型接管。
+本节只用于在进入现场最简流程前检查模型 bundle 和 shadow 输出。shadow 阶段
+policy action 只写入 `steps.jsonl`，下发给底层的动作保持零。正式录制和
+policy control 都使用上面的唯一 `policy_remote` receiver 流程。
 
-### 0. 从端启动底层链路
+从端启动底层链路用于 shadow：
 
 ```bash
 cd /media/mundane/D/Excavator_real_stack
-./scripts/slave_real_stack.sh start --force --no-receiver
+./scripts/slave_real_stack.sh run --force --no-receiver
 ```
 
-这里的 `--no-receiver` 只是不启动脚本默认的 remote 录制 receiver，避免占用
+这里的 `--no-receiver` 只是不启动脚本默认的 receiver，避免占用
 `8770` 或启动错误模式；底层 real CAN bridge、相机、FPV、gateway 仍会启动。
-后面的 shadow 和 `policy_remote` 控制 receiver 会由本节命令显式启动。
+这个命令用于 shadow 检查时的底层链路；在该终端按一次 `Ctrl+C` 会停止底层链路。
+正式 policy/录制流程不要用本命令，直接用后面的唯一 receiver 一体化命令。
 
-### 1. 检查 bundle 并跑 shadow
+检查 bundle 并跑 shadow：
 
 ```bash
 cd /media/mundane/D/Excavator_real_stack
@@ -206,94 +217,6 @@ export LD_LIBRARY_PATH="$PWD/.venv/lib/python3.10/site-packages/nvidia/cu12/lib$
 看到 `Bundle verdict: OK` 且 `Verdict: OK` 后，再继续下一步。如果是 `NOT OK`，
 不要进入 policy control。
 
-### 2. 从端启动 policy receiver，等待手动点火和 4 号键接管
-
-```bash
-cd /media/mundane/D/Excavator_real_stack
-export PYTHON="$PWD/.venv/bin/python"
-export PYTHONPATH="$PWD/testbed"
-export LD_LIBRARY_PATH="$PWD/.venv/lib/python3.10/site-packages/nvidia/cu12/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-
-"${PYTHON}" -m testbed.cli.record_real \
-  --config testbed/testbed/configs/policy_real_one_dig_v1.yaml \
-  --data-side slave \
-  --backend bridge_tcp \
-  --state-reader bridge_tcp \
-  --bridge-host 127.0.0.1 \
-  --bridge-port 8765 \
-  --bridge-timeout 2.0 \
-  --input policy_remote \
-  --no-record \
-  --policy-output-mode control \
-  --policy-action-scale 1.0 \
-  --num-episodes 1 \
-  --max-steps 4000 \
-  --test-log-dir /media/mundane/EXTERNAL_USB/policy_control_tests \
-  --live-action-line
-```
-
-这个 receiver 只有一个进程：按 4 号前四维 action 来自主端 remote；按 4 号后四维
-action 来自 policy。remote 的状态按钮、go-home、reset/discard/quit 事件仍会被
-receiver 消费。此流程默认 `--no-record`，只写 `/media/mundane/EXTERNAL_USB/policy_control_tests`
-下的 JSONL 日志。
-
-### 3. 主端启动 sender
-
-```bash
-cd ~/Excavator_real_stack
-export PYTHON="$HOME/miniforge3/envs/excavator-real-stack/bin/python"
-export GO_HOME_BUTTON=3
-
-"${PYTHON}" -m testbed.cli.teleop_remote \
-  --config testbed/testbed/configs/teleop_real_v1.yaml \
-  --host 192.168.100.1 \
-  --port 8770 \
-  --input joystick \
-  --rate-hz 50 \
-  --record-start-button 2 \
-  --record-start-joystick-id 0 \
-  --policy-start-button 4 \
-  --go-home-button "${GO_HOME_BUTTON}" \
-  --confirm-remote-control
-```
-
-`--policy-start-button 4` 是左侧物理 4 号键；代码内部会换算成 pygame index 3。
-2 号键保留给录制流程，本 policy 测试流程不要按 2 号键。
-
-### 4. 现场操作顺序
-
-1. 先用摇杆手动摆位。
-2. 按 `5 -> 1 -> 6` 点火，从端 `candump` 确认 `18F021F6` 前两字节到 `01 05`。
-3. 确认急停、人工接管和现场安全手段都可用。
-4. 按左侧物理 `4` 号键，receiver 在同一进程内切到 policy control。
-5. 测试结束后停止主端 sender，再停止从端 policy receiver。
-
-`steps.jsonl` 中：
-
-- `policy_remote_mode=manual` 表示仍是手动 remote 阶段。
-- `policy_remote_mode=policy` 表示已进入 policy 控制。
-- `policy_remote_activated=1` 是切换发生的那一步。
-- `policy_start_requested=1` 是主端物理 4 号键发出的切换事件。
-
-### 5. 查看 control 测试日志
-
-```bash
-cd /media/mundane/D/Excavator_real_stack
-export PYTHON="$PWD/.venv/bin/python"
-
-"${PYTHON}" scripts/summarize_policy_test_log.py \
-  --latest /media/mundane/EXTERNAL_USB/policy_control_tests \
-  --expect-output-mode control \
-  --expect-policy-remote \
-  --allow-stop-reason aborted \
-  --warmup-steps 1
-```
-
-```text
-Ctrl+C policy receiver
-./scripts/slave_real_stack.sh stop
-```
-
 ## 运行分工
 
 | 端 | 负责内容 | 不应启动 |
@@ -308,46 +231,18 @@ Ctrl+C policy receiver
 - 从端 gateway 也连接本机 C++ bridge：`127.0.0.1:8766`，用于 `read_state` 和 FPV
 - 主端 remote action 连接从端 receiver：`192.168.100.1:8770`
 
-## 从端启动命令
+## 补充说明
 
-推荐从端直接用统一脚本启动主链路：
+正式现场只使用上面的“现场最简流程”。不要再分开启动底层链路和 receiver；
+`./scripts/slave_real_stack.sh run --force --policy-remote` 会同时托管底层链路和唯一
+`policy_remote` receiver，并用当前终端的 `Ctrl+C` 统一停止。
 
-```bash
-cd /media/mundane/D/Excavator_real_stack
-./scripts/slave_real_stack.sh run
-```
+如果上次没有关干净导致端口占用，重新执行现场最简流程里的
+`./scripts/slave_real_stack.sh run --force --policy-remote` 即可；`--force` 会先清理旧服务再启动。
 
-`run` 会按顺序启动 real CAN bridge、Orbbec、FPV 到 SHM、gateway 和
-`tb-receiver-real --wait-for-record-start`，并在当前终端持续显示各服务日志。
-按一次 `Ctrl+C` 时脚本会先让 receiver 下发零命令并保存当前片段，再停止 gateway、
-FPV、Orbbec 和 bridge。不要连续按两次，除非必须立即放弃保存。
-
-统一脚本默认使用 `EXCAVATOR_CONTROL_MODE=open_loop_motor_speed` 启动 bridge。现场不要在
+统一脚本使用 `EXCAVATOR_CONTROL_MODE=open_loop_motor_speed` 启动 bridge。现场不要在
 未重新验证前切回 `closed_loop_velocity_scalar`：该模式在摇杆零输入时仍会用 IMU qvel
 跑底层速度 PID，可能导致 boom 在无摇杆输入时自运动。
-
-如果不想占住终端，也可以后台启动后按需看日志：
-
-```bash
-./scripts/slave_real_stack.sh start
-./scripts/slave_real_stack.sh status
-./scripts/slave_real_stack.sh tail receiver
-./scripts/slave_real_stack.sh stop
-```
-
-兼容别名仍保留：`./scripts/slave_real_stack.sh tail recorder` 会转到 receiver 日志。
-
-如果上次没有关干净导致端口占用：
-
-```bash
-./scripts/slave_real_stack.sh restart --force
-```
-
-脚本默认不启动 `candump`，CAN 观察仍然单独开终端执行：
-
-```bash
-candump -ta can2,18F021F6:1FFFFFFF
-```
 
 IMU 四个传感器地址检查。这个检查是只读的，只监听 `can3` 上的 IMU 高速帧，
 不会向机器下发控制命令。
@@ -382,223 +277,17 @@ IMU 地址没有在 `can3` 上持续发帧。先处理 IMU 地址/协议/CAN 接
 `captured_frames` 表示监听窗口内总 CAN 帧数，`imu_highspeed_ch1_frames` 表示其中被识别为
 IMU 高速 ch1 协议的帧数，`cmd_counts_by_raw_addr` 可用于看每个 IMU 地址的各类分包是否齐全。
 
-下面的手动命令用于排错或脚本不可用时逐项启动。
-
-先确认 USB 移动硬盘已经挂载。当前现场盘 label 是 `EXTERNAL_USB`：
-
-```bash
-lsblk -o NAME,SIZE,FSTYPE,LABEL,MOUNTPOINTS,MODEL
-sudo mkdir -p /media/mundane/EXTERNAL_USB
-findmnt /media/mundane/EXTERNAL_USB || \
-  sudo mount -t ntfs3 -o uid=$(id -u),gid=$(id -g),umask=022 \
-    /dev/disk/by-label/EXTERNAL_USB /media/mundane/EXTERNAL_USB || \
-  sudo mount -t ntfs-3g -o uid=$(id -u),gid=$(id -g),umask=022 \
-    /dev/disk/by-label/EXTERNAL_USB /media/mundane/EXTERNAL_USB
-mkdir -p /media/mundane/EXTERNAL_USB/real_teleop_v1
-test -w /media/mundane/EXTERNAL_USB/real_teleop_v1 && echo USB_WRITE_OK
-```
-
-不用统一脚本时，在从端先打开 4 个基础服务终端。每个终端先执行：
-
-```bash
-cd /media/mundane/D/Excavator_real_stack
-source .venv/bin/activate
-```
-
-### 终端 1：real CAN bridge
-
-```bash
-control/setup/setup_can.sh can2 250000
-control/setup/setup_can.sh can3 250000
-ip -details link show can2
-ip -details link show can3
-
-./bridge/build/excavator_real_bridge \
-  --host 127.0.0.1 \
-  --port 8766 \
-  --can-if can2 \
-  --imu-if can3 \
-  --can-bus-enabled true \
-  --can-simulation false \
-  --imu-simulation false \
-  --create-mapping true \
-  --control-mode open_loop_motor_speed \
-  --pid-yaml control/config/joint_pid.yaml \
-  --heartbeat-timeout-ms 800
-```
-
-bridge 启动日志应出现：
-
-```text
-loaded PID YAML: control/config/joint_pid.yaml
-```
-
-### 终端 2：Orbbec 相机
-
-```bash
-source ./scripts/ros2_fpv_env.sh
-export EXCAVATOR_ORBBEC_WS=/home/mundane/orbbec_ws
-export EXCAVATOR_ROS_WS=/home/mundane/orbbec_ws
-source ./scripts/source_ros_stack.sh
-./scripts/start_orbbec_fpv_camera.sh
-```
-
-如果报 `orbbec_fpv_camera.launch.py` 找不到，说明
-`/home/mundane/orbbec_ws/src/excavator_ros2_bridge` 可能还是旧链接。修复一次即可：
-
-```bash
-cd /home/mundane/orbbec_ws/src
-mv excavator_ros2_bridge excavator_ros2_bridge.broken_$(date +%Y%m%d_%H%M%S)
-ln -s /media/mundane/D/Excavator_real_stack/ros2_bridge/excavator_ros2_bridge excavator_ros2_bridge
-cd /home/mundane/orbbec_ws
-source /opt/ros/humble/setup.bash
-colcon build --symlink-install --packages-select excavator_ros2_bridge
-```
-
-### 终端 3：FPV compressed 到共享内存
-
-```bash
-source ./scripts/ros2_fpv_env.sh
-export EXCAVATOR_ROS_WS=/home/mundane/orbbec_ws
-source ./scripts/source_excavator_ros_ws.sh
-./scripts/start_fpv_subscriber_py.sh
-```
-
-### 终端 4：gateway
-
-必须在终端 3 已创建 `/dev/shm/excavator_fpv_v1` 后再启动 gateway。
-
-```bash
-source ./scripts/excavator_deploy_network.sh
-excavator_apply_slave_network_defaults
-./scripts/start_bridge_gateway.sh --fpv-source auto --fpv-max-stale-ms 1000
-```
-
-`start_bridge_gateway.sh` 默认追加：
-
-```bash
---fpv-encoding jpeg --fpv-jpeg-quality 95 --fpv-jpeg-cache-hz 30
-```
-
-因此 HDF5 中图像默认写到 `/observations/encoded_images/fpv`，格式为逐帧 JPEG。
+HDF5 中图像默认写到 `/observations/encoded_images/fpv`，格式为逐帧 JPEG。
 gateway 只在 FPV SHM 帧序号变化时压缩一次，并缓存给 `read_state`，避免 receiver
 高频读状态时重复压缩同一帧影响控制链路。
 训练和 QC 会自动解码；`camera_fps` 仍由真实 image timestamp 估计，不等于
 `record_hz` 或 control pump 的 50Hz。
 
-## 点火前 CAN 确认和等待录制
-
-主端 `tb-teleop-remote` 连接的是从端 `tb-receiver-real --input remote` 创建的
-`8770` 端口。没有先启动从端 remote 接收端时，主端会报：
-
-```text
-ConnectionRefusedError: [Errno 111] Connection refused
-```
-
-### 从端新终端：只看 can2 的 18F021F6
-
-另开一个从端终端执行：
-
-```bash
-candump -ta can2,18F021F6:1FFFFFFF
-```
-
-### 从端新终端：正式 receiver，先接收但等待开始录制
-
-这个进程会立即打开 `8770` 并把主端摇杆 action 通过 control pump 直发到
-`127.0.0.1:8766`，状态/FPV 仍从 gateway `127.0.0.1:8765` 读取；在收到
-`record_start_requested` 前不会把 step 写入 episode 缓存。这样可以先点火、看 CAN，
-确认正常后再按主端摇杆的录制开始键。
-
-receiver live line 会显式显示健康门禁，例如：
-
-```text
-mode=armed health=OK err=- imu=1111 ...
-mode=fault health=ERR err=imu_missing:1 imu=1011 ...
-```
-
-recording 过程中如果出现 IMU/FPV/bridge/remote/control 任一严格门禁错误，
-receiver 会立即下发零命令并停止当前 record；已有 step 会保存到
-`<dataset_dir>/failed/episode_<id>_failed_<timestamp>.hdf5`，不会写入主目录的
-`episode_*.hdf5`，训练 loader 不会误读。
-FAULT_HOLD 只把四维速度 action 钳成零；点火、remote mode、pilot 等 status toggle
-仍会透传，方便现场先完成上电/先导流程，再等待传感器健康恢复后开始 record。
-
-```bash
-cd /media/mundane/D/Excavator_real_stack
-source .venv/bin/activate
-python -m pip install --no-build-isolation --no-deps -e ./testbed
-tb-receiver-real \
-  --config testbed/testbed/configs/teleop_real_v1.yaml \
-  --data-side slave \
-  --backend bridge_tcp \
-  --state-reader bridge_tcp \
-  --bridge-host 127.0.0.1 \
-  --bridge-port 8765 \
-  --bridge-timeout 2.0 \
-  --input remote \
-  --num-episodes 1000000 \
-  --max-steps 50000 \
-  --output-dir /media/mundane/EXTERNAL_USB/real_teleop_v1 \
-  --session-id remote_teleop_slave_record \
-  --wait-for-record-start \
-  --live-action-line
-```
-
-如果主端仍然报 `ConnectionRefusedError`，先在从端确认 `8770` 是否已经监听：
-
-```bash
-ss -tlnp | grep ':8770'
-```
-
-## 主端 rqt 看图
-
-主端 rqt 只用于看图，不参与 TCP 控制和 HDF5 录制主链路。主端新开一个终端执行：
-
-```bash
-cd ~/Excavator_real_stack
-source ./scripts/excavator_deploy_network.sh
-excavator_apply_host_network_defaults
-source ./scripts/ros2_fpv_env.sh
-./scripts/start_host_fpv_rqt.sh
-```
-
-rqt 里选择：
-
-```text
-/camera/color/image_raw
-```
-
-如果主端没有 ROS2 或 rqt 起不来，可以跳过本节；录制 HDF5 不依赖主端 rqt。
-
-## 主端摇杆控制命令
+## 按键和动作映射
 
 当前 `testbed/testbed/configs/teleop_real_v1.yaml` 使用双手柄映射：左侧物理摇杆是
 pygame `joystick 0`，右侧物理摇杆是 pygame `joystick 1`；左侧控制 `swing/stick`，
-右侧控制 `boom/bucket`。从端 `8770` 监听后，在主端启动 remote action sender：
-
-```bash
-cd ~/Excavator_real_stack
-export PYTHON="$HOME/miniforge3/envs/excavator-real-stack/bin/python"
-export GO_HOME_BUTTON=3
-"${PYTHON}" -m pip install --no-build-isolation --no-deps -e ./testbed
-"${PYTHON}" -m testbed.cli.teleop_remote \
-  --config testbed/testbed/configs/teleop_real_v1.yaml \
-  --host 192.168.100.1 \
-  --port 8770 \
-  --input joystick \
-  --rate-hz 50 \
-  --record-start-button 2 \
-  --record-start-joystick-id 0 \
-  --policy-start-button 4 \
-  --go-home-button "${GO_HOME_BUTTON}" \
-  --confirm-remote-control
-```
-
-交互式终端默认显示从端回传的 `receiver_mode/recording/go_home/saved` 状态；需要滚动日志时追加
-`--no-monitor`。`--record-start-button 2` 和 `--record-start-joystick-id 0` 表示只接收左侧摇杆按钮
-`2` 作为正式录制开始键；`--policy-start-button 4` 表示左侧物理 4 号键在
-`policy_remote` receiver 中切到模型控制。右侧按钮不参与录制/policy 切换控制。
+右侧控制 `boom/bucket`。主端 sender 的启动命令只保留在“现场最简流程”里。
 
 | 软件动作 | action index | pygame 设备/轴 | 当前 action 正方向 |
 |----------|--------------|----------------|--------------------|
@@ -633,7 +322,7 @@ export GO_HOME_BUTTON=3
 | `1` | ignition 点火 |
 | `2` | 开始正式录制 HDF5 |
 | `3` | go-home；启用后不再发送 crush 破碎 |
-| `4` | policy_start；在 `policy_remote` receiver 中切到模型控制 |
+| `4` | policy_start；在 `policy_remote` receiver 中切换 manual/model |
 | `5` | remote_mode 遥控模式 |
 | `6` | pilot 先导使能 |
 | `7` | high_speed 高速 |
@@ -655,20 +344,15 @@ export GO_HOME_BUTTON=3
 1. 机器实体急停、人工接管或现场电源/液压安全手段永远优先。
 2. 主端松开摇杆会发送零 action；按 `Ctrl+C` 停止 `teleop_remote` 时 sender 会尽量发送零 action，
    从端 receiver 会等待主端重连。
-3. 必要时在从端停止 receiver 或 bridge：
-
-   ```bash
-   pkill -f "[e]xcavator_real_bridge" || true
-   ```
-
+3. 必要时在从端 `slave_real_stack.sh run --force --policy-remote` 终端按一次 `Ctrl+C`，统一停止 receiver 和底层链路。
 4. 软件 estop 的手柄外壳按键尚未现场确认，本文档不写具体按键号。
 
 录制和 go-home 行为：
 
 - 按左侧按钮 `2` 前，receiver 处于 receive/armed 状态，会接收和下发控制，但不会写入 HDF5。
-- 按左侧按钮 `2` 后开始正式 HDF5 录制；从端 `slave_real_stack.sh run --force` 终端按一次 `Ctrl+C`
+- 按左侧按钮 `2` 后开始正式 HDF5 录制；从端 `slave_real_stack.sh run --force --policy-remote` 终端按一次 `Ctrl+C`
   会先下发零命令，再停止当前 episode 并保存已有数据；主端 `teleop_remote` 的 `Ctrl+C` 只断开 sender。
-- go-home 启用前需要在 `testbed/testbed/configs/teleop_real_v1.yaml` 中配置
+- go-home 启用前需要在 `testbed/testbed/configs/policy_real_one_dig_v1.yaml` 中配置
   `teleop.recording.go_home.home_pose_rad` 并设为 `enabled: true`，也可以用
   `./scripts/calibrate_home_pose_from_current.sh` 从当前姿态采样写入。
 - receive/armed 状态按按钮 `3` 只做 go-home，不保存 HDF5，完成或失败后回到 receive/armed。
@@ -774,14 +458,6 @@ cd /media/mundane/D/Excavator_real_stack
 ./scripts/slave_real_stack.sh stop --force
 ```
 
-手动停止顺序：
+常规现场不要手动 `pkill`；只有脚本失效、`stop --force` 也清不掉端口时再排查残留进程。
 
-1. 先在主端停止 `${PYTHON} -m testbed.cli.teleop_remote`。
-2. 再在从端停止 `tb-receiver-real`，确认日志出现 saved 或 failed 后再关终端。
-3. 最后在从端停止 C++ real CAN bridge：
-
-```bash
-pkill -f "[e]xcavator_real_bridge" || true
-```
-
-如需重启真实控制，重新启动从端 4 个基础服务，再按“点火前 CAN 确认”或“正式录制”的顺序启动 remote 接收端和主端 sender。
+如需重启真实控制，重新执行上面的“现场最简流程”。

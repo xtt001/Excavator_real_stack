@@ -84,6 +84,7 @@ def _publish_remote_receiver_status(
     receiver_health: Any | None = None,
     record_steps: int | None = None,
     saved_path: Any | None = None,
+    action_info: Any | None = None,
     message: str = "",
 ) -> None:
     publish = getattr(action_source, "publish_status", None)
@@ -125,9 +126,40 @@ def _publish_remote_receiver_status(
         "receiver_health_error": health_error,
         "message": str(message),
     }
+    payload.update(_policy_remote_status_payload(action_source, action_info))
     if saved_path is not None:
         payload["saved_path"] = str(saved_path)
     publish(payload)
+
+
+def _policy_remote_status_payload(
+    action_source: Any,
+    action_info: Any | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    extras = dict(getattr(action_info, "extras", {}) or {}) if action_info is not None else {}
+    for key in (
+        "policy_remote_mode",
+        "policy_remote_activated",
+        "policy_remote_deactivated",
+        "policy_remote_activation_step",
+        "policy_remote_toggle_count",
+        "model_control",
+    ):
+        if key in extras:
+            payload[key] = extras[key]
+    status = getattr(action_source, "policy_status", None)
+    if callable(status):
+        try:
+            payload.update(dict(status()))
+        except Exception:
+            log.debug("Failed to query policy_remote status.", exc_info=True)
+    mode = str(payload.get("policy_remote_mode", "") or "")
+    if mode:
+        model_control = int(mode == "policy")
+        payload["model_control"] = int(payload.get("model_control", model_control) or 0)
+        payload["control_mode"] = "model" if int(payload["model_control"]) else "manual"
+    return payload
 
 
 def _hold_remote_control_zero(remote_control_loop: Any | None) -> None:
@@ -961,7 +993,6 @@ def main(prog: str = "tb-record-real") -> None:
                                 "go-home request ignored in receiver mode %s.",
                                 receiver_mode,
                             )
-
                     live_line.update(
                         step=local_step,
                         mode=receiver_mode,
@@ -982,6 +1013,7 @@ def main(prog: str = "tb-record-real") -> None:
                         record_session=record_session,
                         go_home_update=go_home_update,
                         receiver_health=receiver_health,
+                        action_info=action_info,
                     )
                     if test_logger is not None:
                         test_logger.record_step(
@@ -1028,6 +1060,7 @@ def main(prog: str = "tb-record-real") -> None:
                                 record_session=record_session,
                                 go_home_update=go_home_update,
                                 receiver_health=receiver_health,
+                                action_info=action_info,
                                 message="go_home_failed_armed",
                             )
                         elif go_home_update.done:
@@ -1049,6 +1082,7 @@ def main(prog: str = "tb-record-real") -> None:
                                 record_session=record_session,
                                 go_home_update=go_home_update,
                                 receiver_health=receiver_health,
+                                action_info=action_info,
                                 message="go_home_done_armed",
                             )
                     if receiver_mode in {"recording", "go_home"} and record_session is not None:
@@ -1129,6 +1163,7 @@ def main(prog: str = "tb-record-real") -> None:
                                 receiver_health=receiver_health,
                                 record_steps=failed_steps,
                                 saved_path=failed_path,
+                                action_info=action_info,
                                 message="go_home_failed_record_saved",
                             )
                             ts = ts_next
@@ -1180,6 +1215,7 @@ def main(prog: str = "tb-record-real") -> None:
                                 receiver_health=receiver_health,
                                 record_steps=saved_steps,
                                 saved_path=saved_path,
+                                action_info=action_info,
                                 message="go_home_done_record_saved",
                             )
                             if saved >= num_episodes:
@@ -1556,6 +1592,12 @@ class ReceiverTestLogger:
         metadata: dict[str, Any],
         record_config_yaml: str,
         flush_every_steps: int = 1,
+        capture_images: bool = False,
+        image_camera: str = "fpv",
+        image_interval_steps: int = 20,
+        image_policy_only: bool = True,
+        image_dir_name: str = "fpv_frames",
+        image_jpeg_quality: int = 95,
     ) -> None:
         self.run_dir = Path(run_dir)
         self.run_dir.mkdir(parents=True, exist_ok=True)
@@ -1563,14 +1605,32 @@ class ReceiverTestLogger:
         self.summary_path = self.run_dir / "summary.json"
         self.metadata_path = self.run_dir / "metadata.json"
         self.flush_every_steps = max(1, int(flush_every_steps))
+        self.capture_images = bool(capture_images)
+        self.image_camera = str(image_camera)
+        self.image_interval_steps = max(1, int(image_interval_steps))
+        self.image_policy_only = bool(image_policy_only)
+        self.image_jpeg_quality = int(image_jpeg_quality)
+        self.image_dir = self.run_dir / str(image_dir_name)
+        self._last_image_capture_step: int | None = None
+        self._captured_images = 0
         self._started_ns = time.time_ns()
         self._steps = 0
         self._closed = False
         self._fh = self.steps_path.open("w", encoding="utf-8")
+        if self.capture_images:
+            self.image_dir.mkdir(parents=True, exist_ok=True)
         metadata_payload = {
             "started_at_ns": self._started_ns,
             "metadata": metadata,
             "record_config_yaml": record_config_yaml,
+            "image_capture": {
+                "enabled": self.capture_images,
+                "camera": self.image_camera,
+                "interval_steps": self.image_interval_steps,
+                "policy_only": self.image_policy_only,
+                "dir": str(self.image_dir.relative_to(self.run_dir)),
+                "jpeg_quality": self.image_jpeg_quality,
+            },
         }
         self.metadata_path.write_text(
             json.dumps(_jsonable(metadata_payload), ensure_ascii=False, indent=2),
@@ -1597,6 +1657,14 @@ class ReceiverTestLogger:
             metadata=metadata,
             record_config_yaml=record_config_yaml,
             flush_every_steps=int(cfg.get("flush_every_steps", 1)),
+            capture_images=bool(
+                cfg.get("capture_images", cfg.get("save_fpv_images", False))
+            ),
+            image_camera=str(cfg.get("image_camera", "fpv")),
+            image_interval_steps=int(cfg.get("image_interval_steps", 20)),
+            image_policy_only=bool(cfg.get("image_policy_only", True)),
+            image_dir_name=str(cfg.get("image_dir", "fpv_frames")),
+            image_jpeg_quality=int(cfg.get("image_jpeg_quality", 95)),
         )
 
     def record_step(
@@ -1662,6 +1730,8 @@ class ReceiverTestLogger:
             "policy_scaled_action": extras.get("policy_scaled_action"),
             "policy_returned_action": extras.get("policy_returned_action"),
             "policy_output_mode": str(extras.get("policy_output_mode", "")),
+            "policy_qvel_mode": str(extras.get("policy_qvel_mode", "")),
+            "policy_qvel_input": extras.get("policy_qvel_input"),
             "policy_error": str(extras.get("policy_error", "")),
             "policy_inference_latency_ms": float(
                 extras.get("policy_inference_latency_ms", 0.0) or 0.0
@@ -1680,10 +1750,96 @@ class ReceiverTestLogger:
                 bool(getattr(go_home_update, "failed", False))
             )
             payload["go_home_reason"] = str(getattr(go_home_update, "reason", "") or "")
+        image_info = self._maybe_capture_image(
+            local_step=int(local_step),
+            obs=obs,
+            extras=extras,
+        )
+        if image_info:
+            payload.update(image_info)
         self._fh.write(json.dumps(_jsonable(payload), ensure_ascii=False) + "\n")
         self._steps += 1
         if self._steps % self.flush_every_steps == 0:
             self._fh.flush()
+
+    def _maybe_capture_image(
+        self,
+        *,
+        local_step: int,
+        obs: dict[str, Any],
+        extras: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self.capture_images:
+            return {}
+        if self.image_policy_only and extras.get("policy_action") is None:
+            return {}
+        if (
+            self._last_image_capture_step is not None
+            and local_step - self._last_image_capture_step < self.image_interval_steps
+        ):
+            return {}
+
+        rel_path = Path(self.image_dir.name) / f"{self.image_camera}_{local_step:06d}.jpg"
+        path = self.run_dir / rel_path
+        encoded = dict(obs.get("encoded_images", {}) or {}).get(self.image_camera)
+        if isinstance(encoded, dict) and str(encoded.get("encoding", "")) == "jpeg":
+            data = encoded.get("data", encoded.get("bytes", b""))
+            if isinstance(data, np.ndarray):
+                raw = np.asarray(data, dtype=np.uint8).reshape(-1).tobytes()
+            else:
+                raw = bytes(data)
+            path.write_bytes(raw)
+            shape = tuple(int(v) for v in encoded.get("shape", ()) or ())
+            source = "encoded_jpeg"
+        else:
+            images = dict(obs.get("images", {}) or {})
+            if self.image_camera not in images:
+                return {}
+            image = np.asarray(images[self.image_camera], dtype=np.uint8)
+            if image.ndim != 3 or image.shape[-1] not in (1, 3, 4):
+                return {}
+            self._write_rgb_jpeg(path, image)
+            shape = tuple(int(v) for v in image.shape)
+            source = "rgb_array"
+
+        self._last_image_capture_step = int(local_step)
+        self._captured_images += 1
+        return {
+            "fpv_image_path": str(rel_path),
+            "fpv_image_capture_source": source,
+            "fpv_image_shape": list(shape),
+            "fpv_image_capture_index": self._captured_images - 1,
+        }
+
+    def _write_rgb_jpeg(self, path: Path, image: np.ndarray) -> None:
+        try:
+            from PIL import Image
+
+            Image.fromarray(image).save(
+                path,
+                format="JPEG",
+                quality=self.image_jpeg_quality,
+            )
+            return
+        except ImportError:
+            pass
+
+        import cv2
+
+        if image.shape[-1] == 3:
+            encoded_image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+        elif image.shape[-1] == 4:
+            encoded_image = cv2.cvtColor(image, cv2.COLOR_RGBA2BGR)
+        else:
+            encoded_image = image
+        ok, buf = cv2.imencode(
+            ".jpg",
+            encoded_image,
+            [int(cv2.IMWRITE_JPEG_QUALITY), self.image_jpeg_quality],
+        )
+        if not ok:
+            raise RuntimeError("failed to encode FPV frame as JPEG")
+        path.write_bytes(buf.tobytes())
 
     def close(self, *, stop_reason: str = "complete") -> None:
         if self._closed:
@@ -1702,6 +1858,12 @@ class ReceiverTestLogger:
                 "stop_reason": str(stop_reason),
                 "steps_path": str(self.steps_path),
                 "flush_every_steps": self.flush_every_steps,
+                "captured_images": self._captured_images,
+                "image_dir": (
+                    str(self.image_dir.relative_to(self.run_dir))
+                    if self.capture_images
+                    else ""
+                ),
             }
             self.summary_path.write_text(
                 json.dumps(_jsonable(summary), ensure_ascii=False, indent=2),
@@ -1957,6 +2119,12 @@ class _LiveActionLine:
         hz_text = "-" if self._hz_ema is None else f"{self._hz_ema:.1f}"
         health_ok = receiver_health.ok if receiver_health is not None else True
         health_text = "OK" if health_ok else "ERR"
+        control_mode = str(extras.get("policy_remote_mode", "") or "")
+        control_text = (
+            "model"
+            if control_mode == "policy"
+            else "manual" if control_mode == "manual" else "-"
+        )
         err_text = (
             receiver_health.error_code
             if receiver_health is not None and receiver_health.error_code
@@ -1970,7 +2138,8 @@ class _LiveActionLine:
             else f"{max(0.0, (time.time_ns() - controller_ts_ns) / 1_000_000.0):.1f}"
         )
         text = (
-            f"mode={mode} health={health_text} err={err_text} imu={imu_text} "
+            f"mode={mode} control={control_text} "
+            f"health={health_text} err={err_text} imu={imu_text} "
             f"{_format_go_home_live_status(mode, go_home_update)}"
             f"hz={hz_text} ctl_ms={control_age_text} "
             f"raw={_format_action_line_values(raw_action)} "
@@ -2301,6 +2470,11 @@ def _add_policy_action_diagnostics(
         dtype=np.float32,
     )
     diagnostics["policy_output_mode"] = str(extras.get("policy_output_mode", ""))
+    diagnostics["policy_qvel_mode"] = str(extras.get("policy_qvel_mode", ""))
+    diagnostics["policy_qvel_input"] = np.asarray(
+        extras.get("policy_qvel_input", np.zeros(4)),
+        dtype=np.float32,
+    )
     diagnostics["policy_error"] = str(extras.get("policy_error", ""))
     diagnostics["policy_step"] = _int_timestamp(extras.get("policy_step"))
     diagnostics["policy_inference_latency_ms"] = float(

@@ -14,6 +14,7 @@ from testbed.actions.base import ActionInfo, ActionSource
 from testbed.backends.real.contracts import as_real_action
 
 POLICY_OUTPUT_MODES = ("control", "shadow_zero")
+POLICY_QVEL_MODES = ("raw", "zero", "qpos_diff")
 
 
 class PolicyActionSource(ActionSource):
@@ -34,6 +35,9 @@ class PolicyActionSource(ActionSource):
         action_scale: float | list[float] | tuple[float, ...] | np.ndarray = 1.0,
         clip: float = 1.0,
         output_mode: str = "shadow_zero",
+        qvel_mode: str = "raw",
+        qvel_diff_tau_s: float = 0.15,
+        qvel_diff_clip_rad_s: float | list[float] | tuple[float, ...] | np.ndarray = 2.0,
         fail_safe_zero: bool = True,
         record_start_on_reset: bool = False,
         bundle_dir: str | Path | None = None,
@@ -42,17 +46,27 @@ class PolicyActionSource(ActionSource):
             raise ValueError(
                 f"output_mode must be one of {POLICY_OUTPUT_MODES}, got {output_mode!r}"
             )
+        if qvel_mode not in POLICY_QVEL_MODES:
+            raise ValueError(
+                f"qvel_mode must be one of {POLICY_QVEL_MODES}, got {qvel_mode!r}"
+            )
         self._policy = policy
         self._source_id = str(source_id)
         self._camera_name = str(camera_name)
         self._action_scale = _broadcast_action_scale(action_scale)
         self._clip = float(clip)
         self._output_mode = str(output_mode)
+        self._qvel_mode = str(qvel_mode)
+        self._qvel_diff_tau_s = max(0.0, float(qvel_diff_tau_s))
+        self._qvel_diff_clip = _broadcast_qvel_clip(qvel_diff_clip_rad_s)
         self._fail_safe_zero = bool(fail_safe_zero)
         self._record_start_on_reset = bool(record_start_on_reset)
         self._bundle_dir = None if bundle_dir is None else str(bundle_dir)
         self._step = 0
         self._record_start_pending = self._record_start_on_reset
+        self._last_qpos: np.ndarray | None = None
+        self._last_obs_time_ns: int | None = None
+        self._filtered_qvel = np.zeros(4, dtype=np.float32)
 
     @classmethod
     def from_config(cls, config: dict[str, Any] | None) -> PolicyActionSource:
@@ -73,6 +87,9 @@ class PolicyActionSource(ActionSource):
             action_scale=cfg.get("action_scale", 1.0),
             clip=float(cfg.get("clip", 1.0)),
             output_mode=str(cfg.get("output_mode", "shadow_zero")),
+            qvel_mode=str(cfg.get("qvel_mode", "raw")),
+            qvel_diff_tau_s=float(cfg.get("qvel_diff_tau_s", 0.15)),
+            qvel_diff_clip_rad_s=cfg.get("qvel_diff_clip_rad_s", 2.0),
             fail_safe_zero=bool(cfg.get("fail_safe_zero", True)),
             record_start_on_reset=bool(cfg.get("record_start_on_reset", False)),
             bundle_dir=bundle_dir,
@@ -81,6 +98,9 @@ class PolicyActionSource(ActionSource):
     def reset(self) -> None:
         self._step = 0
         self._record_start_pending = self._record_start_on_reset
+        self._last_qpos = None
+        self._last_obs_time_ns = None
+        self._filtered_qvel.fill(0.0)
         if hasattr(self._policy, "reset"):
             self._policy.reset()
 
@@ -89,7 +109,7 @@ class PolicyActionSource(ActionSource):
         now_ns = time.time_ns()
         record_start_requested = self._consume_record_start_request()
         try:
-            policy_obs = _policy_obs_from_real_obs(obs, camera_name=self._camera_name)
+            policy_obs, qvel_input = self._policy_obs(obs)
             policy_action = as_real_action(self._policy.predict(policy_obs), clip=False)
             policy_action = np.clip(policy_action, -self._clip, self._clip).astype(np.float32)
             scaled_action = np.clip(
@@ -111,6 +131,8 @@ class PolicyActionSource(ActionSource):
                 "policy_scaled_action": scaled_action.copy(),
                 "policy_returned_action": returned_action.copy(),
                 "policy_action_scale": self._action_scale.copy(),
+                "policy_qvel_mode": self._qvel_mode,
+                "policy_qvel_input": qvel_input.copy(),
                 "policy_inference_latency_ms": latency_ms,
                 "policy_step": int(self._step),
                 "policy_error": "",
@@ -140,6 +162,8 @@ class PolicyActionSource(ActionSource):
                 "policy_scaled_action": zero.copy(),
                 "policy_returned_action": zero.copy(),
                 "policy_action_scale": self._action_scale.copy(),
+                "policy_qvel_mode": self._qvel_mode,
+                "policy_qvel_input": zero.copy(),
                 "policy_inference_latency_ms": latency_ms,
                 "policy_step": int(self._step),
                 "policy_error": f"{type(exc).__name__}: {exc}",
@@ -156,6 +180,49 @@ class PolicyActionSource(ActionSource):
                     extras=extras,
                 ),
             )
+
+    def _policy_obs(self, obs: dict[str, Any]) -> tuple[dict[str, Any], np.ndarray]:
+        qvel = self._policy_qvel(obs)
+        policy_obs = _policy_obs_from_real_obs(
+            obs,
+            camera_name=self._camera_name,
+            qvel_override=qvel,
+        )
+        return policy_obs, qvel
+
+    def _policy_qvel(self, obs: dict[str, Any]) -> np.ndarray:
+        raw_qvel = np.asarray(obs.get("qvel", np.zeros(4)), dtype=np.float32).reshape(-1)
+        if raw_qvel.shape != (4,):
+            raise ValueError(f"observation qvel must have shape (4,), got {raw_qvel.shape}")
+        if self._qvel_mode == "raw":
+            return raw_qvel.astype(np.float32, copy=True)
+        if self._qvel_mode == "zero":
+            return np.zeros(4, dtype=np.float32)
+        return self._qpos_diff_qvel(obs)
+
+    def _qpos_diff_qvel(self, obs: dict[str, Any]) -> np.ndarray:
+        qpos = np.asarray(obs.get("qpos", np.zeros(4)), dtype=np.float32).reshape(-1)
+        if qpos.shape != (4,):
+            raise ValueError(f"observation qpos must have shape (4,), got {qpos.shape}")
+        obs_time_ns = _obs_time_ns(obs)
+        if self._last_qpos is None or self._last_obs_time_ns is None:
+            self._last_qpos = qpos.astype(np.float32, copy=True)
+            self._last_obs_time_ns = obs_time_ns
+            self._filtered_qvel.fill(0.0)
+            return self._filtered_qvel.copy()
+        dt = max(1e-3, float(obs_time_ns - self._last_obs_time_ns) * 1e-9)
+        raw = (qpos - self._last_qpos) / dt
+        raw = np.clip(raw, -self._qvel_diff_clip, self._qvel_diff_clip).astype(np.float32)
+        if self._qvel_diff_tau_s <= 0.0:
+            self._filtered_qvel = raw
+        else:
+            alpha = float(dt / (self._qvel_diff_tau_s + dt))
+            self._filtered_qvel = (
+                self._filtered_qvel + alpha * (raw - self._filtered_qvel)
+            ).astype(np.float32)
+        self._last_qpos = qpos.astype(np.float32, copy=True)
+        self._last_obs_time_ns = obs_time_ns
+        return self._filtered_qvel.copy()
 
     def close(self) -> None:
         close = getattr(self._policy, "close", None)
@@ -233,7 +300,12 @@ def _act_policy_config_from_resolved(resolved: dict[str, Any]) -> dict[str, Any]
     }
 
 
-def _policy_obs_from_real_obs(obs: dict[str, Any], *, camera_name: str) -> dict[str, Any]:
+def _policy_obs_from_real_obs(
+    obs: dict[str, Any],
+    *,
+    camera_name: str,
+    qvel_override: np.ndarray | None = None,
+) -> dict[str, Any]:
     if "qpos" not in obs:
         raise KeyError("observation missing qpos")
     if "qvel" not in obs:
@@ -241,7 +313,11 @@ def _policy_obs_from_real_obs(obs: dict[str, Any], *, camera_name: str) -> dict[
     image = _resolve_camera_image(obs, camera_name=camera_name)
     return {
         "qpos": np.asarray(obs["qpos"], dtype=np.float32),
-        "qvel": np.asarray(obs["qvel"], dtype=np.float32),
+        "qvel": (
+            np.asarray(qvel_override, dtype=np.float32)
+            if qvel_override is not None
+            else np.asarray(obs["qvel"], dtype=np.float32)
+        ),
         f"image_{camera_name}": image,
     }
 
@@ -283,6 +359,27 @@ def _broadcast_action_scale(value: Any) -> np.ndarray:
     if arr.shape != (4,):
         raise ValueError(f"action_scale must be scalar or shape (4,), got {arr.shape}")
     return arr.astype(np.float32, copy=True)
+
+
+def _broadcast_qvel_clip(value: Any) -> np.ndarray:
+    if isinstance(value, (int, float)):
+        return np.full(4, max(0.0, float(value)), dtype=np.float32)
+    arr = np.asarray(value, dtype=np.float32).reshape(-1)
+    if arr.shape != (4,):
+        raise ValueError(f"qvel_diff_clip_rad_s must be scalar or shape (4,), got {arr.shape}")
+    return np.maximum(arr, 0.0).astype(np.float32, copy=True)
+
+
+def _obs_time_ns(obs: dict[str, Any]) -> int:
+    for key in ("joint_timestamp_ns", "sync_timestamp_ns", "timestamp_ns"):
+        value = obs.get(key)
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return time.time_ns()
 
 
 def policy_bundle_manifest(bundle_dir: str | Path) -> dict[str, Any]:

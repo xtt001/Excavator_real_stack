@@ -451,7 +451,7 @@ class _RemoteTeleopMonitor:
             "quit": 0,
         }
         self._last_event_by_name: dict[str, tuple[int, float]] = {}
-        self._last_receiver_key: tuple[str, int, int, int, str, str] | None = None
+        self._last_receiver_key: tuple[str, str, int, int, int, str, str] | None = None
 
     def start(self) -> None:
         if not self.enabled:
@@ -546,8 +546,14 @@ class _RemoteTeleopMonitor:
         if receiver_status is None:
             return
         payload = dict(getattr(receiver_status, "payload", {}) or {})
+        control_mode = str(payload.get("control_mode", "") or "")
+        if not control_mode:
+            control_mode = (
+                "model" if int(payload.get("model_control", 0) or 0) else "manual"
+            )
         key = (
             str(payload.get("receiver_mode", "")),
+            control_mode,
             int(payload.get("recording", 0) or 0),
             int(payload.get("episode_idx", -1) or -1),
             int(payload.get("saved", -1) or -1),
@@ -558,12 +564,13 @@ class _RemoteTeleopMonitor:
             return
         self._last_receiver_key = key
         stamp = time.strftime("%H:%M:%S")
-        rec = "yes" if key[1] else "no"
-        go_home = key[4] or "-"
-        message = f" msg={key[5]}" if key[5] else ""
+        rec = "yes" if key[2] else "no"
+        go_home = key[5] or "-"
+        message = f" msg={key[6]}" if key[6] else ""
         self._event_history.appendleft(
-            f"{stamp} receiver mode={key[0] or '-'} rec={rec} "
-            f"episode={key[2]} saved={key[3]} go_home={go_home}{message}"
+            f"{stamp} receiver mode={key[0] or '-'} control={key[1] or '-'} "
+            f"rec={rec} episode={key[3]} saved={key[4]} "
+            f"go_home={go_home}{message}"
         )
 
     def _draw(
@@ -680,6 +687,10 @@ def _format_receiver_status(receiver_status: Any | None) -> str:
         else f"{max(0.0, (time.time_ns() - receive_time_ns) / 1_000_000.0):.0f}"
     )
     mode = str(payload.get("receiver_mode", "-") or "-")
+    control_mode = str(payload.get("control_mode", "") or "")
+    model_control = int(payload.get("model_control", 0) or 0)
+    if not control_mode:
+        control_mode = "model" if model_control else "manual"
     recording = "yes" if int(payload.get("recording", 0) or 0) else "no"
     episode = int(payload.get("episode_idx", -1) or -1)
     saved = int(payload.get("saved", 0) or 0)
@@ -697,7 +708,9 @@ def _format_receiver_status(receiver_status: Any | None) -> str:
         suffix_parts.append(f"file={saved_name}")
     suffix = "" if not suffix_parts else " " + " ".join(suffix_parts)
     return (
-        f"receiver_mode={mode} recording={recording} episode={episode} "
+        f"receiver_mode={mode} control={control_mode} "
+        f"model_control={'yes' if model_control else 'no'} "
+        f"recording={recording} episode={episode} "
         f"steps={steps} saved={saved} go_home={go_home} "
         f"health={health}:{health_error} status_age_ms={age_ms}{suffix}"
     )

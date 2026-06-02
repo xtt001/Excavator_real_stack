@@ -74,7 +74,7 @@ def _obs() -> dict:
 
 
 class PolicyActionSourceTests(unittest.TestCase):
-    def test_remote_armed_policy_switches_on_record_start(self) -> None:
+    def test_remote_armed_policy_toggles_on_policy_start(self) -> None:
         remote = DummyActionSource(
             [
                 (
@@ -99,6 +99,18 @@ class PolicyActionSourceTests(unittest.TestCase):
                         },
                     ),
                 ),
+                (
+                    np.array([-0.3, 0.0, 0.0, 0.0], dtype=np.float32),
+                    ActionInfo(
+                        source_type="teleop",
+                        source_id="remote:unit",
+                        latency_ms=5.0,
+                        extras={
+                            "remote_action_connected": 1,
+                            "policy_start_requested": True,
+                        },
+                    ),
+                ),
             ]
         )
         policy = PolicyActionSource(
@@ -115,6 +127,7 @@ class PolicyActionSourceTests(unittest.TestCase):
 
         manual_action, manual_info = source.next_action(_obs())
         policy_action, policy_info = source.next_action(_obs())
+        manual_again_action, manual_again_info = source.next_action(_obs())
 
         np.testing.assert_allclose(manual_action, [0.1, 0.0, 0.0, 0.0])
         self.assertEqual(manual_info.extras["policy_remote_mode"], "manual")
@@ -122,6 +135,7 @@ class PolicyActionSourceTests(unittest.TestCase):
         self.assertEqual(policy_info.source_type, "policy")
         self.assertEqual(policy_info.extras["policy_remote_mode"], "policy")
         self.assertEqual(policy_info.extras["policy_remote_activated"], 1)
+        self.assertEqual(policy_info.extras["model_control"], 1)
         self.assertTrue(policy_info.extras["policy_start_requested"])
         self.assertFalse(policy_info.extras["record_start_requested"])
         self.assertEqual(policy_info.extras["toggle_mask"], 1)
@@ -129,6 +143,11 @@ class PolicyActionSourceTests(unittest.TestCase):
             policy_info.extras["policy_remote_remote_action"],
             [0.2, 0.0, 0.0, 0.0],
         )
+        np.testing.assert_allclose(manual_again_action, [-0.3, 0.0, 0.0, 0.0])
+        self.assertEqual(manual_again_info.source_type, "teleop")
+        self.assertEqual(manual_again_info.extras["policy_remote_mode"], "manual")
+        self.assertEqual(manual_again_info.extras["policy_remote_deactivated"], 1)
+        self.assertEqual(manual_again_info.extras["model_control"], 0)
 
     def test_shadow_zero_records_policy_action_but_returns_zero(self) -> None:
         policy = DummyPolicy([0.5, -0.25, 0.1, -0.9])
@@ -179,6 +198,53 @@ class PolicyActionSourceTests(unittest.TestCase):
             [0.3, -0.25, 0.25, -0.3],
         )
 
+    def test_qvel_zero_mode_feeds_zero_to_policy(self) -> None:
+        policy = DummyPolicy([0.1, 0.2, 0.3, 0.4])
+        source = PolicyActionSource(
+            policy=policy,
+            source_id="unit",
+            output_mode="shadow_zero",
+            qvel_mode="zero",
+        )
+
+        _action, info = source.next_action(_obs())
+
+        np.testing.assert_allclose(policy.seen_obs[-1]["qvel"], np.zeros(4))
+        np.testing.assert_allclose(info.extras["policy_qvel_input"], np.zeros(4))
+        self.assertEqual(info.extras["policy_qvel_mode"], "zero")
+
+    def test_qpos_diff_mode_feeds_filtered_qpos_derivative(self) -> None:
+        policy = DummyPolicy([0.1, 0.2, 0.3, 0.4])
+        source = PolicyActionSource(
+            policy=policy,
+            source_id="unit",
+            output_mode="shadow_zero",
+            qvel_mode="qpos_diff",
+            qvel_diff_tau_s=0.0,
+            qvel_diff_clip_rad_s=10.0,
+        )
+        obs0 = _obs()
+        obs0["joint_timestamp_ns"] = 1_000_000_000
+        obs1 = _obs()
+        obs1["qpos"] = np.array([1.1, 1.8, 3.0, 4.4], dtype=np.float32)
+        obs1["joint_timestamp_ns"] = 1_100_000_000
+
+        source.next_action(obs0)
+        _action, info = source.next_action(obs1)
+
+        np.testing.assert_allclose(
+            policy.seen_obs[-1]["qvel"],
+            [1.0, -2.0, 0.0, 4.0],
+            rtol=1e-5,
+            atol=1e-5,
+        )
+        np.testing.assert_allclose(
+            info.extras["policy_qvel_input"],
+            [1.0, -2.0, 0.0, 4.0],
+            rtol=1e-5,
+            atol=1e-5,
+        )
+
     def test_fail_safe_zero_on_missing_camera(self) -> None:
         policy = DummyPolicy([0.1, 0.2, 0.3, 0.4])
         source = PolicyActionSource(
@@ -216,6 +282,8 @@ class PolicyActionSourceTests(unittest.TestCase):
                 "policy_returned_action": np.zeros(4),
                 "policy_action_scale": np.full(4, 0.1),
                 "policy_output_mode": "shadow_zero",
+                "policy_qvel_mode": "zero",
+                "policy_qvel_input": np.zeros(4),
                 "policy_error": "",
                 "policy_step": 7,
                 "policy_inference_latency_ms": 1.5,
@@ -225,6 +293,8 @@ class PolicyActionSourceTests(unittest.TestCase):
 
         np.testing.assert_allclose(diagnostics["policy_action"], [0.1, 0.2, 0.3, 0.4])
         self.assertEqual(diagnostics["policy_output_mode"], "shadow_zero")
+        self.assertEqual(diagnostics["policy_qvel_mode"], "zero")
+        np.testing.assert_allclose(diagnostics["policy_qvel_input"], np.zeros(4))
         self.assertEqual(diagnostics["policy_step"], 7)
         self.assertEqual(
             diagnostics["policy_bundle_dir"],

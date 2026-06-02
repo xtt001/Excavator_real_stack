@@ -19,6 +19,11 @@ USB_LABEL="${EXCAVATOR_USB_LABEL:-EXTERNAL_USB}"
 USB_MOUNT="${EXCAVATOR_USB_MOUNT:-/media/${USER}/EXTERNAL_USB}"
 DATASET_DIR="${EXCAVATOR_DATASET_DIR:-${USB_MOUNT}/real_teleop_v1}"
 CONFIG_PATH="${EXCAVATOR_TELEOP_CONFIG:-${ROOT_DIR}/testbed/testbed/configs/teleop_real_v1.yaml}"
+RECEIVER_INPUT="${EXCAVATOR_RECEIVER_INPUT:-remote}"
+RECEIVER_RECORD_MODE="${EXCAVATOR_RECEIVER_RECORD_MODE:-config}"
+POLICY_OUTPUT_MODE="${EXCAVATOR_POLICY_OUTPUT_MODE:-}"
+POLICY_ACTION_SCALE="${EXCAVATOR_POLICY_ACTION_SCALE:-}"
+TEST_LOG_DIR="${EXCAVATOR_TEST_LOG_DIR:-}"
 PID_YAML_PATH="${EXCAVATOR_PID_YAML:-${ROOT_DIR}/control/config/joint_pid.yaml}"
 SESSION_ID="${EXCAVATOR_SESSION_ID:-remote_teleop_slave_record}"
 NUM_EPISODES="${EXCAVATOR_NUM_EPISODES:-1000000}"
@@ -39,8 +44,8 @@ STARTED_SERVICES=()
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/slave_real_stack.sh start [--force] [--no-camera] [--no-receiver] [--skip-usb] [--skip-can] [--install-python-package]
-  scripts/slave_real_stack.sh run [--force] [--no-camera] [--no-receiver] [--skip-usb] [--skip-can] [--install-python-package]
+  scripts/slave_real_stack.sh start [--force] [--policy-remote] [--no-camera] [--no-receiver] [--skip-usb] [--skip-can] [--install-python-package]
+  scripts/slave_real_stack.sh run [--force] [--policy-remote] [--no-camera] [--no-receiver] [--skip-usb] [--skip-can] [--install-python-package]
   scripts/slave_real_stack.sh stop [--force]
   scripts/slave_real_stack.sh restart [--force] [start options]
   scripts/slave_real_stack.sh status
@@ -53,6 +58,10 @@ Default start services:
 Use "run" when you want one foreground terminal that shows logs and stops the
 managed services on Ctrl+C.
 
+Common profiles:
+  --policy-remote  Start the single field receiver for manual teleop, go-home,
+                   recording, and policy control toggle.
+
 Common environment overrides:
   EXCAVATOR_USB_MOUNT=/media/mundane/EXTERNAL_USB
   EXCAVATOR_DATASET_DIR=/media/mundane/EXTERNAL_USB/real_teleop_v1
@@ -61,6 +70,11 @@ Common environment overrides:
   EXCAVATOR_CAN_IF=can2 EXCAVATOR_IMU_IF=can3
   EXCAVATOR_PID_YAML=/media/mundane/D/Excavator_real_stack/control/config/joint_pid.yaml
   EXCAVATOR_CONTROL_MODE=open_loop_motor_speed
+  EXCAVATOR_RECEIVER_INPUT=remote
+  EXCAVATOR_RECEIVER_RECORD_MODE=config       # config | record | no-record
+  EXCAVATOR_POLICY_OUTPUT_MODE=control        # optional for policy/policy_remote
+  EXCAVATOR_POLICY_ACTION_SCALE=1.0           # optional for policy/policy_remote
+  EXCAVATOR_TEST_LOG_DIR=/media/mundane/EXTERNAL_USB/policy_control_tests
   EXCAVATOR_NUM_EPISODES=1000000
   EXCAVATOR_RECEIVER_STOP_TIMEOUT_S=180
   EXCAVATOR_SKIP_PIP_INSTALL=1
@@ -78,6 +92,18 @@ log() {
 die() {
   printf '[slave-stack] error: %s\n' "$*" >&2
   exit 1
+}
+
+apply_policy_remote_profile() {
+  CONFIG_PATH="${EXCAVATOR_TELEOP_CONFIG:-${ROOT_DIR}/testbed/testbed/configs/policy_real_one_dig_v1.yaml}"
+  RECEIVER_INPUT="${EXCAVATOR_RECEIVER_INPUT:-policy_remote}"
+  RECEIVER_RECORD_MODE="${EXCAVATOR_RECEIVER_RECORD_MODE:-record}"
+  POLICY_OUTPUT_MODE="${EXCAVATOR_POLICY_OUTPUT_MODE:-control}"
+  POLICY_ACTION_SCALE="${EXCAVATOR_POLICY_ACTION_SCALE:-1.0}"
+  DATASET_DIR="${EXCAVATOR_DATASET_DIR:-${USB_MOUNT}/real_teleop_v1}"
+  TEST_LOG_DIR="${EXCAVATOR_TEST_LOG_DIR:-${USB_MOUNT}/policy_control_tests}"
+  NUM_EPISODES="${EXCAVATOR_NUM_EPISODES:-1000000}"
+  MAX_STEPS="${EXCAVATOR_MAX_STEPS:-50000}"
 }
 
 canonical_service() {
@@ -327,7 +353,9 @@ start_stack() {
 
   prepare_start
   export ROOT_DIR CONTROL_HOST CONTROL_PORT GATEWAY_HOST GATEWAY_PORT RECEIVER_PORT
-  export CAN_IF IMU_IF DATASET_DIR CONFIG_PATH PID_YAML_PATH SESSION_ID NUM_EPISODES MAX_STEPS BRIDGE_TIMEOUT CONTROL_MODE
+  export CAN_IF IMU_IF DATASET_DIR CONFIG_PATH RECEIVER_INPUT RECEIVER_RECORD_MODE
+  export POLICY_OUTPUT_MODE POLICY_ACTION_SCALE TEST_LOG_DIR
+  export PID_YAML_PATH SESSION_ID NUM_EPISODES MAX_STEPS BRIDGE_TIMEOUT CONTROL_MODE
   export EXCAVATOR_SKIP_PIP_INSTALL
   export FPV_MAX_STALE_MS FPV_SHM_NAME
   export EXCAVATOR_ORBBEC_WS="${EXCAVATOR_ORBBEC_WS:-${HOME}/orbbec_ws}"
@@ -384,10 +412,39 @@ start_stack() {
       if [[ -d .venv ]]; then
         source .venv/bin/activate
       fi
+      export PYTHONPATH="${ROOT_DIR}/testbed${PYTHONPATH:+:${PYTHONPATH}}"
+      CU12_LIB="${ROOT_DIR}/.venv/lib/python3.10/site-packages/nvidia/cu12/lib"
+      if [[ -d "${CU12_LIB}" ]]; then
+        export LD_LIBRARY_PATH="${CU12_LIB}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+      fi
       if [[ "${EXCAVATOR_SKIP_PIP_INSTALL}" != "1" ]]; then
         python -m pip install --no-build-isolation --no-deps -e ./testbed
       fi
-      exec tb-receiver-real \
+      extra_args=()
+      case "${RECEIVER_RECORD_MODE}" in
+        config|"")
+          ;;
+        record)
+          extra_args+=(--record)
+          ;;
+        no-record)
+          extra_args+=(--no-record)
+          ;;
+        *)
+          printf "[slave-stack] error: invalid EXCAVATOR_RECEIVER_RECORD_MODE=%s\n" "${RECEIVER_RECORD_MODE}" >&2
+          exit 2
+          ;;
+      esac
+      if [[ -n "${POLICY_OUTPUT_MODE}" ]]; then
+        extra_args+=(--policy-output-mode "${POLICY_OUTPUT_MODE}")
+      fi
+      if [[ -n "${POLICY_ACTION_SCALE}" ]]; then
+        extra_args+=(--policy-action-scale "${POLICY_ACTION_SCALE}")
+      fi
+      if [[ -n "${TEST_LOG_DIR}" ]]; then
+        extra_args+=(--test-log-dir "${TEST_LOG_DIR}")
+      fi
+      exec python -m testbed.cli.record_real \
         --config "${CONFIG_PATH}" \
         --data-side slave \
         --backend bridge_tcp \
@@ -395,14 +452,15 @@ start_stack() {
         --bridge-host "${GATEWAY_HOST}" \
         --bridge-port "${GATEWAY_PORT}" \
         --bridge-timeout "${BRIDGE_TIMEOUT}" \
-        --input remote \
+        --input "${RECEIVER_INPUT}" \
         --remote-port "${RECEIVER_PORT}" \
         --num-episodes "${NUM_EPISODES}" \
         --max-steps "${MAX_STEPS}" \
         --output-dir "${DATASET_DIR}" \
         --session-id "${SESSION_ID}" \
         --wait-for-record-start \
-        --live-action-line
+        --live-action-line \
+        "${extra_args[@]}"
     '
     wait_for_port "${GATEWAY_HOST}" "${RECEIVER_PORT}" receiver
   fi
@@ -492,6 +550,9 @@ main() {
     case "$1" in
       --force)
         force=1
+        ;;
+      --policy-remote)
+        apply_policy_remote_profile
         ;;
       --no-camera)
         no_camera=1

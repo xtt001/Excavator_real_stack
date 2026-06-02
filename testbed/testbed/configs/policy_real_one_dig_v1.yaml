@@ -51,6 +51,9 @@ teleop:
     camera: fpv
     temporal_agg: true
     output_mode: shadow_zero
+    qvel_mode: zero
+    qvel_diff_tau_s: 0.15
+    qvel_diff_clip_rad_s: [1.5, 1.5, 1.5, 1.5]
     action_scale: 1.0
     clip: 1.0
     fail_safe_zero: true
@@ -71,12 +74,56 @@ teleop:
     enabled: false
     wait_for_start: true
     go_home:
-      enabled: false
+      enabled: true
+      home_pose_rad: [2.559211, -0.011737, -0.458603, -0.852192]
+      near_tolerance_rad: [999.0, 999.0, 999.0, 999.0]
+      success_tolerance_rad: [0.05, 0.05, 0.08, 0.12]
+      center_tolerance_rad: [0.025, 0.030, 0.035, 0.050]
+      resume_tolerance_rad: [0.040, 0.045, 0.055, 0.075]
+      control_signs: [1.0, 1.0, 1.0, 1.0]
+      p_gain: [0.60, 0.60, 0.60, 0.55]
+      d_gain: [0.12, 0.10, 0.10, 0.10]
+      min_action: [0.65, 0.35, 0.46, 0.60]
+      min_action_positive: [0.65, 0.30, 0.46, 0.60]
+      min_action_negative: [0.65, 0.24, 0.46, 0.60]
+      max_action: [0.80, 0.45, 0.60, 0.60]
+      near_max_action: [0.70, 0.38, 0.52, 0.60]
+      coast_stop_time_s: [0.25, 1.20, 0.30, 0.45]
+      coast_reactivation_delay_s: [0.20, 1.20, 0.25, 0.35]
+      action_slew_rate: [0.0, 0.0, 0.0, 0.0]
+      action_ramp_rate: [0.30, 0.15, 0.20, 0.20]
+      axis_order: [boom, stick, bucket, swing]
+      max_active_axes: 1
+      center_approach_action: [0.0, 0.18, 0.0, 0.0]
+      control_decision_period_s: 0.10
+      sign_reversal_delay_s: [0.0, 1.50, 0.0, 0.0]
+      sign_reversal_min_error_rad: [0.0, 0.120, 0.0, 0.0]
+      qpos_filter_tau_s: [0.10, 0.10, 0.10, 0.12]
+      qvel_filter_tau_s: [0.18, 0.18, 0.18, 0.20]
+      axis_center_hold_s: [0.10, 0.10, 0.10, 0.15]
+      stall_detection_s: 1.0
+      stall_boost_interval_s: 0.8
+      stall_action_step: [0.03, 0.02, 0.03, 0.03]
+      stall_error_progress_rad: [0.004, 0.004, 0.004, 0.003]
+      stall_qvel_threshold_rad_s: [0.012, 0.080, 0.012, 0.010]
+      wrong_direction_detection_s: 0.4
+      wrong_direction_error_increase_rad: [999.0, 999.0, 999.0, 0.08]
+      wrong_direction_cooldown_s: [0.0, 0.0, 0.0, 2.0]
+      qvel_stable_rad_s: [0.10, 0.30, 0.50, 0.35]
+      dwell_s: 0.4
+      timeout_s: 100.0
+      runaway_error_factor: 1.5
 
   test_log:
     enabled: true
     output_dir: runs/policy_control_tests
     flush_every_steps: 20
+    capture_images: true
+    image_camera: fpv
+    image_interval_steps: 20
+    image_policy_only: true
+    image_dir: fpv_frames
+    image_jpeg_quality: 95
 
 task:
   task_name: real_one_dig_v1_policy_test
