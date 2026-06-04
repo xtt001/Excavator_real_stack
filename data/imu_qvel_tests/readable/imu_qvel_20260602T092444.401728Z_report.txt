@@ -1,0 +1,45 @@
+IMU/qvel 日志可读报告
+================================
+
+源 JSONL: data/imu_qvel_tests/imu_qvel_20260602T092444.401728Z.jsonl
+源 summary: data/imu_qvel_tests/imu_qvel_20260602T092444.401728Z_summary.json
+行数: 15728
+时长: 317.11 s
+read_errors: 0
+missing_imu_debug_rows: 0
+
+字段意义
+- qpos: read_state 返回的 4 轴姿态，顺序 [swing, boom, stick, bucket]，单位 rad。
+- qpos_deg: qpos 转成角度，方便肉眼看姿态变化。
+- qvel: bridge 返回给 receiver/policy 的速度，单位 rad/s。
+- diff: 相邻 qpos 差分得到的速度，用于检查 qpos/qvel 一致性。
+- resid: qvel - diff；静止且传感器稳定时应接近 0。
+- raw_imu: 从 IMU gyro_dps 直接推导的关节速度，未做启动 bias 扣除。
+- gyro_dps: IMU 三轴角速度，单位 degree/s。
+- rpy_rad: IMU 姿态 roll/pitch/yaw，单位 rad。
+- online/gyro_valid/age_ms/loss: 在线、gyro 有效、数据年龄、丢包计数。
+
+qpos 范围
+- swing: span 0.063181 rad = 3.620 deg, min/max 144.230/147.850 deg
+- boom: span 0.543845 rad = 31.160 deg, min/max -29.200/1.960 deg
+- stick: span 1.003215 rad = 57.480 deg, min/max -28.280/29.200 deg
+- bucket: span 0.637569 rad = 36.530 deg, min/max -88.530/-52.000 deg
+
+qvel mean_abs(rad/s)
+- qvel_bridge: swing=0.0010, boom=0.1354, stick=0.1315, bucket=0.0045
+- qvel_raw_imu_rad_s: swing=0.0015, boom=0.1354, stick=0.1315, bucket=0.0081
+- qvel_qpos_diff: swing=0.2975, boom=0.0087, stick=0.0123, bucket=0.0112
+
+IMU online 转换
+- t=0.00s sample=0 imu0 addr=1 online=1 age_ms=5.147342 gyro=[-0.20000000298023224, 0.20000000298023224, -0.10000000149011612]
+- t=0.00s sample=0 imu1 addr=2 online=0 age_ms=-1.0 gyro=[0.0, 0.0, 0.0]
+- t=107.21s sample=5327 imu1 addr=2 online=1 age_ms=29.002868 gyro=[-1.2000000476837158, 1.399999976158142, 1.899999976158142]
+- t=0.00s sample=0 imu2 addr=3 online=0 age_ms=10625.20435 gyro=[0.0, 0.0, 0.0]
+- t=67.86s sample=3373 imu2 addr=3 online=1 age_ms=19.118288 gyro=[-2.0, -2.0, 0.5]
+- t=0.00s sample=0 imu3 addr=4 online=1 age_ms=5.143663 gyro=[0.4000000059604645, -0.5, 0.0]
+
+简短结论
+这份 log 里 read_state/logger 正常，但启动时 addr=3 约 67.9s 后才 online，addr=2 约 107.2s 后才 online。
+bridge 很可能在 4 个 IMU 未全部 ready 前完成了 qvel bias 初始化，导致后续 boom/stick 的 gyro bias 没有被扣掉。
+120s 后 qvel_bridge 基本等于 raw_imu：boom 约 -0.172 rad/s，stick 约 +0.166 rad/s，这是假的静止速度，不是真实运动。
+建议 bias 校准等待 4 个 IMU online/valid/fresh 后再开始；校准未完成前 qvel 应标 invalid 或置 0。

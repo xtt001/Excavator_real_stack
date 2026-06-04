@@ -63,6 +63,25 @@ struct ImuHealth {
     std::array<std::uint64_t, kImuDeviceCount> host_rx_time_ns{};
 };
 
+struct ImuDebugSample {
+    std::uint8_t device_addr{0};
+    std::uint8_t online{0};
+    std::uint8_t valid_attitude{0};
+    std::uint8_t valid_gyro{0};
+    std::uint8_t valid_accel{0};
+    std::uint16_t packet_loss_count{0};
+    std::uint32_t imu_timestamp_ms{0};
+    std::uint64_t host_rx_time_ns{0};
+    std::array<double, 3> rpy_rad{};
+    std::array<double, 3> gyro_dps{};
+    std::array<double, 3> accel_mps2{};
+    std::array<double, 4> quaternion_wxyz{1.0, 0.0, 0.0, 0.0};
+};
+
+struct ImuDebug {
+    std::array<ImuDebugSample, kImuDeviceCount> devices{};
+};
+
 struct RespState {
     Vector8d position = Vector8d::Zero();
     Vector8d velocity = Vector8d::Zero();
@@ -72,6 +91,7 @@ struct RespState {
     Vector8d motor_rpm = Vector8d::Constant(8190.0);
     Vector8d plan_rpm = Vector8d::Constant(8190.0);
     ImuHealth imu_health{};
+    ImuDebug imu_debug{};
 };
 
 struct SnapshotMeta {

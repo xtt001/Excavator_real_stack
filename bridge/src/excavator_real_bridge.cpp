@@ -331,6 +331,14 @@ json vector12Json(const excavator_api::Vector12i& v) {
     return out;
 }
 
+json doubleArrayJson(const std::array<double, 3>& values) {
+    return json::array({values[0], values[1], values[2]});
+}
+
+json doubleArrayJson(const std::array<double, 4>& values) {
+    return json::array({values[0], values[1], values[2], values[3]});
+}
+
 json imuHealthJson(const excavator_api::ImuHealth& h, std::uint64_t steady_now_ns) {
     json online = json::array();
     json valid_attitude = json::array();
@@ -358,6 +366,44 @@ json imuHealthJson(const excavator_api::ImuHealth& h, std::uint64_t steady_now_n
         {"valid_accel", valid_accel},
         {"packet_loss_count", packet_loss_count},
         {"host_rx_age_ms", host_rx_age_ms},
+    };
+}
+
+json imuDebugJson(const excavator_api::ImuDebug& d, std::uint64_t steady_now_ns) {
+    json devices = json::array();
+    for (std::size_t i = 0; i < excavator_api::kImuDeviceCount; ++i) {
+        const auto& src = d.devices[i];
+        double host_rx_age_ms = -1.0;
+        if (src.host_rx_time_ns != 0U && src.host_rx_time_ns <= steady_now_ns) {
+            host_rx_age_ms =
+                static_cast<double>(steady_now_ns - src.host_rx_time_ns) / 1000000.0;
+        }
+        devices.push_back(json{
+            {"index", i},
+            {"device_addr", static_cast<int>(src.device_addr)},
+            {"online", static_cast<int>(src.online)},
+            {"valid_attitude", static_cast<int>(src.valid_attitude)},
+            {"valid_gyro", static_cast<int>(src.valid_gyro)},
+            {"valid_accel", static_cast<int>(src.valid_accel)},
+            {"packet_loss_count", static_cast<int>(src.packet_loss_count)},
+            {"imu_timestamp_ms", src.imu_timestamp_ms},
+            {"host_rx_time_ns", src.host_rx_time_ns},
+            {"host_rx_age_ms", host_rx_age_ms},
+            {"rpy_rad", doubleArrayJson(src.rpy_rad)},
+            {"gyro_dps", doubleArrayJson(src.gyro_dps)},
+            {"accel_mps2", doubleArrayJson(src.accel_mps2)},
+            {"quaternion_wxyz", doubleArrayJson(src.quaternion_wxyz)},
+        });
+    }
+    return json{
+        {"devices", devices},
+        {"joint_velocity_mapping",
+         json{
+             {"swing", json{{"device_index", 3}, {"gyro_axis", "z"}}},
+             {"boom", json{{"device_index", 2}, {"gyro_axis", "y"}}},
+             {"stick", json{{"device_index", 1}, {"gyro_axis", "y-minus-imu3-y"}}},
+             {"bucket", json{{"device_index", 0}, {"gyro_axis", "y-minus-imu2-y"}}},
+         }},
     };
 }
 
@@ -730,6 +776,7 @@ private:
             {"snapshot_age_ms", snapshot_age_ms},
             {"state_loop_tick", snap.meta.loop_tick},
             {"imu_health", imuHealthJson(snap.resp.imu_health, steadyNs())},
+            {"imu_debug", imuDebugJson(snap.resp.imu_debug, steadyNs())},
         };
         json joint_sample{
             {"timestamp_ns", ts},

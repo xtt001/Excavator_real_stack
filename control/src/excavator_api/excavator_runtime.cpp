@@ -173,12 +173,31 @@ bool fillRespState(const excavator::ExcavatorState& in, RespState& out) {
     out.plan_rpm = in.plan_rpm;
     for (std::size_t i = 0; i < kImuDeviceCount; ++i) {
         const auto& src = in.imu.devices[i];
+        auto& debug = out.imu_debug.devices[i];
         out.imu_health.online[i] = src.online;
         out.imu_health.valid_attitude[i] = src.valid_attitude;
         out.imu_health.valid_gyro[i] = src.valid_gyro;
         out.imu_health.valid_accel[i] = src.valid_accel;
         out.imu_health.packet_loss_count[i] = src.packet_loss_count;
         out.imu_health.host_rx_time_ns[i] = src.host_rx_time_ns;
+
+        debug.device_addr = src.device_addr;
+        debug.online = src.online;
+        debug.valid_attitude = src.valid_attitude;
+        debug.valid_gyro = src.valid_gyro;
+        debug.valid_accel = src.valid_accel;
+        debug.packet_loss_count = src.packet_loss_count;
+        debug.imu_timestamp_ms = src.imu_timestamp_ms;
+        debug.host_rx_time_ns = src.host_rx_time_ns;
+        for (std::size_t j = 0; j < 3; ++j) {
+            debug.rpy_rad[j] = static_cast<double>(src.rpy_rad(static_cast<int>(j)));
+            debug.gyro_dps[j] = static_cast<double>(src.gyro_dps(static_cast<int>(j)));
+            debug.accel_mps2[j] = static_cast<double>(src.accel_mps2(static_cast<int>(j)));
+        }
+        debug.quaternion_wxyz[0] = static_cast<double>(src.quaternion.w());
+        debug.quaternion_wxyz[1] = static_cast<double>(src.quaternion.x());
+        debug.quaternion_wxyz[2] = static_cast<double>(src.quaternion.y());
+        debug.quaternion_wxyz[3] = static_cast<double>(src.quaternion.z());
     }
     return true;
 }

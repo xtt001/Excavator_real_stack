@@ -53,7 +53,9 @@ cd ~/Excavator_real_stack
   --ssh-user mundane
 ```
 
-### 1. 从端启动全链路和唯一 receiver
+### 1. 从端启动链路
+
+正式录制或 policy control 时，启动全链路和唯一 receiver：
 
 ```bash
 cd /media/mundane/D/Excavator_real_stack
@@ -64,6 +66,24 @@ cd /media/mundane/D/Excavator_real_stack
 会先停止 receiver，再停止 gateway、FPV、相机和 bridge。
 `--policy-remote` 会自动使用 `policy_real_one_dig_v1.yaml`、`policy_remote` input、
 `control` output、`action_scale=1.0`、USB HDF5 目录和 policy test log 目录。
+
+如果当前只是检查 IMU/qvel，不想启动 receiver，使用下面这个命令。它会启动
+bridge、Orbbec、FPV、gateway，但不开 receiver：
+
+```bash
+cd /media/mundane/D/Excavator_real_stack
+./scripts/slave_real_stack.sh run --force --no-receiver
+```
+
+如果只查 IMU/qvel 且不需要相机/FPV，可以进一步省掉相机链路：
+
+```bash
+cd /media/mundane/D/Excavator_real_stack
+./scripts/slave_real_stack.sh run --force --no-receiver --no-camera
+```
+
+上面两个 `--no-receiver` 模式下，IMU/qvel 日志脚本仍然连接默认 gateway
+`127.0.0.1:8765`；不要改成 `--port 8766`。
 
 ### 2. 从端另开终端看 CAN
 
@@ -78,7 +98,28 @@ cd /media/mundane/D/Excavator_real_stack
 ./scripts/imu_can_probe.py --interface can3 --duration-s 3 --require-four
 ```
 
-### 3. 主端 rqt 看图
+### 3. 从端另开终端持续记录 IMU/qvel
+
+这个日志脚本只读 `read_state`，不启动 receiver/sender，也不发送动作。现场全链路已经由
+第 1 步启动时，脚本应连接默认 gateway `127.0.0.1:8765`，可以和 receiver 同时运行。
+不要在全链路运行时加 `--port 8766` 直连 C++ bridge，因为 C++ bridge 当前只适合由
+gateway/control pump 托管连接。
+
+```bash
+cd /media/mundane/D/Excavator_real_stack
+./scripts/log_imu_qvel_quality.py \
+  --rate-hz 50 \
+  --duration-s 0 \
+  --print-every-s 1 \
+  --verbose-imu
+```
+
+`--duration-s 0` 表示一直记录到手动 `Ctrl+C`。记录文件优先写到
+`/media/mundane/EXTERNAL_USB/imu_qvel_tests/`；终端会持续打印 qpos/qpos_deg、
+bridge qvel、qpos 差分 qvel、raw IMU gyro 推导 qvel，以及每个 IMU 的
+gyro/rpy/age/loss。
+
+### 4. 主端 rqt 看图
 
 ```bash
 cd ~/Excavator_real_stack
@@ -94,7 +135,7 @@ rqt 里选择：
 /camera/color/image_raw
 ```
 
-### 4. 主端启动 sender
+### 5. 主端启动 sender
 
 ```bash
 cd ~/Excavator_real_stack
@@ -114,7 +155,7 @@ export GO_HOME_BUTTON=3
   --confirm-remote-control
 ```
 
-### 5. 点火、go-home、录制和模型控制
+### 6. 点火、go-home、录制和模型控制
 
 ```text
 5 -> remote mode
@@ -138,7 +179,7 @@ button 4 -> manual/model control toggle
 显示 go-home done；然后按 `4` 切到 model control。需要回到人操作时再按一次 `4`。
 需要写 HDF5 时按 `2`；不需要录制就不要按 `2`。
 
-### 6. 主端实时 QC
+### 7. 主端实时 QC
 
 ```bash
 cd ~/Excavator_real_stack
@@ -276,6 +317,36 @@ ssh slave-jetson \
 IMU 地址没有在 `can3` 上持续发帧。先处理 IMU 地址/协议/CAN 接线/供电问题，再录训练数据。
 `captured_frames` 表示监听窗口内总 CAN 帧数，`imu_highspeed_ch1_frames` 表示其中被识别为
 IMU 高速 ch1 协议的帧数，`cmd_counts_by_raw_addr` 可用于看每个 IMU 地址的各类分包是否齐全。
+
+IMU/qvel 只读日志。用于检查上电后陀螺仪原始值、bridge 返回的 qvel，以及 qpos
+差分得到的 qvel 是否一致。这个脚本不启动 receiver/sender，也不发送动作；正式现场
+全链路运行时默认连接从端本机 gateway `127.0.0.1:8765`，记录文件优先写到
+`/media/mundane/EXTERNAL_USB/imu_qvel_tests/`。`--duration-s 0` 表示一直记录到
+手动 `Ctrl+C`。
+
+```bash
+cd /media/mundane/D/Excavator_real_stack
+./scripts/log_imu_qvel_quality.py --rate-hz 50 --duration-s 0 --print-every-s 1 --verbose-imu
+```
+
+只有在没有启动 gateway/receiver、临时只启动 C++ bridge 做只读检查时，才直连
+C++ bridge `8766`：
+
+```bash
+./scripts/log_imu_qvel_quality.py --port 8766 --rate-hz 50 --duration-s 0 --print-every-s 1 --verbose-imu
+```
+
+脚本会打印：
+
+- `qpos`：当前 `read_state` 返回的 4 轴姿态，单位 rad。
+- `qpos_deg`：同一组姿态转成 degree，方便肉眼判断角度变化。
+- `qvel`：当前 `read_state` 返回给 receiver/policy 的 qvel。
+- `diff`：由相邻 qpos 差分得到的 qvel。
+- `raw_imu`：由 IMU 原始 gyro 重新计算的关节 qvel，未做启动 bias 扣除。
+- `resid`：`qvel - diff`，静止时应接近 0。
+
+如果输出提示 `imu_debug missing`，说明当前运行的 bridge 还是旧二进制，只能看到
+`imu_health`，看不到每个 IMU 的 gyro/rpy/accel 原始值。需要重新编译并重启 bridge。
 
 HDF5 中图像默认写到 `/observations/encoded_images/fpv`，格式为逐帧 JPEG。
 gateway 只在 FPV SHM 帧序号变化时压缩一次，并缓存给 `read_state`，避免 receiver

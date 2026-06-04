@@ -111,7 +111,7 @@ teleop:
     go_home:
       enabled: true
       # 必须现场标定后填写，顺序为 [swing, boom, stick, bucket]，单位 rad。
-      home_pose_rad: [2.559211, -0.011737, -0.458603, -0.852192]
+      home_pose_rad: [3.000000, -0.011737, -0.458603, -0.852192]
       # TEMP for go-home function testing: disables the near-home start gate.
       # Restore to a calibrated finite region after area testing.
       near_tolerance_rad: [999.0, 999.0, 999.0, 999.0]
@@ -212,7 +212,7 @@ teleop:
 
 phase_labeling:
   # 离线 phase labeler 使用；真实数值必须现场标定后填写。
-  home_pose_rad: [2.559211, -0.011737, -0.458603, -0.852192]
+  home_pose_rad: [3.000000, -0.011737, -0.458603, -0.852192]
   near_home_tolerance_rad: [0.25, 0.25, 0.45, 0.25]
   dig_swing_range: null
   dump_swing_range: null
