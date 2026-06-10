@@ -293,6 +293,7 @@ bool ExcavatorCommunication::read() {
                 hw_state_.imu.devices[i].device_addr = snap.imus[i].device_addr;
                 hw_state_.imu.devices[i].online = snap.imus[i].online;
                 hw_state_.imu.devices[i].valid_attitude = snap.imus[i].valid_attitude;
+                hw_state_.imu.devices[i].valid_quaternion = snap.imus[i].valid_quaternion;
                 hw_state_.imu.devices[i].valid_gyro = snap.imus[i].valid_gyro;
                 hw_state_.imu.devices[i].valid_accel = snap.imus[i].valid_accel;
                 hw_state_.imu.devices[i].reserved0 = snap.imus[i].reserved0;
@@ -300,6 +301,7 @@ bool ExcavatorCommunication::read() {
                 hw_state_.imu.devices[i].imu_timestamp_ms = snap.imus[i].imu_timestamp_ms;
                 hw_state_.imu.devices[i].host_rx_time_ns = snap.imus[i].host_rx_time_ns;
                 hw_state_.imu.devices[i].rpy_rad = snap.imus[i].rpy_rad;
+                hw_state_.imu.devices[i].rpy_raw_deg = snap.imus[i].rpy_raw_deg;
                 hw_state_.imu.devices[i].gyro_dps = snap.imus[i].gyro_dps;
                 hw_state_.imu.devices[i].accel_mps2 = snap.imus[i].accel_mps2;
                 hw_state_.imu.devices[i].quaternion = snap.imus[i].quaternion;

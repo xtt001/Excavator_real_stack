@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
@@ -11,8 +12,31 @@ import numpy as np
 from testbed.backends.real.contracts import (
     REAL_ACTION_DIM,
     REAL_ACTION_ORDER,
+    align_real_qpos_to_reference_branch,
     as_real_vector4,
+    real_qpos_error_rad,
 )
+
+
+_RAW_IMU_QPOS_MAX_STEP_RAD = (
+    np.asarray([180.0, 180.0, 180.0, 2.5], dtype=np.float32) * np.float32(np.pi / 180.0)
+)
+_BUCKET_AXIS = 3
+_BUCKET_QUATERNION_POLICY_OFFSET_ENV = "EXCAVATOR_BUCKET_QUATERNION_OFFSET_RAD"
+_BUCKET_QUATERNION_POLICY_OFFSET_DEFAULT_RAD = -0.4060066694119653
+
+
+def _bucket_quaternion_policy_offset_rad() -> float:
+    raw = os.environ.get(_BUCKET_QUATERNION_POLICY_OFFSET_ENV)
+    if raw is None or raw == "":
+        return _BUCKET_QUATERNION_POLICY_OFFSET_DEFAULT_RAD
+    try:
+        value = float(raw)
+    except ValueError:
+        return _BUCKET_QUATERNION_POLICY_OFFSET_DEFAULT_RAD
+    if not np.isfinite(value):
+        return _BUCKET_QUATERNION_POLICY_OFFSET_DEFAULT_RAD
+    return value
 
 
 def _vector4(value: Any, *, name: str, default: Sequence[float] | None = None) -> np.ndarray:
@@ -132,6 +156,7 @@ class GoHomeConfig:
     wrong_direction_error_increase_rad: np.ndarray
     wrong_direction_cooldown_s: np.ndarray
     qvel_stable_rad_s: np.ndarray
+    max_policy_raw_qpos_delta_rad: np.ndarray
     dwell_s: float = 0.4
     timeout_s: float = 8.0
     runaway_error_factor: float = 1.5
@@ -316,6 +341,11 @@ class GoHomeConfig:
             name="qvel_stable_rad_s",
             default=[0.02] * REAL_ACTION_DIM,
         )
+        max_policy_raw_delta = _positive_vector4(
+            raw.get("max_policy_raw_qpos_delta_rad"),
+            name="max_policy_raw_qpos_delta_rad",
+            default=[0.08] * REAL_ACTION_DIM,
+        )
         dwell_s = float(raw.get("dwell_s", 0.4))
         timeout_s = float(raw.get("timeout_s", 8.0))
         if dwell_s < 0.0:
@@ -358,6 +388,7 @@ class GoHomeConfig:
             wrong_direction_error_increase_rad=wrong_direction_error_increase,
             wrong_direction_cooldown_s=wrong_direction_cooldown,
             qvel_stable_rad_s=qvel_stable,
+            max_policy_raw_qpos_delta_rad=max_policy_raw_delta,
             dwell_s=dwell_s,
             timeout_s=timeout_s,
             runaway_error_factor=float(raw.get("runaway_error_factor", 1.5)),
@@ -404,6 +435,10 @@ class GoHomeController:
         self._filtered_qpos = np.zeros(REAL_ACTION_DIM, dtype=np.float32)
         self._filtered_qvel = np.zeros(REAL_ACTION_DIM, dtype=np.float32)
         self._raw_error = np.zeros(REAL_ACTION_DIM, dtype=np.float32)
+        self._raw_imu_qpos = np.zeros(REAL_ACTION_DIM, dtype=np.float32)
+        self._has_raw_imu_qpos = False
+        self._policy_raw_delta = np.zeros(REAL_ACTION_DIM, dtype=np.float32)
+        self._feedback_consistent = True
         self._stall_reference_error = np.zeros(REAL_ACTION_DIM, dtype=np.float32)
         self._stall_reference_s = np.zeros(REAL_ACTION_DIM, dtype=np.float64)
         self._stall_last_boost_s = np.full(REAL_ACTION_DIM, -np.inf, dtype=np.float64)
@@ -421,7 +456,16 @@ class GoHomeController:
 
     def start(self, obs: Mapping[str, Any], *, now_ns: int | None = None) -> None:
         qpos = _obs_qpos(obs)
-        error = self.config.home_pose_rad - qpos
+        error = real_qpos_error_rad(self.config.home_pose_rad, qpos)
+        policy_raw_delta, feedback_consistent, raw_imu_qpos = self._policy_raw_feedback(
+            obs,
+            qpos,
+        )
+        if not feedback_consistent:
+            raise ValueError(
+                "feedback_inconsistent policy_raw_delta_rad: "
+                + _format_vector(policy_raw_delta)
+            )
         if np.any(np.abs(error) > self.config.near_tolerance_rad):
             raise ValueError(
                 "current pose is outside go-home near_tolerance_rad: "
@@ -455,6 +499,14 @@ class GoHomeController:
         self._filtered_qpos = qpos.astype(np.float32, copy=True)
         self._filtered_qvel = _obs_qvel(obs).astype(np.float32, copy=True)
         self._raw_error = error.astype(np.float32, copy=True)
+        self._policy_raw_delta = policy_raw_delta.astype(np.float32, copy=True)
+        self._feedback_consistent = bool(feedback_consistent)
+        if raw_imu_qpos is None:
+            self._raw_imu_qpos.fill(0.0)
+            self._has_raw_imu_qpos = False
+        else:
+            self._raw_imu_qpos = raw_imu_qpos.astype(np.float32, copy=True)
+            self._has_raw_imu_qpos = True
         abs_error = np.abs(error).astype(np.float32)
         self._stall_reference_error = abs_error.copy()
         self._stall_reference_s = np.full(REAL_ACTION_DIM, self._start_s, dtype=np.float64)
@@ -480,10 +532,22 @@ class GoHomeController:
             raw_qvel = _obs_qvel(obs)
         except ValueError as exc:
             return self._fail(f"feedback_invalid:{exc}", obs)
+        policy_raw_delta, feedback_consistent, raw_imu_qpos = self._policy_raw_feedback(
+            obs,
+            raw_qpos,
+        )
+        self._policy_raw_delta = policy_raw_delta.astype(np.float32, copy=True)
+        self._feedback_consistent = bool(feedback_consistent)
+        if raw_imu_qpos is None:
+            self._raw_imu_qpos.fill(0.0)
+            self._has_raw_imu_qpos = False
+        else:
+            self._raw_imu_qpos = raw_imu_qpos.astype(np.float32, copy=True)
+            self._has_raw_imu_qpos = True
         qpos, qvel = self._filtered_feedback(raw_qpos, raw_qvel, now_s=now)
 
-        error = self.config.home_pose_rad - qpos
-        raw_error = self.config.home_pose_rad - raw_qpos
+        error = real_qpos_error_rad(self.config.home_pose_rad, qpos)
+        raw_error = real_qpos_error_rad(self.config.home_pose_rad, raw_qpos)
         self._raw_error = raw_error.astype(np.float32, copy=True)
         self.final_qpos = raw_qpos.astype(np.float32, copy=True)
         self.final_error = raw_error.astype(np.float32, copy=True)
@@ -495,8 +559,14 @@ class GoHomeController:
             return self._fail("runaway_error", obs)
 
         abs_error = np.abs(error)
-        acceptable_position = np.all(abs_error <= self.config.success_tolerance_rad)
-        in_position = np.all(abs_error <= self.config.center_tolerance_rad)
+        acceptable_position = bool(
+            feedback_consistent
+            and np.all(abs_error <= self.config.success_tolerance_rad)
+        )
+        in_position = bool(
+            feedback_consistent
+            and np.all(abs_error <= self.config.center_tolerance_rad)
+        )
         stable_velocity = np.all(np.abs(qvel) <= self.config.qvel_stable_rad_s)
         if elapsed > self.config.timeout_s and not (
             acceptable_position and stable_velocity
@@ -772,9 +842,13 @@ class GoHomeController:
             "go_home_start_qpos": self.start_qpos.astype(np.float32),
             "go_home_final_qpos": self.final_qpos.astype(np.float32),
             "go_home_final_error": self.final_error.astype(np.float32),
-            "go_home_final_filtered_error": (
-                self.config.home_pose_rad - self._filtered_qpos
-            ).astype(np.float32),
+            "go_home_final_filtered_error": real_qpos_error_rad(
+                self.config.home_pose_rad,
+                self._filtered_qpos,
+            ),
+            "go_home_policy_raw_delta": self._policy_raw_delta.astype(np.float32),
+            "go_home_feedback_consistent": int(bool(self._feedback_consistent)),
+            "go_home_has_raw_imu_qpos": int(bool(self._has_raw_imu_qpos)),
         }
 
     def _finish(self, result_code: str, *, done: bool = False, failed: bool = False) -> GoHomeResult:
@@ -797,7 +871,10 @@ class GoHomeController:
         self._action_ramp_limit = np.zeros(REAL_ACTION_DIM, dtype=np.float32)
         self._axis_ramp_start_s = np.full(REAL_ACTION_DIM, np.nan, dtype=np.float64)
         self._axis_ramp_sign = np.zeros(REAL_ACTION_DIM, dtype=np.float32)
-        filtered_error = (self.config.home_pose_rad - self._filtered_qpos).astype(np.float32)
+        filtered_error = real_qpos_error_rad(
+            self.config.home_pose_rad,
+            self._filtered_qpos,
+        )
         return GoHomeResult(
             action=np.zeros(REAL_ACTION_DIM, dtype=np.float32),
             done=done,
@@ -808,6 +885,10 @@ class GoHomeController:
                 "go_home_result_code": result_code,
                 "go_home_error": filtered_error,
                 "go_home_raw_error": self.final_error.astype(np.float32),
+                "go_home_policy_raw_delta": self._policy_raw_delta.astype(np.float32),
+                "go_home_feedback_consistent": int(bool(self._feedback_consistent)),
+                "go_home_raw_imu_qpos": self._raw_imu_qpos.astype(np.float32),
+                "go_home_has_raw_imu_qpos": int(bool(self._has_raw_imu_qpos)),
                 "go_home_qvel": np.zeros(REAL_ACTION_DIM, dtype=np.float32),
                 "go_home_raw_qvel": np.zeros(REAL_ACTION_DIM, dtype=np.float32),
                 "go_home_filtered_qpos": self._filtered_qpos.astype(np.float32),
@@ -839,7 +920,10 @@ class GoHomeController:
         try:
             qpos = _obs_qpos(obs)
             self.final_qpos = qpos.astype(np.float32, copy=True)
-            self.final_error = (self.config.home_pose_rad - qpos).astype(np.float32)
+            self.final_error = real_qpos_error_rad(
+                self.config.home_pose_rad,
+                qpos,
+            )
         except ValueError:
             pass
         self.failed_reason = str(reason)
@@ -863,8 +947,15 @@ class GoHomeController:
         return {
             "go_home_running": 1,
             "go_home_result_code": "running",
-            "go_home_error": (self.config.home_pose_rad - qpos).astype(np.float32),
-            "go_home_raw_error": (self.config.home_pose_rad - raw_qpos).astype(np.float32),
+            "go_home_error": real_qpos_error_rad(self.config.home_pose_rad, qpos),
+            "go_home_raw_error": real_qpos_error_rad(
+                self.config.home_pose_rad,
+                raw_qpos,
+            ),
+            "go_home_policy_raw_delta": self._policy_raw_delta.astype(np.float32),
+            "go_home_feedback_consistent": int(bool(self._feedback_consistent)),
+            "go_home_raw_imu_qpos": self._raw_imu_qpos.astype(np.float32),
+            "go_home_has_raw_imu_qpos": int(bool(self._has_raw_imu_qpos)),
             "go_home_qvel": np.asarray(qvel, dtype=np.float32),
             "go_home_raw_qvel": np.asarray(raw_qvel, dtype=np.float32),
             "go_home_filtered_qpos": np.asarray(qpos, dtype=np.float32),
@@ -902,8 +993,9 @@ class GoHomeController:
     ) -> tuple[np.ndarray, np.ndarray]:
         dt = 0.02 if self._filter_last_s is None else max(0.0, now_s - self._filter_last_s)
         self._filter_last_s = now_s
+        aligned_qpos = align_real_qpos_to_reference_branch(raw_qpos, self._filtered_qpos)
         self._filtered_qpos = _lowpass_vector(
-            raw_qpos,
+            aligned_qpos,
             self._filtered_qpos,
             tau_s=self.config.qpos_filter_tau_s,
             dt_s=dt,
@@ -915,6 +1007,26 @@ class GoHomeController:
             dt_s=dt,
         )
         return self._filtered_qpos.copy(), self._filtered_qvel.copy()
+
+    def _policy_raw_feedback(
+        self,
+        obs: Mapping[str, Any],
+        policy_qpos: np.ndarray,
+    ) -> tuple[np.ndarray, bool, np.ndarray | None]:
+        raw_imu_qpos = _obs_raw_imu_qpos(obs)
+        if raw_imu_qpos is None:
+            return np.zeros(REAL_ACTION_DIM, dtype=np.float32), True, None
+        if self._has_raw_imu_qpos and not _obs_has_explicit_raw_imu_qpos(obs):
+            raw_imu_qpos = _limited_raw_imu_qpos(raw_imu_qpos, self._raw_imu_qpos)
+        delta = real_qpos_error_rad(policy_qpos, raw_imu_qpos)
+        gated_delta = np.abs(delta)
+        if not _obs_has_explicit_raw_imu_qpos(obs):
+            gated_delta = gated_delta.copy()
+            gated_delta[_BUCKET_AXIS] = 0.0
+        consistent = bool(
+            np.all(gated_delta <= self.config.max_policy_raw_qpos_delta_rad)
+        )
+        return delta.astype(np.float32, copy=False), consistent, raw_imu_qpos
 
     def _centered_axis_held(self, abs_error: np.ndarray, *, now_s: float) -> np.ndarray:
         inside = abs_error <= self.config.center_tolerance_rad
@@ -1149,6 +1261,132 @@ def _obs_qvel(obs: Mapping[str, Any]) -> np.ndarray:
     if "qvel" not in obs:
         raise ValueError("missing qvel")
     return as_real_vector4(obs["qvel"], name="qvel")
+
+
+def _obs_raw_imu_qpos(obs: Mapping[str, Any]) -> np.ndarray | None:
+    if "qpos_raw_imu" in obs:
+        return as_real_vector4(obs["qpos_raw_imu"], name="qpos_raw_imu")
+    if "qpos_raw_imu_deg" in obs:
+        return np.deg2rad(
+            as_real_vector4(obs["qpos_raw_imu_deg"], name="qpos_raw_imu_deg")
+        ).astype(np.float32)
+
+    imu_debug = obs.get("imu_debug")
+    if not isinstance(imu_debug, Mapping):
+        sensor_health = obs.get("sensor_health")
+        if isinstance(sensor_health, Mapping):
+            imu_debug = sensor_health.get("imu_debug")
+    if not isinstance(imu_debug, Mapping):
+        return None
+    devices = imu_debug.get("devices")
+    if not isinstance(devices, Sequence) or len(devices) < 4:
+        return None
+
+    def quat_wxyz(device_index: int) -> np.ndarray | None:
+        device = devices[device_index]
+        if not isinstance(device, Mapping):
+            return None
+        try:
+            if int(device.get("online", 1)) == 0 or int(device.get("valid_quaternion", 0)) == 0:
+                return None
+        except (TypeError, ValueError):
+            return None
+        try:
+            quat = np.asarray(device.get("quaternion_wxyz"), dtype=np.float64).reshape(-1)
+        except (TypeError, ValueError):
+            return None
+        if quat.shape != (4,) or not np.all(np.isfinite(quat)):
+            return None
+        norm = float(np.linalg.norm(quat))
+        if not np.isfinite(norm) or norm <= 0.5 or norm >= 1.5:
+            return None
+        return quat / norm
+
+    def quat_multiply(lhs: np.ndarray, rhs: np.ndarray) -> np.ndarray:
+        lw, lx, ly, lz = [float(v) for v in lhs]
+        rw, rx, ry, rz = [float(v) for v in rhs]
+        return np.asarray(
+            [
+                lw * rw - lx * rx - ly * ry - lz * rz,
+                lw * rx + lx * rw + ly * rz - lz * ry,
+                lw * ry - lx * rz + ly * rw + lz * rx,
+                lw * rz + lx * ry - ly * rx + lz * rw,
+            ],
+            dtype=np.float64,
+        )
+
+    def quat_conjugate(quat: np.ndarray) -> np.ndarray:
+        return np.asarray([quat[0], -quat[1], -quat[2], -quat[3]], dtype=np.float64)
+
+    def bucket_quat_angle() -> float | None:
+        imu1_q = quat_wxyz(0)
+        imu2_q = quat_wxyz(1)
+        if imu1_q is None or imu2_q is None:
+            return None
+        relative = quat_multiply(quat_conjugate(imu2_q), imu1_q)
+        angle = 2.0 * np.arctan2(float(relative[2]), float(relative[0]))
+        return float(
+            np.remainder(
+                angle + _bucket_quaternion_policy_offset_rad() + np.pi,
+                2.0 * np.pi,
+            )
+            - np.pi
+        )
+
+    def raw_deg(device_index: int, axis_index: int) -> float | None:
+        device = devices[device_index]
+        if not isinstance(device, Mapping):
+            return None
+        try:
+            if int(device.get("online", 1)) == 0 or int(device.get("valid_attitude", 1)) == 0:
+                return None
+        except (TypeError, ValueError):
+            return None
+        try:
+            rpy = np.asarray(device.get("rpy_raw_deg"), dtype=np.float32).reshape(-1)
+        except (TypeError, ValueError):
+            return None
+        if rpy.shape != (3,) or not np.all(np.isfinite(rpy)):
+            return None
+        return float(rpy[axis_index])
+
+    imu1_y = raw_deg(0, 1)
+    imu2_y = raw_deg(1, 1)
+    imu3_y = raw_deg(2, 1)
+    imu4_z = raw_deg(3, 2)
+    if None in (imu1_y, imu2_y, imu3_y, imu4_z):
+        return None
+    bucket_qpos = bucket_quat_angle()
+    if bucket_qpos is None:
+        bucket_qpos = np.deg2rad(float(imu1_y) - float(imu2_y))
+    return np.deg2rad(
+        np.asarray(
+            [
+                float(imu4_z),
+                float(imu3_y),
+                float(imu2_y) - float(imu3_y),
+                0.0,
+            ],
+            dtype=np.float32,
+        )
+    ).astype(np.float32) + np.asarray(
+        [0.0, 0.0, 0.0, float(bucket_qpos)], dtype=np.float32
+    )
+
+
+def _obs_has_explicit_raw_imu_qpos(obs: Mapping[str, Any]) -> bool:
+    return "qpos_raw_imu" in obs or "qpos_raw_imu_deg" in obs
+
+
+def _limited_raw_imu_qpos(current: np.ndarray, previous: np.ndarray) -> np.ndarray:
+    aligned = align_real_qpos_to_reference_branch(current, previous)
+    delta = aligned - previous
+    limited = previous + np.clip(
+        delta,
+        -_RAW_IMU_QPOS_MAX_STEP_RAD,
+        _RAW_IMU_QPOS_MAX_STEP_RAD,
+    )
+    return limited.astype(np.float32, copy=False)
 
 
 def _format_vector(value: Any) -> str:

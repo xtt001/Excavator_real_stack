@@ -176,6 +176,7 @@ bool fillRespState(const excavator::ExcavatorState& in, RespState& out) {
         auto& debug = out.imu_debug.devices[i];
         out.imu_health.online[i] = src.online;
         out.imu_health.valid_attitude[i] = src.valid_attitude;
+        out.imu_health.valid_quaternion[i] = src.valid_quaternion;
         out.imu_health.valid_gyro[i] = src.valid_gyro;
         out.imu_health.valid_accel[i] = src.valid_accel;
         out.imu_health.packet_loss_count[i] = src.packet_loss_count;
@@ -184,6 +185,7 @@ bool fillRespState(const excavator::ExcavatorState& in, RespState& out) {
         debug.device_addr = src.device_addr;
         debug.online = src.online;
         debug.valid_attitude = src.valid_attitude;
+        debug.valid_quaternion = src.valid_quaternion;
         debug.valid_gyro = src.valid_gyro;
         debug.valid_accel = src.valid_accel;
         debug.packet_loss_count = src.packet_loss_count;
@@ -191,6 +193,7 @@ bool fillRespState(const excavator::ExcavatorState& in, RespState& out) {
         debug.host_rx_time_ns = src.host_rx_time_ns;
         for (std::size_t j = 0; j < 3; ++j) {
             debug.rpy_rad[j] = static_cast<double>(src.rpy_rad(static_cast<int>(j)));
+            debug.rpy_raw_deg[j] = static_cast<double>(src.rpy_raw_deg(static_cast<int>(j)));
             debug.gyro_dps[j] = static_cast<double>(src.gyro_dps(static_cast<int>(j)));
             debug.accel_mps2[j] = static_cast<double>(src.accel_mps2(static_cast<int>(j)));
         }

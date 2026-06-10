@@ -316,10 +316,20 @@ append_and_summarize() {
     "${SSH_TARGET}" <<'PY'
 import datetime as _dt
 import json
+import math
 import sys
 from pathlib import Path
 
 import numpy as np
+
+
+def pose_error_rad(target, current):
+    err = np.asarray(target, dtype=np.float64).reshape(1, 4) - np.asarray(
+        current,
+        dtype=np.float64,
+    )
+    err[:, 0] = np.remainder(err[:, 0] + math.pi, 2.0 * math.pi) - math.pi
+    return err
 
 output_path = Path(sys.argv[1])
 sample_path = Path(sys.argv[2])
@@ -397,7 +407,7 @@ if home_pose is not None:
     ]
     if allowed:
         qpos = np.asarray([r["qpos_mean"] for r in allowed], dtype=np.float64)
-        max_error = np.max(np.abs(qpos - home_pose.reshape(1, 4)), axis=0)
+        max_error = np.max(np.abs(pose_error_rad(home_pose, qpos)), axis=0)
         suggested = max_error + 0.05
         print(
             "[region-sample] max_abs_error_from_config_home=["

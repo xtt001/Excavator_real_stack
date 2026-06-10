@@ -203,6 +203,9 @@ class SynchronizedObservationBuilder:
         )
         if action_timestamp_ns is not None:
             observation["action_timestamp_ns"] = int(action_timestamp_ns)
+        for key in ("imu_debug", "qpos_raw_imu", "qpos_raw_imu_deg"):
+            if key in joint_payload:
+                observation[key] = joint_payload[key]
         return SyncResult(
             observation=observation,
             joint_sample=joint_sample,

@@ -34,6 +34,21 @@ std::array<std::uint8_t, kImuCanPayloadBytes> i16_payload(
     return out;
 }
 
+std::array<std::uint8_t, kImuCanPayloadBytes> euler_payload(
+    std::int16_t roll,
+    std::int16_t pitch,
+    std::uint16_t yaw) {
+    std::array<std::uint8_t, kImuCanPayloadBytes> out{};
+    auto put = [&](std::size_t idx, std::uint16_t v) {
+        out[idx] = static_cast<std::uint8_t>(v & 0xFFU);
+        out[idx + 1] = static_cast<std::uint8_t>((v >> 8U) & 0xFFU);
+    };
+    put(0, static_cast<std::uint16_t>(roll));
+    put(2, static_cast<std::uint16_t>(pitch));
+    put(4, yaw);
+    return out;
+}
+
 std::array<std::uint8_t, kImuCanPayloadBytes> status_payload(std::uint8_t flags) {
     auto out = zeros();
     out[4] = flags;
@@ -106,6 +121,21 @@ void test_missing_addresses_remain_absent() {
     expect(partials[3].last_rx_ns != 0U, "raw addr 3 should be present");
 }
 
+void test_raw_euler_degrees_preserved() {
+    constexpr float kPi = 3.14159265F;
+    ImuDefaultCanFrameParser parser;
+    std::array<ImuRxAccumulator, kImuDeviceCount> partials{};
+    parser.parseFrame(frame_id(0, 4), euler_payload(18300, -18100, 32769), partials);
+    const auto& sample = partials[3];
+    expect(sample.has_euler, "raw euler missing");
+    expect_near(sample.roll_raw_deg, 183.0F, "raw roll degree wrong");
+    expect_near(sample.pitch_raw_deg, -181.0F, "raw pitch degree wrong");
+    expect_near(sample.yaw_raw_deg, 327.69F, "raw yaw degree wrong");
+    expect_near(sample.roll_rad, -177.0F * kPi / 180.0F, "wrapped roll rad wrong");
+    expect_near(sample.pitch_rad, 179.0F * kPi / 180.0F, "wrapped pitch rad wrong");
+    expect_near(sample.yaw_rad, -32.31F * kPi / 180.0F, "yaw rad wrong");
+}
+
 }  // namespace
 
 int main() {
@@ -113,6 +143,7 @@ int main() {
         test_zero_based_addresses();
         test_one_based_addresses();
         test_missing_addresses_remain_absent();
+        test_raw_euler_degrees_preserved();
     } catch (const std::exception& exc) {
         std::cerr << "imu_canlib_parser_test failed: " << exc.what() << "\n";
         return 1;

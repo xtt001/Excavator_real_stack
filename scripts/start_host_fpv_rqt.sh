@@ -13,6 +13,7 @@ source "${ROOT_DIR}/scripts/ros2_fpv_env.sh"
 COMPRESSED_TOPIC="${EXCAVATOR_FPV_COMPRESSED_TOPIC:-/camera/color/image_raw/compressed}"
 # rqt 看解码后的 /camera/color/image_raw（由 republish 从 compressed 生成）
 RAW_TOPIC="${COMPRESSED_TOPIC%/compressed}"
+LAUNCH_PID=""
 
 if [[ -z "${ROS_DISTRO:-}" ]]; then
   for distro in jazzy humble iron rolling; do
@@ -78,6 +79,28 @@ _sanitize_host_gui_env() {
   unset QT_PLUGIN_PATH QT_QPA_PLATFORM_PLUGIN_PATH QT_QPA_FONTDIR
 }
 
+_cleanup_host_fpv_rqt() {
+  local pid
+  if [[ -n "${LAUNCH_PID}" ]]; then
+    kill -TERM "-${LAUNCH_PID}" >/dev/null 2>&1 || true
+    sleep 0.5
+    kill -KILL "-${LAUNCH_PID}" >/dev/null 2>&1 || true
+  fi
+  while read -r pid; do
+    [[ -z "${pid}" || "${pid}" == "$$" ]] && continue
+    kill -TERM "${pid}" >/dev/null 2>&1 || true
+  done < <(
+    pgrep -f "host_fpv_republisher_node.py|rqt_image_view .*${RAW_TOPIC}|host_fpv_rqt.launch.py" || true
+  )
+  sleep 0.2
+  while read -r pid; do
+    [[ -z "${pid}" || "${pid}" == "$$" ]] && continue
+    kill -KILL "${pid}" >/dev/null 2>&1 || true
+  done < <(
+    pgrep -f "host_fpv_republisher_node.py|rqt_image_view .*${RAW_TOPIC}|host_fpv_rqt.launch.py" || true
+  )
+}
+
 _sanitize_host_gui_env
 
 set +u
@@ -87,6 +110,8 @@ source "/opt/ros/${ROS_DISTRO}/setup.bash"
 set -u
 
 ros2 daemon stop >/dev/null 2>&1 || true
+_cleanup_host_fpv_rqt
+trap _cleanup_host_fpv_rqt EXIT INT TERM
 
 LAUNCH_FILE="${ROOT_DIR}/ros2_bridge/excavator_ros2_bridge/launch/host_fpv_rqt.launch.py"
 echo "【主端】图源: ${COMPRESSED_TOPIC}（ros2 topic list 里能看到）"
@@ -99,4 +124,6 @@ if [[ -z "${EXCAVATOR_ROS_PEER_IP:-}" ]]; then
   echo "  source scripts/excavator_deploy_network.sh && excavator_apply_host_network_defaults" >&2
 fi
 
-exec ros2 launch "${LAUNCH_FILE}" compressed_topic:="${COMPRESSED_TOPIC}"
+setsid ros2 launch "${LAUNCH_FILE}" compressed_topic:="${COMPRESSED_TOPIC}" &
+LAUNCH_PID="$!"
+wait "${LAUNCH_PID}"

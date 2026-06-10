@@ -11,6 +11,11 @@ from typing import Any, Mapping
 import h5py
 import numpy as np
 
+from testbed.backends.real.contracts import (
+    real_qpos_error_rad,
+    shortest_angle_error_rad,
+)
+
 
 PHASES = ("DIG", "SWING_TO_DUMP", "DUMP", "RETURN_NEAR_HOME", "GO_HOME", "END")
 
@@ -117,7 +122,7 @@ def _label_arrays(
         if state == "DIG":
             toward_dump = (
                 dump_center is None
-                or np.sign(dump_center - swing) == np.sign(swing_vel)
+                or np.sign(_swing_error(dump_center, swing)) == np.sign(swing_vel)
             )
             if _dwell(
                 counters,
@@ -144,7 +149,7 @@ def _label_arrays(
         elif state == "DUMP":
             toward_home = (
                 dig_center is None
-                or np.sign(dig_center - swing) == np.sign(swing_vel)
+                or np.sign(_swing_error(dig_center, swing)) == np.sign(swing_vel)
             )
             bucket_quiet = abs(bucket_vel) < cfg.bucket_velocity_threshold_rad_s
             if _dwell(
@@ -191,7 +196,11 @@ def _dwell(counters: dict[str, int], key: str, condition: bool, steps: int) -> b
 def _inside(value: float, rng: tuple[float, float] | None) -> bool:
     if rng is None:
         return False
-    return min(rng) <= value <= max(rng)
+    start = float(rng[0])
+    end = float(rng[1])
+    span = _swing_error(end, start)
+    center = start + 0.5 * span
+    return abs(_swing_error(value, center)) <= abs(span) * 0.5
 
 
 def _outside(value: float, rng: tuple[float, float] | None) -> bool:
@@ -203,19 +212,28 @@ def _outside(value: float, rng: tuple[float, float] | None) -> bool:
 def _range_center(rng: tuple[float, float] | None) -> float | None:
     if rng is None:
         return None
-    return 0.5 * (float(rng[0]) + float(rng[1]))
+    return float(rng[0]) + 0.5 * _swing_error(float(rng[1]), float(rng[0]))
+
+
+def _swing_error(target: float, current: float) -> float:
+    return shortest_angle_error_rad(target, current)
 
 
 def _home_distance(qpos: np.ndarray, cfg: PhaseLabelConfig) -> float | None:
     if cfg.home_pose_rad is None:
         return None
-    return float(np.linalg.norm(np.asarray(qpos, dtype=np.float32) - cfg.home_pose_rad))
+    return float(np.linalg.norm(real_qpos_error_rad(cfg.home_pose_rad, qpos)))
 
 
 def _near_home(qpos: np.ndarray, cfg: PhaseLabelConfig) -> bool:
     if cfg.home_pose_rad is None or cfg.near_home_tolerance_rad is None:
         return False
-    return bool(np.all(np.abs(np.asarray(qpos, dtype=np.float32) - cfg.home_pose_rad) <= cfg.near_home_tolerance_rad))
+    return bool(
+        np.all(
+            np.abs(real_qpos_error_rad(cfg.home_pose_rad, qpos))
+            <= cfg.near_home_tolerance_rad
+        )
+    )
 
 
 def _transitions(labels: list[str]) -> list[dict[str, Any]]:

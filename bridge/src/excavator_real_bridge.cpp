@@ -342,6 +342,7 @@ json doubleArrayJson(const std::array<double, 4>& values) {
 json imuHealthJson(const excavator_api::ImuHealth& h, std::uint64_t steady_now_ns) {
     json online = json::array();
     json valid_attitude = json::array();
+    json valid_quaternion = json::array();
     json valid_gyro = json::array();
     json valid_accel = json::array();
     json packet_loss_count = json::array();
@@ -349,6 +350,7 @@ json imuHealthJson(const excavator_api::ImuHealth& h, std::uint64_t steady_now_n
     for (std::size_t i = 0; i < excavator_api::kImuDeviceCount; ++i) {
         online.push_back(static_cast<int>(h.online[i]));
         valid_attitude.push_back(static_cast<int>(h.valid_attitude[i]));
+        valid_quaternion.push_back(static_cast<int>(h.valid_quaternion[i]));
         valid_gyro.push_back(static_cast<int>(h.valid_gyro[i]));
         valid_accel.push_back(static_cast<int>(h.valid_accel[i]));
         packet_loss_count.push_back(static_cast<int>(h.packet_loss_count[i]));
@@ -362,6 +364,7 @@ json imuHealthJson(const excavator_api::ImuHealth& h, std::uint64_t steady_now_n
     return json{
         {"online", online},
         {"valid_attitude", valid_attitude},
+        {"valid_quaternion", valid_quaternion},
         {"valid_gyro", valid_gyro},
         {"valid_accel", valid_accel},
         {"packet_loss_count", packet_loss_count},
@@ -383,6 +386,7 @@ json imuDebugJson(const excavator_api::ImuDebug& d, std::uint64_t steady_now_ns)
             {"device_addr", static_cast<int>(src.device_addr)},
             {"online", static_cast<int>(src.online)},
             {"valid_attitude", static_cast<int>(src.valid_attitude)},
+            {"valid_quaternion", static_cast<int>(src.valid_quaternion)},
             {"valid_gyro", static_cast<int>(src.valid_gyro)},
             {"valid_accel", static_cast<int>(src.valid_accel)},
             {"packet_loss_count", static_cast<int>(src.packet_loss_count)},
@@ -390,6 +394,7 @@ json imuDebugJson(const excavator_api::ImuDebug& d, std::uint64_t steady_now_ns)
             {"host_rx_time_ns", src.host_rx_time_ns},
             {"host_rx_age_ms", host_rx_age_ms},
             {"rpy_rad", doubleArrayJson(src.rpy_rad)},
+            {"rpy_raw_deg", doubleArrayJson(src.rpy_raw_deg)},
             {"gyro_dps", doubleArrayJson(src.gyro_dps)},
             {"accel_mps2", doubleArrayJson(src.accel_mps2)},
             {"quaternion_wxyz", doubleArrayJson(src.quaternion_wxyz)},
@@ -399,7 +404,7 @@ json imuDebugJson(const excavator_api::ImuDebug& d, std::uint64_t steady_now_ns)
         {"devices", devices},
         {"joint_velocity_mapping",
          json{
-             {"swing", json{{"device_index", 3}, {"gyro_axis", "z"}}},
+             {"swing", json{{"device_index", 3}, {"gyro_axis", "-z"}}},
              {"boom", json{{"device_index", 2}, {"gyro_axis", "y"}}},
              {"stick", json{{"device_index", 1}, {"gyro_axis", "y-minus-imu3-y"}}},
              {"bucket", json{{"device_index", 0}, {"gyro_axis", "y-minus-imu2-y"}}},

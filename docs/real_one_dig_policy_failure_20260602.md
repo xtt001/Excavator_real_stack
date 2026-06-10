@@ -58,6 +58,16 @@ image timestamp positive diff p50: 66.6ms
 
 也就是说，控制 pump 可以 50Hz 重复发送最后一次动作，但 ACT 新推理动作不是 50Hz。原因是当前 Jetson 上单次 ACT 推理接近 50ms，已经超过 20ms 的 50Hz 周期。
 
+更简单说：
+
+训练时模型以为：
+第 1 个动作、20ms 后第 2 个动作、40ms 后第 3 个动作...
+
+部署时实际变成：
+第 1 个动作、60ms 后第 2 个动作、120ms 后第 3 个动作...
+
+这样 ACT 的时序会错，动作可能变慢、滞后、幅度被 temporal aggregation 平滑掉，尤其对挖斗这种需要连续时序的动作影响明显。
+
 因此当前状态不是“ACT 实时看到 50Hz FPV”，也不是稳定 20Hz，而是新动作约 16-17Hz。底层 50Hz hold last action 只能维持 CAN/液压命令连续，不能改变 ACT 的时间语义。
 
 如果训练数据统一到 50Hz，部署侧也需要让 policy 新动作接近 50Hz；否则 ACT chunk 的时间尺度和训练语义仍会错。50Hz 短期不现实，因为端到端每步必须小于 20ms，而当前单次推理 p50 已接近 50ms。实现 50Hz 需要组合优化：
@@ -71,12 +81,39 @@ image timestamp positive diff p50: 66.6ms
 
 现有 9 条数据仍可用于 smoke/overfit 验证和对比实验，但不足以训练可泛化的视觉策略。若改 20Hz，不需要丢弃原始数据；应从原始 HDF5 重新构建 20Hz 窗口数据，并补录更多轨迹。
 
+## 当前决策
+
+当前不修改录制频率代码，继续按现场流程采集高频原始数据：
+
+- HDF5 仍按 `record_hz=50` 保存 step、qpos/qvel、action、诊断和 FPV JPEG。
+- control pump 仍以 50Hz 维持底层控制 heartbeat 和最新 safe action 下发。
+- FPV 是否可用于训练由真实 `image_timestamp_ns_fpv`、`fpv_age_ms`、JPEG 解码和 QC 判断，不用 `record_hz` 代替相机真实帧率。
+
+训练侧不直接把 50Hz HDF5 当成 50Hz policy 语义使用。录制完成后，从原始 HDF5 离线重建 20Hz 训练数据：
+
+- 按真实时间戳或 `image_timestamp_ns_fpv` 选取 20Hz 样本。
+- 对重复 FPV timestamp 去重，避免把同一张图当成多个新视觉观测。
+- 保留并检查 action/sample/send/joint/image 时间戳，确认 action label 和 observation 没有系统性错位。
+- 20Hz 下若希望 ACT 预测约 0.5s，`chunk_size` 用 10-12；若希望预测约 1.0s，`chunk_size` 用 20。
+
+部署侧先按 20Hz policy 更新语义实现，底层仍 50Hz：
+
+- policy worker 目标更新频率先设为 20Hz。
+- 优先在新 FPV timestamp 到达时推理；没有新图时不重复做完整视觉前向。
+- control pump 50Hz 发送最新 safe action 或 ACT chunk 中后续 action。
+- 记录并限制 `policy_action_age_ms`；若 action age 或 FPV age 超过阈值，guard 归零或平滑归零。
+
+25Hz 可作为下一档目标，但需要先把端到端 policy 推理 P95 降到 40ms 以下。当前 p95 约 58ms，只适合先做 20Hz 方案和推理优化。
+
 ## 下一步
 
-1. 增加训练数据。9 条轨迹太少，建议先补到至少几十条，覆盖 go-home 后起始状态、不同沙堆形态、bucket 高低、光照变化和轻微相机视角变化。
-2. 加 FPV 数据增强：brightness/contrast/color jitter、crop/shift、轻微旋转、resize jitter、JPEG quality jitter。
-3. 用现场 live FPV 做 held-out eval。不能只看训练 HDF5 offline eval。
-4. 统一训练和部署时间语义。短期建议先做 20Hz 训练/部署；50Hz 作为后续推理优化目标。
-5. 若走 20Hz：重建 20Hz 窗口数据、调整 `chunk_size` 到约 10-12、部署端限制 policy 新动作到 20Hz，pump 仍 50Hz。
-6. 若走 50Hz：先做推理加速实验，目标是把 ACT 单步推理从约 50ms 降到 20ms 以下，再训练 50Hz 模型。
-7. 暂不把液压死区补偿作为根因修复；它只能作为后续部署保护，不能替代视觉泛化和频率问题修复。
+1. 继续按 50Hz 原始 HDF5 流程补录数据。录制频率代码暂不改，录后用 QC 检查 `camera_unique_fps >= 20`、`image_gap > 100ms`、`fpv_age_ms`、JPEG 解码和 receiver health。
+2. 实现 20Hz 训练数据重建脚本或配置，从原始 HDF5 按真实时间戳抽样，输出 20Hz policy dataset。
+3. 用 20Hz dataset 训练新 ACT：先用 `chunk_size=20` 做约 1s horizon；如动作过慢或过平滑，再对比 `chunk_size=10-12`。
+4. 部署端实现 20Hz policy worker + 50Hz control pump：新增 `policy_update_hz`、`policy_action_age_ms`、`policy_inference_latency_ms`、`policy_update_hz`、`control_send_hz` 和 `camera_update_hz` 诊断。
+5. 加 FPV 数据增强：brightness/contrast/color jitter、crop/shift、轻微旋转、resize jitter、JPEG quality jitter。
+6. 用现场 live FPV 做 held-out eval。不能只看训练 HDF5 offline eval。
+7. 并行做推理 profiling 和加速：拆分统计 read_state、JPEG decode、preprocess、GPU copy、model forward、postprocess、logging；先尝试降低输入分辨率、`torch.inference_mode()`、warmup，再评估 FP16/TensorRT 和更小 backbone。
+8. 25Hz 作为后续目标：只有当端到端 policy 推理 P95 小于 40ms，才切到 25Hz dataset 和 `chunk_size=25`。
+9. 若走 50Hz：先把 ACT 单步端到端推理 P95 降到 20ms 以下，再训练 50Hz 模型。
+10. 暂不把液压死区补偿作为根因修复；它只能作为后续部署保护，不能替代视觉泛化和频率问题修复。

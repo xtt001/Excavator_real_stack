@@ -52,6 +52,7 @@ struct ExcavatorImuHardwareState {
         std::uint8_t device_addr{0};
         std::uint8_t online{0};
         std::uint8_t valid_attitude{0};
+        std::uint8_t valid_quaternion{0};
         std::uint8_t valid_gyro{0};
         std::uint8_t valid_accel{0};
         std::uint8_t reserved0{0};
@@ -59,6 +60,7 @@ struct ExcavatorImuHardwareState {
         std::uint32_t imu_timestamp_ms{0};
         std::uint64_t host_rx_time_ns{0};
         Eigen::Vector3f rpy_rad{Eigen::Vector3f::Zero()};
+        Eigen::Vector3f rpy_raw_deg{Eigen::Vector3f::Zero()};
         Eigen::Vector3f gyro_dps{Eigen::Vector3f::Zero()};
         Eigen::Vector3f accel_mps2{Eigen::Vector3f::Zero()};
         Eigen::Quaternionf quaternion{1.0F, 0.0F, 0.0F, 0.0F};

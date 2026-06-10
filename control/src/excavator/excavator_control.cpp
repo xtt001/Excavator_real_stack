@@ -46,7 +46,9 @@ double scalar_to_motor_rpm(double n) {
 }
 
 double scalar_to_motor_rpm_by_joint(int joint_idx, double n) {
-    const double scalar = (joint_idx == 2) ? (-n) : n;
+    // Field response: semantic positive swing and stick velocity need negative
+    // raw motor scalar to make qpos increase.
+    const double scalar = (joint_idx == 0 || joint_idx == 2) ? (-n) : n;
     return scalar_to_motor_rpm(scalar);
 }
 

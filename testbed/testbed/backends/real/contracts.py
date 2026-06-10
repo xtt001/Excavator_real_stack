@@ -17,7 +17,9 @@ import numpy as np
 REAL_ACTION_DIM = 4
 EXCAVATOR_API_AXIS_COUNT = 8
 REAL_ACTION_ORDER = ("swing", "boom", "stick", "bucket")
+REAL_SWING_AXIS = REAL_ACTION_ORDER.index("swing")
 STATUS_TOGGLE_BIT_COUNT = 11
+_TWO_PI = float(2.0 * np.pi)
 
 
 def apply_status_toggle_mask_to_status11(
@@ -194,6 +196,50 @@ def as_real_vector4(value: np.ndarray | Sequence[float], *, name: str) -> np.nda
     if not np.all(np.isfinite(arr)):
         raise ValueError(f"{name} contains NaN or Inf")
     return arr.astype(np.float32, copy=True)
+
+
+def shortest_angle_error_rad(target: float, current: float) -> float:
+    """Return target-current on the shortest angular branch in [-pi, pi)."""
+
+    return float(np.remainder(float(target) - float(current) + np.pi, _TWO_PI) - np.pi)
+
+
+def align_angle_to_reference_rad(value: float, reference: float) -> float:
+    """Shift value by an integer 2*pi so it is nearest to reference."""
+
+    return float(value) + round((float(reference) - float(value)) / _TWO_PI) * _TWO_PI
+
+
+def real_qpos_error_rad(
+    target: np.ndarray | Sequence[float],
+    current: np.ndarray | Sequence[float],
+) -> np.ndarray:
+    """Return real qpos target-current, with swing using shortest-angle error."""
+
+    target_arr = as_real_vector4(target, name="target_qpos")
+    current_arr = as_real_vector4(current, name="current_qpos")
+    error = target_arr - current_arr
+    error[REAL_SWING_AXIS] = shortest_angle_error_rad(
+        float(target_arr[REAL_SWING_AXIS]),
+        float(current_arr[REAL_SWING_AXIS]),
+    )
+    return error.astype(np.float32, copy=False)
+
+
+def align_real_qpos_to_reference_branch(
+    qpos: np.ndarray | Sequence[float],
+    reference: np.ndarray | Sequence[float],
+) -> np.ndarray:
+    """Align qpos swing branch to reference before filtering or differencing."""
+
+    qpos_arr = as_real_vector4(qpos, name="qpos")
+    ref_arr = as_real_vector4(reference, name="reference_qpos")
+    aligned = qpos_arr.astype(np.float32, copy=True)
+    aligned[REAL_SWING_AXIS] = align_angle_to_reference_rad(
+        float(aligned[REAL_SWING_AXIS]),
+        float(ref_arr[REAL_SWING_AXIS]),
+    )
+    return aligned
 
 
 def action4_to_speed_scalar8(

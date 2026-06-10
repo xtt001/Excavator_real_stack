@@ -95,10 +95,13 @@ void builtin_imu_apply_can_payload_to_partials(std::uint16_t can_id,
 
     pf.last_rx_ns = now_ns();
     switch (cmd) {
-        case 0x00:  // 欧拉角（总线 0.01° → 解析后统一弧度）
-            pf.roll_rad = euler_deg_to_rad_pm_pi(static_cast<float>(get_i16_le(payload, 0)) * 0.01F);
-            pf.pitch_rad = euler_deg_to_rad_pm_pi(static_cast<float>(get_i16_le(payload, 2)) * 0.01F);
-            pf.yaw_rad = euler_deg_to_rad_pm_pi(static_cast<float>(get_i16_le(payload, 4)) * 0.01F);
+        case 0x00:  // 欧拉角：roll/pitch 为有符号 0.01°，yaw 为无符号 0.01°。
+            pf.roll_raw_deg = static_cast<float>(get_i16_le(payload, 0)) * 0.01F;
+            pf.pitch_raw_deg = static_cast<float>(get_i16_le(payload, 2)) * 0.01F;
+            pf.yaw_raw_deg = static_cast<float>(get_u16_le(payload, 4)) * 0.01F;
+            pf.roll_rad = euler_deg_to_rad_pm_pi(pf.roll_raw_deg);
+            pf.pitch_rad = euler_deg_to_rad_pm_pi(pf.pitch_raw_deg);
+            pf.yaw_rad = euler_deg_to_rad_pm_pi(pf.yaw_raw_deg);
             pf.has_euler = true;
             break;
         case 0x01:  // 角速率
@@ -319,12 +322,14 @@ struct ImuCanLib::Impl {
             d.device_addr = static_cast<std::uint8_t>(i + 1U);
             d.online = 1U;
             d.valid_attitude = 1U;
+            d.valid_quaternion = 1U;
             d.valid_gyro = 1U;
             d.valid_accel = 1U;
             d.packet_loss_count = 0;
             d.imu_timestamp_ms = tms;
             d.host_rx_time_ns = tns;
             d.rpy_rad.setZero();
+            d.rpy_raw_deg.setZero();
             d.gyro_dps.setZero();
             d.accel_mps2.setZero();
             d.quaternion = Eigen::Quaternionf(1.0F, 0.0F, 0.0F, 0.0F);
@@ -363,6 +368,7 @@ struct ImuCanLib::Impl {
                              ? 1U
                              : 0U;
             dst.valid_attitude = ((pf.valid_flags & 0x01U) != 0U) ? 1U : 0U;
+            dst.valid_quaternion = (pf.has_quat_1 && pf.has_quat_2) ? 1U : 0U;
             dst.valid_gyro = ((pf.valid_flags & 0x02U) != 0U) ? 1U : 0U;
             dst.valid_accel = ((pf.valid_flags & 0x04U) != 0U) ? 1U : 0U;
             dst.imu_timestamp_ms = pf.timestamp_ms;
@@ -371,6 +377,9 @@ struct ImuCanLib::Impl {
                 dst.rpy_rad(0) = pf.roll_rad;
                 dst.rpy_rad(1) = pf.pitch_rad;
                 dst.rpy_rad(2) = pf.yaw_rad;
+                dst.rpy_raw_deg(0) = pf.roll_raw_deg;
+                dst.rpy_raw_deg(1) = pf.pitch_raw_deg;
+                dst.rpy_raw_deg(2) = pf.yaw_raw_deg;
             }
             if (pf.has_gyro) {
                 dst.gyro_dps(0) = pf.gyro_x_dps;

@@ -61,6 +61,7 @@ from testbed.backends.real.bridge_protocol import (
 from testbed.backends.real.contracts import (
     STATUS_TOGGLE_BIT_COUNT,
     apply_status_toggle_mask_to_status11,
+    real_qpos_error_rad,
 )
 from testbed.backends.real.excavator_api import SERVO_MAGIC, SERVO_PACKET_STRUCT
 from testbed.backends.real.ros_can import RosCanLowLevelController, RosCanStateReader
@@ -124,6 +125,16 @@ def _wait_until_remote_seq_stored(
 
 
 class RealworldV1Tests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._bucket_offset_patch = patch.dict(
+            os.environ,
+            {"EXCAVATOR_BUCKET_QUATERNION_OFFSET_RAD": "0.0"},
+        )
+        self._bucket_offset_patch.start()
+
+    def tearDown(self) -> None:
+        self._bucket_offset_patch.stop()
+
     def test_remote_action_protocol_round_trip(self) -> None:
         frame = encode_remote_action_update(
             seq=7,
@@ -597,6 +608,349 @@ class RealworldV1Tests(unittest.TestCase):
                     "qvel": np.zeros(4, dtype=np.float32),
                 }
             )
+
+    def test_go_home_controller_uses_shortest_swing_home_error(self) -> None:
+        home_swing = np.deg2rad(216.46)
+        wrapped_feedback = home_swing - 2.0 * np.pi + 0.002
+        cfg = GoHomeConfig.from_mapping(
+            {
+                "enabled": True,
+                "home_pose_rad": [home_swing, 0.0, 0.0, 0.0],
+                "near_tolerance_rad": [0.05, 0.05, 0.05, 0.05],
+                "success_tolerance_rad": [0.01, 0.01, 0.01, 0.01],
+                "center_tolerance_rad": [0.005, 0.005, 0.005, 0.005],
+                "p_gain": [1.0, 1.0, 1.0, 1.0],
+                "max_action": [0.2, 0.2, 0.2, 0.2],
+                "qvel_stable_rad_s": [0.02, 0.02, 0.02, 0.02],
+                "dwell_s": 0.0,
+                "timeout_s": 1.0,
+            }
+        )
+        assert cfg is not None
+        controller = GoHomeController(cfg)
+        obs = {
+            "qpos": np.array([wrapped_feedback, 0.0, 0.0, 0.0], dtype=np.float32),
+            "qvel": np.zeros(4, dtype=np.float32),
+        }
+
+        controller.start(obs)
+        result = controller.update(obs)
+
+        self.assertTrue(result.done)
+        self.assertLess(abs(result.diagnostics["go_home_error"][0]), 0.003)
+        self.assertLess(abs(controller.metadata()["go_home_final_error"][0]), 0.003)
+        self.assertGreater(abs(home_swing - wrapped_feedback), 6.0)
+
+    def test_go_home_controller_rejects_policy_raw_qpos_divergence_on_start(
+        self,
+    ) -> None:
+        cfg = GoHomeConfig.from_mapping(
+            {
+                "enabled": True,
+                "home_pose_rad": [0.0, 0.0, 0.0, 0.0],
+                "near_tolerance_rad": [999.0, 999.0, 999.0, 999.0],
+                "success_tolerance_rad": [0.05, 0.05, 0.05, 0.05],
+                "max_policy_raw_qpos_delta_rad": [0.08, 0.08, 0.08, 0.08],
+            }
+        )
+        assert cfg is not None
+        controller = GoHomeController(cfg)
+
+        with self.assertRaisesRegex(ValueError, "feedback_inconsistent"):
+            controller.start(
+                {
+                    "qpos": np.zeros(4, dtype=np.float32),
+                    "qpos_raw_imu": np.array([0.0, 0.0, 0.0, 0.40], dtype=np.float32),
+                    "qvel": np.zeros(4, dtype=np.float32),
+                }
+            )
+
+    def test_go_home_controller_uses_bucket_quaternion_for_raw_feedback(
+        self,
+    ) -> None:
+        bucket_rad = float(np.deg2rad(59.40))
+
+        def pitch_quat_wxyz(pitch_deg: float) -> list[float]:
+            half = float(np.deg2rad(pitch_deg)) * 0.5
+            return [float(np.cos(half)), 0.0, float(np.sin(half)), 0.0]
+
+        cfg = GoHomeConfig.from_mapping(
+            {
+                "enabled": True,
+                "home_pose_rad": [0.0, 0.0, 0.0, bucket_rad],
+                "near_tolerance_rad": [999.0, 999.0, 999.0, 999.0],
+                "success_tolerance_rad": [0.05, 0.05, 0.05, 0.05],
+                "max_policy_raw_qpos_delta_rad": [999.0, 999.0, 999.0, 0.08],
+            }
+        )
+        assert cfg is not None
+        controller = GoHomeController(cfg)
+        obs = {
+            "qpos": np.array([0.0, 0.0, 0.0, bucket_rad], dtype=np.float32),
+            "qvel": np.zeros(4, dtype=np.float32),
+            "imu_debug": {
+                "devices": [
+                    {
+                        "online": 1,
+                        "valid_attitude": 1,
+                        "valid_quaternion": 1,
+                        "rpy_raw_deg": [0.0, -56.47, 0.0],
+                        "quaternion_wxyz": pitch_quat_wxyz(25.26),
+                    },
+                    {
+                        "online": 1,
+                        "valid_attitude": 1,
+                        "valid_quaternion": 1,
+                        "rpy_raw_deg": [0.0, -34.14, 0.0],
+                        "quaternion_wxyz": pitch_quat_wxyz(-34.14),
+                    },
+                    {"online": 1, "valid_attitude": 1, "rpy_raw_deg": [0.0, 0.0, 0.0]},
+                    {"online": 1, "valid_attitude": 1, "rpy_raw_deg": [0.0, 0.0, 0.0]},
+                ],
+            },
+        }
+
+        controller.start(obs)
+        result = controller.update(obs)
+
+        self.assertEqual(result.diagnostics["go_home_feedback_consistent"], 1)
+        self.assertAlmostEqual(
+            float(result.diagnostics["go_home_raw_imu_qpos"][3]),
+            bucket_rad,
+            places=5,
+        )
+
+    def test_go_home_controller_applies_bucket_quaternion_policy_offset(
+        self,
+    ) -> None:
+        legacy_offset = -0.4060066694119653
+
+        def pitch_quat_wxyz(pitch_deg: float) -> list[float]:
+            half = float(np.deg2rad(pitch_deg)) * 0.5
+            return [float(np.cos(half)), 0.0, float(np.sin(half)), 0.0]
+
+        obs = {
+            "qpos": np.array([0.0, 0.0, 0.0, legacy_offset], dtype=np.float32),
+            "qvel": np.zeros(4, dtype=np.float32),
+            "imu_debug": {
+                "devices": [
+                    {
+                        "online": 1,
+                        "valid_attitude": 1,
+                        "valid_quaternion": 1,
+                        "rpy_raw_deg": [0.0, 0.0, 0.0],
+                        "quaternion_wxyz": pitch_quat_wxyz(0.0),
+                    },
+                    {
+                        "online": 1,
+                        "valid_attitude": 1,
+                        "valid_quaternion": 1,
+                        "rpy_raw_deg": [0.0, 0.0, 0.0],
+                        "quaternion_wxyz": pitch_quat_wxyz(0.0),
+                    },
+                    {"online": 1, "valid_attitude": 1, "rpy_raw_deg": [0.0, 0.0, 0.0]},
+                    {"online": 1, "valid_attitude": 1, "rpy_raw_deg": [0.0, 0.0, 0.0]},
+                ],
+            },
+        }
+        cfg = GoHomeConfig.from_mapping(
+            {
+                "enabled": True,
+                "home_pose_rad": [0.0, 0.0, 0.0, legacy_offset],
+                "near_tolerance_rad": [999.0, 999.0, 999.0, 999.0],
+                "success_tolerance_rad": [0.05, 0.05, 0.05, 0.05],
+                "max_policy_raw_qpos_delta_rad": [0.08, 0.08, 0.08, 0.08],
+            }
+        )
+        assert cfg is not None
+        with patch.dict(
+            os.environ,
+            {"EXCAVATOR_BUCKET_QUATERNION_OFFSET_RAD": str(legacy_offset)},
+        ):
+            controller = GoHomeController(cfg)
+            controller.start(obs)
+            result = controller.update(obs)
+
+        self.assertEqual(result.diagnostics["go_home_feedback_consistent"], 1)
+        self.assertAlmostEqual(
+            float(result.diagnostics["go_home_raw_imu_qpos"][3]),
+            legacy_offset,
+            places=5,
+        )
+
+    def test_go_home_controller_limits_bucket_quaternion_branch_jump(
+        self,
+    ) -> None:
+        def pitch_quat_wxyz(pitch_deg: float) -> list[float]:
+            half = float(np.deg2rad(pitch_deg)) * 0.5
+            return [float(np.cos(half)), 0.0, float(np.sin(half)), 0.0]
+
+        def obs_for_bucket(bucket_deg: float) -> dict[str, object]:
+            return {
+                "qpos": np.zeros(4, dtype=np.float32),
+                "qvel": np.zeros(4, dtype=np.float32),
+                "imu_debug": {
+                    "devices": [
+                        {
+                            "online": 1,
+                            "valid_attitude": 1,
+                            "valid_quaternion": 1,
+                            "rpy_raw_deg": [0.0, bucket_deg, 0.0],
+                            "quaternion_wxyz": pitch_quat_wxyz(bucket_deg),
+                        },
+                        {
+                            "online": 1,
+                            "valid_attitude": 1,
+                            "valid_quaternion": 1,
+                            "rpy_raw_deg": [0.0, 0.0, 0.0],
+                            "quaternion_wxyz": pitch_quat_wxyz(0.0),
+                        },
+                        {"online": 1, "valid_attitude": 1, "rpy_raw_deg": [0.0, 0.0, 0.0]},
+                        {"online": 1, "valid_attitude": 1, "rpy_raw_deg": [0.0, 0.0, 0.0]},
+                    ],
+                },
+            }
+
+        cfg = GoHomeConfig.from_mapping(
+            {
+                "enabled": True,
+                "home_pose_rad": [0.0, 0.0, 0.0, 0.0],
+                "near_tolerance_rad": [999.0, 999.0, 999.0, 999.0],
+                "success_tolerance_rad": [0.05, 0.05, 0.05, 0.05],
+                "max_policy_raw_qpos_delta_rad": [0.08, 0.08, 0.08, 0.08],
+                "qvel_stable_rad_s": [0.02, 0.02, 0.02, 0.02],
+                "dwell_s": 0.0,
+            }
+        )
+        assert cfg is not None
+        controller = GoHomeController(cfg)
+
+        controller.start(obs_for_bucket(0.0))
+        result = controller.update(obs_for_bucket(120.0), now_s=controller._start_s)
+
+        self.assertEqual(result.diagnostics["go_home_feedback_consistent"], 1)
+        self.assertAlmostEqual(
+            float(result.diagnostics["go_home_raw_imu_qpos"][3]),
+            float(np.deg2rad(2.5)),
+            places=5,
+        )
+        self.assertAlmostEqual(
+            float(result.diagnostics["go_home_policy_raw_delta"][3]),
+            -float(np.deg2rad(2.5)),
+            places=5,
+        )
+
+    def test_go_home_controller_allows_imu_debug_bucket_raw_branch_for_done(
+        self,
+    ) -> None:
+        def pitch_quat_wxyz(pitch_deg: float) -> list[float]:
+            half = float(np.deg2rad(pitch_deg)) * 0.5
+            return [float(np.cos(half)), 0.0, float(np.sin(half)), 0.0]
+
+        obs = {
+            "qpos": np.zeros(4, dtype=np.float32),
+            "qvel": np.zeros(4, dtype=np.float32),
+            "imu_debug": {
+                "devices": [
+                    {
+                        "online": 1,
+                        "valid_attitude": 1,
+                        "valid_quaternion": 1,
+                        "rpy_raw_deg": [0.0, 23.0, 0.0],
+                        "quaternion_wxyz": pitch_quat_wxyz(23.0),
+                    },
+                    {
+                        "online": 1,
+                        "valid_attitude": 1,
+                        "valid_quaternion": 1,
+                        "rpy_raw_deg": [0.0, 0.0, 0.0],
+                        "quaternion_wxyz": pitch_quat_wxyz(0.0),
+                    },
+                    {"online": 1, "valid_attitude": 1, "rpy_raw_deg": [0.0, 0.0, 0.0]},
+                    {"online": 1, "valid_attitude": 1, "rpy_raw_deg": [0.0, 0.0, 0.0]},
+                ],
+            },
+        }
+        cfg = GoHomeConfig.from_mapping(
+            {
+                "enabled": True,
+                "home_pose_rad": [0.0, 0.0, 0.0, 0.0],
+                "near_tolerance_rad": [999.0, 999.0, 999.0, 999.0],
+                "success_tolerance_rad": [0.05, 0.05, 0.05, 0.05],
+                "center_tolerance_rad": [0.02, 0.02, 0.02, 0.02],
+                "max_policy_raw_qpos_delta_rad": [0.08, 0.08, 0.08, 0.08],
+                "qvel_stable_rad_s": [0.02, 0.02, 0.02, 0.02],
+                "dwell_s": 0.0,
+            }
+        )
+        assert cfg is not None
+        controller = GoHomeController(cfg)
+
+        controller.start(obs)
+        result = controller.update(obs, now_s=controller._start_s)
+
+        self.assertTrue(result.done)
+        self.assertEqual(result.diagnostics["go_home_feedback_consistent"], 1)
+        self.assertAlmostEqual(
+            float(result.diagnostics["go_home_policy_raw_delta"][3]),
+            -float(np.deg2rad(23.0)),
+            places=5,
+        )
+
+    def test_go_home_controller_does_not_finish_when_policy_raw_qpos_diverges(
+        self,
+    ) -> None:
+        cfg = GoHomeConfig.from_mapping(
+            {
+                "enabled": True,
+                "home_pose_rad": [0.0, 0.0, 0.0, 0.0],
+                "near_tolerance_rad": [999.0, 999.0, 999.0, 999.0],
+                "success_tolerance_rad": [0.05, 0.05, 0.05, 0.05],
+                "center_tolerance_rad": [0.02, 0.02, 0.02, 0.02],
+                "max_policy_raw_qpos_delta_rad": [0.08, 0.08, 0.08, 0.08],
+                "qvel_stable_rad_s": [0.02, 0.02, 0.02, 0.02],
+                "dwell_s": 0.0,
+                "timeout_s": 1.0,
+            }
+        )
+        assert cfg is not None
+        controller = GoHomeController(cfg)
+        controller.start(
+            {
+                "qpos": np.array([0.20, 0.0, 0.0, 0.0], dtype=np.float32),
+                "qpos_raw_imu": np.array([0.20, 0.0, 0.0, 0.0], dtype=np.float32),
+                "qvel": np.zeros(4, dtype=np.float32),
+            }
+        )
+
+        result = controller.update(
+            {
+                "qpos": np.zeros(4, dtype=np.float32),
+                "qpos_raw_imu": np.array([0.0, 0.0, 0.0, 0.40], dtype=np.float32),
+                "qvel": np.zeros(4, dtype=np.float32),
+            },
+            now_s=controller._start_s,
+        )
+
+        self.assertFalse(result.done)
+        self.assertEqual(result.diagnostics["go_home_feedback_consistent"], 0)
+        self.assertEqual(result.diagnostics["go_home_acceptable_position"], 0)
+        np.testing.assert_allclose(
+            result.diagnostics["go_home_policy_raw_delta"],
+            [0.0, 0.0, 0.0, -0.40],
+            atol=1e-6,
+        )
+
+    def test_real_qpos_error_wraps_only_swing_axis(self) -> None:
+        home = np.array([np.deg2rad(216.46), 0.20, -0.30, 0.40], dtype=np.float32)
+        current = np.array(
+            [home[0] - 2.0 * np.pi + 0.01, -0.10, 0.10, -0.20],
+            dtype=np.float32,
+        )
+
+        err = real_qpos_error_rad(home, current)
+
+        np.testing.assert_allclose(err, [-0.01, 0.30, -0.40, 0.60], atol=1e-6)
 
     def test_go_home_controller_times_out(self) -> None:
         cfg = GoHomeConfig.from_mapping(
@@ -2828,6 +3182,15 @@ class RealworldV1Tests(unittest.TestCase):
                     "host_rx_age_ms": [10.0, 11.0, 10.5, 9.5],
                 },
                 "snapshot_age_ms": 15.0,
+                "qpos_raw_imu": np.array([0.1, 0.2, 0.3, 0.4], dtype=np.float32),
+                "imu_debug": {
+                    "devices": [
+                        {"online": 1, "valid_attitude": 1, "rpy_raw_deg": [0.0, 1.0, 2.0]},
+                        {"online": 1, "valid_attitude": 1, "rpy_raw_deg": [0.0, 3.0, 4.0]},
+                        {"online": 1, "valid_attitude": 1, "rpy_raw_deg": [0.0, 5.0, 6.0]},
+                        {"online": 1, "valid_attitude": 1, "rpy_raw_deg": [0.0, 7.0, 8.0]},
+                    ],
+                },
             },
             source="joint",
         )
@@ -2849,6 +3212,8 @@ class RealworldV1Tests(unittest.TestCase):
         self.assertEqual(sensor_health["imu"]["online"], [1, 0, 1, 1])
         self.assertEqual(sensor_health["imu"]["packet_loss_count"], [0, 2, 0, 0])
         self.assertAlmostEqual(sensor_health["bridge_snapshot_age_ms"], 15.0)
+        self.assertIn("imu_debug", result.observation)
+        np.testing.assert_allclose(result.observation["qpos_raw_imu"], [0.1, 0.2, 0.3, 0.4])
 
     def test_timestamped_buffer_selects_nearest_sample(self) -> None:
         buffer = TimestampedBuffer(maxlen=4)
@@ -2961,6 +3326,22 @@ class RealworldV1Tests(unittest.TestCase):
             self.assertFalse(result["ok"])
             self.assertIn("fpv_black_frames", result["errors"])
             self.assertTrue((Path(tmpdir) / "qc" / "episode_0.json").exists())
+
+    @unittest.skipUnless(HAS_H5PY, "h5py is required for phase label tests")
+    def test_phase_labeler_uses_shortest_swing_home_error(self) -> None:
+        from testbed.data.phase_labeler import PhaseLabelConfig, _home_distance, _near_home
+
+        home_swing = np.deg2rad(216.46)
+        cfg = PhaseLabelConfig.from_mapping(
+            {
+                "home_pose_rad": [home_swing, 0.0, 0.0, 0.0],
+                "near_home_tolerance_rad": [0.05, 0.05, 0.05, 0.05],
+            }
+        )
+        qpos = np.array([home_swing - 2.0 * np.pi + 0.01, 0.0, 0.0, 0.0])
+
+        self.assertTrue(_near_home(qpos, cfg))
+        self.assertLess(_home_distance(qpos, cfg), 0.02)
 
     @unittest.skipUnless(HAS_H5PY, "h5py is required for phase label tests")
     def test_phase_labeler_generates_monotonic_real_workflow_labels(self) -> None:

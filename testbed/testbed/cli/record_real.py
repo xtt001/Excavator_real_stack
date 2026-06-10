@@ -1114,7 +1114,9 @@ def main(prog: str = "tb-record-real") -> None:
                             action=safe_action,
                             reward=0.0,
                             step_id=int(obs.get("step_id", local_step)),
-                            step_ns=action_send_ns,
+                            step_ns=_record_step_timestamp_ns(
+                                obs, fallback=action_send_ns
+                            ),
                             action_src_type=action_info.source_type,
                             action_src_id=action_info.source_id,
                             diagnostics=step_diagnostics,
@@ -2400,6 +2402,10 @@ def _ensure_go_home_step_diagnostics(diagnostics: dict[str, Any]) -> None:
     diagnostics.setdefault("go_home_result_code", "")
     diagnostics.setdefault("go_home_error", np.zeros(4, dtype=np.float32))
     diagnostics.setdefault("go_home_raw_error", np.zeros(4, dtype=np.float32))
+    diagnostics.setdefault("go_home_policy_raw_delta", np.zeros(4, dtype=np.float32))
+    diagnostics.setdefault("go_home_feedback_consistent", 1)
+    diagnostics.setdefault("go_home_raw_imu_qpos", np.zeros(4, dtype=np.float32))
+    diagnostics.setdefault("go_home_has_raw_imu_qpos", 0)
     diagnostics.setdefault("go_home_qvel", np.zeros(4, dtype=np.float32))
     diagnostics.setdefault("go_home_raw_qvel", np.zeros(4, dtype=np.float32))
     diagnostics.setdefault("go_home_filtered_qpos", np.zeros(4, dtype=np.float32))
@@ -2507,6 +2513,14 @@ def _add_policy_remote_diagnostics(
 def _action_sample_timestamp_ns(action_info) -> int:
     extras = getattr(action_info, "extras", {}) or {}
     return _int_timestamp(extras.get("action_timestamp_ns"), default=time.time_ns())
+
+
+def _record_step_timestamp_ns(obs: dict[str, Any], *, fallback: int) -> int:
+    for key in ("timestamp_ns", "sync_timestamp_ns", "joint_timestamp_ns"):
+        timestamp_ns = _int_timestamp(obs.get(key))
+        if timestamp_ns > 0:
+            return timestamp_ns
+    return int(fallback)
 
 
 def _primary_image_timestamp_ns(image_timestamps: dict[str, Any]) -> int:

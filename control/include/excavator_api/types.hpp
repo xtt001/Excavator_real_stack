@@ -57,6 +57,7 @@ struct RefState {
 struct ImuHealth {
     std::array<std::uint8_t, kImuDeviceCount> online{};
     std::array<std::uint8_t, kImuDeviceCount> valid_attitude{};
+    std::array<std::uint8_t, kImuDeviceCount> valid_quaternion{};
     std::array<std::uint8_t, kImuDeviceCount> valid_gyro{};
     std::array<std::uint8_t, kImuDeviceCount> valid_accel{};
     std::array<std::uint16_t, kImuDeviceCount> packet_loss_count{};
@@ -67,12 +68,14 @@ struct ImuDebugSample {
     std::uint8_t device_addr{0};
     std::uint8_t online{0};
     std::uint8_t valid_attitude{0};
+    std::uint8_t valid_quaternion{0};
     std::uint8_t valid_gyro{0};
     std::uint8_t valid_accel{0};
     std::uint16_t packet_loss_count{0};
     std::uint32_t imu_timestamp_ms{0};
     std::uint64_t host_rx_time_ns{0};
     std::array<double, 3> rpy_rad{};
+    std::array<double, 3> rpy_raw_deg{};
     std::array<double, 3> gyro_dps{};
     std::array<double, 3> accel_mps2{};
     std::array<double, 4> quaternion_wxyz{1.0, 0.0, 0.0, 0.0};

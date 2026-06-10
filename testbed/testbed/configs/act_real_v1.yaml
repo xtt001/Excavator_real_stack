@@ -1,6 +1,6 @@
 # ACT offline training config for the real excavator V1 dataset.
-# Uses joint-sensor qpos and qvel only; hydraulic cylinder signals are not part
-# of the first-stage schema or training input.
+# Uses joint-sensor qpos only for now. Field IMU qvel is still recorded, but
+# current swing/bucket velocity consistency is not good enough for training.
 
 task:
   task_name: real_excavation_teleop_v1
@@ -19,7 +19,6 @@ policy:
   device: cuda
   low_dim_keys:
     - qpos
-    - qvel
   act_params:
     chunk_size: 100
     kl_weight: 10.0

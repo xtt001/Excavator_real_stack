@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import socket
 import statistics
 import sys
@@ -18,6 +19,21 @@ from typing import Any
 
 PROTOCOL_VERSION = 1
 AXES = ("swing", "boom", "stick", "bucket")
+BUCKET_QUATERNION_POLICY_OFFSET_ENV = "EXCAVATOR_BUCKET_QUATERNION_OFFSET_RAD"
+BUCKET_QUATERNION_POLICY_OFFSET_DEFAULT_RAD = -0.4060066694119653
+
+
+def bucket_quaternion_policy_offset_rad() -> float:
+    raw = os.environ.get(BUCKET_QUATERNION_POLICY_OFFSET_ENV)
+    if raw is None or raw == "":
+        return BUCKET_QUATERNION_POLICY_OFFSET_DEFAULT_RAD
+    try:
+        value = float(raw)
+    except ValueError:
+        return BUCKET_QUATERNION_POLICY_OFFSET_DEFAULT_RAD
+    if not math.isfinite(value):
+        return BUCKET_QUATERNION_POLICY_OFFSET_DEFAULT_RAD
+    return value
 
 
 class BridgeClient:
@@ -150,6 +166,14 @@ def finite_list(values: list[float] | None) -> bool:
     return values is not None and all(math.isfinite(v) for v in values)
 
 
+def safe_float(value: Any, default: float = -1.0) -> float:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return default
+    return out if math.isfinite(out) else default
+
+
 def angle_delta_rad(current: float, previous: float) -> float:
     delta = current - previous
     if abs(delta) <= math.pi:
@@ -187,11 +211,133 @@ def gyro_joint_qvel_rad_s(imu_debug: dict[str, Any] | None) -> list[float] | Non
         return None
     deg_to_rad = math.pi / 180.0
     return [
-        float(imu4_z) * deg_to_rad,
+        -float(imu4_z) * deg_to_rad,
         float(imu3_y) * deg_to_rad,
         (float(imu2_y) - float(imu3_y)) * deg_to_rad,
         (float(imu1_y) - float(imu2_y)) * deg_to_rad,
     ]
+
+
+def imu_joint_qpos_from_rpy_rad(imu_debug: dict[str, Any] | None) -> list[float] | None:
+    if not isinstance(imu_debug, dict):
+        return None
+    devices = imu_debug.get("devices")
+    if not isinstance(devices, list) or len(devices) < 4:
+        return None
+
+    def rpy_rad(device_index: int, axis_index: int) -> float | None:
+        device = devices[device_index]
+        if not isinstance(device, dict):
+            return None
+        rpy = to_float_list(device.get("rpy_rad"), 3)
+        if not finite_list(rpy):
+            return None
+        return rpy[axis_index]
+
+    imu1_y = rpy_rad(0, 1)
+    imu2_y = rpy_rad(1, 1)
+    imu3_y = rpy_rad(2, 1)
+    imu4_z = rpy_rad(3, 2)
+    if None in (imu1_y, imu2_y, imu3_y, imu4_z):
+        return None
+    return [
+        float(imu4_z),
+        float(imu3_y),
+        float(imu2_y) - float(imu3_y),
+        float(imu1_y) - float(imu2_y),
+    ]
+
+
+def quaternion_wxyz(device: dict[str, Any]) -> list[float] | None:
+    try:
+        if int(device.get("online", 1)) == 0 or int(device.get("valid_quaternion", 0)) == 0:
+            return None
+    except (TypeError, ValueError):
+        return None
+    quat = to_float_list(device.get("quaternion_wxyz"), 4)
+    if not finite_list(quat):
+        return None
+    norm = math.sqrt(sum(float(v) * float(v) for v in quat))
+    if not math.isfinite(norm) or norm <= 0.5 or norm >= 1.5:
+        return None
+    return [float(v) / norm for v in quat]
+
+
+def quaternion_multiply(lhs: list[float], rhs: list[float]) -> list[float]:
+    lw, lx, ly, lz = lhs
+    rw, rx, ry, rz = rhs
+    return [
+        lw * rw - lx * rx - ly * ry - lz * rz,
+        lw * rx + lx * rw + ly * rz - lz * ry,
+        lw * ry - lx * rz + ly * rw + lz * rx,
+        lw * rz + lx * ry - ly * rx + lz * rw,
+    ]
+
+
+def quaternion_conjugate(quat: list[float]) -> list[float]:
+    return [quat[0], -quat[1], -quat[2], -quat[3]]
+
+
+def bucket_qpos_from_quaternion_rad(devices: list[Any]) -> float | None:
+    if len(devices) < 2 or not isinstance(devices[0], dict) or not isinstance(devices[1], dict):
+        return None
+    imu1_q = quaternion_wxyz(devices[0])
+    imu2_q = quaternion_wxyz(devices[1])
+    if imu1_q is None or imu2_q is None:
+        return None
+    relative = quaternion_multiply(quaternion_conjugate(imu2_q), imu1_q)
+    return (
+        2.0 * math.atan2(relative[2], relative[0])
+        + bucket_quaternion_policy_offset_rad()
+        + math.pi
+    ) % (2.0 * math.pi) - math.pi
+
+
+def imu_joint_qpos_raw_deg(imu_debug: dict[str, Any] | None) -> list[float] | None:
+    if not isinstance(imu_debug, dict):
+        return None
+    devices = imu_debug.get("devices")
+    if not isinstance(devices, list) or len(devices) < 4:
+        return None
+
+    def rpy_raw_deg(device_index: int, axis_index: int) -> float | None:
+        device = devices[device_index]
+        if not isinstance(device, dict):
+            return None
+        rpy = to_float_list(device.get("rpy_raw_deg"), 3)
+        if not finite_list(rpy):
+            return None
+        return rpy[axis_index]
+
+    imu1_y = rpy_raw_deg(0, 1)
+    imu2_y = rpy_raw_deg(1, 1)
+    imu3_y = rpy_raw_deg(2, 1)
+    imu4_z = rpy_raw_deg(3, 2)
+    if None in (imu1_y, imu2_y, imu3_y, imu4_z):
+        return None
+    bucket_qpos_rad = bucket_qpos_from_quaternion_rad(devices)
+    if bucket_qpos_rad is None:
+        bucket_qpos_deg = float(imu1_y) - float(imu2_y)
+    else:
+        bucket_qpos_deg = bucket_qpos_rad * 180.0 / math.pi
+    return [
+        float(imu4_z),
+        float(imu3_y),
+        float(imu2_y) - float(imu3_y),
+        bucket_qpos_deg,
+    ]
+
+
+def qpos_delta_rad(current: list[float], reference: list[float] | None) -> list[float] | None:
+    if reference is None:
+        return None
+    return [angle_delta_rad(c, r) for c, r in zip(current, reference)]
+
+
+def vec_minus(current: list[float] | None, reference: list[float] | None) -> list[float] | None:
+    if current is None or reference is None:
+        return None
+    return [c - r for c, r in zip(current, reference)]
 
 
 def bits(values: Any) -> str:
@@ -214,10 +360,34 @@ def fmt_vec(values: list[float] | None, width: int = 6, precision: int = 3) -> s
     return "[" + " ".join(f"{v:{width}.{precision}f}" for v in values) + "]"
 
 
+def fmt_axis_header(width: int = 10, label_width: int = 22) -> str:
+    return "  " + f"{'axes':<{label_width}}" + "".join(f"{name:>{width}}" for name in AXES)
+
+
+def fmt_axis_row(
+    label: str,
+    values: list[float] | None,
+    *,
+    width: int = 10,
+    precision: int = 2,
+    label_width: int = 22,
+) -> str:
+    prefix = "  " + f"{label:<{label_width}}"
+    if values is None:
+        return prefix + "n/a"
+    return prefix + "".join(f"{v:{width}.{precision}f}" for v in values)
+
+
 def rad_to_deg(values: list[float] | None) -> list[float] | None:
     if values is None:
         return None
     return [v * 180.0 / math.pi for v in values]
+
+
+def deg_to_rad(values: list[float] | None) -> list[float] | None:
+    if values is None:
+        return None
+    return [v * math.pi / 180.0 for v in values]
 
 
 def mean_abs(columns: list[list[float | None]], axis: int) -> float | None:
@@ -351,17 +521,23 @@ def print_imu_debug(imu_debug: dict[str, Any] | None) -> None:
     if not isinstance(devices, list):
         print("  imu_debug.devices: unavailable", flush=True)
         return
+    print(
+        "  imu  addr on quat gyro    age_ms loss | gyro_dps[x y z]        rpy_deg[x y z]        raw_deg[x y z]",
+        flush=True,
+    )
     for index, device in enumerate(devices[:4]):
         if not isinstance(device, dict):
             continue
+        rpy_rad = to_float_list(device.get("rpy_rad"), 3)
         print(
-            "  "
-            f"imu{index} addr={device.get('device_addr')} "
-            f"online={device.get('online')} gyro_valid={device.get('valid_gyro')} "
-            f"age_ms={float(device.get('host_rx_age_ms', -1.0)):6.1f} "
-            f"loss={device.get('packet_loss_count')} "
-            f"gyro_dps={fmt_vec(to_float_list(device.get('gyro_dps'), 3))} "
-            f"rpy_rad={fmt_vec(to_float_list(device.get('rpy_rad'), 3))}",
+            f"  imu{index:<1} {str(device.get('device_addr')):>4} "
+            f"{str(device.get('online')):>2} {str(device.get('valid_quaternion')):>4} "
+            f"{str(device.get('valid_gyro')):>4} "
+            f"{safe_float(device.get('host_rx_age_ms')):9.1f} "
+            f"{str(device.get('packet_loss_count')):>4} | "
+            f"{fmt_vec(to_float_list(device.get('gyro_dps'), 3), width=7, precision=2)} "
+            f"{fmt_vec(rad_to_deg(rpy_rad), width=8, precision=2)} "
+            f"{fmt_vec(to_float_list(device.get('rpy_raw_deg'), 3), width=8, precision=2)}",
             flush=True,
         )
 
@@ -458,6 +634,11 @@ def main() -> int:
                     missing_imu_debug += 1
                     imu_debug = None
                 raw_imu_qvel = gyro_joint_qvel_rad_s(imu_debug)
+                qpos_folded_imu = imu_joint_qpos_from_rpy_rad(imu_debug)
+                qpos_raw_imu_deg = imu_joint_qpos_raw_deg(imu_debug)
+                qpos_raw_imu = deg_to_rad(qpos_raw_imu_deg)
+                qpos_policy_minus_raw_imu = qpos_delta_rad(qpos, qpos_raw_imu)
+                qpos_policy_minus_raw_imu_deg_direct = vec_minus(rad_to_deg(qpos), qpos_raw_imu_deg)
                 raw_minus_bridge = (
                     [a - b for a, b in zip(raw_imu_qvel, qvel_bridge)]
                     if raw_imu_qvel is not None
@@ -506,6 +687,13 @@ def main() -> int:
                     "dt_s": dt_s,
                     "qpos": qpos,
                     "qpos_deg": rad_to_deg(qpos),
+                    "qpos_raw_imu": qpos_raw_imu,
+                    "qpos_raw_imu_deg": qpos_raw_imu_deg,
+                    "qpos_folded_imu": qpos_folded_imu,
+                    "qpos_folded_imu_deg": rad_to_deg(qpos_folded_imu),
+                    "qpos_policy_minus_raw_imu": qpos_policy_minus_raw_imu,
+                    "qpos_policy_minus_raw_imu_deg": rad_to_deg(qpos_policy_minus_raw_imu),
+                    "qpos_policy_minus_raw_imu_deg_direct": qpos_policy_minus_raw_imu_deg_direct,
                     "qvel_bridge": qvel_bridge,
                     "qvel_qpos_diff": qvel_diff,
                     "qvel_residual_bridge_minus_qpos_diff": residual,
@@ -533,16 +721,99 @@ def main() -> int:
                     bad = "ok" if not bad_parts else ";".join(bad_parts)
                     health = imu_health if isinstance(imu_health, dict) else {}
                     print(
-                        f"[imu-qvel] t={elapsed_s:6.1f}s hz={actual_hz:5.1f} "
-                        f"qpos={fmt_vec(qpos)} "
-                        f"qpos_deg={fmt_vec(rad_to_deg(qpos), width=7, precision=2)} "
-                        f"qvel={fmt_vec(qvel_bridge)} "
-                        f"diff={fmt_vec(qvel_diff)} "
-                        f"resid={fmt_vec(residual)} "
-                        f"raw_imu={fmt_vec(raw_imu_qvel)} "
-                        f"bad={bad} "
-                        f"imu_online={bits(health.get('online'))} "
-                        f"gyro_valid={bits(health.get('valid_gyro'))}",
+                        f"[imu-qvel] t={elapsed_s:7.1f}s hz={actual_hz:5.1f} bad={bad} "
+                        f"imu={bits(health.get('online'))} gyro={bits(health.get('valid_gyro'))}",
+                        flush=True,
+                    )
+                    print(fmt_axis_header(width=10, label_width=22), flush=True)
+                    print(
+                        fmt_axis_row(
+                            "qpos raw_imu_deg",
+                            qpos_raw_imu_deg,
+                            width=10,
+                            precision=2,
+                            label_width=22,
+                        ),
+                        flush=True,
+                    )
+                    print(
+                        fmt_axis_row(
+                            "qpos policy_deg",
+                            rad_to_deg(qpos),
+                            width=10,
+                            precision=2,
+                            label_width=22,
+                        ),
+                        flush=True,
+                    )
+                    print(
+                        fmt_axis_row(
+                            "qpos policy_rad",
+                            qpos,
+                            width=10,
+                            precision=4,
+                            label_width=22,
+                        ),
+                        flush=True,
+                    )
+                    print(
+                        fmt_axis_row(
+                            "qpos policy-raw_deg",
+                            qpos_policy_minus_raw_imu_deg_direct,
+                            width=10,
+                            precision=2,
+                            label_width=22,
+                        ),
+                        flush=True,
+                    )
+                    print(
+                        fmt_axis_row(
+                            "qpos physical_delta",
+                            rad_to_deg(qpos_policy_minus_raw_imu),
+                            width=10,
+                            precision=2,
+                            label_width=22,
+                        ),
+                        flush=True,
+                    )
+                    print(
+                        fmt_axis_row(
+                            "qvel policy_rad_s",
+                            qvel_bridge,
+                            width=10,
+                            precision=4,
+                            label_width=22,
+                        ),
+                        flush=True,
+                    )
+                    print(
+                        fmt_axis_row(
+                            "qvel diff_rad_s",
+                            qvel_diff,
+                            width=10,
+                            precision=4,
+                            label_width=22,
+                        ),
+                        flush=True,
+                    )
+                    print(
+                        fmt_axis_row(
+                            "qvel raw_gyro_rad_s",
+                            raw_imu_qvel,
+                            width=10,
+                            precision=4,
+                            label_width=22,
+                        ),
+                        flush=True,
+                    )
+                    print(
+                        fmt_axis_row(
+                            "qvel resid_rad_s",
+                            residual,
+                            width=10,
+                            precision=4,
+                            label_width=22,
+                        ),
                         flush=True,
                     )
                     if args.verbose_imu:
@@ -580,6 +851,10 @@ def main() -> int:
             "qvel_bridge is the qvel currently returned by read_state.",
             "qvel_qpos_diff is finite-difference qpos using bridge timestamps.",
             "qpos/qpos_deg are the current joint pose in radians/degrees.",
+            "qpos_raw_imu/qpos_raw_imu_deg are reconstructed before qpos continuity filtering; bucket uses relative quaternion when valid and falls back to imu_debug.rpy_raw_deg.",
+            "qpos_folded_imu/qpos_folded_imu_deg are reconstructed from imu_debug.rpy_rad after per-axis angle folding.",
+            "qpos_policy_minus_raw_imu is the shortest-angle delta from raw IMU joint pose to policy qpos.",
+            "qpos_policy_minus_raw_imu_deg_direct is policy_deg - raw_imu_deg without branch wrapping.",
             "qvel_raw_imu_rad_s is derived from raw gyro before converter startup bias subtraction.",
         ],
     }

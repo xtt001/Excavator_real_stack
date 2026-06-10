@@ -27,11 +27,20 @@ private:
     static const ExcavatorHardwareState* asHardwareState(const HardwareState& raw) {
         return dynamic_cast<const ExcavatorHardwareState*>(&raw);
     }
+    std::array<Eigen::Vector3d, kImuDeviceCount> continuousImuRpy(const ExcavatorHardwareState& hw);
+    void applyPositionContinuity(ExcavatorState& st,
+                                 bool position_observed,
+                                 const Vector8d& branch_reference,
+                                 bool bucket_quaternion_observed);
 
     Vector8d resp_velocity_bias_sum_ = Vector8d::Zero();
     Vector8d resp_velocity_bias_ = Vector8d::Zero();
     std::uint32_t resp_velocity_bias_count_{0};
     bool resp_velocity_bias_ready_{false};
+    std::array<Eigen::Vector3d, kImuDeviceCount> imu_rpy_continuous_{};
+    std::array<bool, kImuDeviceCount> imu_rpy_continuous_ready_{};
+    Vector8d resp_position_continuous_ = Vector8d::Zero();
+    bool resp_position_continuous_ready_{false};
 };
 
 }  // namespace excavator

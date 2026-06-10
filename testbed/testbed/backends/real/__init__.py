@@ -26,6 +26,9 @@ from testbed.backends.real.contracts import (
     REAL_QPOS_ORDER,
     REAL_QVEL_ORDER,
     action4_to_speed_scalar8,
+    align_real_qpos_to_reference_branch,
+    real_qpos_error_rad,
+    shortest_angle_error_rad,
 )
 from testbed.backends.real.control import (
     ControlResult,
@@ -96,12 +99,15 @@ __all__ = [
     "TimestampedBuffer",
     "TimestampedSample",
     "action4_to_speed_scalar8",
+    "align_real_qpos_to_reference_branch",
     "control_result_from_payload",
     "control_result_to_payload",
     "decode_frame",
     "encode_frame",
+    "real_qpos_error_rad",
     "state_samples_from_payload",
     "state_samples_to_payload",
+    "shortest_angle_error_rad",
 ]
 
 RealBackend = RealExcavatorBackend

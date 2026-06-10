@@ -27,6 +27,9 @@ struct ImuRxAccumulator {
     float roll_rad{0.0F};
     float pitch_rad{0.0F};
     float yaw_rad{0.0F};
+    float roll_raw_deg{0.0F};
+    float pitch_raw_deg{0.0F};
+    float yaw_raw_deg{0.0F};
     float gyro_x_dps{0.0F};
     float gyro_y_dps{0.0F};
     float gyro_z_dps{0.0F};
@@ -62,6 +65,7 @@ struct ImuSample {
     std::uint8_t device_addr{0};
     std::uint8_t online{0};
     std::uint8_t valid_attitude{0};
+    std::uint8_t valid_quaternion{0};
     std::uint8_t valid_gyro{0};
     std::uint8_t valid_accel{0};
     std::uint8_t reserved0{0};
@@ -70,6 +74,7 @@ struct ImuSample {
     std::uint64_t host_rx_time_ns{0};
 
     Eigen::Vector3f rpy_rad{Eigen::Vector3f::Zero()};    // roll,pitch,yaw
+    Eigen::Vector3f rpy_raw_deg{Eigen::Vector3f::Zero()}; // roll,pitch,yaw, unwrapped protocol degrees
     Eigen::Vector3f gyro_dps{Eigen::Vector3f::Zero()};   // x,y,z
     Eigen::Vector3f accel_mps2{Eigen::Vector3f::Zero()}; // x,y,z
 

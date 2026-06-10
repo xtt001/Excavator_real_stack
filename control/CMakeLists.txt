@@ -97,4 +97,12 @@ if(BUILD_TESTING)
     add_executable(imu_canlib_parser_test tests/imu_canlib_parser_test.cpp)
     target_link_libraries(imu_canlib_parser_test PRIVATE robot_control_canlib)
     add_test(NAME imu_canlib_parser_test COMMAND $<TARGET_FILE:imu_canlib_parser_test>)
+
+    add_executable(excavator_converter_test tests/excavator_converter_test.cpp)
+    target_link_libraries(excavator_converter_test PRIVATE robot_control_excavator)
+    add_test(NAME excavator_converter_test COMMAND $<TARGET_FILE:excavator_converter_test>)
+
+    add_executable(excavator_control_test tests/excavator_control_test.cpp)
+    target_link_libraries(excavator_control_test PRIVATE robot_control_excavator)
+    add_test(NAME excavator_control_test COMMAND $<TARGET_FILE:excavator_control_test>)
 endif()

@@ -11,6 +11,22 @@ POLL_S="${POLL_S:-10}"
 STABLE_INTERVAL_S="${STABLE_INTERVAL_S:-5}"
 MIN_MTIME_AGE_S="${MIN_MTIME_AGE_S:-10}"
 HISTORY_FROM="${HISTORY_FROM:-0}"
+SYNC_REMOTE_TIME="${SYNC_REMOTE_TIME:-1}"
+MAX_TIME_SKEW_S="${MAX_TIME_SKEW_S:-5}"
+TIME_SYNC_WARN_INTERVAL_S="${TIME_SYNC_WARN_INTERVAL_S:-60}"
+SCAN_ALL_ON_TIME_SYNC_FAIL="${SCAN_ALL_ON_TIME_SYNC_FAIL:-1}"
+INTERACTIVE_REMOTE_SUDO="${INTERACTIVE_REMOTE_SUDO:-1}"
+LOG_FILE="${LOG_FILE:-}"
+LAST_TIME_SYNC_WARN_EPOCH=0
+LAST_FALLBACK_WARN_EPOCH=0
+LOCK_DIR=""
+LOCK_HELD=0
+ACTIVE_CHILD_PID=""
+RUN_CAPTURE_OUTPUT=""
+STOPPING=0
+TIME_SYNC_OK=1
+REMOTE_TIME_WAS_CORRECTED=0
+ACTIVE_TMP_PATH=""
 
 usage() {
   cat <<'EOF'
@@ -27,10 +43,20 @@ Options:
   --stable-interval-s SEC      Delay between two remote stat checks. Default: 5
   --min-mtime-age-s SEC        Skip very fresh files. Default: 10
   --history-from N             Only print per-episode history from episode_N. Default: 0
+  --no-sync-remote-time        Do not try to sync slave time before scans.
+  --max-time-skew-s SEC        Sync slave time when skew exceeds this. Default: 5
+  --no-interactive-remote-sudo
+                              Do not prompt for the slave sudo password.
+  --no-scan-all-on-time-sync-fail
+                              Keep date-filtered scans even if time sync fails.
+  --log-file FILE              Also append watcher output to FILE.
   -h, --help                   Show this help.
 
 Environment:
   PYTHON can override the Python executable.
+  SYNC_REMOTE_TIME=0 disables remote time sync.
+  INTERACTIVE_REMOTE_SUDO=0 disables the slave sudo password prompt.
+  SCAN_ALL_ON_TIME_SYNC_FAIL=0 disables the bad-clock scan fallback.
 EOF
 }
 
@@ -72,6 +98,26 @@ while [ "$#" -gt 0 ]; do
       HISTORY_FROM="$2"
       shift 2
       ;;
+    --no-sync-remote-time)
+      SYNC_REMOTE_TIME=0
+      shift
+      ;;
+    --max-time-skew-s)
+      MAX_TIME_SKEW_S="$2"
+      shift 2
+      ;;
+    --no-interactive-remote-sudo)
+      INTERACTIVE_REMOTE_SUDO=0
+      shift
+      ;;
+    --no-scan-all-on-time-sync-fail)
+      SCAN_ALL_ON_TIME_SYNC_FAIL=0
+      shift
+      ;;
+    --log-file)
+      LOG_FILE="$2"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -90,6 +136,8 @@ fi
 EP_DIR="${BASE_DIR}/episodes"
 REPORT_DIR="${BASE_DIR}/report"
 REMOTE_TARGET="${SSH_USER}@${SSH_HOST}"
+PID_FILE="${BASE_DIR}/qc_watch.pid"
+LOCK_DIR="${BASE_DIR}/qc_watch.lock"
 
 log() {
   printf '%(%F %T)T %s\n' -1 "$*"
@@ -104,6 +152,223 @@ episode_number() {
   episode_id="${episode_id#episode_}"
   episode_id="${episode_id%.hdf5}"
   printf '%s' "$episode_id"
+}
+
+cleanup() {
+  if [ -n "$ACTIVE_TMP_PATH" ]; then
+    rm -f "$ACTIVE_TMP_PATH"
+    ACTIVE_TMP_PATH=""
+  fi
+  if [ "$LOCK_HELD" = 1 ]; then
+    rm -rf "$LOCK_DIR"
+    rm -f "$PID_FILE"
+    LOCK_HELD=0
+  fi
+}
+
+stop_watcher() {
+  trap - INT TERM HUP QUIT EXIT
+  STOPPING=1
+  if [ -n "$ACTIVE_CHILD_PID" ]; then
+    kill "$ACTIVE_CHILD_PID" 2>/dev/null || true
+    wait "$ACTIVE_CHILD_PID" 2>/dev/null || true
+    ACTIVE_CHILD_PID=""
+  fi
+  cleanup
+  log "today QC watcher stopping" || true
+  exit 130
+}
+
+run_command() {
+  "$@" &
+  ACTIVE_CHILD_PID=$!
+  wait "$ACTIVE_CHILD_PID"
+  local rc=$?
+  ACTIVE_CHILD_PID=""
+  if [ "$rc" -ge 128 ] && [ "$STOPPING" = 0 ]; then
+    stop_watcher
+  fi
+  return "$rc"
+}
+
+run_capture() {
+  local tmp rc
+  tmp="$(mktemp)"
+  "$@" >"$tmp" 2>&1 &
+  ACTIVE_CHILD_PID=$!
+  wait "$ACTIVE_CHILD_PID"
+  rc=$?
+  ACTIVE_CHILD_PID=""
+  RUN_CAPTURE_OUTPUT="$(cat "$tmp")"
+  rm -f "$tmp"
+  if [ "$rc" -ge 128 ] && [ "$STOPPING" = 0 ]; then
+    stop_watcher
+  fi
+  return "$rc"
+}
+
+run_tty_command() {
+  "$@" </dev/tty &
+  ACTIVE_CHILD_PID=$!
+  wait "$ACTIVE_CHILD_PID"
+  local rc=$?
+  ACTIVE_CHILD_PID=""
+  if [ "$rc" -ge 128 ] && [ "$STOPPING" = 0 ]; then
+    stop_watcher
+  fi
+  return "$rc"
+}
+
+interruptible_sleep() {
+  run_command sleep "$1"
+}
+
+is_live_watcher_pid() {
+  local pid="$1"
+  local stat args
+
+  if ! [[ "$pid" =~ ^[0-9]+$ ]]; then
+    return 1
+  fi
+  if ! kill -0 "$pid" 2>/dev/null; then
+    return 1
+  fi
+
+  stat="$(ps -o stat= -p "$pid" 2>/dev/null || true)"
+  args="$(ps -o args= -p "$pid" 2>/dev/null || true)"
+  if [[ "$stat" == *Z* ]]; then
+    return 1
+  fi
+  [[ "$args" == *"watch_today_qc_from_slave.sh"* ]]
+}
+
+acquire_lock() {
+  local existing_pid
+
+  if [ ! -d "$LOCK_DIR" ] && [ -f "$PID_FILE" ]; then
+    existing_pid="$(cat "$PID_FILE" 2>/dev/null || true)"
+    if is_live_watcher_pid "$existing_pid"; then
+      log "another QC watcher is already running for ${BASE_DIR}: pid=${existing_pid}"
+      return 1
+    fi
+    log "remove stale QC watcher pid: ${PID_FILE} pid=${existing_pid:-unknown}"
+    rm -f "$PID_FILE"
+  fi
+
+  if mkdir "$LOCK_DIR" 2>/dev/null; then
+    LOCK_HELD=1
+    printf '%s\n' "$$" > "${LOCK_DIR}/pid"
+    printf '%s\n' "$$" > "$PID_FILE"
+    return 0
+  fi
+
+  existing_pid="$(cat "${LOCK_DIR}/pid" 2>/dev/null || true)"
+  if is_live_watcher_pid "$existing_pid"; then
+    log "another QC watcher is already running for ${BASE_DIR}: pid=${existing_pid}"
+    return 1
+  fi
+
+  log "remove stale QC watcher lock: ${LOCK_DIR}"
+  rm -rf "$LOCK_DIR"
+  if mkdir "$LOCK_DIR" 2>/dev/null; then
+    LOCK_HELD=1
+    printf '%s\n' "$$" > "${LOCK_DIR}/pid"
+    printf '%s\n' "$$" > "$PID_FILE"
+    return 0
+  fi
+
+  log "failed to create QC watcher lock: ${LOCK_DIR}"
+  return 1
+}
+
+sync_remote_time() {
+  if [ "$SYNC_REMOTE_TIME" != 1 ]; then
+    TIME_SYNC_OK=1
+    return 0
+  fi
+
+  local host_epoch remote_epoch skew abs_skew sync_cmd sync_output sync_rc interactive_attempted
+  interactive_attempted=0
+  host_epoch="$(date +%s)"
+  if run_capture ssh -o BatchMode=yes -o ConnectTimeout=8 "$REMOTE_TARGET" "date +%s"; then
+    remote_epoch="$RUN_CAPTURE_OUTPUT"
+  else
+    remote_epoch=""
+  fi
+  if ! [[ "$remote_epoch" =~ ^[0-9]+$ ]]; then
+    log "remote time check failed; skip time sync"
+    TIME_SYNC_OK=0
+    return 1
+  fi
+
+  skew=$((remote_epoch - host_epoch))
+  abs_skew="${skew#-}"
+  if [ "$abs_skew" -le "$MAX_TIME_SKEW_S" ]; then
+    TIME_SYNC_OK=1
+    return 0
+  fi
+
+  if [ "$INTERACTIVE_REMOTE_SUDO" = 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
+    log "remote time skew=${skew}s; enter sudo password for ${REMOTE_TARGET} if prompted"
+    interactive_attempted=1
+    host_epoch="$(date +%s)"
+    sync_cmd="SECONDS=0; sudo -v && sudo timedatectl set-ntp false && adjusted_epoch=\$(( ${host_epoch} + SECONDS )) && sudo date -u -s @\${adjusted_epoch} >/dev/null && (sudo hwclock --systohc 2>/dev/null || true) && sudo timedatectl set-ntp true && date '+%F %T %z'"
+    if run_tty_command ssh -tt -o BatchMode=yes -o ConnectTimeout=8 "$REMOTE_TARGET" "$sync_cmd"; then
+      log "remote time synced with interactive sudo: skew=${skew}s"
+      TIME_SYNC_OK=1
+      REMOTE_TIME_WAS_CORRECTED=1
+      return 0
+    fi
+  fi
+
+  sync_cmd="sudo -n timedatectl set-ntp false && sudo -n date -u -s @${host_epoch} >/dev/null && (sudo -n hwclock --systohc 2>/dev/null || true) && sudo -n timedatectl set-ntp true && date '+%F %T %z'"
+  run_capture ssh -o BatchMode=yes -o ConnectTimeout=8 "$REMOTE_TARGET" "$sync_cmd"
+  sync_rc=$?
+  sync_output="$RUN_CAPTURE_OUTPUT"
+  if [ "$sync_rc" -eq 0 ]; then
+    log "remote time synced: skew=${skew}s new_time=${sync_output//$'\n'/; }"
+    TIME_SYNC_OK=1
+    REMOTE_TIME_WAS_CORRECTED=1
+    return 0
+  fi
+
+  TIME_SYNC_OK=0
+  if [ $((host_epoch - LAST_TIME_SYNC_WARN_EPOCH)) -ge "$TIME_SYNC_WARN_INTERVAL_S" ]; then
+    log "remote time sync failed rc=${sync_rc}: skew=${skew}s output=${sync_output//$'\n'/; }"
+    if [ "$interactive_attempted" = 1 ]; then
+      log "remote time sync failed after interactive sudo; passwordless sudo for timedatectl/date also failed on ${REMOTE_TARGET}"
+    else
+      log "remote time sync requires passwordless sudo for timedatectl/date on ${REMOTE_TARGET}"
+    fi
+    LAST_TIME_SYNC_WARN_EPOCH="$host_epoch"
+  fi
+  return "$sync_rc"
+}
+
+build_remote_find_cmd() {
+  local start="$1"
+  local end="$2"
+  local now_epoch
+
+  if { [ "$TIME_SYNC_OK" = 1 ] && [ "$REMOTE_TIME_WAS_CORRECTED" != 1 ]; } || [ "$SCAN_ALL_ON_TIME_SYNC_FAIL" != 1 ]; then
+    printf "find %s -maxdepth 1 -type f -name 'episode_*.hdf5' -newermt %s ! -newermt %s -printf '%%f\\t%%s\\t%%T@\\n' | sort -V" \
+      "$(remote_shell_quote "$REMOTE_DIR")" \
+      "$(remote_shell_quote "$start")" \
+      "$(remote_shell_quote "$end")"
+    return 0
+  fi
+
+  now_epoch="$(date +%s)"
+  if [ $((now_epoch - LAST_FALLBACK_WARN_EPOCH)) -ge "$TIME_SYNC_WARN_INTERVAL_S" ]; then
+    if [ "$REMOTE_TIME_WAS_CORRECTED" = 1 ]; then
+      log "remote time was corrected in this watcher; fallback to scanning all remote episode_*.hdf5 files and filtering episode number >= ${HISTORY_FROM}" >&2
+    else
+      log "remote time is not reliable; fallback to scanning all remote episode_*.hdf5 files and filtering episode number >= ${HISTORY_FROM}" >&2
+    fi
+    LAST_FALLBACK_WARN_EPOCH="$now_epoch"
+  fi
+  printf "find %s -maxdepth 1 -type f -name 'episode_*.hdf5' -printf '%%f\\t%%s\\t%%T@\\n' | sort -V" \
+    "$(remote_shell_quote "$REMOTE_DIR")"
 }
 
 print_qc_status() {
@@ -182,19 +447,34 @@ PY
 }
 
 mkdir -p "$EP_DIR" "$REPORT_DIR"
-log "today QC watcher started: day=${DAY} remote=${REMOTE_TARGET}:${REMOTE_DIR} episodes=${EP_DIR} report=${REPORT_DIR} history_from=${HISTORY_FROM}"
+if [ -n "$LOG_FILE" ]; then
+  mkdir -p "$(dirname "$LOG_FILE")"
+  exec > >(tee -a "$LOG_FILE") 2>&1
+fi
+
+trap stop_watcher INT TERM HUP QUIT
+trap cleanup EXIT
+
+if ! acquire_lock; then
+  exit 1
+fi
+
+log "today QC watcher started: day=${DAY} remote=${REMOTE_TARGET}:${REMOTE_DIR} episodes=${EP_DIR} report=${REPORT_DIR} history_from=${HISTORY_FROM} sync_remote_time=${SYNC_REMOTE_TIME}"
 print_qc_status
 
 while true; do
+  sync_remote_time || true
+
   start="${DAY} 00:00:00"
   end="$(date -d "${DAY} +1 day" +%F) 00:00:00"
-  remote_find_cmd="find $(remote_shell_quote "$REMOTE_DIR") -maxdepth 1 -type f -name 'episode_*.hdf5' -newermt $(remote_shell_quote "$start") ! -newermt $(remote_shell_quote "$end") -printf '%f\\t%s\\t%T@\\n' | sort -V"
+  remote_find_cmd="$(build_remote_find_cmd "$start" "$end")"
 
-  scan_output="$(ssh -o BatchMode=yes -o ConnectTimeout=8 "$REMOTE_TARGET" "$remote_find_cmd" 2>&1)"
+  run_capture ssh -o BatchMode=yes -o ConnectTimeout=8 "$REMOTE_TARGET" "$remote_find_cmd"
   scan_rc=$?
+  scan_output="$RUN_CAPTURE_OUTPUT"
   if [ "$scan_rc" -ne 0 ]; then
     log "remote scan failed rc=${scan_rc}: ${scan_output}"
-    sleep "$POLL_S"
+    interruptible_sleep "$POLL_S"
     continue
   fi
 
@@ -206,7 +486,7 @@ while true; do
   if [ "${#episodes[@]}" -eq 0 ]; then
     log "no ${DAY} episodes found yet"
     print_qc_status
-    sleep "$POLL_S"
+    interruptible_sleep "$POLL_S"
     continue
   fi
 
@@ -218,13 +498,28 @@ while true; do
     fi
 
     IFS=$'\t' read -r name _size _mtime <<< "$line"
+    episode_num="$(episode_number "$name")"
+    if { [ "$TIME_SYNC_OK" != 1 ] || [ "$REMOTE_TIME_WAS_CORRECTED" = 1 ]; } && [ "$SCAN_ALL_ON_TIME_SYNC_FAIL" = 1 ]; then
+      if [[ "$episode_num" =~ ^[0-9]+$ ]] && [ "$episode_num" -lt "$HISTORY_FROM" ]; then
+        continue
+      fi
+    fi
+
     remote_path="${REMOTE_DIR%/}/${name}"
     local_path="${EP_DIR}/${name}"
     stat_cmd="stat -c '%s %Y' $(remote_shell_quote "$remote_path")"
 
-    stat1="$(ssh -o BatchMode=yes -o ConnectTimeout=8 "$REMOTE_TARGET" "$stat_cmd" 2>/dev/null || true)"
-    sleep "$STABLE_INTERVAL_S"
-    stat2="$(ssh -o BatchMode=yes -o ConnectTimeout=8 "$REMOTE_TARGET" "$stat_cmd" 2>/dev/null || true)"
+    if run_capture ssh -o BatchMode=yes -o ConnectTimeout=8 "$REMOTE_TARGET" "$stat_cmd"; then
+      stat1="$RUN_CAPTURE_OUTPUT"
+    else
+      stat1=""
+    fi
+    interruptible_sleep "$STABLE_INTERVAL_S"
+    if run_capture ssh -o BatchMode=yes -o ConnectTimeout=8 "$REMOTE_TARGET" "$stat_cmd"; then
+      stat2="$RUN_CAPTURE_OUTPUT"
+    else
+      stat2=""
+    fi
 
     if [ -z "$stat1" ] || [ "$stat1" != "$stat2" ]; then
       log "skip unstable ${name}: ${stat1} -> ${stat2}"
@@ -246,21 +541,24 @@ while true; do
 
     tmp_path="${EP_DIR}/.${name}.tmp.$$"
     rm -f "$tmp_path"
+    ACTIVE_TMP_PATH="$tmp_path"
     log "copy ${name} (${remote_size} bytes)"
-    if rsync -a --partial --protect-args "${REMOTE_TARGET}:${remote_path}" "$tmp_path"; then
+    if run_command rsync -a --partial --protect-args "${REMOTE_TARGET}:${remote_path}" "$tmp_path"; then
       mv "$tmp_path" "$local_path"
+      ACTIVE_TMP_PATH=""
       changed=1
       log "copied ${name}"
     else
       rc=$?
       rm -f "$tmp_path"
+      ACTIVE_TMP_PATH=""
       log "rsync failed for ${name}: rc=${rc}"
     fi
   done
 
   if [ "$changed" = 1 ]; then
     log "run QC for ${EP_DIR}"
-    if MPLCONFIGDIR=/tmp/excavator_mpl "$PYTHON" -m testbed.cli.dataset_qc --dataset-dir "$EP_DIR" --output-dir "$REPORT_DIR"; then
+    if run_command env MPLCONFIGDIR=/tmp/excavator_mpl "$PYTHON" -m testbed.cli.dataset_qc --dataset-dir "$EP_DIR" --output-dir "$REPORT_DIR"; then
       log "QC finished"
     else
       log "QC command failed"
@@ -270,5 +568,5 @@ while true; do
   fi
   print_qc_status
 
-  sleep "$POLL_S"
+  interruptible_sleep "$POLL_S"
 done

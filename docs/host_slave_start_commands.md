@@ -53,7 +53,23 @@ cd ~/Excavator_real_stack
   --ssh-user mundane
 ```
 
-### 1. 从端启动链路
+### 1. 主端校准从端时间
+
+在主端执行一次，把 Jetson 系统时间校准到主端时间。这个命令会通过 SSH
+登录从端；如果提示 sudo 密码，输入 Jetson 的 `mundane` sudo 密码。
+
+```bash
+cd ~/Excavator_real_stack
+./scripts/sync_slave_time_from_host.sh \
+  --ssh-host slave-jetson \
+  --ssh-user mundane
+```
+
+当前 Jetson 的公网/DNS/NTP 可能不可用，因此 `timedatectl` 服务 active
+不等于已经同步成功。正式启动链路前以这条主端校时命令为准；校时完成后再到
+Jetson 终端启动从端链路。从端启动脚本只负责启动链路，不再检查或修改系统时间。
+
+### 2. 从端启动链路
 
 正式录制或 policy control 时，启动全链路和唯一 receiver：
 
@@ -85,7 +101,7 @@ cd /media/mundane/D/Excavator_real_stack
 上面两个 `--no-receiver` 模式下，IMU/qvel 日志脚本仍然连接默认 gateway
 `127.0.0.1:8765`；不要改成 `--port 8766`。
 
-### 2. 从端另开终端看 CAN
+### 3. 从端另开终端看 CAN
 
 ```bash
 candump -ta can2,18F021F6:1FFFFFFF
@@ -98,7 +114,7 @@ cd /media/mundane/D/Excavator_real_stack
 ./scripts/imu_can_probe.py --interface can3 --duration-s 3 --require-four
 ```
 
-### 3. 从端另开终端持续记录 IMU/qvel
+### 4. 从端另开终端持续记录 IMU/qvel
 
 这个日志脚本只读 `read_state`，不启动 receiver/sender，也不发送动作。现场全链路已经由
 第 1 步启动时，脚本应连接默认 gateway `127.0.0.1:8765`，可以和 receiver 同时运行。
@@ -119,7 +135,7 @@ cd /media/mundane/D/Excavator_real_stack
 bridge qvel、qpos 差分 qvel、raw IMU gyro 推导 qvel，以及每个 IMU 的
 gyro/rpy/age/loss。
 
-### 4. 主端 rqt 看图
+### 5. 主端 rqt 看图
 
 ```bash
 cd ~/Excavator_real_stack
@@ -135,7 +151,7 @@ rqt 里选择：
 /camera/color/image_raw
 ```
 
-### 5. 主端启动 sender
+### 6. 主端启动 sender
 
 ```bash
 cd ~/Excavator_real_stack
@@ -155,7 +171,7 @@ export GO_HOME_BUTTON=3
   --confirm-remote-control
 ```
 
-### 6. 点火、go-home、录制和模型控制
+### 7. 点火、go-home、录制和模型控制
 
 ```text
 5 -> remote mode
@@ -179,7 +195,7 @@ button 4 -> manual/model control toggle
 显示 go-home done；然后按 `4` 切到 model control。需要回到人操作时再按一次 `4`。
 需要写 HDF5 时按 `2`；不需要录制就不要按 `2`。
 
-### 7. 主端实时 QC
+### 8. 主端实时 QC
 
 ```bash
 cd ~/Excavator_real_stack
@@ -189,29 +205,35 @@ chmod +x scripts/watch_today_qc_from_slave.sh
 
 DAY="$(date +%F)"
 BASE="data/qc_today_${DAY}"
+HISTORY_FROM=27  # 2026-06-09: episode_26 是昨天最后一条，今天从 episode_27 开始。
 mkdir -p "${BASE}"
 
-setsid bash -c "cd ~/Excavator_real_stack || exit 1; \
-  echo \$\$ > '${BASE}/qc_watch.pid'; \
-  exec ./scripts/watch_today_qc_from_slave.sh \
-    --ssh-host slave-jetson \
-    --ssh-user mundane \
-    --remote-dir /media/mundane/EXTERNAL_USB/real_teleop_v1 \
-    --day '${DAY}' \
-    --base-dir '${BASE}' \
-    --history-from 13 \
-    >> '${BASE}/qc_watch.log' 2>&1" \
-  </dev/null >/dev/null 2>&1 &
-
-tail -f "${BASE}/qc_watch.log"
+./scripts/watch_today_qc_from_slave.sh \
+  --ssh-host slave-jetson \
+  --ssh-user mundane \
+  --remote-dir /media/mundane/EXTERNAL_USB/real_teleop_v1 \
+  --day "${DAY}" \
+  --base-dir "${BASE}" \
+  --history-from "${HISTORY_FROM}" \
+  --log-file "${BASE}/qc_watch.log"
 ```
 
-停止今日在线 QC watcher：
+按 `Ctrl+C` 会停止 watcher，不需要再手动 `kill`。脚本每轮扫描前会检查主从端时间差，
+超过 5 秒会通过 SSH 提示输入从端 sudo 密码并自动校准时间。如果校时失败，
+日志会提示 `remote time sync failed`，并降级为扫描远端全部 `episode_*.hdf5`，
+只拉取编号不小于 `--history-from` 的 episode。长期仍建议修复从端 NTP，避免 HDF5
+文件时间继续写错。
+
+如需免输入密码，也可以在从端 Jetson 上一次性配置：
 
 ```bash
-cd ~/Excavator_real_stack
-DAY="$(date +%F)"
-kill "$(cat "data/qc_today_${DAY}/qc_watch.pid")"
+sudo visudo -f /etc/sudoers.d/excavator-qc-time-sync
+```
+
+填入：
+
+```text
+mundane ALL=(root) NOPASSWD: /usr/bin/timedatectl, /usr/bin/date, /usr/sbin/hwclock
 ```
 
 ## 附录：policy shadow 检查命令（不属于现场流程）
@@ -340,10 +362,22 @@ C++ bridge `8766`：
 
 - `qpos`：当前 `read_state` 返回的 4 轴姿态，单位 rad。
 - `qpos_deg`：同一组姿态转成 degree，方便肉眼判断角度变化。
-- `qvel`：当前 `read_state` 返回给 receiver/policy 的 qvel。
-- `diff`：由相邻 qpos 差分得到的 qvel。
-- `raw_imu`：由 IMU 原始 gyro 重新计算的关节 qvel，未做启动 bias 扣除。
-- `resid`：`qvel - diff`，静止时应接近 0。
+- `qpos raw_imu_deg`：由每个 IMU 当前 `rpy_raw_deg` 直接反算的关节角，
+  代表 IMU 协议原始角度，不做 `[-180, 180]` 折叠，也不做连续保护。
+- `qpos policy_deg`：当前 `read_state` 返回给 receiver/policy 的 qpos。
+- `qpos policy_rad`：同一组 policy qpos 的弧度值；receiver、policy 和 HDF5
+  实际使用的是 rad。
+- `qpos policy-raw_deg`：`policy_deg - raw_imu_deg` 的直接差值，不做分支折叠；
+  如果同一物理角被表示成 `-137` 和 `222`，这里会显示约 `-360`。
+- `qpos physical_delta`：`policy - raw_imu` 的最短角差，用于看连续保护改了多少。
+- `qpos_folded_imu_deg`：JSONL 中额外记录；由 `rpy_rad` 反算，代表单轴折叠后、
+  policy 连续保护前的姿态。
+- `qvel policy_rad_s`：当前 `read_state` 返回给 receiver/policy 的 qvel。
+- `qvel diff_rad_s`：由相邻 policy qpos 差分得到的 qvel。
+- `qvel raw_gyro_rad_s`：由 IMU 原始 gyro 重新计算的关节 qvel，未做启动 bias 扣除。
+- `qvel resid_rad_s`：`policy - qpos_diff`，静止时应接近 0。
+- `rpy_raw_deg`：`--verbose-imu` 下每个 IMU 原始欧拉角，单位 degree，不做
+  `[-180, 180]` 折叠；`rpy_rad` 仍是旧的折叠后弧度值。
 
 如果输出提示 `imu_debug missing`，说明当前运行的 bridge 还是旧二进制，只能看到
 `imu_health`，看不到每个 IMU 的 gyro/rpy/accel 原始值。需要重新编译并重启 bridge。
@@ -426,6 +460,9 @@ pygame `joystick 0`，右侧物理摇杆是 pygame `joystick 1`；左侧控制 `
 - go-home 启用前需要在 `testbed/testbed/configs/policy_real_one_dig_v1.yaml` 中配置
   `teleop.recording.go_home.home_pose_rad` 并设为 `enabled: true`，也可以用
   `./scripts/calibrate_home_pose_from_current.sh` 从当前姿态采样写入。
+- `swing` 是圆周角，`216°` 和 `-144°` 是同一物理分支附近。go-home、phase label
+  和 go-home 区域采样必须使用最短角误差；不要用 `home_pose_rad - qpos` 的普通差值
+  判断 swing 距离或控制方向。bridge 输出也应优先保持 IMU4 raw yaw 的非负分支。
 - receive/armed 状态按按钮 `3` 只做 go-home，不保存 HDF5，完成或失败后回到 receive/armed。
 - recording 状态按按钮 `3` 会结束 episode；成功保存到成功目录，失败保存到 `failed/` 并写入失败原因。
 - 现场统一脚本默认 `EXCAVATOR_NUM_EPISODES=1000000`，要限制 episode 数量可在启动前显式设置该环境变量。

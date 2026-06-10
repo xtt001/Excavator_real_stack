@@ -77,7 +77,7 @@ teleop:
     group_switch_button: 11
     # 轴 [-1,1]：|v|<=0.1 为 0，(0.1,1] 线性映射到 (0,1]，满杆 -> control_api ±1
     deadzone: 0.1
-    scale: 1.0
+    scale: [1.0, 1.0, 1.0, 0.75]
     clip: 1.0
     response_profile:
       enabled: false
@@ -111,20 +111,20 @@ teleop:
     go_home:
       enabled: true
       # 必须现场标定后填写，顺序为 [swing, boom, stick, bucket]，单位 rad。
-      home_pose_rad: [3.000000, -0.011737, -0.458603, -0.852192]
+      home_pose_rad: [3.777900, 0.118000, -0.724500, -0.613100]
       # TEMP for go-home function testing: disables the near-home start gate.
       # Restore to a calibrated finite region after area testing.
       near_tolerance_rad: [999.0, 999.0, 999.0, 999.0]
-      # TEMP for go-home function testing: bucket ended at ~0.091 rad error in the
-      # 20260528 field run while still moving slowly, so keep bucket tolerance
-      # wider until the final approach speed is re-tuned. Stick is allowed a
-      # slightly wider success band because field runs can stall near center.
-      success_tolerance_rad: [0.05, 0.05, 0.08, 0.12]
+      # Bucket success is intentionally tight so go-home does not accept
+      # visibly different bucket poses as done.
+      success_tolerance_rad: [0.05, 0.05, 0.08, 0.04]
+      # Refuse go-home success when bridge policy qpos diverges from raw IMU qpos.
+      max_policy_raw_qpos_delta_rad: [0.08, 0.08, 0.08, 0.08]
       # Controller still aims at the tighter center tolerance, but go-home may
       # finish once the wider success tolerance and stable dwell are satisfied.
       # Resume tolerance adds hysteresis to prevent on/off pulsing near home.
-      center_tolerance_rad: [0.025, 0.030, 0.035, 0.050]
-      resume_tolerance_rad: [0.040, 0.045, 0.055, 0.075]
+      center_tolerance_rad: [0.025, 0.030, 0.035, 0.025]
+      resume_tolerance_rad: [0.040, 0.045, 0.055, 0.045]
       # PD control; D term damps motion that is already moving toward home.
       # Go-home qpos error to low-level action sign.
       # 20260528T081331 failed HDF5 showed stick/action[2] moving away from home
@@ -141,7 +141,7 @@ teleop:
       # side first.
       min_action_positive: [0.65, 0.30, 0.46, 0.60]
       min_action_negative: [0.65, 0.24, 0.46, 0.60]
-      max_action: [0.80, 0.45, 0.60, 0.60]
+      max_action: [0.80, 0.45, 0.60, 0.68]
       near_max_action: [0.70, 0.38, 0.52, 0.60]
       # Stop sending command early when the joint is already moving toward the
       # center. This compensates hydraulic delay without accepting a larger
@@ -158,7 +158,7 @@ teleop:
       # Once active, cap the command at min_action first, then let the cap grow
       # smoothly toward max_action. This avoids an initial max-action step while
       # still starting above the hydraulic dead-zone.
-      action_ramp_rate: [0.30, 0.15, 0.20, 0.20]
+      action_ramp_rate: [0.30, 0.15, 0.20, 0.25]
       # Run one joint at a time to avoid hydraulic flow sharing and axis
       # coupling. Current field order: boom first, then stick, bucket, swing.
       axis_order: [boom, stick, bucket, swing]
@@ -212,7 +212,7 @@ teleop:
 
 phase_labeling:
   # 离线 phase labeler 使用；真实数值必须现场标定后填写。
-  home_pose_rad: [3.000000, -0.011737, -0.458603, -0.852192]
+  home_pose_rad: [3.777900, 0.118000, -0.724500, -0.613100]
   near_home_tolerance_rad: [0.25, 0.25, 0.45, 0.25]
   dig_swing_range: null
   dump_swing_range: null
