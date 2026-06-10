@@ -7,6 +7,7 @@ This branch keeps only real-excavator configs.
 | Safe teleop receiver/record | `testbed/configs/teleop_real_v1.yaml` | `tb-receiver-real` |
 | One-dig policy shadow/control | `testbed/configs/policy_real_one_dig_v1.yaml` | `tb-receiver-real --input policy` |
 | Offline ACT training | `testbed/configs/act_real_v1.yaml` | `tb-train` |
+| Offline ACT training, repaired 20Hz data | `testbed/configs/act_real_20hz_v1.yaml` | `tb-train` |
 
 ## `teleop_real_v1.yaml`
 
