@@ -210,6 +210,8 @@ def episode_training_metrics(
         receiver_health = _read_optional(diagnostics, "receiver_health_ok")
         imu_online = _read_optional(diagnostics, "imu_online")
         imu_valid = _read_optional(diagnostics, "imu_valid_attitude")
+        source_time_gap_ms = _read_optional(diagnostics, "source_time_gap_ms")
+        train_exclude_mask = _read_optional(diagnostics, "train_exclude_mask")
         go_home_requested = _read_optional(diagnostics, "go_home_requested")
         go_home_running = _read_optional(diagnostics, "go_home_running")
         repair_mask = _read_repair_mask(f)
@@ -222,6 +224,12 @@ def episode_training_metrics(
     raw_qpos_jump = _max_abs_raw_diff(qpos)
     qvel_residual = _qvel_residual(qpos=qpos, qvel=qvel, dt=dt)
     fpv = _fpv_time_metrics(image_ts=image_ts)
+    fpv_gap_mask = _fpv_gap_mask_status(
+        fpv=fpv,
+        source_time_gap_ms=source_time_gap_ms,
+        train_exclude_mask=train_exclude_mask,
+        thresholds=th,
+    )
     bucket_ref_status = _bucket_reference_status(
         bucket=qpos[:, BUCKET_AXIS] if qpos.ndim == 2 and qpos.shape[1] > BUCKET_AXIS else np.zeros(0),
         reference_stats=reference_stats,
@@ -258,11 +266,15 @@ def episode_training_metrics(
         imu_online=imu_online,
         imu_valid=imu_valid,
         fpv_decode=fpv_decode,
+        fpv_gap_mask=fpv_gap_mask,
         bucket_ref_status=bucket_ref_status,
         length_ref_status=length_ref_status,
         total_steps_ref_status=total_steps_ref_status,
         thresholds=th,
     )
+    info = []
+    if fpv_gap_mask["status"] == "usable_with_gap_mask":
+        info.append("usable_with_gap_mask")
     episode_id_num = _episode_id_num(path)
     plot_path = ""
     if make_plot and plot_dir is not None:
@@ -294,6 +306,7 @@ def episode_training_metrics(
         "training_status": status,
         "training_ready": int(status in {"PASS", "WARN"}),
         "training_warnings": ";".join(warnings),
+        "training_info": ";".join(info),
         "qpos_max_jump_swing": qpos_jump[0],
         "qpos_max_jump_boom": qpos_jump[1],
         "qpos_max_jump_stick": qpos_jump[2],
@@ -312,6 +325,12 @@ def episode_training_metrics(
         "fpv_gap_gt150_count": fpv["gap_gt150_count"],
         "fpv_gap_gt250_count": fpv["gap_gt250_count"],
         "fpv_max_gap_ms": fpv["max_gap_ms"],
+        "fpv_gap_mask_status": fpv_gap_mask["status"],
+        "source_time_gap_max_ms": fpv_gap_mask["source_time_gap_max_ms"],
+        "source_time_gap_gt250_count": fpv_gap_mask["source_time_gap_event_count"],
+        "source_time_gap_covered_count": fpv_gap_mask["covered_event_count"],
+        "train_exclude_count": fpv_gap_mask["train_exclude_count"],
+        "train_exclude_fraction": fpv_gap_mask["train_exclude_fraction"],
         "fpv_timestamp_backward_count": fpv["timestamp_backward_count"],
         "fpv_age_p95_ms": _pctl(fpv_age, 95),
         "fpv_age_max_ms": _max(fpv_age),
@@ -345,7 +364,8 @@ def _hard_reference_candidate_ok(row: dict[str, Any]) -> bool:
         and float(row.get("imu_online_all_rate", 0.0)) >= 0.999
         and float(row.get("imu_valid_all_rate", 0.0)) >= 0.999
         and float(row.get("fpv_unique_fps", 0.0)) >= 19.5
-        and float(row.get("fpv_gap_gt250_count", 0.0)) == 0.0
+        and str(row.get("fpv_gap_mask_status", "unmasked_gap")) != "unmasked_gap"
+        and str(row.get("fpv_gap_mask_status", "no_source_time_gap")) != "no_source_time_gap"
         and max(
             float(row.get("qpos_max_jump_swing", 0.0)),
             float(row.get("qpos_max_jump_boom", 0.0)),
@@ -372,6 +392,7 @@ def _episode_status(
     imu_online: np.ndarray | None,
     imu_valid: np.ndarray | None,
     fpv_decode: dict[str, float | int],
+    fpv_gap_mask: dict[str, Any],
     bucket_ref_status: dict[str, Any],
     length_ref_status: dict[str, Any],
     total_steps_ref_status: dict[str, Any],
@@ -397,7 +418,7 @@ def _episode_status(
     if float(fpv["unique_fps"]) < thresholds.fpv_unique_fps_fail_hz:
         warnings.append("fpv_unique_fps_low")
         fail = True
-    if int(fpv["gap_gt250_count"]) > 0 or float(fpv["max_gap_ms"]) > thresholds.fpv_gap_fail_ms:
+    if fpv_gap_mask["status"] in {"unmasked_gap", "no_source_time_gap"}:
         warnings.append("fpv_gap_fail")
         fail = True
     if _pctl(fpv_age, 95) > thresholds.fpv_age_p95_fail_ms:
@@ -436,6 +457,58 @@ def _episode_status(
     if warnings:
         return warnings, "WARN"
     return warnings, "PASS"
+
+
+def _fpv_gap_mask_status(
+    *,
+    fpv: dict[str, float | int],
+    source_time_gap_ms: np.ndarray | None,
+    train_exclude_mask: np.ndarray | None,
+    thresholds: TrainingQcThresholds,
+) -> dict[str, Any]:
+    """Classify large FPV gaps as usable only when 20Hz data carries a training mask."""
+
+    fpv_has_large_gap = (
+        int(fpv["gap_gt250_count"]) > 0
+        or float(fpv["max_gap_ms"]) > float(thresholds.fpv_gap_fail_ms)
+    )
+    source_gap = (
+        np.asarray(source_time_gap_ms, dtype=np.float64).reshape(-1)
+        if source_time_gap_ms is not None
+        else np.zeros(0, dtype=np.float64)
+    )
+    mask = (
+        np.asarray(train_exclude_mask, dtype=bool).reshape(-1)
+        if train_exclude_mask is not None
+        else np.zeros(0, dtype=bool)
+    )
+    events = source_gap > float(thresholds.fpv_gap_fail_ms)
+    if not fpv_has_large_gap and not np.any(events):
+        status = "no_large_gap"
+    elif source_gap.size == 0:
+        status = "no_source_time_gap"
+    elif mask.size != source_gap.size:
+        status = "unmasked_gap"
+    else:
+        event_indices = np.flatnonzero(events)
+        covered = int(np.count_nonzero(mask[event_indices])) if event_indices.size else 0
+        status = (
+            "usable_with_gap_mask"
+            if event_indices.size > 0 and covered == int(event_indices.size)
+            else "unmasked_gap"
+        )
+    return {
+        "status": status,
+        "source_time_gap_max_ms": float(np.max(source_gap)) if source_gap.size else 0.0,
+        "source_time_gap_event_count": int(np.count_nonzero(events)),
+        "covered_event_count": (
+            int(np.count_nonzero(mask[np.flatnonzero(events)]))
+            if mask.size == source_gap.size and source_gap.size
+            else 0
+        ),
+        "train_exclude_count": int(np.count_nonzero(mask)),
+        "train_exclude_fraction": float(np.mean(mask)) if mask.size else 0.0,
+    }
 
 
 def _fpv_time_metrics(*, image_ts: np.ndarray | None) -> dict[str, float | int]:
@@ -814,6 +887,9 @@ def _summary_from_rows(
         "warn_episode_ids": [row["episode_id"] for row in rows if row["training_status"] == "WARN"],
         "train_ready_episode_ids": [row["episode_id"] for row in rows if row["training_ready"]],
         "failed_episode_ids": [row["episode_id"] for row in rows if row["training_status"] == "FAIL"],
+        "info_episode_ids": [
+            row["episode_id"] for row in rows if str(row.get("training_info", ""))
+        ],
         "reference": reference,
     }
 
@@ -825,6 +901,7 @@ def _train_ready_manifest(rows: list[dict[str, Any]], summary: dict[str, Any]) -
         "dataset_dir": summary["dataset_dir"],
         "strict_pass_episode_ids": summary.get("strict_pass_episode_ids", []),
         "warn_episode_ids": summary.get("warn_episode_ids", []),
+        "info_episode_ids": summary.get("info_episode_ids", []),
         "train_ready_episode_ids": summary["train_ready_episode_ids"],
         "failed_episode_ids": summary.get("failed_episode_ids", []),
         "excluded_episode_ids": summary.get("failed_episode_ids", []),
@@ -833,9 +910,21 @@ def _train_ready_manifest(rows: list[dict[str, Any]], summary: dict[str, Any]) -
                 "episode_id": row["episode_id"],
                 "status": row["training_status"],
                 "warnings": row["training_warnings"],
+                "info": row.get("training_info", ""),
             }
             for row in rows
             if not row["training_ready"]
+        ],
+        "info": [
+            {
+                "episode_id": row["episode_id"],
+                "status": row["training_status"],
+                "info": row.get("training_info", ""),
+                "source_time_gap_max_ms": row.get("source_time_gap_max_ms", 0.0),
+                "train_exclude_fraction": row.get("train_exclude_fraction", 0.0),
+            }
+            for row in rows
+            if str(row.get("training_info", ""))
         ],
     }
 

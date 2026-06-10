@@ -15,6 +15,8 @@ from testbed.data.bucket_repair import parse_episode_spec
 
 DEFAULT_INPUT_DIR = Path("/media/mundane/EXTERNAL_USB/real_teleop_v1_repaired_bucket_v1")
 DEFAULT_OUTPUT_DIR = Path("/media/mundane/EXTERNAL_USB/real_teleop_v1_repaired_20hz_v1")
+DEFAULT_GAP_MASK_THRESHOLD_MS = 250.0
+DEFAULT_GAP_MASK_PADDING_S = 1.0
 
 
 def build_20hz_dataset(
@@ -24,6 +26,8 @@ def build_20hz_dataset(
     episode_ids: list[int] | None = None,
     target_hz: float = 20.0,
     action_label_offset_s: float = -0.02,
+    gap_mask_threshold_ms: float = DEFAULT_GAP_MASK_THRESHOLD_MS,
+    gap_mask_padding_s: float = DEFAULT_GAP_MASK_PADDING_S,
 ) -> dict[str, Any]:
     input_dir = Path(input_dir)
     output_dir = Path(output_dir)
@@ -41,6 +45,8 @@ def build_20hz_dataset(
                 output_path=dst,
                 target_hz=target_hz,
                 action_label_offset_s=action_label_offset_s,
+                gap_mask_threshold_ms=gap_mask_threshold_ms,
+                gap_mask_padding_s=gap_mask_padding_s,
             )
         )
     summary = {
@@ -49,6 +55,8 @@ def build_20hz_dataset(
         "output_dir": str(output_dir),
         "target_hz": float(target_hz),
         "action_label_offset_s": float(action_label_offset_s),
+        "gap_mask_threshold_ms": float(gap_mask_threshold_ms),
+        "gap_mask_padding_s": float(gap_mask_padding_s),
         "episodes": rows,
     }
     with (output_dir / "resample_20hz_summary.json").open("w", encoding="utf-8") as f:
@@ -62,6 +70,8 @@ def build_20hz_episode(
     output_path: str | Path,
     target_hz: float = 20.0,
     action_label_offset_s: float = -0.02,
+    gap_mask_threshold_ms: float = DEFAULT_GAP_MASK_THRESHOLD_MS,
+    gap_mask_padding_s: float = DEFAULT_GAP_MASK_PADDING_S,
 ) -> dict[str, Any]:
     src = Path(input_path)
     dst = Path(output_path)
@@ -86,9 +96,14 @@ def build_20hz_episode(
                 action_idx=action_idx,
                 target_hz=target_hz,
                 action_label_offset_s=action_label_offset_s,
+                gap_mask_threshold_ms=gap_mask_threshold_ms,
+                gap_mask_padding_s=gap_mask_padding_s,
                 manual_end=manual_end,
                 source_path=src,
             )
+            source_time_gap_ms = np.asarray(out_f["diagnostics/source_time_gap_ms"][()], dtype=np.float32)
+            train_exclude_mask = np.asarray(out_f["diagnostics/train_exclude_mask"][()], dtype=bool)
+            gap_events = np.asarray(out_f["diagnostics/source_time_gap_exceeds_threshold"][()], dtype=bool)
     duration_s = (obs_idx.size - 1) / float(target_hz) if obs_idx.size > 1 else 0.0
     return {
         "episode_id": _episode_id_num(src),
@@ -102,6 +117,12 @@ def build_20hz_episode(
         "action_label_offset_s": float(action_label_offset_s),
         "first_source_index": int(obs_idx[0]),
         "last_source_index": int(obs_idx[-1]),
+        "source_time_gap_max_ms": float(np.max(source_time_gap_ms)) if source_time_gap_ms.size else 0.0,
+        "source_time_gap_event_count": int(np.count_nonzero(gap_events)),
+        "train_exclude_count": int(np.count_nonzero(train_exclude_mask)),
+        "train_exclude_fraction": (
+            float(np.mean(train_exclude_mask)) if train_exclude_mask.size else 0.0
+        ),
     }
 
 
@@ -173,6 +194,8 @@ def _copy_selected_episode(
     action_idx: np.ndarray,
     target_hz: float,
     action_label_offset_s: float,
+    gap_mask_threshold_ms: float,
+    gap_mask_padding_s: float,
     manual_end: int,
     source_path: Path,
 ) -> None:
@@ -194,6 +217,10 @@ def _copy_selected_episode(
     meta.attrs["action_prealigned"] = True
     meta.attrs["sampling_hz"] = float(target_hz)
     meta.attrs["excluded_go_home"] = True
+    meta.attrs["source_time_gap_ms"] = "diagnostics/source_time_gap_ms"
+    meta.attrs["train_exclude_mask"] = "diagnostics/train_exclude_mask"
+    meta.attrs["gap_mask_threshold_ms"] = float(gap_mask_threshold_ms)
+    meta.attrs["gap_mask_padding_s"] = float(gap_mask_padding_s)
     out_f.attrs["is_real"] = bool(in_f.attrs.get("is_real", True))
 
     _copy_dataset(in_f, out_f, "observations/qpos", obs_idx)
@@ -216,11 +243,37 @@ def _copy_selected_episode(
         for name in in_f["diagnostics"]:
             _copy_dataset(in_f, out_f, f"diagnostics/{name}", obs_idx)
     diag = out_f.require_group("diagnostics")
-    diag.create_dataset("source_observation_index", data=obs_idx.astype(np.int64))
-    diag.create_dataset("source_action_index", data=action_idx.astype(np.int64))
+    _replace_dataset(diag, "source_observation_index", obs_idx.astype(np.int64))
+    _replace_dataset(diag, "source_action_index", action_idx.astype(np.int64))
     source_obs_ts = _observation_timestamps(in_f)
     if source_obs_ts.size:
-        diag.create_dataset("source_observation_timestamp_ns", data=source_obs_ts[obs_idx].astype(np.int64))
+        selected_ts = source_obs_ts[obs_idx].astype(np.int64)
+        _replace_dataset(diag, "source_observation_timestamp_ns", selected_ts)
+    else:
+        selected_ts = np.zeros(obs_idx.size, dtype=np.int64)
+    source_time_gap_ms = _source_time_gap_ms(selected_ts)
+    gap_events = source_time_gap_ms > float(gap_mask_threshold_ms)
+    padding_steps = int(np.ceil(float(gap_mask_padding_s) * float(target_hz)))
+    train_exclude_mask = _gap_train_exclude_mask(
+        gap_events=gap_events,
+        n_steps=obs_idx.size,
+        padding_steps=padding_steps,
+    )
+    _replace_dataset(diag, "source_time_gap_ms", source_time_gap_ms.astype(np.float32))
+    _replace_dataset(
+        diag,
+        "source_time_gap_exceeds_threshold",
+        gap_events.astype(np.uint8),
+    )
+    _replace_dataset(diag, "train_exclude_mask", train_exclude_mask.astype(np.uint8))
+    diag.attrs["gap_mask_threshold_ms"] = float(gap_mask_threshold_ms)
+    diag.attrs["gap_mask_padding_s"] = float(gap_mask_padding_s)
+    diag.attrs["gap_mask_padding_steps"] = int(padding_steps)
+    diag.attrs["source_time_gap_max_ms"] = (
+        float(np.max(source_time_gap_ms)) if source_time_gap_ms.size else 0.0
+    )
+    diag.attrs["source_time_gap_event_count"] = int(np.count_nonzero(gap_events))
+    diag.attrs["train_exclude_count"] = int(np.count_nonzero(train_exclude_mask))
 
 
 def _copy_images(in_f: h5py.File, out_f: h5py.File, obs_idx: np.ndarray) -> None:
@@ -249,6 +302,41 @@ def _copy_dataset(in_f: h5py.File, out_f: h5py.File, path: str, indices: np.ndar
     out = parent.create_dataset(name, data=data, dtype=ds.dtype)
     for key, value in ds.attrs.items():
         out.attrs[key] = value
+
+
+def _replace_dataset(group: h5py.Group, name: str, data: np.ndarray) -> None:
+    if name in group:
+        del group[name]
+    group.create_dataset(name, data=data)
+
+
+def _source_time_gap_ms(timestamps_ns: np.ndarray) -> np.ndarray:
+    ts = np.asarray(timestamps_ns, dtype=np.int64).reshape(-1)
+    if ts.size == 0:
+        return np.zeros(0, dtype=np.float32)
+    gap = np.zeros(ts.size, dtype=np.float64)
+    if ts.size > 1:
+        delta_ms = np.diff(ts).astype(np.float64) * 1e-6
+        gap[1:] = np.maximum(delta_ms, 0.0)
+    return gap.astype(np.float32)
+
+
+def _gap_train_exclude_mask(
+    *,
+    gap_events: np.ndarray,
+    n_steps: int,
+    padding_steps: int,
+) -> np.ndarray:
+    mask = np.zeros(int(n_steps), dtype=bool)
+    if n_steps <= 0:
+        return mask
+    pad = max(0, int(padding_steps))
+    events = np.flatnonzero(np.asarray(gap_events, dtype=bool).reshape(-1)[:n_steps])
+    for idx in events:
+        start = max(0, int(idx) - pad)
+        end = min(int(n_steps), int(idx) + pad + 1)
+        mask[start:end] = True
+    return mask
 
 
 def _copy_attrs(in_f: h5py.File, out_f: h5py.File) -> None:
@@ -314,6 +402,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--episodes", default="26-65")
     parser.add_argument("--target-hz", type=float, default=20.0)
     parser.add_argument("--action-label-offset-s", type=float, default=-0.02)
+    parser.add_argument("--gap-mask-threshold-ms", type=float, default=DEFAULT_GAP_MASK_THRESHOLD_MS)
+    parser.add_argument("--gap-mask-padding-s", type=float, default=DEFAULT_GAP_MASK_PADDING_S)
     args = parser.parse_args(argv)
     summary = build_20hz_dataset(
         input_dir=args.input_dir,
@@ -321,6 +411,8 @@ def main(argv: list[str] | None = None) -> None:
         episode_ids=parse_episode_spec(args.episodes),
         target_hz=args.target_hz,
         action_label_offset_s=args.action_label_offset_s,
+        gap_mask_threshold_ms=args.gap_mask_threshold_ms,
+        gap_mask_padding_s=args.gap_mask_padding_s,
     )
     print(f"20Hz dataset summary written to {args.output_dir / 'resample_20hz_summary.json'}")
     print(f"Episodes: {len(summary['episodes'])}")

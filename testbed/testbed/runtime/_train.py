@@ -90,6 +90,7 @@ def train_policy(config: dict[str, Any]) -> None:
     num_workers  = int(train_cfg.get("num_workers", 4))
     pf_raw       = train_cfg.get("prefetch_factor", 2)
     prefetch_factor = int(pf_raw) if pf_raw is not None and num_workers > 0 else None
+    action_chunk_size = int(act_params.get("chunk_size", 100))
     train_loader, val_loader, norm_stats, _, split_info = load_data(
         dataset_dir  = dataset_dir,
         num_episodes = num_episodes,
@@ -107,6 +108,7 @@ def train_policy(config: dict[str, Any]) -> None:
         reuse_split        = reuse_split,
         low_dim_keys       = low_dim_keys,
         episode_ids        = episode_ids,
+        action_chunk_size  = action_chunk_size,
     )
 
     # save normalisation stats so trainer can load them

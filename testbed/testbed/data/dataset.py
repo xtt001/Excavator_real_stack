@@ -192,6 +192,7 @@ class EpisodicDataset(Dataset):
         norm_stats: dict[str, np.ndarray],
         episode_len: int | None = None,
         low_dim_keys: list[str] | tuple[str, ...] | None = None,
+        action_chunk_size: int | None = None,
     ):
         super().__init__()
         self.episode_ids  = episode_ids
@@ -200,6 +201,7 @@ class EpisodicDataset(Dataset):
         self.norm_stats   = norm_stats
         self.episode_len  = int(episode_len) if episode_len is not None else None
         self.low_dim_keys = _normalize_low_dim_keys(low_dim_keys)
+        self.action_chunk_size = int(action_chunk_size) if action_chunk_size is not None else None
         self.is_real: bool | None = None
         # Warm-up to populate self.is_real
         self.__getitem__(0)
@@ -221,7 +223,17 @@ class EpisodicDataset(Dataset):
             T = original_action_shape[0]
 
             # ── sample start timestep ─────────────────────────────────────
-            t0 = int(np.random.choice(T))
+            train_exclude_mask = _read_train_exclude_mask(f, T)
+            valid_starts = _valid_start_indices(
+                total_steps=T,
+                train_exclude_mask=train_exclude_mask,
+                action_chunk_size=self.action_chunk_size,
+            )
+            if valid_starts.size == 0:
+                raise ValueError(
+                    f"Episode {ep_id} has no valid training start after train_exclude_mask."
+                )
+            t0 = int(np.random.choice(valid_starts))
 
             # ── observation at t0 ─────────────────────────────────────────
             qpos = f["/observations/qpos"][t0]
@@ -303,6 +315,40 @@ def _bool_attr(value: Any) -> bool:
         return str(value).strip().lower() in {"true", "yes", "1"}
 
 
+def _read_train_exclude_mask(h5_file: Any, total_steps: int) -> np.ndarray | None:
+    path = "diagnostics/train_exclude_mask"
+    if path not in h5_file:
+        return None
+    mask = np.asarray(h5_file[path][()], dtype=bool).reshape(-1)
+    if mask.size != int(total_steps):
+        return None
+    return mask
+
+
+def _valid_start_indices(
+    *,
+    total_steps: int,
+    train_exclude_mask: np.ndarray | None,
+    action_chunk_size: int | None,
+) -> np.ndarray:
+    """Return t0 values whose sampled action window does not cross masked samples."""
+
+    T = int(total_steps)
+    if T <= 0:
+        return np.zeros(0, dtype=np.int64)
+    if train_exclude_mask is None:
+        return np.arange(T, dtype=np.int64)
+    mask = np.asarray(train_exclude_mask, dtype=bool).reshape(-1)
+    if mask.size != T or not np.any(mask):
+        return np.arange(T, dtype=np.int64)
+    horizon = max(1, int(action_chunk_size) if action_chunk_size is not None else 1)
+    starts = np.arange(T, dtype=np.int64)
+    ends = np.minimum(starts + horizon, T)
+    prefix = np.concatenate(([0], np.cumsum(mask.astype(np.int64))))
+    window_has_mask = (prefix[ends] - prefix[starts]) > 0
+    return starts[~window_has_mask]
+
+
 def _decode_jpeg_image(encoded: np.ndarray) -> np.ndarray:
     try:
         import cv2
@@ -334,6 +380,7 @@ def load_data(
     reuse_split: bool = True,
     low_dim_keys: list[str] | tuple[str, ...] | None = None,
     episode_ids: list[int] | None = None,
+    action_chunk_size: int | None = None,
 ) -> tuple[DataLoader, DataLoader, dict, bool, dict[str, Any]]:
     """
     Build train/val DataLoaders from an HDF5 dataset directory.
@@ -379,6 +426,7 @@ def load_data(
     import h5py
     dim_info = {}
     length_info = {}
+    valid_start_count = {}
     for ep_id in available:
         p = dataset_dir / f"episode_{ep_id}.hdf5"
         with h5py.File(p, "r") as f:
@@ -387,6 +435,13 @@ def load_data(
                 f["/observations/qpos"].shape[1],
             )
             length_info[ep_id] = int(f["/action"].shape[0])
+            valid_start_count[ep_id] = int(
+                _valid_start_indices(
+                    total_steps=length_info[ep_id],
+                    train_exclude_mask=_read_train_exclude_mask(f, length_info[ep_id]),
+                    action_chunk_size=action_chunk_size,
+                ).size
+            )
     filtered = [i for i in available if dim_info[i][0] == dim_info[i][1]]
     dropped = len(available) - len(filtered)
     if dropped:
@@ -402,6 +457,20 @@ def load_data(
         raise FileNotFoundError(
             f"No valid episodes found under {dataset_dir} (action_dim != qpos_dim for all). "
             "Re-collect data with `tb-record-real`."
+        )
+
+    mask_filtered = [i for i in available if valid_start_count.get(i, 0) > 0]
+    dropped_masked = len(available) - len(mask_filtered)
+    if dropped_masked:
+        print(
+            f"Warning: skipped {dropped_masked} episode(s) with no valid training "
+            "starts after diagnostics/train_exclude_mask."
+        )
+    available = mask_filtered
+
+    if not available:
+        raise FileNotFoundError(
+            f"No valid episodes found under {dataset_dir} after train_exclude_mask filtering."
         )
 
     max_episode_len = max(length_info[ep_id] for ep_id in available)
@@ -437,6 +506,7 @@ def load_data(
         norm_stats,
         episode_len=target_episode_len,
         low_dim_keys=selected_low_dim_keys,
+        action_chunk_size=action_chunk_size,
     )
     val_ds = EpisodicDataset(
         val_ids,
@@ -445,12 +515,17 @@ def load_data(
         norm_stats,
         episode_len=target_episode_len,
         low_dim_keys=selected_low_dim_keys,
+        action_chunk_size=action_chunk_size,
     )
 
     split_info["dataset_max_episode_len"] = int(max_episode_len)
     split_info["loader_episode_len"] = int(target_episode_len)
     split_info["low_dim_keys"] = list(selected_low_dim_keys)
     split_info["low_dim_dim"] = int(norm_stats["proprio_dim"])
+    split_info["action_chunk_size"] = None if action_chunk_size is None else int(action_chunk_size)
+    split_info["gap_mask_valid_start_count"] = {
+        int(ep_id): int(valid_start_count.get(ep_id, 0)) for ep_id in available
+    }
     split_info["explicit_episode_ids"] = (
         [] if episode_ids is None else [int(ep_id) for ep_id in episode_ids]
     )

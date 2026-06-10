@@ -3028,6 +3028,7 @@ class RealworldV1Tests(unittest.TestCase):
             n = 100
             step_ns = np.arange(n, dtype=np.int64) * 20_000_000
             image_ts = (np.arange(n, dtype=np.int64) // 2) * 40_000_000 + 1_000_000_000
+            image_ts[40:] += 400_000_000
             diagnostics = _real_diagnostics(n)
             diagnostics.update(
                 {
@@ -3052,15 +3053,21 @@ class RealworldV1Tests(unittest.TestCase):
             )
             row = build_20hz_episode(input_path=src, output_path=dst)
             self.assertLess(row["last_source_index"], 70)
+            self.assertGreater(row["source_time_gap_event_count"], 0)
             import h5py
 
             with h5py.File(dst, "r") as f:
                 source_idx = f["diagnostics/source_observation_index"][()]
                 source_action_idx = f["diagnostics/source_action_index"][()]
                 image_out = f["diagnostics/image_timestamp_ns_fpv"][()]
+                source_gap_ms = f["diagnostics/source_time_gap_ms"][()]
+                train_exclude_mask = f["diagnostics/train_exclude_mask"][()].astype(bool)
                 self.assertTrue(np.all(np.diff(source_idx) > 0))
                 self.assertEqual(len(np.unique(image_out)), len(image_out))
                 np.testing.assert_array_less(source_action_idx, source_idx + 1)
+                self.assertEqual(source_gap_ms.shape, source_idx.shape)
+                self.assertGreater(float(np.max(source_gap_ms)), 250.0)
+                self.assertTrue(np.any(train_exclude_mask))
                 self.assertTrue(bool(f["metadata"].attrs["action_prealigned"]))
 
     @unittest.skipUnless(HAS_H5PY, "h5py is required for training QC tests")
@@ -3106,6 +3113,71 @@ class RealworldV1Tests(unittest.TestCase):
             self.assertEqual(metrics["training_status"], "FAIL")
             self.assertIn("qpos_jump", metrics["training_warnings"])
             self.assertIn("fpv_gap_fail", metrics["training_warnings"])
+
+    @unittest.skipUnless(HAS_H5PY, "h5py is required for training QC tests")
+    def test_training_qc_treats_masked_fpv_gap_as_info(self) -> None:
+        from testbed.data.hdf5_io import write_episode
+        from testbed.data.training_qc import episode_training_metrics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "episode_1.hdf5"
+            n = 80
+            diagnostics = _real_diagnostics(n)
+            image_ts = np.arange(n, dtype=np.int64) * 40_000_000 + 1_000_000_000
+            image_ts[30:] += 350_000_000
+            source_gap_ms = np.zeros(n, dtype=np.float32)
+            source_gap_ms[1:] = np.diff(image_ts).astype(np.float64) * 1e-6
+            train_exclude_mask = np.zeros(n, dtype=np.uint8)
+            train_exclude_mask[20:41] = 1
+            diagnostics.update(
+                {
+                    "image_timestamp_ns_fpv": image_ts,
+                    "image_timestamp_ns": image_ts,
+                    "joint_timestamp_ns": np.arange(n, dtype=np.int64) * 40_000_000,
+                    "fpv_age_ms": np.full(n, 10.0),
+                    "sync_max_skew_ns": np.zeros(n, dtype=np.int64),
+                    "receiver_health_ok": np.ones(n, dtype=np.int8),
+                    "imu_online": np.ones((n, 4), dtype=np.int32),
+                    "imu_valid_attitude": np.ones((n, 4), dtype=np.int32),
+                    "source_time_gap_ms": source_gap_ms,
+                    "train_exclude_mask": train_exclude_mask,
+                }
+            )
+            write_episode(
+                path,
+                qpos=np.zeros((n, 4), dtype=np.float32),
+                qvel=np.zeros((n, 4), dtype=np.float32),
+                actions=np.zeros((n, 4), dtype=np.float32),
+                images={"fpv": np.zeros((n, 4, 4, 3), dtype=np.uint8) + 30},
+                metadata={"is_real": True, "success": 1},
+                diagnostics=diagnostics,
+            )
+            metrics = episode_training_metrics(
+                path,
+                reference_stats=None,
+                make_plot=False,
+                plot_dir=None,
+            )
+            self.assertEqual(metrics["training_status"], "PASS")
+            self.assertNotIn("fpv_gap_fail", metrics["training_warnings"])
+            self.assertIn("usable_with_gap_mask", metrics["training_info"])
+            self.assertEqual(metrics["fpv_gap_mask_status"], "usable_with_gap_mask")
+
+    @unittest.skipUnless(HAS_TORCH, "torch is required for ACT data loader tests")
+    def test_training_sampler_excludes_windows_crossing_gap_mask(self) -> None:
+        from testbed.data.dataset import _valid_start_indices
+
+        mask = np.zeros(12, dtype=bool)
+        mask[5] = True
+        starts = _valid_start_indices(
+            total_steps=12,
+            train_exclude_mask=mask,
+            action_chunk_size=4,
+        )
+        self.assertNotIn(2, starts.tolist())
+        self.assertNotIn(5, starts.tolist())
+        self.assertIn(1, starts.tolist())
+        self.assertIn(6, starts.tolist())
 
     @unittest.skipUnless(HAS_H5PY, "h5py is required for recorder metadata tests")
     def test_recorder_metadata_uses_recorded_image_shape_and_timestamps(self) -> None:
