@@ -24,6 +24,7 @@ BUCKET_AXIS = 3
 @dataclass(frozen=True)
 class TrainingQcThresholds:
     qpos_jump_fail_rad: float = 0.20
+    raw_qpos_branch_jump_fail_rad: float = 3.0
     qvel_residual_p95_warn_rad_s: float = 1.50
     fpv_unique_fps_fail_hz: float = 19.5
     fpv_gap_warn_ms: float = 100.0
@@ -218,6 +219,7 @@ def episode_training_metrics(
     source_total_steps = _source_total_steps(path=path, metadata=metadata, fallback=n_steps)
     dt = _dt_seconds(timestamps_ns, n_steps)
     qpos_jump = _max_abs_diff(qpos)
+    raw_qpos_jump = _max_abs_raw_diff(qpos)
     qvel_residual = _qvel_residual(qpos=qpos, qvel=qvel, dt=dt)
     fpv = _fpv_time_metrics(image_ts=image_ts)
     bucket_ref_status = _bucket_reference_status(
@@ -246,6 +248,7 @@ def episode_training_metrics(
         success_ok=success_ok,
         go_home_result=go_home_result,
         qpos_jump=qpos_jump,
+        raw_qpos_jump=raw_qpos_jump,
         qvel_residual=qvel_residual,
         fpv=fpv,
         fpv_age=fpv_age,
@@ -295,6 +298,10 @@ def episode_training_metrics(
         "qpos_max_jump_boom": qpos_jump[1],
         "qpos_max_jump_stick": qpos_jump[2],
         "qpos_max_jump_bucket": qpos_jump[3],
+        "raw_qpos_max_jump_swing": raw_qpos_jump[0],
+        "raw_qpos_max_jump_boom": raw_qpos_jump[1],
+        "raw_qpos_max_jump_stick": raw_qpos_jump[2],
+        "raw_qpos_max_jump_bucket": raw_qpos_jump[3],
         "qvel_residual_p95_swing": qvel_residual["p95_abs"][0],
         "qvel_residual_p95_boom": qvel_residual["p95_abs"][1],
         "qvel_residual_p95_stick": qvel_residual["p95_abs"][2],
@@ -355,6 +362,7 @@ def _episode_status(
     success_ok: bool,
     go_home_result: str,
     qpos_jump: list[float],
+    raw_qpos_jump: list[float],
     qvel_residual: dict[str, list[float]],
     fpv: dict[str, float | int],
     fpv_age: np.ndarray | None,
@@ -381,6 +389,9 @@ def _episode_status(
     if max(qpos_jump) > thresholds.qpos_jump_fail_rad:
         warnings.append("qpos_jump")
         fail = True
+    if max(raw_qpos_jump) > thresholds.raw_qpos_branch_jump_fail_rad:
+        warnings.append("raw_qpos_branch_jump")
+        fail = True
     if max(qvel_residual["p95_abs"]) > thresholds.qvel_residual_p95_warn_rad_s:
         warnings.append("qvel_residual_high")
     if float(fpv["unique_fps"]) < thresholds.fpv_unique_fps_fail_hz:
@@ -389,8 +400,6 @@ def _episode_status(
     if int(fpv["gap_gt250_count"]) > 0 or float(fpv["max_gap_ms"]) > thresholds.fpv_gap_fail_ms:
         warnings.append("fpv_gap_fail")
         fail = True
-    elif int(fpv["gap_gt100_count"]) > 0:
-        warnings.append("fpv_gap_warn")
     if _pctl(fpv_age, 95) > thresholds.fpv_age_p95_fail_ms:
         warnings.append("fpv_age_high")
         fail = True
@@ -634,6 +643,14 @@ def _max_abs_diff(values: np.ndarray) -> list[float]:
         # swing is a circular yaw-like axis; use shortest-angle step for QC.
         delta[:, 0] = (delta[:, 0] + np.pi) % (2.0 * np.pi) - np.pi
     out = np.max(np.abs(delta), axis=0).tolist()
+    return [float(x) for x in out]
+
+
+def _max_abs_raw_diff(values: np.ndarray) -> list[float]:
+    arr = np.asarray(values, dtype=np.float64)
+    if arr.ndim != 2 or arr.shape[0] < 2:
+        return [0.0, 0.0, 0.0, 0.0]
+    out = np.max(np.abs(np.diff(arr, axis=0)), axis=0).tolist()
     return [float(x) for x in out]
 
 
