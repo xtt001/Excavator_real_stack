@@ -3179,6 +3179,42 @@ class RealworldV1Tests(unittest.TestCase):
         self.assertIn(1, starts.tolist())
         self.assertIn(6, starts.tolist())
 
+    def test_bucket_semantic_decision_drops_bad_recovery_and_reviews_shallow_min(self) -> None:
+        from testbed.data.training_qc import _bucket_semantic_decision
+
+        reference = {
+            "end": {"p5": 0.20},
+            "max": {"p5": 0.60},
+            "late_max": {"p5": 0.48},
+            "min": {"p99": -1.54},
+            "max_jump": {"p99": 0.17},
+        }
+        drop_features = {
+            "end": -0.25,
+            "max": 0.24,
+            "late_max": 0.05,
+            "min": -2.1,
+            "max_jump": 0.09,
+        }
+        review_features = {
+            "end": 0.92,
+            "max": 1.08,
+            "late_max": 1.08,
+            "min": -1.43,
+            "max_jump": 0.10,
+        }
+        keep_features = {
+            "end": 0.70,
+            "max": 0.71,
+            "late_max": 0.71,
+            "min": -2.1,
+            "max_jump": 0.16,
+        }
+
+        self.assertEqual(_bucket_semantic_decision(drop_features, reference)[0], "drop")
+        self.assertEqual(_bucket_semantic_decision(review_features, reference)[0], "review")
+        self.assertEqual(_bucket_semantic_decision(keep_features, reference)[0], "keep")
+
     @unittest.skipUnless(HAS_H5PY, "h5py is required for recorder metadata tests")
     def test_recorder_metadata_uses_recorded_image_shape_and_timestamps(self) -> None:
         import h5py

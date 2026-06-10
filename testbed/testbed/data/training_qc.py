@@ -75,6 +75,7 @@ def run_training_qc(
             plot_dir=output_dir / "episodes",
         )
         rows.append(metrics)
+    _apply_bucket_semantic_adjudication(rows)
 
     summary = _summary_from_rows(
         rows,
@@ -927,6 +928,163 @@ def _train_ready_manifest(rows: list[dict[str, Any]], summary: dict[str, Any]) -
             if str(row.get("training_info", ""))
         ],
     }
+
+
+def _apply_bucket_semantic_adjudication(rows: list[dict[str, Any]]) -> None:
+    """Resolve bucket_reference_warn into PASS/WARN/FAIL using trajectory semantics."""
+
+    for row in rows:
+        row.setdefault("bucket_semantic_decision", "")
+        row.setdefault("bucket_semantic_notes", "")
+        for key in _BUCKET_SEMANTIC_FEATURES:
+            row.setdefault(f"bucket_semantic_{key}", 0.0)
+
+    pass_features: list[dict[str, float]] = []
+    features_by_episode: dict[str, dict[str, float]] = {}
+    for row in rows:
+        try:
+            features = _bucket_semantic_features(
+                Path(str(row["path"])),
+                manual_end_index=int(row.get("manual_end_index", 0) or 0),
+            )
+        except Exception:
+            continue
+        features_by_episode[str(row["episode_id"])] = features
+        if row.get("training_status") == "PASS":
+            pass_features.append(features)
+        for key, value in features.items():
+            row[f"bucket_semantic_{key}"] = float(value)
+    if len(pass_features) < 5:
+        return
+
+    reference = _bucket_semantic_reference(pass_features)
+    for row in rows:
+        warnings = _split_warnings(str(row.get("training_warnings", "")))
+        if row.get("training_status") != "WARN" or warnings != ["bucket_reference_warn"]:
+            continue
+        features = features_by_episode.get(str(row["episode_id"]))
+        if features is None:
+            continue
+        decision, notes = _bucket_semantic_decision(features, reference)
+        row["bucket_semantic_decision"] = decision
+        row["bucket_semantic_notes"] = ";".join(notes)
+        if decision == "drop":
+            row["training_status"] = "FAIL"
+            row["training_ready"] = 0
+            row["training_warnings"] = "bucket_semantic_outlier"
+        elif decision == "review":
+            row["training_status"] = "WARN"
+            row["training_ready"] = 1
+            row["training_warnings"] = "bucket_semantic_review"
+        elif decision == "keep":
+            row["training_status"] = "PASS"
+            row["training_ready"] = 1
+            row["training_warnings"] = ""
+            info = _split_warnings(str(row.get("training_info", "")))
+            if "bucket_reference_semantic_keep" not in info:
+                info.append("bucket_reference_semantic_keep")
+            row["training_info"] = ";".join(info)
+
+
+_BUCKET_SEMANTIC_FEATURES = (
+    "start",
+    "end",
+    "min",
+    "max",
+    "range",
+    "argmin",
+    "argmax",
+    "early_max",
+    "late_max",
+    "max_jump",
+)
+
+
+def _bucket_semantic_features(path: Path, *, manual_end_index: int) -> dict[str, float]:
+    with h5py.File(path, "r") as f:
+        qpos = np.asarray(f["observations/qpos"][()], dtype=np.float64)
+    if qpos.ndim != 2 or qpos.shape[0] == 0 or qpos.shape[1] <= BUCKET_AXIS:
+        return {key: 0.0 for key in _BUCKET_SEMANTIC_FEATURES}
+    end = int(manual_end_index) if manual_end_index > 0 else int(qpos.shape[0])
+    end = max(1, min(end, int(qpos.shape[0])))
+    bucket = qpos[:end, BUCKET_AXIS]
+    n = int(bucket.size)
+    window = max(3, int(round(n * 0.05)))
+    early_end = max(window, int(round(n * 0.35)))
+    late_start = min(n - window, int(round(n * 0.60)))
+    smoothed = _moving_average(bucket, max(3, int(round(n * 0.02))))
+    jump = float(np.max(np.abs(np.diff(bucket)))) if n > 1 else 0.0
+    return {
+        "start": float(np.median(bucket[:window])),
+        "end": float(np.median(bucket[-window:])),
+        "min": float(np.min(bucket)),
+        "max": float(np.max(bucket)),
+        "range": float(np.max(bucket) - np.min(bucket)),
+        "argmin": float(np.argmin(smoothed) / max(1, n - 1)),
+        "argmax": float(np.argmax(smoothed) / max(1, n - 1)),
+        "early_max": float(np.max(bucket[:early_end])),
+        "late_max": float(np.max(bucket[late_start:])),
+        "max_jump": jump,
+    }
+
+
+def _moving_average(values: np.ndarray, window: int) -> np.ndarray:
+    arr = np.asarray(values, dtype=np.float64).reshape(-1)
+    if arr.size == 0:
+        return arr
+    win = max(1, int(window))
+    if win % 2 == 0:
+        win += 1
+    if arr.size < win:
+        return arr
+    kernel = np.ones(win, dtype=np.float64) / float(win)
+    return np.convolve(arr, kernel, mode="same")
+
+
+def _bucket_semantic_reference(features: list[dict[str, float]]) -> dict[str, dict[str, float]]:
+    out: dict[str, dict[str, float]] = {}
+    for key in _BUCKET_SEMANTIC_FEATURES:
+        values = np.asarray([item[key] for item in features], dtype=np.float64)
+        out[key] = {
+            "p1": float(np.percentile(values, 1)),
+            "p5": float(np.percentile(values, 5)),
+            "median": float(np.median(values)),
+            "p95": float(np.percentile(values, 95)),
+            "p99": float(np.percentile(values, 99)),
+        }
+    return out
+
+
+def _bucket_semantic_decision(
+    features: dict[str, float],
+    reference: dict[str, dict[str, float]],
+) -> tuple[str, list[str]]:
+    notes: list[str] = []
+    end_drop_threshold = float(reference["end"]["p5"]) - 0.02
+    max_drop_threshold = float(reference["max"]["p5"]) - 0.20
+    late_max_drop_threshold = float(reference["late_max"]["p5"]) - 0.20
+    if features["end"] < end_drop_threshold and (
+        features["max"] < max_drop_threshold
+        or features["late_max"] < late_max_drop_threshold
+    ):
+        notes.append(
+            "bucket_end_or_late_recovery_too_low"
+        )
+        return "drop", notes
+
+    shallow_min_threshold = float(reference["min"]["p99"]) + 0.10
+    if features["min"] > shallow_min_threshold:
+        notes.append("bucket_min_too_shallow")
+    jump_threshold = max(0.18, float(reference["max_jump"]["p99"]) + 0.03)
+    if features["max_jump"] > jump_threshold:
+        notes.append("bucket_jump_needs_review")
+    if notes:
+        return "review", notes
+    return "keep", notes
+
+
+def _split_warnings(value: str) -> list[str]:
+    return [part for part in str(value).split(";") if part]
 
 
 def _plot_episode_timeline(
