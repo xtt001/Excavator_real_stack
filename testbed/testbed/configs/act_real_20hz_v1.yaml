@@ -1,0 +1,48 @@
+# ACT offline training config for repaired 20Hz real excavator data.
+# Source data should be built with tb-build-20hz-dataset from repaired 50Hz HDF5.
+
+task:
+  task_name: real_excavation_teleop_20hz_v1
+  equipment_model: real_excavator
+  dataset_dir: /media/mundane/EXTERNAL_USB/real_teleop_v1_repaired_20hz_v1
+  train_ready_manifest_path: /media/mundane/EXTERNAL_USB/real_teleop_v1_repaired_20hz_v1/qc_full/train_ready_manifest.json
+  num_episodes: 66
+  episode_len:
+  camera_names:
+    - fpv
+  backend:
+    name: real
+    dt: 0.05
+
+policy:
+  class: ACT
+  device: cuda
+  low_dim_keys:
+    - qpos
+  act_params:
+    # 20 queries at 20Hz represent roughly a 1s action horizon.
+    chunk_size: 20
+    kl_weight: 10.0
+    hidden_dim: 512
+    dim_feedforward: 3200
+
+train:
+  lr: 1.0e-5
+  num_epochs: 2000
+  batch_size: 4
+  seed: 0
+  device: cuda
+  num_workers: 0
+  prefetch_factor:
+  persistent_workers: false
+  pin_memory: true
+  split_seed: 0
+  train_split_ratio: 0.8
+  reuse_split: true
+  val_every: 5
+  save_latest_every: 10
+  checkpoint_every: 50
+  plot_every: 50
+  amp: true
+  amp_dtype: auto
+  ckpt_dir: runs/ckpts/real_excavation_act_20hz_v1

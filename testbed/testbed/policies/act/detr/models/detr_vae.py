@@ -10,9 +10,6 @@ from .transformer import build_transformer, TransformerEncoder, TransformerEncod
 
 import numpy as np
 
-import IPython
-e = IPython.embed
-
 
 def reparametrize(mu, logvar):
     std = logvar.div(2).exp()

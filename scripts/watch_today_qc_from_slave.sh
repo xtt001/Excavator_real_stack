@@ -383,6 +383,7 @@ report_dir = Path(os.environ["REPORT_DIR"])
 history_from = int(os.environ.get("HISTORY_FROM", "0"))
 summary_path = report_dir / "summary.json"
 episodes_path = report_dir / "episodes.csv"
+training_episodes_path = report_dir / "training_qc_episodes.csv"
 
 if not summary_path.exists() or not episodes_path.exists():
     print("QC UNKNOWN: report missing")
@@ -402,6 +403,10 @@ if isinstance(warnings, dict):
 
 with episodes_path.open(newline="") as f:
     rows = list(csv.DictReader(f))
+training_rows = {}
+if training_episodes_path.exists():
+    with training_episodes_path.open(newline="") as f:
+        training_rows = {row.get("episode_id", ""): row for row in csv.DictReader(f)}
 
 bad_episode_ids = []
 episode_parts = []
@@ -417,11 +422,30 @@ for row in rows:
     ok = row.get("success") in {"1", "true", "True"}
     warnings_text = row.get("warnings", "")
     error_text = row.get("error", "")
-    label = "OK" if ok and not warnings_text and not error_text else "BAD"
-    if label != "OK":
+    training = training_rows.get(episode_id, {})
+    training_status = training.get("training_status", "")
+    training_warnings = training.get("training_warnings", "")
+    if not ok or warnings_text or error_text or training_status == "FAIL":
+        label = "BAD"
+    elif training_status == "WARN":
+        label = "WARN"
+    else:
+        label = "OK"
+    if label == "BAD":
         bad_episode_ids.append(episode_id)
 
     detail = f"{episode_id}:{label}:steps={row.get('n_steps', '?')}"
+    if training_status:
+        detail += f":train={training_status}"
+    if training_warnings:
+        detail += f":train_warnings={training_warnings}"
+    for metric in ("fpv_unique_fps", "fpv_max_gap_ms", "fpv_age_p95_ms", "qpos_max_jump_bucket"):
+        value = training.get(metric)
+        if value not in (None, ""):
+            try:
+                detail += f":{metric}={float(value):.3g}"
+            except Exception:
+                detail += f":{metric}={value}"
     if warnings_text:
         detail += f":warnings={warnings_text}"
     if error_text:
@@ -558,7 +582,7 @@ while true; do
 
   if [ "$changed" = 1 ]; then
     log "run QC for ${EP_DIR}"
-    if run_command env MPLCONFIGDIR=/tmp/excavator_mpl "$PYTHON" -m testbed.cli.dataset_qc --dataset-dir "$EP_DIR" --output-dir "$REPORT_DIR"; then
+    if run_command env MPLCONFIGDIR=/tmp/excavator_mpl "$PYTHON" -m testbed.cli.dataset_qc --dataset-dir "$EP_DIR" --output-dir "$REPORT_DIR" --mode quick; then
       log "QC finished"
     else
       log "QC command failed"

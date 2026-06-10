@@ -2957,6 +2957,156 @@ class RealworldV1Tests(unittest.TestCase):
             self.assertEqual(episode["images"]["fpv"].shape, (2, 6, 8, 3))
             self.assertGreater(float(episode["images"]["fpv"][0, ..., 0].mean()), 180.0)
 
+    def test_bucket_qpos_repair_is_noop_for_clean_series(self) -> None:
+        from testbed.data.bucket_repair import repair_bucket_series
+
+        qpos = np.linspace(-0.6, -0.2, 40, dtype=np.float32)
+        qvel = np.gradient(qpos, 0.02).astype(np.float32)
+        repaired, repair_mask, bad_mask, degraded = repair_bucket_series(
+            bucket_qpos=qpos,
+            bucket_qvel=qvel,
+            timestamps_ns=np.arange(40, dtype=np.int64) * 20_000_000,
+        )
+        np.testing.assert_allclose(repaired, qpos, atol=1e-6)
+        self.assertFalse(bool(np.any(repair_mask)))
+        self.assertFalse(bool(np.any(bad_mask)))
+        self.assertFalse(degraded)
+
+    def test_bucket_qpos_repair_reconstructs_branch_jump_and_env_state(self) -> None:
+        from testbed.data.bucket_repair import repair_episode
+        from testbed.data.hdf5_io import write_episode
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            src = Path(tmpdir) / "episode_47.hdf5"
+            dst = Path(tmpdir) / "repaired" / "episode_47.hdf5"
+            n = 80
+            t = np.arange(n, dtype=np.int64) * 20_000_000
+            bucket = np.linspace(-0.6, -1.0, n, dtype=np.float32)
+            corrupted = bucket.copy()
+            corrupted[35:45] += 3.0
+            qpos = np.zeros((n, 4), dtype=np.float32)
+            qpos[:, 3] = corrupted
+            qvel = np.zeros((n, 4), dtype=np.float32)
+            qvel[:, 3] = np.gradient(bucket, 0.02)
+            env_state = np.concatenate([qpos, qvel], axis=1)
+            diagnostics = _real_diagnostics(n)
+            diagnostics["joint_timestamp_ns"] = t
+            write_episode(
+                src,
+                qpos=qpos,
+                qvel=qvel,
+                actions=np.zeros((n, 4), dtype=np.float32),
+                images={"fpv": np.zeros((n, 4, 4, 3), dtype=np.uint8)},
+                env_state=env_state,
+                metadata={"is_real": True, "success": 1},
+                step_ns=t,
+                diagnostics=diagnostics,
+            )
+
+            result = repair_episode(src, dst, imu_log_dir=None)
+            self.assertTrue(result.repaired)
+            import h5py
+
+            with h5py.File(dst, "r") as f:
+                repaired_bucket = f["observations/qpos"][:, 3]
+                self.assertLess(float(np.max(np.abs(np.diff(repaired_bucket)))), 0.20)
+                np.testing.assert_allclose(
+                    f["observations/env_state"][:, 3],
+                    repaired_bucket,
+                    atol=1e-6,
+                )
+                self.assertIn("repairs/bucket_qpos_v1/repair_mask", f)
+
+    @unittest.skipUnless(HAS_H5PY, "h5py is required for 20Hz builder tests")
+    def test_20hz_builder_excludes_go_home_and_uses_unique_fpv_timestamps(self) -> None:
+        from testbed.data.hdf5_io import write_episode
+        from testbed.data.resample_20hz import build_20hz_episode
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            src = Path(tmpdir) / "episode_1.hdf5"
+            dst = Path(tmpdir) / "out" / "episode_1.hdf5"
+            n = 100
+            step_ns = np.arange(n, dtype=np.int64) * 20_000_000
+            image_ts = (np.arange(n, dtype=np.int64) // 2) * 40_000_000 + 1_000_000_000
+            diagnostics = _real_diagnostics(n)
+            diagnostics.update(
+                {
+                    "image_timestamp_ns_fpv": image_ts,
+                    "image_timestamp_ns": image_ts,
+                    "joint_timestamp_ns": image_ts,
+                    "action_sample_timestamp_ns": image_ts,
+                    "go_home_requested": np.r_[np.zeros(70, dtype=np.int8), np.ones(30, dtype=np.int8)],
+                    "go_home_running": np.r_[np.zeros(71, dtype=np.int8), np.ones(29, dtype=np.int8)],
+                }
+            )
+            actions = np.repeat(np.arange(n, dtype=np.float32).reshape(n, 1), 4, axis=1)
+            write_episode(
+                src,
+                qpos=np.zeros((n, 4), dtype=np.float32),
+                qvel=np.zeros((n, 4), dtype=np.float32),
+                actions=actions,
+                images={"fpv": np.zeros((n, 4, 4, 3), dtype=np.uint8)},
+                metadata={"is_real": True, "success": 1},
+                step_ns=step_ns,
+                diagnostics=diagnostics,
+            )
+            row = build_20hz_episode(input_path=src, output_path=dst)
+            self.assertLess(row["last_source_index"], 70)
+            import h5py
+
+            with h5py.File(dst, "r") as f:
+                source_idx = f["diagnostics/source_observation_index"][()]
+                source_action_idx = f["diagnostics/source_action_index"][()]
+                image_out = f["diagnostics/image_timestamp_ns_fpv"][()]
+                self.assertTrue(np.all(np.diff(source_idx) > 0))
+                self.assertEqual(len(np.unique(image_out)), len(image_out))
+                np.testing.assert_array_less(source_action_idx, source_idx + 1)
+                self.assertTrue(bool(f["metadata"].attrs["action_prealigned"]))
+
+    @unittest.skipUnless(HAS_H5PY, "h5py is required for training QC tests")
+    def test_training_qc_flags_bucket_jump_and_fpv_gap(self) -> None:
+        from testbed.data.hdf5_io import write_episode
+        from testbed.data.training_qc import episode_training_metrics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "episode_1.hdf5"
+            n = 20
+            qpos = np.zeros((n, 4), dtype=np.float32)
+            qpos[10:, 3] = 3.0
+            diagnostics = _real_diagnostics(n)
+            image_ts = np.arange(n, dtype=np.int64) * 50_000_000 + 1_000_000_000
+            image_ts[10:] += 300_000_000
+            diagnostics.update(
+                {
+                    "image_timestamp_ns_fpv": image_ts,
+                    "image_timestamp_ns": image_ts,
+                    "joint_timestamp_ns": np.arange(n, dtype=np.int64) * 20_000_000,
+                    "fpv_age_ms": np.full(n, 10.0),
+                    "sync_max_skew_ns": np.zeros(n, dtype=np.int64),
+                    "receiver_health_ok": np.ones(n, dtype=np.int8),
+                    "imu_online": np.ones((n, 4), dtype=np.int32),
+                    "imu_valid_attitude": np.ones((n, 4), dtype=np.int32),
+                }
+            )
+            write_episode(
+                path,
+                qpos=qpos,
+                qvel=np.zeros((n, 4), dtype=np.float32),
+                actions=np.zeros((n, 4), dtype=np.float32),
+                images={"fpv": np.zeros((n, 4, 4, 3), dtype=np.uint8) + 30},
+                metadata={"is_real": True, "success": 1},
+                diagnostics=diagnostics,
+            )
+            metrics = episode_training_metrics(
+                path,
+                reference_stats=None,
+                make_plot=False,
+                plot_dir=None,
+            )
+            self.assertEqual(metrics["training_status"], "FAIL")
+            self.assertIn("qpos_jump", metrics["training_warnings"])
+            self.assertIn("fpv_gap_fail", metrics["training_warnings"])
+
     @unittest.skipUnless(HAS_H5PY, "h5py is required for recorder metadata tests")
     def test_recorder_metadata_uses_recorded_image_shape_and_timestamps(self) -> None:
         import h5py

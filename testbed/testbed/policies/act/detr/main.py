@@ -6,9 +6,6 @@ import numpy as np
 import torch
 from .models import build_ACT_model, build_CNNMLP_model
 
-import IPython
-e = IPython.embed
-
 def get_args_parser():
     parser = argparse.ArgumentParser('Set transformer detector', add_help=False)
     parser.add_argument('--lr', default=1e-4, type=float) # will be overridden
@@ -80,7 +77,7 @@ def build_ACT_model_and_optimizer(args_override):
         setattr(args, k, v)
 
     model = build_ACT_model(args)
-    model.cuda()
+    model.to(_resolve_model_device(args))
 
     param_dicts = [
         {"params": [p for n, p in model.named_parameters() if "backbone" not in n and p.requires_grad]},
@@ -103,7 +100,7 @@ def build_CNNMLP_model_and_optimizer(args_override):
         setattr(args, k, v)
 
     model = build_CNNMLP_model(args)
-    model.cuda()
+    model.to(_resolve_model_device(args))
 
     param_dicts = [
         {"params": [p for n, p in model.named_parameters() if "backbone" not in n and p.requires_grad]},
@@ -116,3 +113,10 @@ def build_CNNMLP_model_and_optimizer(args_override):
                                   weight_decay=args.weight_decay)
 
     return model, optimizer
+
+
+def _resolve_model_device(args) -> torch.device:
+    device = torch.device(getattr(args, "device", "cuda"))
+    if device.type == "cuda" and not torch.cuda.is_available():
+        return torch.device("cpu")
+    return device

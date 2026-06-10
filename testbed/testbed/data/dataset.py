@@ -215,6 +215,8 @@ class EpisodicDataset(Dataset):
 
         with h5py.File(path, "r") as f:
             is_real: bool = bool(f.attrs.get(ATTR_IS_REAL, True))
+            metadata = dict(f["metadata"].attrs) if "metadata" in f else {}
+            action_prealigned = _bool_attr(metadata.get("action_prealigned", False))
             original_action_shape = f["/action"].shape
             T = original_action_shape[0]
 
@@ -235,7 +237,7 @@ class EpisodicDataset(Dataset):
             }
 
             # ── action from t0 onward ────────────────────────────────────
-            start = max(0, t0 - 1) if is_real else t0
+            start = t0 if (not is_real or action_prealigned) else max(0, t0 - 1)
             action     = f["/action"][start:]
             action_len = T - start
 
@@ -292,6 +294,15 @@ def _read_camera_image(h5_file: Any, camera_name: str, timestep: int) -> np.ndar
     return _decode_jpeg_image(encoded)
 
 
+def _bool_attr(value: Any) -> bool:
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    try:
+        return bool(int(value))
+    except Exception:
+        return str(value).strip().lower() in {"true", "yes", "1"}
+
+
 def _decode_jpeg_image(encoded: np.ndarray) -> np.ndarray:
     try:
         import cv2
@@ -322,6 +333,7 @@ def load_data(
     split_path: str | Path | None = None,
     reuse_split: bool = True,
     low_dim_keys: list[str] | tuple[str, ...] | None = None,
+    episode_ids: list[int] | None = None,
 ) -> tuple[DataLoader, DataLoader, dict, bool, dict[str, Any]]:
     """
     Build train/val DataLoaders from an HDF5 dataset directory.
@@ -334,21 +346,32 @@ def load_data(
     print(f"\nData from: {dataset_dir}\n")
 
     # discover available episode files
-    available = [
+    discovered = [
         int(p.stem.split("_", 1)[1])
         for p in list_episodes(dataset_dir)
     ]
-    available = [i for i in available if i < num_episodes]
+    if episode_ids is None:
+        available = [i for i in discovered if i < num_episodes]
+    else:
+        requested_ids = [int(i) for i in episode_ids]
+        discovered_set = set(discovered)
+        available = [i for i in requested_ids if i in discovered_set]
 
     if not available:
         raise FileNotFoundError(
             f"No episodes found under {dataset_dir}. "
             "Expected files like episode_0.hdf5."
         )
-    if len(available) < num_episodes:
+    if episode_ids is None and len(available) < num_episodes:
         print(
             f"Warning: requested {num_episodes} episodes "
             f"but found {len(available)}. Using available episodes."
+        )
+    if episode_ids is not None and len(available) < len(episode_ids):
+        missing = sorted(set(int(i) for i in episode_ids) - set(available))
+        print(
+            f"Warning: requested explicit episode_ids but {len(missing)} are missing: "
+            f"{missing[:20]}{'...' if len(missing) > 20 else ''}"
         )
 
     # Filter to episodes where action_dim matches qpos_dim.
@@ -428,6 +451,9 @@ def load_data(
     split_info["loader_episode_len"] = int(target_episode_len)
     split_info["low_dim_keys"] = list(selected_low_dim_keys)
     split_info["low_dim_dim"] = int(norm_stats["proprio_dim"])
+    split_info["explicit_episode_ids"] = (
+        [] if episode_ids is None else [int(ep_id) for ep_id in episode_ids]
+    )
 
     loader_kw: dict = {"pin_memory": pin_memory, "num_workers": num_workers}
     if num_workers > 0:

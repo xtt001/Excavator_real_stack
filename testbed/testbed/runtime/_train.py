@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import datetime
+import json
 import pickle
 from pathlib import Path
 from typing import Any
@@ -18,7 +19,8 @@ def train_policy(config: dict[str, Any]) -> None:
     task_name     = task_cfg.get("task_name", task_cfg.get("name", config.get("task_name", "")))
     dataset_dir   = Path(task_cfg.get("dataset_dir", config.get("dataset_dir", "data")))
     num_episodes  = task_cfg.get("num_episodes", config.get("num_episodes", 50))
-    episode_len   = int(task_cfg.get("episode_len", config.get("episode_len", 400)))
+    episode_len_raw = task_cfg.get("episode_len", config.get("episode_len", 400))
+    episode_len = None if episode_len_raw is None else int(episode_len_raw)
     camera_names  = task_cfg.get("camera_names", config.get("camera_names", []))
     low_dim_keys  = list(policy_cfg.get("low_dim_keys", ["qpos"]))
     ckpt_dir      = Path(train_cfg.get("ckpt_dir", config.get("ckpt_dir", f"ckpts/{task_name}")))
@@ -29,6 +31,7 @@ def train_policy(config: dict[str, Any]) -> None:
     train_split_ratio = float(train_cfg.get("train_split_ratio", 0.8))
     reuse_split = bool(train_cfg.get("reuse_split", True))
     split_path = Path(train_cfg.get("split_path", ckpt_dir / "train_val_split.yaml"))
+    episode_ids = _resolve_training_episode_ids(task_cfg=task_cfg, train_cfg=train_cfg)
 
     if policy_class != "ACT":
         raise NotImplementedError(f"Trainer for policy class {policy_class!r} not yet implemented.")
@@ -58,6 +61,7 @@ def train_policy(config: dict[str, Any]) -> None:
         "equipment_model": equipment_model,
         "low_dim_keys":  low_dim_keys,
         "state_dim":     _resolve_low_dim_state_dim(low_dim_keys, equipment_model),
+        "device":        device,
     }
 
     full_config = {
@@ -102,6 +106,7 @@ def train_policy(config: dict[str, Any]) -> None:
         split_path         = split_path,
         reuse_split        = reuse_split,
         low_dim_keys       = low_dim_keys,
+        episode_ids        = episode_ids,
     )
 
     # save normalisation stats so trainer can load them
@@ -165,6 +170,10 @@ def _build_resolved_train_config(
     train_cfg = resolved.setdefault("train", {})
 
     task_cfg["dataset_dir"] = str(dataset_dir)
+    if "train_ready_manifest_path" in config.get("task", {}):
+        task_cfg["train_ready_manifest_path"] = str(
+            config["task"]["train_ready_manifest_path"]
+        )
     train_cfg["ckpt_dir"] = str(ckpt_dir)
     train_cfg["split_path"] = str(split_path)
     train_cfg["split_seed"] = int(full_config["split_seed"])
@@ -191,3 +200,31 @@ def _resolve_single_low_dim_dim(key: str, equipment_model: str) -> int:
     if key in ("qpos", "qvel"):
         return 4
     raise ValueError(f"Unsupported low-dim key {key!r}.")
+
+
+def _resolve_training_episode_ids(
+    *,
+    task_cfg: dict[str, Any],
+    train_cfg: dict[str, Any],
+) -> list[int] | None:
+    raw_ids = task_cfg.get("episode_ids")
+    if raw_ids is not None:
+        return [int(ep_id) for ep_id in raw_ids]
+    manifest_raw = train_cfg.get("train_ready_manifest_path") or task_cfg.get(
+        "train_ready_manifest_path"
+    )
+    if not manifest_raw:
+        return None
+    manifest_path = Path(str(manifest_raw))
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"train_ready_manifest_path does not exist: {manifest_path}")
+    payload = json.loads(manifest_path.read_text())
+    ids: list[int] = []
+    for value in payload.get("train_ready_episode_ids", []):
+        text = str(value)
+        if text.startswith("episode_"):
+            text = text.split("_", 1)[1]
+        ids.append(int(text))
+    if not ids:
+        raise ValueError(f"train_ready_manifest_path contains no train_ready_episode_ids: {manifest_path}")
+    return sorted(set(ids))

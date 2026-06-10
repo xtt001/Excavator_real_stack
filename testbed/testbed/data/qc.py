@@ -8,10 +8,11 @@ import json
 from pathlib import Path
 from typing import Any
 
+import h5py
 import matplotlib
 import numpy as np
 
-from testbed.data.hdf5_io import list_episodes, read_episode
+from testbed.data.hdf5_io import list_episodes
 from testbed.data.schema import (
     ATTR_IS_REAL,
     ATTR_ENV_STATE_ORDER,
@@ -33,6 +34,9 @@ def run_dataset_qc(
     *,
     short_episode_threshold: int = 50,
     profile: str = "real",
+    mode: str = "quick",
+    training_qc: bool = True,
+    reference_episode_ids: list[int] | None = None,
 ) -> dict[str, Any]:
     dataset_dir = Path(dataset_dir)
     output_dir = Path(output_dir) if output_dir is not None else dataset_dir / "qc"
@@ -68,7 +72,7 @@ def run_dataset_qc(
     for path in episode_paths:
         episode_id = path.stem
         try:
-            episode = read_episode(path)
+            episode = _read_episode_lightweight(path)
         except Exception as exc:
             unreadable_episode_ids.append(episode_id)
             unreadable_episode_errors[episode_id] = f"{type(exc).__name__}: {exc}"
@@ -277,11 +281,31 @@ def run_dataset_qc(
         env_state=env_state_cat,
         path=output_dir / "state_ranges.png",
     )
+    training_qc_result = None
+    if training_qc:
+        from testbed.data.training_qc import run_training_qc
+
+        training_qc_result = run_training_qc(
+            dataset_dir=dataset_dir,
+            output_dir=output_dir,
+            mode=mode,
+            reference_episode_ids=reference_episode_ids,
+        )
+        summary["training_qc"] = {
+            "summary_path": training_qc_result["summary_path"],
+            "episodes_csv_path": training_qc_result["episodes_csv_path"],
+            "manifest_path": training_qc_result["manifest_path"],
+            "training_status_counts": training_qc_result["summary"].get(
+                "training_status_counts", {}
+            ),
+        }
+        _write_json(summary_path, summary)
     return {
         "summary_path": str(summary_path),
         "episodes_csv_path": str(episodes_csv_path),
         "output_dir": str(output_dir),
         "summary": summary,
+        "training_qc": training_qc_result,
     }
 
 
@@ -294,6 +318,59 @@ def _series_stats(array: np.ndarray) -> dict[str, Any]:
         "mean": np.mean(array, axis=0).tolist(),
         "std": np.std(array, axis=0).tolist(),
     }
+
+
+def _read_episode_lightweight(path: Path) -> dict[str, Any]:
+    """Read QC fields without decoding the full FPV image stream."""
+
+    with h5py.File(path, "r") as f:
+        result: dict[str, Any] = {
+            "qpos": f["observations/qpos"][()].astype(np.float32),
+            "qvel": f["observations/qvel"][()].astype(np.float32),
+            "actions": f["action"][()].astype(np.float32),
+            "env_state": (
+                f["observations/env_state"][()].astype(np.float32)
+                if "observations/env_state" in f
+                else None
+            ),
+            "step_ids": f["timestamps/step_id"][()] if "timestamps/step_id" in f else None,
+            "step_ns": f["timestamps/step_ns"][()] if "timestamps/step_ns" in f else None,
+            "images": {},
+            "diagnostics": {},
+            "metadata": {},
+            "is_real": bool(f.attrs.get(ATTR_IS_REAL, True)),
+        }
+        if "observations/images" in f:
+            result["images"] = {name: None for name in f["observations/images"].keys()}
+        elif "observations/encoded_images" in f:
+            result["images"] = {
+                name: None for name in f["observations/encoded_images"].keys()
+            }
+        if "diagnostics" in f:
+            for name in f["diagnostics"].keys():
+                ds = f["diagnostics"][name]
+                if ds.dtype.kind in {"S", "O", "U"}:
+                    result["diagnostics"][name] = _read_string_dataset(ds)
+                else:
+                    result["diagnostics"][name] = ds[()]
+        if "metadata" in f:
+            result["metadata"].update(dict(f["metadata"].attrs))
+        result["metadata"].update(dict(f.attrs))
+    return result
+
+
+def _read_string_dataset(dataset: h5py.Dataset) -> list[str]:
+    data = dataset[()]
+    arr = np.asarray(data)
+    out: list[str] = []
+    for item in arr.reshape(-1):
+        if isinstance(item, bytes):
+            out.append(item.decode())
+        elif isinstance(item, np.bytes_):
+            out.append(item.decode())
+        else:
+            out.append(str(item))
+    return out
 
 
 def _optional_rate(value: Any) -> float | str:
