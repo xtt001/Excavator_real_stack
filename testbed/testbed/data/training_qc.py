@@ -32,6 +32,7 @@ class TrainingQcThresholds:
     sync_skew_p95_fail_ms: float = 80.0
     health_rate_fail: float = 0.995
     bucket_reference_margin_rad: float = 0.25
+    length_mad_fail_multiplier: float = 3.0
 
 
 def run_training_qc(
@@ -123,27 +124,34 @@ def build_reference_stats(
         if _hard_reference_candidate_ok(metrics):
             candidates.append(metrics)
 
-    lengths = np.asarray([row["n_steps"] for row in candidates], dtype=np.float64)
+    lengths = np.asarray([row["manual_end_index"] for row in candidates], dtype=np.float64)
+    total_lengths = np.asarray([row["source_total_steps"] for row in candidates], dtype=np.float64)
     if lengths.size:
-        median = float(np.median(lengths))
-        mad = float(np.median(np.abs(lengths - median)))
-        scale = 1.4826 * mad
-        if scale <= 1e-6:
-            keep = np.ones(lengths.shape, dtype=bool)
-        else:
-            keep = np.abs(lengths - median) <= 3.0 * scale
+        keep, length_bounds = _length_keep_mask(lengths, thresholds=th)
+        total_keep, total_length_bounds = _length_keep_mask(total_lengths, thresholds=th)
+        keep = keep & total_keep
         selected_ids = [int(row["episode_id_num"]) for row, ok in zip(candidates, keep) if ok]
     else:
         selected_ids = []
+        length_bounds = {"count": 0}
+        total_length_bounds = {"count": 0}
 
     qpos_parts: list[np.ndarray] = []
     bucket_parts: list[np.ndarray] = []
+    selected_lengths: list[int] = []
     for episode_id in selected_ids:
         path = dataset_dir / f"episode_{episode_id}.hdf5"
         with h5py.File(path, "r") as f:
             qpos = np.asarray(f["observations/qpos"][()], dtype=np.float32)
+            diagnostics = f.get("diagnostics")
+            manual_end = _manual_end_index(
+                n_steps=int(qpos.shape[0]),
+                go_home_requested=_read_optional(diagnostics, "go_home_requested"),
+                go_home_running=_read_optional(diagnostics, "go_home_running"),
+            )
         qpos_parts.append(qpos)
         bucket_parts.append(qpos[:, BUCKET_AXIS])
+        selected_lengths.append(int(manual_end))
     qpos_cat = np.concatenate(qpos_parts, axis=0) if qpos_parts else np.zeros((0, 4), dtype=np.float32)
     bucket_cat = np.concatenate(bucket_parts, axis=0) if bucket_parts else np.zeros((0,), dtype=np.float32)
     return {
@@ -154,7 +162,20 @@ def build_reference_stats(
             for row in candidates
             if int(row["episode_id_num"]) not in selected_ids
         ],
-        "length": _robust_stats(lengths),
+        "manual_length": {
+            **_robust_stats(np.asarray(selected_lengths, dtype=np.float64)),
+            "candidate": _robust_stats(lengths),
+            **length_bounds,
+        },
+        "length": {
+            **_robust_stats(np.asarray(selected_lengths, dtype=np.float64)),
+            "candidate": _robust_stats(lengths),
+            **length_bounds,
+        },
+        "source_total_steps": {
+            "candidate": _robust_stats(total_lengths),
+            **total_length_bounds,
+        },
         "qpos": _robust_axis_stats(qpos_cat),
         "bucket_qpos": _robust_stats(bucket_cat),
     }
@@ -194,6 +215,7 @@ def episode_training_metrics(
         fpv_decode = _sample_fpv_decode_metrics(f)
 
     n_steps = int(action.shape[0]) if action.ndim else 0
+    source_total_steps = _source_total_steps(path=path, metadata=metadata, fallback=n_steps)
     dt = _dt_seconds(timestamps_ns, n_steps)
     qpos_jump = _max_abs_diff(qpos)
     qvel_residual = _qvel_residual(qpos=qpos, qvel=qvel, dt=dt)
@@ -208,7 +230,21 @@ def episode_training_metrics(
         go_home_requested=go_home_requested,
         go_home_running=go_home_running,
     )
+    length_ref_status = _length_reference_status(
+        length=manual_end,
+        reference_stats=reference_stats,
+        key="manual_length",
+    )
+    total_steps_ref_status = _length_reference_status(
+        length=source_total_steps,
+        reference_stats=reference_stats,
+        key="source_total_steps",
+    )
+    success_ok = _boolish(metadata.get("success", 0))
+    go_home_result = str(metadata.get("go_home_result", ""))
     warnings, status = _episode_status(
+        success_ok=success_ok,
+        go_home_result=go_home_result,
         qpos_jump=qpos_jump,
         qvel_residual=qvel_residual,
         fpv=fpv,
@@ -220,6 +256,8 @@ def episode_training_metrics(
         imu_valid=imu_valid,
         fpv_decode=fpv_decode,
         bucket_ref_status=bucket_ref_status,
+        length_ref_status=length_ref_status,
+        total_steps_ref_status=total_steps_ref_status,
         thresholds=th,
     )
     episode_id_num = _episode_id_num(path)
@@ -246,9 +284,10 @@ def episode_training_metrics(
         "episode_id_num": episode_id_num,
         "path": str(path),
         "n_steps": n_steps,
+        "source_total_steps": int(source_total_steps),
         "manual_end_index": int(manual_end),
-        "success": int(_boolish(metadata.get("success", 0))),
-        "go_home_result": str(metadata.get("go_home_result", "")),
+        "success": int(success_ok),
+        "go_home_result": go_home_result,
         "training_status": status,
         "training_ready": int(status in {"PASS", "WARN"}),
         "training_warnings": ";".join(warnings),
@@ -280,6 +319,12 @@ def episode_training_metrics(
         "bucket_reference_status": bucket_ref_status["status"],
         "bucket_ref_low_margin": bucket_ref_status["low_margin"],
         "bucket_ref_high_margin": bucket_ref_status["high_margin"],
+        "length_reference_status": length_ref_status["status"],
+        "length_ref_low_margin": length_ref_status["low_margin"],
+        "length_ref_high_margin": length_ref_status["high_margin"],
+        "source_total_steps_reference_status": total_steps_ref_status["status"],
+        "source_total_steps_low_margin": total_steps_ref_status["low_margin"],
+        "source_total_steps_high_margin": total_steps_ref_status["high_margin"],
         "bucket_repair_fraction": float(np.mean(repair_mask)) if repair_mask.size else 0.0,
         "plot_path": plot_path,
     }
@@ -292,7 +337,7 @@ def _hard_reference_candidate_ok(row: dict[str, Any]) -> bool:
         and float(row.get("receiver_health_ok_rate", 0.0)) >= 0.999
         and float(row.get("imu_online_all_rate", 0.0)) >= 0.999
         and float(row.get("imu_valid_all_rate", 0.0)) >= 0.999
-        and float(row.get("fpv_unique_fps", 0.0)) >= 20.0
+        and float(row.get("fpv_unique_fps", 0.0)) >= 19.5
         and float(row.get("fpv_gap_gt250_count", 0.0)) == 0.0
         and max(
             float(row.get("qpos_max_jump_swing", 0.0)),
@@ -307,6 +352,8 @@ def _hard_reference_candidate_ok(row: dict[str, Any]) -> bool:
 
 def _episode_status(
     *,
+    success_ok: bool,
+    go_home_result: str,
     qpos_jump: list[float],
     qvel_residual: dict[str, list[float]],
     fpv: dict[str, float | int],
@@ -318,10 +365,19 @@ def _episode_status(
     imu_valid: np.ndarray | None,
     fpv_decode: dict[str, float | int],
     bucket_ref_status: dict[str, Any],
+    length_ref_status: dict[str, Any],
+    total_steps_ref_status: dict[str, Any],
     thresholds: TrainingQcThresholds,
 ) -> tuple[list[str], str]:
     warnings: list[str] = []
     fail = False
+    if not success_ok:
+        warnings.append("success_false")
+        fail = True
+    normalized_go_home = str(go_home_result).strip().lower()
+    if normalized_go_home not in {"", "succeeded", "done", "success", "completed"}:
+        warnings.append("go_home_not_succeeded")
+        fail = True
     if max(qpos_jump) > thresholds.qpos_jump_fail_rad:
         warnings.append("qpos_jump")
         fail = True
@@ -360,6 +416,12 @@ def _episode_status(
         fail = True
     elif bucket_ref_status["status"] == "WARN":
         warnings.append("bucket_reference_warn")
+    if length_ref_status["status"] == "FAIL":
+        warnings.append("episode_length_outlier")
+        fail = True
+    if total_steps_ref_status["status"] == "FAIL":
+        warnings.append("episode_total_steps_outlier")
+        fail = True
     if fail:
         return warnings, "FAIL"
     if warnings:
@@ -477,6 +539,76 @@ def _bucket_reference_status(
     else:
         status = "PASS"
     return {"status": status, "low_margin": low_margin, "high_margin": high_margin}
+
+
+def _length_keep_mask(
+    lengths: np.ndarray,
+    *,
+    thresholds: TrainingQcThresholds,
+) -> tuple[np.ndarray, dict[str, float | int]]:
+    arr = np.asarray(lengths, dtype=np.float64).reshape(-1)
+    arr = arr[np.isfinite(arr)]
+    if arr.size == 0:
+        return np.zeros(0, dtype=bool), {"count": 0}
+    median = float(np.median(arr))
+    mad = float(np.median(np.abs(arr - median)))
+    scale = 1.4826 * mad
+    if scale <= 1e-6:
+        lower = float(np.min(arr))
+        upper = float(np.max(arr))
+    else:
+        lower = median - thresholds.length_mad_fail_multiplier * scale
+        upper = median + thresholds.length_mad_fail_multiplier * scale
+    keep = (np.asarray(lengths, dtype=np.float64) >= lower) & (
+        np.asarray(lengths, dtype=np.float64) <= upper
+    )
+    return keep, {
+        "candidate_count": int(arr.size),
+        "candidate_median": median,
+        "candidate_mad": mad,
+        "lower_bound": float(lower),
+        "upper_bound": float(upper),
+        "mad_fail_multiplier": float(thresholds.length_mad_fail_multiplier),
+    }
+
+
+def _length_reference_status(
+    *,
+    length: int,
+    reference_stats: dict[str, Any] | None,
+    key: str = "length",
+) -> dict[str, Any]:
+    if reference_stats is None:
+        return {"status": "UNKNOWN", "low_margin": 0.0, "high_margin": 0.0}
+    ref = reference_stats.get(key, {})
+    lower = ref.get("lower_bound")
+    upper = ref.get("upper_bound")
+    if lower is None or upper is None:
+        return {"status": "UNKNOWN", "low_margin": 0.0, "high_margin": 0.0}
+    low_margin = float(length) - float(lower)
+    high_margin = float(upper) - float(length)
+    status = "PASS" if low_margin >= 0.0 and high_margin >= 0.0 else "FAIL"
+    return {"status": status, "low_margin": low_margin, "high_margin": high_margin}
+
+
+def _source_total_steps(*, path: Path, metadata: dict[str, Any], fallback: int) -> int:
+    raw = metadata.get("source_total_steps")
+    if raw is not None:
+        try:
+            return int(raw)
+        except Exception:
+            pass
+    source_path_raw = metadata.get("source_dataset_path")
+    if source_path_raw:
+        source_path = Path(str(source_path_raw))
+        if source_path.exists():
+            try:
+                with h5py.File(source_path, "r") as f:
+                    if "action" in f:
+                        return int(f["action"].shape[0])
+            except Exception:
+                pass
+    return int(fallback)
 
 
 def _qvel_residual(*, qpos: np.ndarray, qvel: np.ndarray, dt: np.ndarray) -> dict[str, list[float]]:

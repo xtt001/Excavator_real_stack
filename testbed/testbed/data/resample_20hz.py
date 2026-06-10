@@ -67,6 +67,7 @@ def build_20hz_episode(
     dst = Path(output_path)
     dst.parent.mkdir(parents=True, exist_ok=True)
     with h5py.File(src, "r") as in_f:
+        source_total_steps = int(in_f["action"].shape[0])
         obs_idx, action_idx, manual_end = select_20hz_indices(
             in_f,
             target_hz=target_hz,
@@ -94,6 +95,7 @@ def build_20hz_episode(
         "input_path": str(src),
         "output_path": str(dst),
         "source_steps": int(manual_end),
+        "source_total_steps": int(source_total_steps),
         "output_steps": int(obs_idx.size),
         "target_hz": float(target_hz),
         "duration_s": float(duration_s),
@@ -184,6 +186,7 @@ def _copy_selected_episode(
     meta.attrs["dt"] = float(1.0 / target_hz)
     meta.attrs["n_steps"] = int(obs_idx.size)
     meta.attrs["source_dataset_path"] = str(source_path)
+    meta.attrs["source_total_steps"] = int(in_f["action"].shape[0])
     meta.attrs["source_manual_end_index"] = int(manual_end)
     meta.attrs["source_observation_indices"] = "diagnostics/source_observation_index"
     meta.attrs["source_action_indices"] = "diagnostics/source_action_index"
