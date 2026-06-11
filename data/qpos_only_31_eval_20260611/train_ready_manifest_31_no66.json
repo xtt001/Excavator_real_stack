@@ -1,0 +1,288 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-06-11Tmanual_qpos_only_31_no66",
+  "dataset_dir": "/media/mundane/EXTERNAL_USB/real_teleop_v1_repaired_20hz_v1",
+  "strict_pass_episode_ids": [
+    "episode_26",
+    "episode_29",
+    "episode_30",
+    "episode_32",
+    "episode_33",
+    "episode_34",
+    "episode_35",
+    "episode_36",
+    "episode_38",
+    "episode_39",
+    "episode_40",
+    "episode_41",
+    "episode_42",
+    "episode_43",
+    "episode_48",
+    "episode_49",
+    "episode_50",
+    "episode_51",
+    "episode_53",
+    "episode_54",
+    "episode_55",
+    "episode_56",
+    "episode_57",
+    "episode_58",
+    "episode_59",
+    "episode_61",
+    "episode_62",
+    "episode_63",
+    "episode_65"
+  ],
+  "warn_episode_ids": [
+    "episode_47",
+    "episode_60"
+  ],
+  "info_episode_ids": [
+    "episode_27",
+    "episode_30",
+    "episode_34",
+    "episode_36",
+    "episode_39",
+    "episode_40",
+    "episode_41",
+    "episode_54",
+    "episode_55",
+    "episode_58",
+    "episode_62",
+    "episode_70"
+  ],
+  "train_ready_episode_ids": [
+    "episode_26",
+    "episode_29",
+    "episode_30",
+    "episode_32",
+    "episode_33",
+    "episode_34",
+    "episode_35",
+    "episode_36",
+    "episode_38",
+    "episode_39",
+    "episode_40",
+    "episode_41",
+    "episode_42",
+    "episode_43",
+    "episode_47",
+    "episode_48",
+    "episode_49",
+    "episode_50",
+    "episode_51",
+    "episode_53",
+    "episode_54",
+    "episode_55",
+    "episode_56",
+    "episode_57",
+    "episode_58",
+    "episode_59",
+    "episode_60",
+    "episode_61",
+    "episode_62",
+    "episode_63",
+    "episode_65"
+  ],
+  "failed_episode_ids": [
+    "episode_27",
+    "episode_28",
+    "episode_31",
+    "episode_37",
+    "episode_44",
+    "episode_45",
+    "episode_46",
+    "episode_52",
+    "episode_64",
+    "episode_67",
+    "episode_68",
+    "episode_69",
+    "episode_70"
+  ],
+  "excluded_episode_ids": [
+    "episode_27",
+    "episode_28",
+    "episode_31",
+    "episode_37",
+    "episode_44",
+    "episode_45",
+    "episode_46",
+    "episode_52",
+    "episode_64",
+    "episode_67",
+    "episode_68",
+    "episode_69",
+    "episode_70"
+  ],
+  "excluded": [
+    {
+      "episode_id": "episode_27",
+      "status": "FAIL",
+      "warnings": "raw_qpos_branch_jump",
+      "info": "usable_with_gap_mask"
+    },
+    {
+      "episode_id": "episode_28",
+      "status": "FAIL",
+      "warnings": "episode_length_outlier;episode_total_steps_outlier",
+      "info": ""
+    },
+    {
+      "episode_id": "episode_31",
+      "status": "FAIL",
+      "warnings": "qpos_jump",
+      "info": ""
+    },
+    {
+      "episode_id": "episode_37",
+      "status": "FAIL",
+      "warnings": "qpos_jump",
+      "info": ""
+    },
+    {
+      "episode_id": "episode_44",
+      "status": "FAIL",
+      "warnings": "qpos_jump;raw_qpos_branch_jump;bucket_reference_outlier",
+      "info": ""
+    },
+    {
+      "episode_id": "episode_45",
+      "status": "FAIL",
+      "warnings": "raw_qpos_branch_jump;bucket_reference_warn;episode_total_steps_outlier",
+      "info": ""
+    },
+    {
+      "episode_id": "episode_46",
+      "status": "FAIL",
+      "warnings": "episode_length_outlier;episode_total_steps_outlier",
+      "info": ""
+    },
+    {
+      "episode_id": "episode_52",
+      "status": "FAIL",
+      "warnings": "bucket_semantic_outlier",
+      "info": ""
+    },
+    {
+      "episode_id": "episode_64",
+      "status": "FAIL",
+      "warnings": "bucket_semantic_outlier",
+      "info": ""
+    },
+    {
+      "episode_id": "episode_67",
+      "status": "FAIL",
+      "warnings": "bucket_reference_outlier",
+      "info": ""
+    },
+    {
+      "episode_id": "episode_68",
+      "status": "FAIL",
+      "warnings": "bucket_reference_outlier",
+      "info": ""
+    },
+    {
+      "episode_id": "episode_69",
+      "status": "FAIL",
+      "warnings": "qpos_jump;bucket_reference_warn",
+      "info": ""
+    },
+    {
+      "episode_id": "episode_70",
+      "status": "FAIL",
+      "warnings": "bucket_reference_outlier",
+      "info": "usable_with_gap_mask"
+    }
+  ],
+  "info": [
+    {
+      "episode_id": "episode_27",
+      "status": "FAIL",
+      "info": "usable_with_gap_mask",
+      "source_time_gap_max_ms": 266.7640380859375,
+      "train_exclude_fraction": 0.05394736842105263
+    },
+    {
+      "episode_id": "episode_30",
+      "status": "PASS",
+      "info": "usable_with_gap_mask",
+      "source_time_gap_max_ms": 266.735107421875,
+      "train_exclude_fraction": 0.039651837524177946
+    },
+    {
+      "episode_id": "episode_34",
+      "status": "PASS",
+      "info": "bucket_reference_semantic_keep",
+      "source_time_gap_max_ms": 133.53701782226562,
+      "train_exclude_fraction": 0.0
+    },
+    {
+      "episode_id": "episode_36",
+      "status": "PASS",
+      "info": "bucket_reference_semantic_keep",
+      "source_time_gap_max_ms": 100.26700592041016,
+      "train_exclude_fraction": 0.0
+    },
+    {
+      "episode_id": "episode_39",
+      "status": "PASS",
+      "info": "bucket_reference_semantic_keep",
+      "source_time_gap_max_ms": 102.58201599121094,
+      "train_exclude_fraction": 0.0
+    },
+    {
+      "episode_id": "episode_40",
+      "status": "PASS",
+      "info": "bucket_reference_semantic_keep",
+      "source_time_gap_max_ms": 200.04197692871094,
+      "train_exclude_fraction": 0.0
+    },
+    {
+      "episode_id": "episode_41",
+      "status": "PASS",
+      "info": "bucket_reference_semantic_keep",
+      "source_time_gap_max_ms": 234.18316650390625,
+      "train_exclude_fraction": 0.0
+    },
+    {
+      "episode_id": "episode_54",
+      "status": "PASS",
+      "info": "bucket_reference_semantic_keep",
+      "source_time_gap_max_ms": 233.35910034179688,
+      "train_exclude_fraction": 0.0
+    },
+    {
+      "episode_id": "episode_55",
+      "status": "PASS",
+      "info": "usable_with_gap_mask;bucket_reference_semantic_keep",
+      "source_time_gap_max_ms": 266.6859436035156,
+      "train_exclude_fraction": 0.04
+    },
+    {
+      "episode_id": "episode_58",
+      "status": "PASS",
+      "info": "bucket_reference_semantic_keep",
+      "source_time_gap_max_ms": 100.62207794189453,
+      "train_exclude_fraction": 0.0
+    },
+    {
+      "episode_id": "episode_62",
+      "status": "PASS",
+      "info": "usable_with_gap_mask",
+      "source_time_gap_max_ms": 300.369140625,
+      "train_exclude_fraction": 0.09255079006772009
+    },
+    {
+      "episode_id": "episode_70",
+      "status": "FAIL",
+      "info": "usable_with_gap_mask",
+      "source_time_gap_max_ms": 299.98797607421875,
+      "train_exclude_fraction": 0.0407149950347567
+    }
+  ],
+  "source_manifest_path": "/media/pingfan/EXTERNAL_USB/real_teleop_v1_repaired_20hz_v1/qc_full/train_ready_manifest.json",
+  "selection_note": "Manual 31-episode qpos-only evaluation manifest: train-ready set used by runs/ckpts/real_excavation_act_20hz_v1; episode_66 held out as live-like.",
+  "heldout_episode_ids": [
+    "episode_66"
+  ]
+}

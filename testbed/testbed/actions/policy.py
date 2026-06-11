@@ -288,6 +288,8 @@ def _act_policy_config_from_resolved(resolved: dict[str, Any]) -> dict[str, Any]
         "kl_weight": float(act_params.get("kl_weight", 10)),
         "hidden_dim": int(act_params.get("hidden_dim", 512)),
         "dim_feedforward": int(act_params.get("dim_feedforward", 3200)),
+        "vision_feature_scale": float(act_params.get("vision_feature_scale", 1.0)),
+        "proprio_feature_scale": float(act_params.get("proprio_feature_scale", 1.0)),
         "lr_backbone": 1e-5,
         "backbone": "resnet18",
         "enc_layers": 4,

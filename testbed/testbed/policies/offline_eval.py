@@ -206,6 +206,8 @@ def evaluate_episode(
     policy: Any,
     episode_file: str | Path,
     camera_names: list[str],
+    image_episode_file: str | Path | None = None,
+    image_step_mode: str = "progress",
     max_steps: int | None = None,
     progress_every: int = 0,
 ) -> dict[str, Any]:
@@ -216,7 +218,10 @@ def evaluate_episode(
     from testbed.data.dataset import _read_camera_image
 
     episode_file = Path(episode_file)
+    image_episode_path = Path(image_episode_file) if image_episode_file is not None else None
     with h5py.File(episode_file, "r") as f:
+        image_f_ctx = h5py.File(image_episode_path, "r") if image_episode_path else None
+        image_f = image_f_ctx if image_f_ctx is not None else f
         qpos = np.asarray(f["observations/qpos"][()], dtype=np.float32)
         qvel = np.asarray(f["observations/qvel"][()], dtype=np.float32)
         expert_action = np.asarray(f["action"][()], dtype=np.float32)
@@ -226,24 +231,48 @@ def evaluate_episode(
         if step_count <= 0:
             raise ValueError(f"episode has no steps: {episode_file}")
         dt = _episode_dt(f)
+        image_step_count = _episode_step_count(image_f)
+        image_step_map, image_match_metrics = _build_image_step_map(
+            target_qpos=qpos[:step_count],
+            image_h5=image_f,
+            mode=image_step_mode,
+        )
         policy_action = np.zeros((step_count, 4), dtype=np.float32)
         if hasattr(policy, "reset"):
             policy.reset()
-        for step in range(step_count):
-            obs: dict[str, Any] = {
-                "qpos": qpos[step],
-                "qvel": qvel[step],
-            }
-            for camera_name in camera_names:
-                obs[f"image_{camera_name}"] = _read_camera_image(f, camera_name, step)
-            policy_action[step] = np.asarray(policy.predict(obs), dtype=np.float32).reshape(4)
-            if progress_every > 0 and (step + 1) % progress_every == 0:
-                print(f"offline eval replayed {step + 1}/{step_count} steps")
+        try:
+            for step in range(step_count):
+                image_step = _map_image_step(
+                    step=step,
+                    target_steps=step_count,
+                    image_steps=image_step_count,
+                    mode=image_step_mode,
+                    nearest_steps=image_step_map,
+                )
+                obs: dict[str, Any] = {
+                    "qpos": qpos[step],
+                    "qvel": qvel[step],
+                }
+                for camera_name in camera_names:
+                    obs[f"image_{camera_name}"] = _read_camera_image(
+                        image_f,
+                        camera_name,
+                        image_step,
+                    )
+                policy_action[step] = np.asarray(policy.predict(obs), dtype=np.float32).reshape(4)
+                if progress_every > 0 and (step + 1) % progress_every == 0:
+                    print(f"offline eval replayed {step + 1}/{step_count} steps")
+        finally:
+            if image_f_ctx is not None:
+                image_f_ctx.close()
 
     expert = expert_action[:step_count].astype(np.float32, copy=False)
     metrics = compute_action_metrics(expert, policy_action)
     return {
         "episode_path": str(episode_file),
+        "image_episode_path": str(image_episode_path) if image_episode_path else str(episode_file),
+        "image_step_mode": str(image_step_mode),
+        "image_match_metrics": image_match_metrics,
         "n_steps": int(step_count),
         "dt": float(dt),
         "expert_action": expert,
@@ -271,6 +300,9 @@ def write_eval_report(
         "generated_at": _dt.datetime.now().isoformat(timespec="seconds"),
         **metadata,
         "episode_path": result["episode_path"],
+        "image_episode_path": result.get("image_episode_path", result["episode_path"]),
+        "image_step_mode": result.get("image_step_mode"),
+        "image_match_metrics": result.get("image_match_metrics"),
         "n_steps": int(result["n_steps"]),
         "dt": float(result["dt"]),
         "metrics": result["metrics"],
@@ -449,6 +481,88 @@ def _episode_dt(h5_file: Any) -> float:
             if hz > 0:
                 return 1.0 / hz
     return 0.05
+
+
+def _episode_step_count(h5_file: Any) -> int:
+    if "action" in h5_file:
+        return int(h5_file["action"].shape[0])
+    if "observations/qpos" in h5_file:
+        return int(h5_file["observations/qpos"].shape[0])
+    raise KeyError("episode file must contain action or observations/qpos")
+
+
+def _map_image_step(
+    *,
+    step: int,
+    target_steps: int,
+    image_steps: int,
+    mode: str,
+    nearest_steps: np.ndarray | None = None,
+) -> int:
+    if image_steps <= 0:
+        raise ValueError("image_steps must be positive")
+    if mode == "nearest_qpos":
+        if nearest_steps is None:
+            raise ValueError("nearest_steps is required when image_step_mode='nearest_qpos'.")
+        return max(0, min(int(nearest_steps[int(step)]), int(image_steps) - 1))
+    if target_steps <= 1 or image_steps == 1:
+        return 0
+    if mode == "same_index":
+        return max(0, min(int(step), int(image_steps) - 1))
+    if mode == "progress":
+        alpha = max(0.0, min(float(step) / float(target_steps - 1), 1.0))
+        return int(round(alpha * float(image_steps - 1)))
+    raise ValueError(f"Unsupported image_step_mode {mode!r}.")
+
+
+def _build_image_step_map(
+    *,
+    target_qpos: np.ndarray,
+    image_h5: Any,
+    mode: str,
+) -> tuple[np.ndarray | None, dict[str, Any] | None]:
+    if mode != "nearest_qpos":
+        return None, None
+    if "observations/qpos" not in image_h5:
+        raise KeyError("nearest_qpos image mapping requires observations/qpos in image episode")
+
+    target = np.asarray(target_qpos, dtype=np.float32).reshape(-1, 4)
+    image_qpos = np.asarray(image_h5["observations/qpos"][()], dtype=np.float32).reshape(-1, 4)
+    if target.shape[0] == 0 or image_qpos.shape[0] == 0:
+        raise ValueError("nearest_qpos mapping requires non-empty target and image qpos")
+
+    indices = np.zeros(target.shape[0], dtype=np.int64)
+    normalized = np.zeros(target.shape[0], dtype=np.float64)
+    max_abs_rad = np.zeros(target.shape[0], dtype=np.float64)
+    scale = np.asarray([0.08, 0.05, 0.03, 0.08], dtype=np.float64)
+    for idx, qpos in enumerate(target.astype(np.float64, copy=False)):
+        diff = _real_qpos_delta_matrix(qpos, image_qpos.astype(np.float64, copy=False))
+        dist = np.linalg.norm(diff / scale.reshape(1, -1), axis=1)
+        best = int(np.argmin(dist))
+        indices[idx] = best
+        normalized[idx] = float(dist[best])
+        max_abs_rad[idx] = float(np.max(np.abs(diff[best])))
+
+    metrics = {
+        "qpos_match_mode": "nearest_qpos",
+        "mean_normalized_distance": float(np.mean(normalized)),
+        "p95_normalized_distance": float(np.percentile(normalized, 95)),
+        "max_normalized_distance": float(np.max(normalized)),
+        "mean_max_abs_delta_rad": float(np.mean(max_abs_rad)),
+        "p95_max_abs_delta_rad": float(np.percentile(max_abs_rad, 95)),
+        "max_abs_delta_rad": float(np.max(max_abs_rad)),
+        "unique_image_steps": int(np.unique(indices).size),
+    }
+    return indices, metrics
+
+
+def _real_qpos_delta_matrix(target: np.ndarray, current: np.ndarray) -> np.ndarray:
+    diff = np.asarray(target, dtype=np.float64).reshape(1, 4) - np.asarray(
+        current,
+        dtype=np.float64,
+    ).reshape(-1, 4)
+    diff[:, 0] = (diff[:, 0] + math.pi) % (2.0 * math.pi) - math.pi
+    return diff
 
 
 def _write_actions_csv(

@@ -73,6 +73,23 @@ def main() -> None:
         help="Episode id, e.g. 43 or episode_43. Use auto to choose representative train-ready episode.",
     )
     parser.add_argument(
+        "--image-dataset-dir",
+        type=Path,
+        default=None,
+        help="Optional dataset directory for replacement FPV images. Defaults to --dataset-dir.",
+    )
+    parser.add_argument(
+        "--image-episode-id",
+        default=None,
+        help="Optional replacement FPV episode id. Keeps qpos/action from --episode-id.",
+    )
+    parser.add_argument(
+        "--image-step-mode",
+        choices=("progress", "same_index", "nearest_qpos"),
+        default="progress",
+        help="How to map qpos replay steps onto replacement FPV frames.",
+    )
+    parser.add_argument(
         "--all-train-ready",
         action="store_true",
         help="Evaluate every train-ready episode from the manifest.",
@@ -139,6 +156,11 @@ def main() -> None:
     missing = [path for path in selected_paths if not path.exists()]
     if missing:
         raise SystemExit(f"Episode file does not exist: {missing[0]}")
+    image_dataset_dir = Path(args.image_dataset_dir) if args.image_dataset_dir else dataset_dir
+    image_episode = normalize_episode_id(args.image_episode_id) if args.image_episode_id else None
+    image_episode_file = episode_path(image_dataset_dir, image_episode) if image_episode else None
+    if image_episode_file is not None and not image_episode_file.exists():
+        raise SystemExit(f"Image episode file does not exist: {image_episode_file}")
     episode_len = max(_episode_len(path, max_steps=args.max_steps) for path in selected_paths)
     output_dir = (
         Path(args.output_dir)
@@ -188,6 +210,10 @@ def main() -> None:
         "stats_path": str(stats_path),
         "camera_names": camera_names,
         "low_dim_keys": list(policy_cfg.get("low_dim_keys", ["qpos"])),
+        "image_dataset_dir": str(image_dataset_dir),
+        "image_episode_id": image_episode,
+        "image_episode_file": str(image_episode_file) if image_episode_file else None,
+        "image_step_mode": str(args.image_step_mode),
         "temporal_agg": not args.no_temporal_agg,
         "max_steps": args.max_steps,
     }
@@ -201,6 +227,8 @@ def main() -> None:
                 policy=policy,
                 episode_file=path,
                 camera_names=camera_names,
+                image_episode_file=image_episode_file,
+                image_step_mode=str(args.image_step_mode),
                 max_steps=args.max_steps,
                 progress_every=max(0, int(args.progress_every)),
             )
@@ -234,6 +262,8 @@ def main() -> None:
             policy=policy,
             episode_file=selected_paths[0],
             camera_names=camera_names,
+            image_episode_file=image_episode_file,
+            image_step_mode=str(args.image_step_mode),
             max_steps=args.max_steps,
             progress_every=max(0, int(args.progress_every)),
         )

@@ -376,6 +376,8 @@ class PolicyActionSourceTests(unittest.TestCase):
                                 "kl_weight": 0.0,
                                 "hidden_dim": 512,
                                 "dim_feedforward": 3200,
+                                "vision_feature_scale": 0.25,
+                                "proprio_feature_scale": 1.5,
                                 "train_with_zero_latent": True,
                             },
                         },
@@ -396,6 +398,8 @@ class PolicyActionSourceTests(unittest.TestCase):
         self.assertEqual(kwargs["policy_config"]["num_queries"], 25)
         self.assertEqual(kwargs["policy_config"]["state_dim"], 8)
         self.assertEqual(kwargs["policy_config"]["camera_names"], ["fpv"])
+        self.assertEqual(kwargs["policy_config"]["vision_feature_scale"], 0.25)
+        self.assertEqual(kwargs["policy_config"]["proprio_feature_scale"], 1.5)
         self.assertTrue(kwargs["policy_config"]["train_with_zero_latent"])
         self.assertTrue(kwargs["temporal_agg"])
         self.assertEqual(kwargs["device"], "cpu")

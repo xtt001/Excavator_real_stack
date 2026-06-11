@@ -7,6 +7,8 @@ import numpy as np
 from testbed.policies.offline_eval import (
     aggregate_episode_results,
     compute_action_metrics,
+    _build_image_step_map,
+    _map_image_step,
     select_representative_episode,
 )
 
@@ -94,6 +96,68 @@ class OfflinePolicyEvalTests(unittest.TestCase):
             aggregate["episode_rows"][0]["policy_p95_abs_bucket"],
             results[0]["metrics"]["axes"]["bucket"]["policy_p95_abs"],
             places=6,
+        )
+
+    def test_map_image_step_supports_progress_and_same_index(self) -> None:
+        self.assertEqual(
+            _map_image_step(step=0, target_steps=5, image_steps=9, mode="progress"),
+            0,
+        )
+        self.assertEqual(
+            _map_image_step(step=2, target_steps=5, image_steps=9, mode="progress"),
+            4,
+        )
+        self.assertEqual(
+            _map_image_step(step=4, target_steps=5, image_steps=9, mode="progress"),
+            8,
+        )
+        self.assertEqual(
+            _map_image_step(step=12, target_steps=5, image_steps=9, mode="same_index"),
+            8,
+        )
+
+    def test_nearest_qpos_image_step_map_reports_match_quality(self) -> None:
+        class FakeH5(dict):
+            pass
+
+        target = np.array(
+            [
+                [0.0, 0.0, 0.0, 0.0],
+                [0.10, 0.0, 0.0, 0.0],
+                [0.20, 0.0, 0.0, 0.0],
+            ],
+            dtype=np.float32,
+        )
+        image = FakeH5(
+            {
+                "observations/qpos": np.array(
+                    [
+                        [0.21, 0.0, 0.0, 0.0],
+                        [0.01, 0.0, 0.0, 0.0],
+                        [0.11, 0.0, 0.0, 0.0],
+                    ],
+                    dtype=np.float32,
+                )
+            }
+        )
+
+        steps, metrics = _build_image_step_map(
+            target_qpos=target,
+            image_h5=image,
+            mode="nearest_qpos",
+        )
+
+        np.testing.assert_array_equal(steps, np.array([1, 2, 0]))
+        self.assertLess(metrics["max_abs_delta_rad"], 0.011)
+        self.assertEqual(
+            _map_image_step(
+                step=1,
+                target_steps=3,
+                image_steps=3,
+                mode="nearest_qpos",
+                nearest_steps=steps,
+            ),
+            2,
         )
 
 

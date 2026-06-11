@@ -30,7 +30,18 @@ def get_sinusoid_encoding_table(n_position, d_hid):
 
 class DETRVAE(nn.Module):
     """ This is the DETR module that performs object detection """
-    def __init__(self, backbones, transformer, encoder, robot_state_dim, action_dim, num_queries, camera_names):
+    def __init__(
+        self,
+        backbones,
+        transformer,
+        encoder,
+        robot_state_dim,
+        action_dim,
+        num_queries,
+        camera_names,
+        vision_feature_scale=1.0,
+        proprio_feature_scale=1.0,
+    ):
         """ Initializes the model.
         Parameters:
             backbones: torch module of the backbone to be used. See backbone.py
@@ -44,6 +55,8 @@ class DETRVAE(nn.Module):
         super().__init__()
         self.num_queries = num_queries
         self.camera_names = camera_names
+        self.vision_feature_scale = float(vision_feature_scale)
+        self.proprio_feature_scale = float(proprio_feature_scale)
         self.transformer = transformer
         self.encoder = encoder
         hidden_dim = transformer.d_model
@@ -119,10 +132,10 @@ class DETRVAE(nn.Module):
                 features, pos = self.backbones[0](image[:, cam_id]) # HARDCODED
                 features = features[0] # take the last layer feature
                 pos = pos[0]
-                all_cam_features.append(self.input_proj(features))
+                all_cam_features.append(self.input_proj(features) * self.vision_feature_scale)
                 all_cam_pos.append(pos)
             # proprioception features
-            proprio_input = self.input_proj_robot_state(qpos)
+            proprio_input = self.input_proj_robot_state(qpos) * self.proprio_feature_scale
             # fold camera dimension into width dimension
             src = torch.cat(all_cam_features, axis=3)
             pos = torch.cat(all_cam_pos, axis=3)
@@ -255,6 +268,8 @@ def build(args):
         action_dim=action_dim,
         num_queries=args.num_queries,
         camera_names=args.camera_names,
+        vision_feature_scale=getattr(args, "vision_feature_scale", 1.0),
+        proprio_feature_scale=getattr(args, "proprio_feature_scale", 1.0),
     )
 
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
