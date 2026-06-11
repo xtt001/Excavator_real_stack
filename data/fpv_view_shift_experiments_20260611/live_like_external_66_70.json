@@ -1,0 +1,19 @@
+{
+  "description": "FPV view-shift group live_like_external_66_70 generated 2026-06-11",
+  "train_ready_episode_ids": [
+    "episode_66",
+    "episode_67",
+    "episode_68",
+    "episode_69",
+    "episode_70"
+  ],
+  "episode_ids": [
+    "episode_66",
+    "episode_67",
+    "episode_68",
+    "episode_69",
+    "episode_70"
+  ],
+  "source_dataset_dir": "/media/mundane/EXTERNAL_USB/real_teleop_v1_repaired_20hz_v1",
+  "group_name": "live_like_external_66_70"
+}

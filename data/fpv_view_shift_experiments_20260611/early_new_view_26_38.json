@@ -1,0 +1,27 @@
+{
+  "description": "FPV view-shift group early_new_view_26_38 generated 2026-06-11",
+  "train_ready_episode_ids": [
+    "episode_26",
+    "episode_29",
+    "episode_30",
+    "episode_32",
+    "episode_33",
+    "episode_34",
+    "episode_35",
+    "episode_36",
+    "episode_38"
+  ],
+  "episode_ids": [
+    "episode_26",
+    "episode_29",
+    "episode_30",
+    "episode_32",
+    "episode_33",
+    "episode_34",
+    "episode_35",
+    "episode_36",
+    "episode_38"
+  ],
+  "source_dataset_dir": "/media/mundane/EXTERNAL_USB/real_teleop_v1_repaired_20hz_v1",
+  "group_name": "early_new_view_26_38"
+}
