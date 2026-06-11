@@ -400,6 +400,67 @@ class PolicyActionSourceTests(unittest.TestCase):
         self.assertTrue(kwargs["temporal_agg"])
         self.assertEqual(kwargs["device"], "cpu")
 
+    def test_load_act_policy_from_bundle_allows_null_episode_len(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle = Path(tmp)
+            (bundle / "policy_best.ckpt").write_bytes(b"ckpt")
+            (bundle / "dataset_stats.pkl").write_bytes(b"stats")
+            (bundle / "resolved_config.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "task": {
+                            "camera_names": ["fpv"],
+                            "episode_len": None,
+                            "equipment_model": "real_excavator",
+                        },
+                        "policy": {
+                            "device": "cpu",
+                            "low_dim_keys": ["qpos"],
+                            "act_params": {"chunk_size": 20},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch(
+                "testbed.policies.act.adapter.ACTAdapter.from_checkpoint",
+                return_value="loaded",
+            ) as from_checkpoint:
+                loaded = load_act_policy_from_bundle(bundle_dir=bundle)
+
+        self.assertEqual(loaded, "loaded")
+        kwargs = from_checkpoint.call_args.kwargs
+        self.assertEqual(kwargs["policy_config"]["num_queries"], 20)
+        self.assertEqual(kwargs["policy_config"]["state_dim"], 4)
+        self.assertEqual(kwargs["policy_config"]["low_dim_keys"], ["qpos"])
+        self.assertEqual(kwargs["policy_config"]["max_episode_len"], 400)
+
+    def test_act_temporal_aggregation_grows_past_initial_horizon(self) -> None:
+        import torch
+
+        from testbed.policies.act.adapter import ACTAdapter
+
+        adapter = ACTAdapter.__new__(ACTAdapter)
+        adapter.device = torch.device("cpu")
+        adapter._num_queries = 3
+        adapter._t = 0
+        adapter._all_time_actions = None
+        adapter._temporal_weight_cache = {}
+        adapter._max_episode_len = 4
+
+        for step in range(7):
+            a_hat = torch.ones((1, adapter._num_queries, 4), dtype=torch.float32) * (step + 1)
+            action = adapter._aggregate(a_hat)
+            self.assertEqual(action.shape, (4,))
+            adapter._t += 1
+
+        self.assertGreaterEqual(adapter._all_time_actions.shape[0], 7)
+        self.assertGreaterEqual(
+            adapter._all_time_actions.shape[1],
+            adapter._all_time_actions.shape[0] + adapter._num_queries,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

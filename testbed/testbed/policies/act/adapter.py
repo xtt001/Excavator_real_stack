@@ -11,6 +11,9 @@ When `temporal_agg=True`, actions are chunked and averaged using the
 scheme from the original paper: at each step we query the model at
 frequency 1, accumulate the chunk into a (T, T+C, Na) tensor, then
 select the weighted average of all past predictions for the current step.
+Live control can run longer than the resolved training `episode_len`, so the
+aggregation tensor grows at runtime instead of treating that length as a hard
+limit.
 """
 
 from __future__ import annotations
@@ -225,12 +228,16 @@ class ACTAdapter(Policy):
                 [horizon, horizon + self._num_queries, Na], device=self.device
             )
 
-        required_t = self._t + self._num_queries
-        if required_t > self._all_time_actions.shape[1]:
-            current_t = self._all_time_actions.shape[0]
-            new_t = max(required_t, current_t * 2)
+        required_rows = self._t + 1
+        required_cols = self._t + self._num_queries
+        if (
+            required_rows > self._all_time_actions.shape[0]
+            or required_cols > self._all_time_actions.shape[1]
+        ):
+            current_rows = self._all_time_actions.shape[0]
+            new_rows = max(required_rows, current_rows * 2)
             expanded = torch.zeros(
-                [new_t, new_t + self._num_queries, Na],
+                [new_rows, new_rows + self._num_queries, Na],
                 device=self.device,
             )
             expanded[: self._all_time_actions.shape[0], : self._all_time_actions.shape[1]] = (

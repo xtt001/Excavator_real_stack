@@ -35,6 +35,13 @@ void expect_less(double got, double limit, const std::string& message) {
     }
 }
 
+void expect_greater(double got, double limit, const std::string& message) {
+    if (!(got > limit)) {
+        std::cerr << message << ": got=" << got << " limit=" << limit << "\n";
+        std::exit(1);
+    }
+}
+
 void set_bucket_quaternion_offset(double value) {
     const std::string raw = std::to_string(value);
     setenv("EXCAVATOR_BUCKET_QUATERNION_OFFSET_RAD", raw.c_str(), 1);
@@ -197,12 +204,13 @@ void test_bucket_quaternion_position_is_absolute() {
     }
     expect_near(out.position(3), deg_to_rad(10.0), "bucket baseline wrong");
 
+    excavator::ExcavatorConverter converter2;
     make_valid_imu(hw, 10.0, -30.0, 0.0, 222.50);
-    if (!converter.hardwareStateToRobotState(hw, out)) {
+    if (!converter2.hardwareStateToRobotState(hw, out)) {
         std::cerr << "bucket absolute quaternion conversion failed\n";
         std::exit(1);
     }
-    expect_near(out.position(3), deg_to_rad(40.0), "valid bucket quaternion should not be rate limited");
+    expect_near(out.position(3), deg_to_rad(40.0), "initial valid bucket quaternion should be absolute");
 }
 
 void test_bucket_euler_fallback_is_rate_limited_when_quaternion_missing() {
@@ -251,7 +259,7 @@ void test_bucket_quaternion_anchors_through_euler_branch_fold() {
     expect_near(out.position(3), deg_to_rad(-57.08), "valid quaternion should anchor bucket through Euler branch fold");
 }
 
-void test_bucket_quaternion_raw_jump_uses_absolute_anchor() {
+void test_bucket_quaternion_raw_jump_is_gyro_limited_when_direction_conflicts() {
     excavator::ExcavatorConverter converter;
     excavator::ExcavatorHardwareState hw;
     excavator::ExcavatorState out;
@@ -274,40 +282,45 @@ void test_bucket_quaternion_raw_jump_uses_absolute_anchor() {
         std::exit(1);
     }
 
-    expect_less(out.position(3), previous, "bucket raw jump should follow quaternion absolute anchor");
-    expect_near(out.position(3), deg_to_rad(-54.21), "valid quaternion bucket should not gyro-integrate raw jumps");
+    expect_greater(out.position(3), previous, "bucket raw jump should not move against gyro");
+    expect_less(out.position(3) - previous,
+                deg_to_rad(0.10),
+                "direction-conflicting bucket raw jump should only take a gyro-sized step");
 }
 
-void test_bucket_quaternion_does_not_accumulate_alias_state() {
+void test_bucket_quaternion_rejects_two_pi_alias_from_latest_log() {
     excavator::ExcavatorConverter converter;
     excavator::ExcavatorHardwareState hw;
     excavator::ExcavatorState out;
 
-    make_valid_imu(hw, -54.20, -31.33, 0.0, 222.50);
+    make_valid_imu(hw, -148.65, 0.0, 0.0, 222.50);
+    hw.imu.devices[0].gyro_dps(1) = 38.0F;
+    hw.imu.devices[1].gyro_dps(1) = 0.0F;
     if (!converter.hardwareStateToRobotState(hw, out)) {
-        std::cerr << "bucket alias hold baseline conversion failed\n";
+        std::cerr << "bucket latest-log alias baseline conversion failed\n";
         std::exit(1);
     }
+    double previous = out.position(3);
+    expect_near(previous, deg_to_rad(-148.65), "bucket latest-log alias baseline wrong");
 
-    for (int i = 0; i < 80; ++i) {
-        make_valid_imu(hw, -34.40, -38.79, 0.0, 222.50);
-        hw.imu.devices[0].gyro_dps(1) = -51.0F;
-        hw.imu.devices[1].gyro_dps(1) = -1.0F;
+    const double raw_bucket_deg[] = {161.16, 114.14, 79.01, 55.42, 26.42, 19.13, 13.18, 8.87};
+    for (const double raw_deg : raw_bucket_deg) {
+        make_valid_imu(hw, raw_deg, 0.0, 0.0, 222.50);
+        hw.imu.devices[0].gyro_dps(1) = 38.0F;
+        hw.imu.devices[1].gyro_dps(1) = 0.0F;
         if (!converter.hardwareStateToRobotState(hw, out)) {
-            std::cerr << "bucket alias integration conversion failed\n";
+            std::cerr << "bucket latest-log alias crossing conversion failed\n";
             std::exit(1);
         }
+        expect_greater(out.position(3), previous, "bucket alias crossing should follow gyro direction");
+        expect_less(out.position(3) - previous,
+                    deg_to_rad(1.0),
+                    "bucket alias crossing should not snap to raw-2pi branch");
+        expect_greater(out.position(3),
+                       -excavator::kPi,
+                       "bucket alias crossing should stay in the finite policy branch");
+        previous = out.position(3);
     }
-    expect_near(out.position(3), deg_to_rad(4.39), "valid quaternion should not integrate alias state");
-
-    make_valid_imu(hw, -42.80, -36.80, 0.0, 222.50);
-    hw.imu.devices[0].gyro_dps(1) = -1.2F;
-    hw.imu.devices[1].gyro_dps(1) = -1.0F;
-    if (!converter.hardwareStateToRobotState(hw, out)) {
-        std::cerr << "bucket quaternion absolute re-anchor conversion failed\n";
-        std::exit(1);
-    }
-    expect_near(out.position(3), deg_to_rad(-6.0), "valid quaternion should keep using absolute bucket qpos");
 }
 
 void test_bucket_quaternion_applies_legacy_policy_offset() {
@@ -328,7 +341,7 @@ void test_bucket_quaternion_applies_legacy_policy_offset() {
     set_bucket_quaternion_offset(0.0);
 }
 
-void test_bucket_quaternion_keeps_unwrapped_branch_across_pi() {
+void test_bucket_quaternion_does_not_unwrap_pi_branch_without_motion() {
     excavator::ExcavatorConverter converter;
     excavator::ExcavatorHardwareState hw;
     excavator::ExcavatorState out;
@@ -349,7 +362,7 @@ void test_bucket_quaternion_keeps_unwrapped_branch_across_pi() {
         std::cerr << "bucket pi branch crossing conversion failed\n";
         std::exit(1);
     }
-    expect_near(out.position(3), deg_to_rad(181.0), "bucket quaternion should keep the unwrapped branch");
+    expect_near(out.position(3), deg_to_rad(179.0), "zero-gyro bucket should not unwrap across pi");
 }
 
 }  // namespace
@@ -365,10 +378,10 @@ int main() {
     test_bucket_quaternion_position_is_absolute();
     test_bucket_euler_fallback_is_rate_limited_when_quaternion_missing();
     test_bucket_quaternion_anchors_through_euler_branch_fold();
-    test_bucket_quaternion_raw_jump_uses_absolute_anchor();
-    test_bucket_quaternion_does_not_accumulate_alias_state();
+    test_bucket_quaternion_raw_jump_is_gyro_limited_when_direction_conflicts();
+    test_bucket_quaternion_rejects_two_pi_alias_from_latest_log();
     test_bucket_quaternion_applies_legacy_policy_offset();
-    test_bucket_quaternion_keeps_unwrapped_branch_across_pi();
+    test_bucket_quaternion_does_not_unwrap_pi_branch_without_motion();
     std::cout << "excavator_converter_test OK\n";
     return 0;
 }

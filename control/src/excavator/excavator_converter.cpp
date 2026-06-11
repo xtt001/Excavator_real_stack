@@ -1,5 +1,6 @@
 #include <excavator/internal/excavator_converter.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 
@@ -9,6 +10,8 @@ namespace {
 constexpr double kPositionJumpGuardMarginRad = kPi / 360.0;  // 0.5 deg at 50 Hz.
 constexpr int kBucketAxis = 3;
 constexpr double kBucketMaxPositionStepRad = 2.5 * kPi / 180.0;
+constexpr double kBucketVelocityDirectionDeadbandRadS = 0.02;
+constexpr double kBucketDirectionGuardMarginRad = kPi / 720.0;  // 0.25 deg.
 // Maps the quaternion bucket angle back into the legacy policy/home qpos frame.
 constexpr double kDefaultBucketQuaternionPolicyOffsetRad = -0.4060066694119653;
 constexpr float kUninitializedAttitudeEps = 1e-6F;
@@ -35,6 +38,37 @@ double align_swing_to_nonnegative_raw_yaw_branch(double value, double raw_yaw) n
         return value;
     }
     return align_angle_to_reference_branch(value, raw_yaw);
+}
+
+bool bucket_quaternion_delta_plausible(double delta,
+                                       double velocity,
+                                       double max_delta) noexcept {
+    if (!std::isfinite(delta) || !std::isfinite(velocity) || !std::isfinite(max_delta)) {
+        return false;
+    }
+    if (std::abs(delta) > max_delta) {
+        return false;
+    }
+    if (std::abs(velocity) <= kBucketVelocityDirectionDeadbandRadS ||
+        std::abs(delta) <= kBucketDirectionGuardMarginRad) {
+        return true;
+    }
+    return delta * velocity >= 0.0;
+}
+
+double bucket_velocity_limited_delta(double velocity, double max_delta) noexcept {
+    if (!std::isfinite(velocity) || !std::isfinite(max_delta) ||
+        std::abs(velocity) <= kBucketVelocityDirectionDeadbandRadS) {
+        return 0.0;
+    }
+    const double delta = velocity * kTs;
+    if (delta > max_delta) {
+        return max_delta;
+    }
+    if (delta < -max_delta) {
+        return -max_delta;
+    }
+    return delta;
 }
 
 bool swing_raw_yaw_reference_rad(const ExcavatorHardwareState& hw, double& out) noexcept {
@@ -244,16 +278,19 @@ void ExcavatorConverter::applyPositionContinuity(ExcavatorState& st,
     for (int axis = 0; axis < kAxisCount; ++axis) {
         const double previous = resp_position_continuous_(axis);
         double current = unwrap_angle_nearest(previous, st.position(axis));
-        if (axis == kBucketAxis && bucket_quaternion_observed) {
-            resp_position_continuous_(axis) = current;
-            st.position(axis) = current;
-            continue;
-        }
         double max_delta = std::abs(st.velocity(axis)) * kTs + kPositionJumpGuardMarginRad;
         if (axis == kBucketAxis) {
             max_delta = std::min(max_delta, kBucketMaxPositionStepRad);
         }
         const double delta = current - previous;
+        if (axis == kBucketAxis && bucket_quaternion_observed) {
+            if (!bucket_quaternion_delta_plausible(delta, st.velocity(axis), max_delta)) {
+                current = previous + bucket_velocity_limited_delta(st.velocity(axis), max_delta);
+            }
+            resp_position_continuous_(axis) = current;
+            st.position(axis) = current;
+            continue;
+        }
         if (delta > max_delta) {
             current = previous + max_delta;
         } else if (delta < -max_delta) {

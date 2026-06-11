@@ -340,6 +340,26 @@ def vec_minus(current: list[float] | None, reference: list[float] | None) -> lis
     return [c - r for c, r in zip(current, reference)]
 
 
+def branch_alias_axes_from_direct_delta(
+    direct_delta_deg: list[float] | None,
+    *,
+    alias_period_deg: float = 360.0,
+    tolerance_deg: float = 20.0,
+) -> list[str]:
+    if direct_delta_deg is None:
+        return []
+    axes: list[str] = []
+    for name, delta in zip(AXES, direct_delta_deg):
+        if not math.isfinite(delta):
+            continue
+        branch_count = round(delta / alias_period_deg)
+        if branch_count == 0:
+            continue
+        if abs(delta - branch_count * alias_period_deg) <= tolerance_deg:
+            axes.append(name)
+    return axes
+
+
 def bits(values: Any) -> str:
     if not isinstance(values, list):
         return "----"
@@ -568,6 +588,8 @@ def main() -> int:
     residual_samples: list[list[float | None]] = []
     raw_imu_samples: list[list[float | None]] = []
     raw_minus_bridge_samples: list[list[float | None]] = []
+    branch_alias_bad_rows = 0
+    branch_alias_bad_axis_counts = {name: 0 for name in AXES}
     rows_written = 0
     missing_imu_debug = 0
 
@@ -639,6 +661,9 @@ def main() -> int:
                 qpos_raw_imu = deg_to_rad(qpos_raw_imu_deg)
                 qpos_policy_minus_raw_imu = qpos_delta_rad(qpos, qpos_raw_imu)
                 qpos_policy_minus_raw_imu_deg_direct = vec_minus(rad_to_deg(qpos), qpos_raw_imu_deg)
+                branch_alias_bad_axes = branch_alias_axes_from_direct_delta(
+                    qpos_policy_minus_raw_imu_deg_direct
+                )
                 raw_minus_bridge = (
                     [a - b for a, b in zip(raw_imu_qvel, qvel_bridge)]
                     if raw_imu_qvel is not None
@@ -661,6 +686,7 @@ def main() -> int:
                     args.stationary_qvel_rad_s,
                     args.residual_threshold_rad_s,
                 )
+                quality["qpos_branch_alias_axes"] = branch_alias_bad_axes
 
                 qvel_samples.append(qvel_bridge)
                 qpos_samples.append(qpos)
@@ -672,6 +698,10 @@ def main() -> int:
                     raw_imu_samples.append(raw_imu_qvel)
                 if raw_minus_bridge is not None:
                     raw_minus_bridge_samples.append(raw_minus_bridge)
+                if branch_alias_bad_axes:
+                    branch_alias_bad_rows += 1
+                    for axis in branch_alias_bad_axes:
+                        branch_alias_bad_axis_counts[axis] += 1
 
                 row = {
                     "schema_version": 1,
@@ -718,6 +748,8 @@ def main() -> int:
                         bad_parts.append("stationary_qvel=" + ",".join(stationary_bad))
                     if residual_bad:
                         bad_parts.append("residual=" + ",".join(residual_bad))
+                    if branch_alias_bad_axes:
+                        bad_parts.append("branch_alias=" + ",".join(branch_alias_bad_axes))
                     bad = "ok" if not bad_parts else ";".join(bad_parts)
                     health = imu_health if isinstance(imu_health, dict) else {}
                     print(
@@ -847,6 +879,8 @@ def main() -> int:
         "qvel_residual_bridge_minus_qpos_diff": summarize_matrix(residual_samples),
         "qvel_raw_imu_rad_s": summarize_matrix(raw_imu_samples),
         "qvel_raw_imu_minus_bridge": summarize_matrix(raw_minus_bridge_samples),
+        "qpos_branch_alias_bad_rows": branch_alias_bad_rows,
+        "qpos_branch_alias_bad_axis_counts": branch_alias_bad_axis_counts,
         "notes": [
             "qvel_bridge is the qvel currently returned by read_state.",
             "qvel_qpos_diff is finite-difference qpos using bridge timestamps.",
@@ -855,6 +889,7 @@ def main() -> int:
             "qpos_folded_imu/qpos_folded_imu_deg are reconstructed from imu_debug.rpy_rad after per-axis angle folding.",
             "qpos_policy_minus_raw_imu is the shortest-angle delta from raw IMU joint pose to policy qpos.",
             "qpos_policy_minus_raw_imu_deg_direct is policy_deg - raw_imu_deg without branch wrapping.",
+            "qpos_branch_alias_* flags policy qpos that differs from raw IMU by an integer 360deg branch.",
             "qvel_raw_imu_rad_s is derived from raw gyro before converter startup bias subtraction.",
         ],
     }

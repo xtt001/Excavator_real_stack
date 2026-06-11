@@ -1,0 +1,4 @@
+episode_id,path,n_steps,success,has_images,has_env_state,env_state_dim,step_ids_monotonic,has_step_ns,action_dim,qpos_dim,qvel_dim,timestamp,operator_id,session_id,profile,is_real,platform,guard_trigger_rate,controller_ack_rate,warnings,error
+episode_24,data/qc_today_2026-06-08/episodes/episode_24.hdf5,3753,1,1,1,8,1,1,4,4,4,2026-06-08T09:22:45.936632,,remote_teleop_slave_record,real,1,real_excavator,0.0,1.0,,
+episode_25,data/qc_today_2026-06-08/episodes/episode_25.hdf5,3073,1,1,1,8,1,1,4,4,4,2026-06-08T09:24:18.720989,,remote_teleop_slave_record,real,1,real_excavator,0.0,1.0,,
+episode_26,data/qc_today_2026-06-08/episodes/episode_26.hdf5,4151,1,1,1,8,1,1,4,4,4,2026-06-08T10:51:23.985956,,remote_teleop_slave_record,real,1,real_excavator,0.0,1.0,,

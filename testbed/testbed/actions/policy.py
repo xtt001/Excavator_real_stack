@@ -280,6 +280,8 @@ def _act_policy_config_from_resolved(resolved: dict[str, Any]) -> dict[str, Any]
     camera_names = list(task_cfg.get("camera_names", ["fpv"]))
     low_dim_keys = list(policy_cfg.get("low_dim_keys", ["qpos", "qvel"]))
     state_dim = int(act_params.get("state_dim", 4 * len(low_dim_keys)))
+    episode_len = task_cfg.get("episode_len")
+    max_episode_len = 400 if episode_len is None else int(episode_len)
     return {
         "lr": float(train_cfg.get("lr", 1e-5)),
         "num_queries": int(act_params.get("chunk_size", 100)),
@@ -293,7 +295,7 @@ def _act_policy_config_from_resolved(resolved: dict[str, Any]) -> dict[str, Any]
         "nheads": 8,
         "camera_names": camera_names,
         "equipment_model": task_cfg.get("equipment_model", "real_excavator"),
-        "max_episode_len": int(task_cfg.get("episode_len", 400)),
+        "max_episode_len": max_episode_len,
         "low_dim_keys": low_dim_keys,
         "state_dim": state_dim,
         "train_with_zero_latent": bool(act_params.get("train_with_zero_latent", False)),
