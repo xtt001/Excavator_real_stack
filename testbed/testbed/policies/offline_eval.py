@@ -13,6 +13,8 @@ from typing import Any, Iterable
 import numpy as np
 import yaml
 
+from testbed.data.image_transforms import IMAGE_TRANSFORM_CHOICES, build_image_transform
+
 
 AXIS_NAMES = ("swing", "boom", "stick", "bucket")
 
@@ -208,6 +210,7 @@ def evaluate_episode(
     camera_names: list[str],
     image_episode_file: str | Path | None = None,
     image_step_mode: str = "progress",
+    image_transform: str = "none",
     max_steps: int | None = None,
     progress_every: int = 0,
 ) -> dict[str, Any]:
@@ -219,6 +222,7 @@ def evaluate_episode(
 
     episode_file = Path(episode_file)
     image_episode_path = Path(image_episode_file) if image_episode_file is not None else None
+    image_transform_fn = build_image_transform(image_transform)
     with h5py.File(episode_file, "r") as f:
         image_f_ctx = h5py.File(image_episode_path, "r") if image_episode_path else None
         image_f = image_f_ctx if image_f_ctx is not None else f
@@ -254,11 +258,14 @@ def evaluate_episode(
                     "qvel": qvel[step],
                 }
                 for camera_name in camera_names:
-                    obs[f"image_{camera_name}"] = _read_camera_image(
+                    image = _read_camera_image(
                         image_f,
                         camera_name,
                         image_step,
                     )
+                    if image_transform_fn is not None:
+                        image = image_transform_fn(image)
+                    obs[f"image_{camera_name}"] = image
                 policy_action[step] = np.asarray(policy.predict(obs), dtype=np.float32).reshape(4)
                 if progress_every > 0 and (step + 1) % progress_every == 0:
                     print(f"offline eval replayed {step + 1}/{step_count} steps")
@@ -272,6 +279,7 @@ def evaluate_episode(
         "episode_path": str(episode_file),
         "image_episode_path": str(image_episode_path) if image_episode_path else str(episode_file),
         "image_step_mode": str(image_step_mode),
+        "image_transform": str(image_transform),
         "image_match_metrics": image_match_metrics,
         "n_steps": int(step_count),
         "dt": float(dt),
@@ -302,6 +310,7 @@ def write_eval_report(
         "episode_path": result["episode_path"],
         "image_episode_path": result.get("image_episode_path", result["episode_path"]),
         "image_step_mode": result.get("image_step_mode"),
+        "image_transform": result.get("image_transform", metadata.get("image_transform", "none")),
         "image_match_metrics": result.get("image_match_metrics"),
         "n_steps": int(result["n_steps"]),
         "dt": float(result["dt"]),

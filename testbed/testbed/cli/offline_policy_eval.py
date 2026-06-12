@@ -10,6 +10,7 @@ from typing import Any
 import yaml
 
 from testbed.policies.offline_eval import (
+    IMAGE_TRANSFORM_CHOICES,
     aggregate_episode_results,
     choose_default_ckpt,
     default_collection_output_dir,
@@ -88,6 +89,15 @@ def main() -> None:
         choices=("progress", "same_index", "nearest_qpos"),
         default="progress",
         help="How to map qpos replay steps onto replacement FPV frames.",
+    )
+    parser.add_argument(
+        "--image-transform",
+        choices=IMAGE_TRANSFORM_CHOICES,
+        default="none",
+        help=(
+            "Optional deterministic FPV transform applied during replay. "
+            "Use this for offline view-shift sensitivity checks; it does not change training."
+        ),
     )
     parser.add_argument(
         "--all-train-ready",
@@ -184,6 +194,7 @@ def main() -> None:
         print(f"Episode path: {selected_paths[0]}")
     print(f"Checkpoint: {ckpt_path}")
     print(f"Output dir: {output_dir}")
+    print(f"Image transform: {args.image_transform}")
 
     policy = load_policy_for_episode(
         bundle_dir=bundle_dir,
@@ -214,6 +225,7 @@ def main() -> None:
         "image_episode_id": image_episode,
         "image_episode_file": str(image_episode_file) if image_episode_file else None,
         "image_step_mode": str(args.image_step_mode),
+        "image_transform": str(args.image_transform),
         "temporal_agg": not args.no_temporal_agg,
         "max_steps": args.max_steps,
     }
@@ -229,6 +241,7 @@ def main() -> None:
                 camera_names=camera_names,
                 image_episode_file=image_episode_file,
                 image_step_mode=str(args.image_step_mode),
+                image_transform=str(args.image_transform),
                 max_steps=args.max_steps,
                 progress_every=max(0, int(args.progress_every)),
             )
@@ -264,6 +277,7 @@ def main() -> None:
             camera_names=camera_names,
             image_episode_file=image_episode_file,
             image_step_mode=str(args.image_step_mode),
+            image_transform=str(args.image_transform),
             max_steps=args.max_steps,
             progress_every=max(0, int(args.progress_every)),
         )

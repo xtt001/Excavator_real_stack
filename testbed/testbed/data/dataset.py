@@ -16,6 +16,7 @@ import yaml
 from torch.utils.data import DataLoader, Dataset
 
 from testbed.data.hdf5_io import list_episodes
+from testbed.data.image_transforms import build_image_transform
 from testbed.data.schema import ATTR_IS_REAL, GRP_ENCODED_IMAGES
 
 
@@ -193,6 +194,7 @@ class EpisodicDataset(Dataset):
         episode_len: int | None = None,
         low_dim_keys: list[str] | tuple[str, ...] | None = None,
         action_chunk_size: int | None = None,
+        image_transform: str = "none",
     ):
         super().__init__()
         self.episode_ids  = episode_ids
@@ -202,6 +204,8 @@ class EpisodicDataset(Dataset):
         self.episode_len  = int(episode_len) if episode_len is not None else None
         self.low_dim_keys = _normalize_low_dim_keys(low_dim_keys)
         self.action_chunk_size = int(action_chunk_size) if action_chunk_size is not None else None
+        self.image_transform_name = str(image_transform or "none")
+        self.image_transform = build_image_transform(self.image_transform_name)
         self.is_real: bool | None = None
         # Warm-up to populate self.is_real
         self.__getitem__(0)
@@ -243,10 +247,12 @@ class EpisodicDataset(Dataset):
                 qvel=qvel,
                 low_dim_keys=self.low_dim_keys,
             )
-            image_dict = {
-                cam: _read_camera_image(f, cam, t0)
-                for cam in self.camera_names
-            }
+            image_dict = {}
+            for cam in self.camera_names:
+                image = _read_camera_image(f, cam, t0)
+                if self.image_transform is not None:
+                    image = self.image_transform(image)
+                image_dict[cam] = image
 
             # ── action from t0 onward ────────────────────────────────────
             start = t0 if (not is_real or action_prealigned) else max(0, t0 - 1)
@@ -381,6 +387,7 @@ def load_data(
     low_dim_keys: list[str] | tuple[str, ...] | None = None,
     episode_ids: list[int] | None = None,
     action_chunk_size: int | None = None,
+    image_transform: str = "none",
 ) -> tuple[DataLoader, DataLoader, dict, bool, dict[str, Any]]:
     """
     Build train/val DataLoaders from an HDF5 dataset directory.
@@ -507,6 +514,7 @@ def load_data(
         episode_len=target_episode_len,
         low_dim_keys=selected_low_dim_keys,
         action_chunk_size=action_chunk_size,
+        image_transform=image_transform,
     )
     val_ds = EpisodicDataset(
         val_ids,
@@ -516,6 +524,7 @@ def load_data(
         episode_len=target_episode_len,
         low_dim_keys=selected_low_dim_keys,
         action_chunk_size=action_chunk_size,
+        image_transform=image_transform,
     )
 
     split_info["dataset_max_episode_len"] = int(max_episode_len)
@@ -523,6 +532,7 @@ def load_data(
     split_info["low_dim_keys"] = list(selected_low_dim_keys)
     split_info["low_dim_dim"] = int(norm_stats["proprio_dim"])
     split_info["action_chunk_size"] = None if action_chunk_size is None else int(action_chunk_size)
+    split_info["image_transform"] = str(image_transform or "none")
     split_info["gap_mask_valid_start_count"] = {
         int(ep_id): int(valid_start_count.get(ep_id, 0)) for ep_id in available
     }

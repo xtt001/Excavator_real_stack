@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-06-12Tlocal_domain_split",
+  "dataset_dir": "/data/pingfan/Excavator_real_stack_data/external_usb_datasets/real_teleop_v1_repaired_20hz_v1",
+  "view_domain": "new_view_early_26_38",
+  "train_ready_episode_ids": [
+    "episode_26",
+    "episode_29",
+    "episode_30",
+    "episode_32",
+    "episode_33",
+    "episode_34",
+    "episode_35",
+    "episode_36",
+    "episode_38"
+  ]
+}

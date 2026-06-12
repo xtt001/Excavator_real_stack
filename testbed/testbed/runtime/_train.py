@@ -32,6 +32,7 @@ def train_policy(config: dict[str, Any]) -> None:
     reuse_split = bool(train_cfg.get("reuse_split", True))
     split_path = Path(train_cfg.get("split_path", ckpt_dir / "train_val_split.yaml"))
     episode_ids = _resolve_training_episode_ids(task_cfg=task_cfg, train_cfg=train_cfg)
+    image_transform = str(train_cfg.get("image_transform", task_cfg.get("image_transform", "none")))
 
     if policy_class != "ACT":
         raise NotImplementedError(f"Trainer for policy class {policy_class!r} not yet implemented.")
@@ -84,6 +85,7 @@ def train_policy(config: dict[str, Any]) -> None:
         "train_split_ratio": train_split_ratio,
         "reuse_split":    reuse_split,
         "split_path":     str(split_path),
+        "image_transform": image_transform,
     }
 
     ckpt_dir.mkdir(parents=True, exist_ok=True)
@@ -111,6 +113,7 @@ def train_policy(config: dict[str, Any]) -> None:
         low_dim_keys       = low_dim_keys,
         episode_ids        = episode_ids,
         action_chunk_size  = action_chunk_size,
+        image_transform    = image_transform,
     )
 
     # save normalisation stats so trainer can load them
@@ -180,6 +183,7 @@ def _build_resolved_train_config(
         )
     train_cfg["ckpt_dir"] = str(ckpt_dir)
     train_cfg["split_path"] = str(split_path)
+    train_cfg["image_transform"] = str(full_config["image_transform"])
     train_cfg["split_seed"] = int(full_config["split_seed"])
     train_cfg["train_split_ratio"] = float(full_config["train_split_ratio"])
     train_cfg["reuse_split"] = bool(full_config["reuse_split"])

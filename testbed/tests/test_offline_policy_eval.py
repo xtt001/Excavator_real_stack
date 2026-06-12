@@ -6,6 +6,7 @@ import numpy as np
 
 from testbed.policies.offline_eval import (
     aggregate_episode_results,
+    build_image_transform,
     compute_action_metrics,
     _build_image_step_map,
     _map_image_step,
@@ -159,6 +160,31 @@ class OfflinePolicyEvalTests(unittest.TestCase):
             ),
             2,
         )
+
+    def test_image_transform_preserves_rgb_shape_and_dtype(self) -> None:
+        rows = np.arange(12, dtype=np.uint8).reshape(12, 1, 1)
+        cols = np.arange(16, dtype=np.uint8).reshape(1, 16, 1)
+        image = np.concatenate(
+            [
+                np.broadcast_to(rows * 10, (12, 16, 1)),
+                np.broadcast_to(cols * 12, (12, 16, 1)),
+                np.full((12, 16, 1), 127, dtype=np.uint8),
+            ],
+            axis=2,
+        )
+
+        for name in (
+            "center_zoom_085",
+            "center_zoom_075_blur",
+            "downsample_060",
+        ):
+            transformed = build_image_transform(name)(image)
+            self.assertEqual(transformed.shape, image.shape)
+            self.assertEqual(transformed.dtype, image.dtype)
+
+    def test_image_transform_rejects_unknown_name(self) -> None:
+        with self.assertRaises(ValueError):
+            build_image_transform("not_a_transform")
 
 
 if __name__ == "__main__":

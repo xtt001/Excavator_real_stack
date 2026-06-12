@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-06-12Tlocal_domain_split",
+  "dataset_dir": "/data/pingfan/Excavator_real_stack_data/external_usb_datasets/real_teleop_v1_repaired_20hz_v1",
+  "view_domain": "new_view_late_39_65",
+  "train_ready_episode_ids": [
+    "episode_39",
+    "episode_40",
+    "episode_41",
+    "episode_42",
+    "episode_43",
+    "episode_47",
+    "episode_48",
+    "episode_49",
+    "episode_50",
+    "episode_51",
+    "episode_53",
+    "episode_54",
+    "episode_55",
+    "episode_56",
+    "episode_57",
+    "episode_58",
+    "episode_59",
+    "episode_60",
+    "episode_61",
+    "episode_62",
+    "episode_63",
+    "episode_65"
+  ]
+}
