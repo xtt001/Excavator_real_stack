@@ -198,6 +198,80 @@ class PolicyActionSourceTests(unittest.TestCase):
             [0.3, -0.25, 0.25, -0.3],
         )
 
+    def test_deadzone_assist_lifts_stable_intent_above_directional_deadzone(self) -> None:
+        policy = DummyPolicy([0.33, -0.26, 0.1, -0.2])
+        source = PolicyActionSource(
+            policy=policy,
+            source_id="unit",
+            output_mode="control",
+            deadzone_assist={
+                "enabled": True,
+                "trigger_fraction": 0.5,
+                "margin": 0.02,
+                "min_consecutive_steps": 2,
+                "deadzone_positive": [0.6, 0.4, 0.5, 0.5],
+                "deadzone_negative": [0.7, 0.5, 0.5, 0.5],
+            },
+        )
+
+        first_action, first_info = source.next_action(_obs())
+        second_action, second_info = source.next_action(_obs())
+
+        np.testing.assert_allclose(first_action, [0.33, -0.26, 0.1, -0.2])
+        self.assertEqual(first_info.extras["policy_deadzone_assist_active"], 0)
+        np.testing.assert_allclose(second_action, [0.62, -0.52, 0.1, -0.2])
+        np.testing.assert_allclose(
+            second_info.extras["policy_deadzone_assist_mask"],
+            [1, 1, 0, 0],
+        )
+        self.assertEqual(second_info.extras["policy_deadzone_assist_active"], 1)
+        self.assertEqual(second_info.extras["policy_deadzone_assist_axes"], "swing+,boom-")
+        np.testing.assert_allclose(
+            second_info.extras["policy_scaled_action"],
+            [0.33, -0.26, 0.1, -0.2],
+        )
+        np.testing.assert_allclose(
+            second_info.extras["policy_assisted_action"],
+            [0.62, -0.52, 0.1, -0.2],
+        )
+        np.testing.assert_allclose(second_info.extras["policy_returned_action"], second_action)
+
+    def test_deadzone_assist_resets_when_direction_changes(self) -> None:
+        class SequencePolicy:
+            def __init__(self) -> None:
+                self.actions = [
+                    np.array([0.33, 0.0, 0.0, 0.0], dtype=np.float32),
+                    np.array([-0.36, 0.0, 0.0, 0.0], dtype=np.float32),
+                    np.array([-0.36, 0.0, 0.0, 0.0], dtype=np.float32),
+                ]
+
+            def predict(self, obs: dict) -> np.ndarray:
+                return self.actions.pop(0).copy()
+
+        source = PolicyActionSource(
+            policy=SequencePolicy(),
+            source_id="unit",
+            output_mode="control",
+            deadzone_assist={
+                "enabled": True,
+                "trigger_fraction": 0.5,
+                "margin": 0.02,
+                "min_consecutive_steps": 2,
+                "deadzone_positive": [0.6, 0.4, 0.5, 0.5],
+                "deadzone_negative": [0.7, 0.5, 0.5, 0.5],
+            },
+        )
+
+        first_action, first_info = source.next_action(_obs())
+        second_action, second_info = source.next_action(_obs())
+        third_action, third_info = source.next_action(_obs())
+
+        np.testing.assert_allclose(first_action, [0.33, 0.0, 0.0, 0.0])
+        np.testing.assert_allclose(second_action, [-0.36, 0.0, 0.0, 0.0])
+        self.assertEqual(second_info.extras["policy_deadzone_assist_active"], 0)
+        np.testing.assert_allclose(third_action, [-0.72, 0.0, 0.0, 0.0])
+        self.assertEqual(third_info.extras["policy_deadzone_assist_axes"], "swing-")
+
     def test_qvel_zero_mode_feeds_zero_to_policy(self) -> None:
         policy = DummyPolicy([0.1, 0.2, 0.3, 0.4])
         source = PolicyActionSource(
@@ -287,11 +361,27 @@ class PolicyActionSourceTests(unittest.TestCase):
                 "policy_error": "",
                 "policy_step": 7,
                 "policy_inference_latency_ms": 1.5,
+                "policy_assisted_action": np.array([0.1, 0.55, 0.3, 0.4]),
+                "policy_deadzone_assist_enabled": 1,
+                "policy_deadzone_assist_active": 1,
+                "policy_deadzone_assist_mask": np.array([0, 1, 0, 0]),
+                "policy_deadzone_assist_axes": "boom+",
                 "policy_bundle_dir": "policy_bundles/real_one_dig_v1",
             },
         )
 
         np.testing.assert_allclose(diagnostics["policy_action"], [0.1, 0.2, 0.3, 0.4])
+        np.testing.assert_allclose(
+            diagnostics["policy_assisted_action"],
+            [0.1, 0.55, 0.3, 0.4],
+        )
+        self.assertEqual(diagnostics["policy_deadzone_assist_enabled"], 1)
+        self.assertEqual(diagnostics["policy_deadzone_assist_active"], 1)
+        np.testing.assert_allclose(
+            diagnostics["policy_deadzone_assist_mask"],
+            [0, 1, 0, 0],
+        )
+        self.assertEqual(diagnostics["policy_deadzone_assist_axes"], "boom+")
         self.assertEqual(diagnostics["policy_output_mode"], "shadow_zero")
         self.assertEqual(diagnostics["policy_qvel_mode"], "zero")
         np.testing.assert_allclose(diagnostics["policy_qvel_input"], np.zeros(4))
@@ -321,8 +411,13 @@ class PolicyActionSourceTests(unittest.TestCase):
                     extras={
                         "policy_action": np.array([0.1, 0.2, 0.3, 0.4]),
                         "policy_scaled_action": np.array([0.01, 0.02, 0.03, 0.04]),
+                        "policy_assisted_action": np.array([0.01, 0.55, 0.03, 0.04]),
                         "policy_returned_action": np.zeros(4),
                         "policy_output_mode": "shadow_zero",
+                        "policy_deadzone_assist_enabled": 1,
+                        "policy_deadzone_assist_active": 1,
+                        "policy_deadzone_assist_mask": np.array([0, 1, 0, 0]),
+                        "policy_deadzone_assist_axes": "boom+",
                         "policy_error": "",
                     },
                 ),
@@ -353,6 +448,8 @@ class PolicyActionSourceTests(unittest.TestCase):
 
         self.assertEqual(len(step_lines), 1)
         self.assertIn('"policy_output_mode": "shadow_zero"', step_lines[0])
+        self.assertIn('"policy_deadzone_assist_active": 1', step_lines[0])
+        self.assertIn('"policy_deadzone_assist_axes": "boom+"', step_lines[0])
         self.assertEqual(summary["steps"], 1)
 
     def test_load_act_policy_from_bundle_resolves_repo_a_config(self) -> None:

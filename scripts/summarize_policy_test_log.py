@@ -157,6 +157,17 @@ def _compute_metrics(steps: list[dict[str, Any]], *, warmup_steps: int) -> dict[
     effective_hz = (len(steps) - 1) / duration_s if duration_s > 0.0 else 0.0
     policy_actions = [_vec(step.get("policy_action")) for step in checked]
     policy_actions = [vec for vec in policy_actions if vec]
+    assist_steps = [
+        step
+        for step in checked
+        if int(step.get("policy_deadzone_assist_active", 0) or 0)
+    ]
+    assist_axes = _counts(
+        axis
+        for step in assist_steps
+        for axis in str(step.get("policy_deadzone_assist_axes", "")).split(",")
+        if axis
+    )
     modes = _counts(str(step.get("policy_output_mode", "")) for step in steps)
     remote_modes = _counts(str(step.get("policy_remote_mode", "")) for step in steps)
     activated_steps = [
@@ -196,6 +207,16 @@ def _compute_metrics(steps: list[dict[str, Any]], *, warmup_steps: int) -> dict[
         "policy_remote_activated_steps": activated_steps,
         "policy_action_mean": _vector_mean(policy_actions),
         "policy_action_max_abs": _vectors_max_abs(policy_actions),
+        "deadzone_assist_enabled_count": sum(
+            1
+            for step in checked
+            if int(step.get("policy_deadzone_assist_enabled", 0) or 0)
+        ),
+        "deadzone_assist_active_count": len(assist_steps),
+        "deadzone_assist_axes": assist_axes,
+        "deadzone_assist_active_pct": (
+            len(assist_steps) / len(checked) * 100.0 if checked else 0.0
+        ),
         "returned_action_max_abs": _steps_vec_max_abs(checked, "policy_returned_action"),
         "raw_action_max_abs": _steps_vec_max_abs(checked, "raw_action"),
         "safe_action_max_abs": _steps_vec_max_abs(checked, "safe_action"),
@@ -279,6 +300,13 @@ def _print_log_summary(
         f"raw={metrics['raw_action_max_abs']:.4f} "
         f"safe={metrics['safe_action_max_abs']:.4f} "
         f"commanded={metrics['commanded_action_max_abs']:.4f}"
+    )
+    print(
+        "Deadzone assist: "
+        f"enabled_steps={metrics['deadzone_assist_enabled_count']} "
+        f"active_steps={metrics['deadzone_assist_active_count']} "
+        f"active_pct={metrics['deadzone_assist_active_pct']:.1f}% "
+        f"axes={metrics['deadzone_assist_axes'] or '-'}"
     )
     print(
         "Health/control: "

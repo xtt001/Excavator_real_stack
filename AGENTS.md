@@ -72,3 +72,50 @@
 5. 只有用户明确表达需要“沉淀”、更新文档、写复盘或整理经验时，才把问题处理过程
    写入文档。需要沉淀时，按“现象 -> 影响 -> 根因 -> 修改 -> 验证 -> 复用经验”
    组织内容；现场启动和操作变化优先更新 `docs/host_slave_start_commands.md`。
+
+## 数据驱动开发原则
+
+1. 开发必须完全数据驱动。不要猜测 HDF5、日志、图像、qpos/qvel、action 轴、
+   采样率、时间戳、分布范围、异常值、缺失模式或真实运行链路特征。
+
+2. 如果算法、阈值、常数、归一化、过滤规则、控制保护或可视化统计依赖某个数据特征，
+   必须先从实际数据、配置、`resolved_config.yaml`、manifest、日志或已有评估输出中
+   提取并确证该特征，再设计实现。
+
+3. 真实策略和真机控制问题默认先离线验证，不先猜测式调整现场参数。排查时必须区分
+   `policy_action`、`safe_action` 和 `commanded_action`；在 `shadow_zero`、动作裁剪或
+   速率限制模式下，不能把后端收到的零动作或安全动作误判为模型原始输出。
+
+4. 遇到模型输出幅度、泛化、FPV、qpos/qvel 或 runtime 性能问题时，先检查 checkpoint
+   bundle 完整性、输入链路、图像链路、qpos/qvel 对齐、日志字段和离线 replay/eval 证据；
+   只有证据支持时，才讨论 `action_scale`、阈值、控制频率或模型结构调整。
+
+5. 涉及 marker、IMU、CAN、相机或其他上游状态源替换时，先明确数据契约和模块边界。
+   在线估计信号与训练真值必须分开处理，新增字段或诊断量必须能在日志、HDF5 或配置中
+   被追溯验证。
+
+## 训练、评估和交付约定
+
+1. 涉及训练、离线评估或长期任务时，先阅读相关 `docs/`、配置和脚本，给出简短执行计划
+   后再运行。不要跳过现有现场文档、历史复盘或数据契约说明。
+
+2. 不要盲信 shell console script 指向当前仓库。运行训练、评估或转换入口前，应确认脚本
+   来源；必要时优先使用当前仓库的 `PYTHONPATH=... python -m ...` 入口。
+
+3. 训练和离线评估默认以当前数据契约和 manifest 为入口。使用 `train_ready_manifest.json`
+   或同等清单确认样本覆盖；使用 `resolved_config.yaml`、实际 HDF5 结构和评估输出确认
+   输入键、采样率、episode 范围和统计量。
+
+4. 长训练或长评估的状态汇报必须紧凑，至少说明进程是否存活、当前 epoch 或进度、
+   best/latest checkpoint、关键指标和下一步动作。不能仅凭 `policy_latest.ckpt` 存在就
+   宣称训练完成，应检查 `run_metadata.json` 或等价完成信号。
+
+5. 如果 `policy_best.ckpt` 尚未产出，但用户要求先做 smoke replay 或初步验证，可使用明确
+   指定的中间 checkpoint；最终结论仍应在 best checkpoint 或用户指定 checkpoint 上复核。
+
+6. 用户要求“全部数据”式离线评估时，默认做全数据集聚合，并输出可复查的表格和图表，
+   而不是只报告单 episode 或抽样结果。
+
+7. 交付策略模型或现场测试包时，把 checkpoint、`dataset_stats.pkl`、`resolved_config.yaml`、
+   `run_metadata.json`、离线评估结果和简短现场 checklist 作为一个整体处理，并用 SHA-256、
+   文件清单、评估摘要或其他可复查输出验证。

@@ -275,6 +275,7 @@ export LD_LIBRARY_PATH="$PWD/.venv/lib/python3.10/site-packages/nvidia/cu12/lib$
 - `policy latency mean/p50/p95/max`
 - `policy_action mean/max_abs`
 - `returned/raw/safe/commanded max_abs`
+- `deadzone assist enabled_steps/active_steps/active_pct/axes`
 - `policy_errors / health_bad / ack_bad / fault_codes`
 
 看到 `Bundle verdict: OK` 且 `Verdict: OK` 后，再继续下一步。如果是 `NOT OK`，

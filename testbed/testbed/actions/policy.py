@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,17 @@ from testbed.backends.real.contracts import as_real_action
 
 POLICY_OUTPUT_MODES = ("control", "shadow_zero")
 POLICY_QVEL_MODES = ("raw", "zero", "qpos_diff")
+ACTION_AXIS_NAMES = ("swing", "boom", "stick", "bucket")
+
+
+@dataclass(frozen=True)
+class DeadzoneAssistConfig:
+    enabled: bool
+    trigger_fraction: float
+    margin: np.ndarray
+    deadzone_positive: np.ndarray
+    deadzone_negative: np.ndarray
+    min_consecutive_steps: int
 
 
 class PolicyActionSource(ActionSource):
@@ -40,6 +52,7 @@ class PolicyActionSource(ActionSource):
         qvel_diff_clip_rad_s: float | list[float] | tuple[float, ...] | np.ndarray = 2.0,
         fail_safe_zero: bool = True,
         record_start_on_reset: bool = False,
+        deadzone_assist: dict[str, Any] | None = None,
         bundle_dir: str | Path | None = None,
     ) -> None:
         if output_mode not in POLICY_OUTPUT_MODES:
@@ -61,12 +74,15 @@ class PolicyActionSource(ActionSource):
         self._qvel_diff_clip = _broadcast_qvel_clip(qvel_diff_clip_rad_s)
         self._fail_safe_zero = bool(fail_safe_zero)
         self._record_start_on_reset = bool(record_start_on_reset)
+        self._deadzone_assist = _deadzone_assist_config(deadzone_assist)
         self._bundle_dir = None if bundle_dir is None else str(bundle_dir)
         self._step = 0
         self._record_start_pending = self._record_start_on_reset
         self._last_qpos: np.ndarray | None = None
         self._last_obs_time_ns: int | None = None
         self._filtered_qvel = np.zeros(4, dtype=np.float32)
+        self._assist_last_sign = np.zeros(4, dtype=np.int8)
+        self._assist_consecutive_steps = np.zeros(4, dtype=np.int32)
 
     @classmethod
     def from_config(cls, config: dict[str, Any] | None) -> PolicyActionSource:
@@ -92,6 +108,7 @@ class PolicyActionSource(ActionSource):
             qvel_diff_clip_rad_s=cfg.get("qvel_diff_clip_rad_s", 2.0),
             fail_safe_zero=bool(cfg.get("fail_safe_zero", True)),
             record_start_on_reset=bool(cfg.get("record_start_on_reset", False)),
+            deadzone_assist=cfg.get("deadzone_assist"),
             bundle_dir=bundle_dir,
         )
 
@@ -101,6 +118,8 @@ class PolicyActionSource(ActionSource):
         self._last_qpos = None
         self._last_obs_time_ns = None
         self._filtered_qvel.fill(0.0)
+        self._assist_last_sign.fill(0)
+        self._assist_consecutive_steps.fill(0)
         if hasattr(self._policy, "reset"):
             self._policy.reset()
 
@@ -117,8 +136,9 @@ class PolicyActionSource(ActionSource):
                 -self._clip,
                 self._clip,
             ).astype(np.float32)
+            assisted_action, assist_extras = self._apply_deadzone_assist(scaled_action)
             returned_action = (
-                scaled_action
+                assisted_action
                 if self._output_mode == "control"
                 else np.zeros(4, dtype=np.float32)
             )
@@ -129,6 +149,7 @@ class PolicyActionSource(ActionSource):
                 "policy_output_mode": self._output_mode,
                 "policy_action": policy_action.copy(),
                 "policy_scaled_action": scaled_action.copy(),
+                "policy_assisted_action": assisted_action.copy(),
                 "policy_returned_action": returned_action.copy(),
                 "policy_action_scale": self._action_scale.copy(),
                 "policy_qvel_mode": self._qvel_mode,
@@ -136,6 +157,7 @@ class PolicyActionSource(ActionSource):
                 "policy_inference_latency_ms": latency_ms,
                 "policy_step": int(self._step),
                 "policy_error": "",
+                **assist_extras,
             }
             if self._bundle_dir is not None:
                 extras["policy_bundle_dir"] = self._bundle_dir
@@ -160,6 +182,7 @@ class PolicyActionSource(ActionSource):
                 "policy_output_mode": self._output_mode,
                 "policy_action": zero.copy(),
                 "policy_scaled_action": zero.copy(),
+                "policy_assisted_action": zero.copy(),
                 "policy_returned_action": zero.copy(),
                 "policy_action_scale": self._action_scale.copy(),
                 "policy_qvel_mode": self._qvel_mode,
@@ -167,6 +190,7 @@ class PolicyActionSource(ActionSource):
                 "policy_inference_latency_ms": latency_ms,
                 "policy_step": int(self._step),
                 "policy_error": f"{type(exc).__name__}: {exc}",
+                **_deadzone_assist_disabled_extras(self._deadzone_assist),
             }
             if self._bundle_dir is not None:
                 extras["policy_bundle_dir"] = self._bundle_dir
@@ -223,6 +247,55 @@ class PolicyActionSource(ActionSource):
         self._last_qpos = qpos.astype(np.float32, copy=True)
         self._last_obs_time_ns = obs_time_ns
         return self._filtered_qvel.copy()
+
+    def _apply_deadzone_assist(
+        self,
+        action: np.ndarray,
+    ) -> tuple[np.ndarray, dict[str, Any]]:
+        cfg = self._deadzone_assist
+        if not cfg.enabled:
+            return action.astype(np.float32, copy=True), _deadzone_assist_disabled_extras(cfg)
+
+        assisted = np.asarray(action, dtype=np.float32).copy()
+        sign = np.sign(assisted).astype(np.int8)
+        threshold = np.where(
+            sign >= 0,
+            cfg.deadzone_positive,
+            cfg.deadzone_negative,
+        ).astype(np.float32)
+        magnitude = np.abs(assisted)
+        intent = (sign != 0) & (magnitude >= cfg.trigger_fraction * threshold)
+
+        same_direction = intent & (sign == self._assist_last_sign)
+        self._assist_consecutive_steps = np.where(
+            same_direction,
+            self._assist_consecutive_steps + 1,
+            np.where(intent, 1, 0),
+        ).astype(np.int32)
+        self._assist_last_sign = np.where(intent, sign, 0).astype(np.int8)
+
+        stable_intent = intent & (
+            self._assist_consecutive_steps >= cfg.min_consecutive_steps
+        )
+        below_deadzone = magnitude < threshold
+        assist_mask = stable_intent & below_deadzone
+        target = np.minimum(threshold + cfg.margin, self._clip).astype(np.float32)
+        assisted = np.where(assist_mask, sign.astype(np.float32) * target, assisted)
+        assisted = np.clip(assisted, -self._clip, self._clip).astype(np.float32)
+        axes = _assist_axes_text(assist_mask=assist_mask, sign=sign)
+        extras = {
+            "policy_deadzone_assist_enabled": 1,
+            "policy_deadzone_assist_active": int(bool(np.any(assist_mask))),
+            "policy_deadzone_assist_mask": assist_mask.astype(np.int32),
+            "policy_deadzone_assist_axes": axes,
+            "policy_deadzone_assist_trigger_fraction": float(cfg.trigger_fraction),
+            "policy_deadzone_assist_min_consecutive_steps": int(
+                cfg.min_consecutive_steps
+            ),
+            "policy_deadzone_assist_positive": cfg.deadzone_positive.copy(),
+            "policy_deadzone_assist_negative": cfg.deadzone_negative.copy(),
+        }
+        return assisted, extras
 
     def close(self) -> None:
         close = getattr(self._policy, "close", None)
@@ -372,6 +445,78 @@ def _broadcast_qvel_clip(value: Any) -> np.ndarray:
     if arr.shape != (4,):
         raise ValueError(f"qvel_diff_clip_rad_s must be scalar or shape (4,), got {arr.shape}")
     return np.maximum(arr, 0.0).astype(np.float32, copy=True)
+
+
+def _deadzone_assist_config(config: dict[str, Any] | None) -> DeadzoneAssistConfig:
+    cfg = dict(config or {})
+    enabled = bool(cfg.get("enabled", False))
+    positive = _broadcast_nonnegative_vector4(
+        cfg.get("deadzone_positive", cfg.get("deadzone", 0.0)),
+        name="deadzone_assist.deadzone_positive",
+    )
+    negative = _broadcast_nonnegative_vector4(
+        cfg.get("deadzone_negative", cfg.get("deadzone", positive)),
+        name="deadzone_assist.deadzone_negative",
+    )
+    if enabled and (np.any(positive <= 0.0) or np.any(negative <= 0.0)):
+        raise ValueError(
+            "deadzone_assist requires positive deadzone_positive and "
+            "deadzone_negative values when enabled"
+        )
+    trigger_fraction = float(cfg.get("trigger_fraction", 0.5))
+    if not 0.0 < trigger_fraction <= 1.0:
+        raise ValueError("deadzone_assist.trigger_fraction must be in (0, 1]")
+    margin = _broadcast_nonnegative_vector4(
+        cfg.get("margin", 0.02),
+        name="deadzone_assist.margin",
+    )
+    min_consecutive_steps = int(cfg.get("min_consecutive_steps", 2))
+    if min_consecutive_steps < 1:
+        raise ValueError("deadzone_assist.min_consecutive_steps must be >= 1")
+    return DeadzoneAssistConfig(
+        enabled=enabled,
+        trigger_fraction=trigger_fraction,
+        margin=margin,
+        deadzone_positive=positive,
+        deadzone_negative=negative,
+        min_consecutive_steps=min_consecutive_steps,
+    )
+
+
+def _broadcast_nonnegative_vector4(value: Any, *, name: str) -> np.ndarray:
+    if isinstance(value, (int, float)):
+        return np.full(4, max(0.0, float(value)), dtype=np.float32)
+    arr = np.asarray(value, dtype=np.float32).reshape(-1)
+    if arr.shape != (4,):
+        raise ValueError(f"{name} must be scalar or shape (4,), got {arr.shape}")
+    return np.maximum(arr, 0.0).astype(np.float32, copy=True)
+
+
+def _deadzone_assist_disabled_extras(
+    cfg: DeadzoneAssistConfig,
+) -> dict[str, Any]:
+    return {
+        "policy_deadzone_assist_enabled": int(bool(cfg.enabled)),
+        "policy_deadzone_assist_active": 0,
+        "policy_deadzone_assist_mask": np.zeros(4, dtype=np.int32),
+        "policy_deadzone_assist_axes": "",
+        "policy_deadzone_assist_trigger_fraction": float(cfg.trigger_fraction),
+        "policy_deadzone_assist_min_consecutive_steps": int(
+            cfg.min_consecutive_steps
+        ),
+        "policy_deadzone_assist_positive": cfg.deadzone_positive.copy(),
+        "policy_deadzone_assist_negative": cfg.deadzone_negative.copy(),
+    }
+
+
+def _assist_axes_text(*, assist_mask: np.ndarray, sign: np.ndarray) -> str:
+    axes = []
+    for idx, axis_name in enumerate(ACTION_AXIS_NAMES):
+        if not bool(assist_mask[idx]):
+            continue
+        suffix = "+" if int(sign[idx]) >= 0 else "-"
+        axes.append(f"{axis_name}{suffix}")
+    return ",".join(axes)
 
 
 def _obs_time_ns(obs: dict[str, Any]) -> int:

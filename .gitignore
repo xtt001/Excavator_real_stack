@@ -40,6 +40,7 @@ policy_bundles/
 # IDE
 .idea/
 .vscode/settings.json
+.codex/
 *.swp
 *.swo
 
