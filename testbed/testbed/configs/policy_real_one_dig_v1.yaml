@@ -55,6 +55,16 @@ teleop:
     qvel_diff_tau_s: 0.15
     qvel_diff_clip_rad_s: [1.5, 1.5, 1.5, 1.5]
     action_scale: [1.0, 1.0, 1.0, 0.75]
+    # Optional hydraulic deadzone assist. Disabled by default. When enabled, a
+    # stable policy command whose magnitude reaches trigger_fraction * deadzone
+    # is lifted to deadzone + margin on that axis/direction before guard checks.
+    deadzone_assist:
+      enabled: false
+      trigger_fraction: 0.5
+      min_consecutive_steps: 2
+      margin: [0.02, 0.02, 0.02, 0.02]
+      deadzone_positive: [0.661, 0.259, 0.500, 0.408]
+      deadzone_negative: [0.721, 0.357, 0.500, 0.508]
     clip: 1.0
     fail_safe_zero: true
     record_start_on_reset: false
@@ -159,6 +169,29 @@ receiver:
     imu_require_online: true
     imu_require_valid_attitude: true
     quarantine_failed_records: true
+  online_qc:
+    enabled: true
+    reference_path: ""
+    mask_backfill_window_steps: 5
+    qpos_warn_consecutive_steps: 5
+    qpos_fail_consecutive_steps: 25
+    qpos_distribution_hard_fail: false
+    qpos_jump_fail_rad: 0.20
+    max_policy_raw_qpos_delta_rad: [0.08, 0.08, 0.08, 0.08]
+    imu_qpos_delta_warn_consecutive_steps: 5
+    imu_qpos_delta_fail_consecutive_steps: 25
+    fpv_sample_interval_steps: 5
+    fpv_drift_warn_consecutive_samples: 5
+    fpv_drift_fail_consecutive_samples: 25
+    fpv_drift_hard_fail: false
+    fpv_black_mean_threshold: 5.0
+    bucket_reference_margin_rad: 0.25
+    bucket_semantic_enabled: true
+    bucket_semantic_review_is_train_ready: true
+    bucket_semantic_min_reference_count: 5
+    min_episode_steps: 300
+    min_healthy_steps: 300
+    min_healthy_fraction: 0.30
 
 safety:
   deadman_enabled: true

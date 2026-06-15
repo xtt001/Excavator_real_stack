@@ -52,6 +52,7 @@ tb-dataset-videos = "testbed.cli.dataset_videos:main"
 tb-repair-bucket-qpos = "testbed.cli.repair_bucket_qpos:main"
 tb-build-20hz-dataset = "testbed.cli.build_20hz_dataset:main"
 tb-offline-policy-eval = "testbed.cli.offline_policy_eval:main"
+tb-build-online-qc-reference = "testbed.cli.build_online_qc_reference:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

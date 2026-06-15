@@ -524,6 +524,856 @@ class RealworldV1Tests(unittest.TestCase):
                 self.assertFalse(snapshot.ok)
                 self.assertEqual(snapshot.error_code, expected)
 
+    def test_online_qc_warns_when_qpos_stays_outside_p5_p95(self) -> None:
+        from testbed.data.online_qc import OnlineQcConfig, OnlineTrainingQcEvaluator
+
+        evaluator = OnlineTrainingQcEvaluator(
+            OnlineQcConfig(
+                reference=_online_qc_reference(),
+                qpos_warn_consecutive_steps=5,
+                qpos_fail_consecutive_steps=25,
+                fpv_sample_interval_steps=999,
+            )
+        )
+
+        snapshot = None
+        for _ in range(5):
+            snapshot = evaluator.evaluate(
+                obs=_online_qc_obs(qpos=[1.2, 0.0, 0.0, 0.0]),
+                now_ns=2_000_000_000,
+            )
+
+        self.assertIsNotNone(snapshot)
+        assert snapshot is not None
+        self.assertEqual(snapshot.status, "WARN_MASK")
+        self.assertEqual(snapshot.error_code, "")
+        self.assertIn("qpos_outside_p5_p95", snapshot.warning_codes)
+        self.assertTrue(snapshot.train_exclude)
+        self.assertEqual(snapshot.diagnostics["online_qc_status"], "WARN_MASK")
+
+    def test_online_qc_masks_when_qpos_stays_outside_p1_p99_by_default(self) -> None:
+        from testbed.data.online_qc import OnlineQcConfig, OnlineTrainingQcEvaluator
+
+        evaluator = OnlineTrainingQcEvaluator(
+            OnlineQcConfig(
+                reference=_online_qc_reference(),
+                qpos_warn_consecutive_steps=5,
+                qpos_fail_consecutive_steps=25,
+                fpv_sample_interval_steps=999,
+            )
+        )
+
+        snapshot = None
+        for _ in range(25):
+            snapshot = evaluator.evaluate(
+                obs=_online_qc_obs(qpos=[2.2, 0.0, 0.0, 0.0]),
+                now_ns=2_000_000_000,
+            )
+
+        self.assertIsNotNone(snapshot)
+        assert snapshot is not None
+        self.assertEqual(snapshot.status, "WARN_MASK")
+        self.assertEqual(snapshot.error_code, "")
+        self.assertIn("qpos_outside_p1_p99", snapshot.warning_codes)
+        self.assertTrue(snapshot.train_exclude)
+
+    def test_online_qc_can_hard_fail_persistent_qpos_distribution_outlier(self) -> None:
+        from testbed.data.online_qc import OnlineQcConfig, OnlineTrainingQcEvaluator
+
+        evaluator = OnlineTrainingQcEvaluator(
+            OnlineQcConfig(
+                reference=_online_qc_reference(),
+                qpos_distribution_hard_fail=True,
+                qpos_fail_consecutive_steps=25,
+                fpv_sample_interval_steps=999,
+            )
+        )
+
+        snapshot = None
+        for _ in range(25):
+            snapshot = evaluator.evaluate(
+                obs=_online_qc_obs(qpos=[2.2, 0.0, 0.0, 0.0]),
+                now_ns=2_000_000_000,
+            )
+
+        self.assertIsNotNone(snapshot)
+        assert snapshot is not None
+        self.assertEqual(snapshot.status, "FAIL_EPISODE")
+        self.assertEqual(snapshot.error_code, "qpos_outside_p1_p99")
+        self.assertTrue(snapshot.train_exclude)
+
+    def test_online_qc_final_fails_short_episode(self) -> None:
+        from testbed.data.online_qc import OnlineQcConfig, OnlineTrainingQcEvaluator
+
+        evaluator = OnlineTrainingQcEvaluator(
+            OnlineQcConfig(
+                reference=_online_qc_reference(),
+                min_episode_steps=100,
+                min_healthy_steps=80,
+                fpv_sample_interval_steps=999,
+            )
+        )
+
+        for _ in range(65):
+            evaluator.evaluate(
+                obs=_online_qc_obs(qpos=[0.0, 0.0, 0.0, 0.0]),
+                now_ns=2_000_000_000,
+            )
+
+        snapshot = evaluator.finalize_episode()
+
+        self.assertEqual(snapshot.status, "FAIL_EPISODE")
+        self.assertEqual(snapshot.error_code, "episode_too_short")
+        self.assertTrue(snapshot.train_exclude)
+        self.assertEqual(snapshot.diagnostics["online_qc_train_ready_candidate"], 0)
+
+    def test_online_qc_final_fails_when_healthy_window_is_insufficient(self) -> None:
+        from testbed.data.online_qc import OnlineQcConfig, OnlineTrainingQcEvaluator
+
+        evaluator = OnlineTrainingQcEvaluator(
+            OnlineQcConfig(
+                reference=_online_qc_reference(),
+                min_episode_steps=50,
+                min_healthy_steps=80,
+                min_healthy_fraction=0.60,
+                fpv_sample_interval_steps=999,
+            )
+        )
+
+        for _ in range(129):
+            evaluator.evaluate(
+                obs=_online_qc_obs(qpos=[1.2, 0.0, 0.0, 0.0]),
+                now_ns=2_000_000_000,
+            )
+
+        snapshot = evaluator.finalize_episode()
+
+        self.assertEqual(snapshot.status, "FAIL_EPISODE")
+        self.assertEqual(snapshot.error_code, "insufficient_healthy_steps")
+        self.assertEqual(snapshot.diagnostics["online_qc_healthy_steps"], 4)
+        self.assertEqual(snapshot.diagnostics["online_qc_train_ready_candidate"], 0)
+
+    def test_online_qc_final_default_allows_enough_masked_episode_windows(self) -> None:
+        from testbed.data.online_qc import OnlineQcConfig, OnlineTrainingQcEvaluator
+
+        evaluator = OnlineTrainingQcEvaluator(
+            OnlineQcConfig(reference=_online_qc_reference(), fpv_sample_interval_steps=999)
+        )
+
+        for _ in range(333):
+            evaluator.evaluate(
+                obs=_online_qc_obs(qpos=[0.0, 0.0, 0.0, 0.0]),
+                now_ns=2_000_000_000,
+            )
+        for _ in range(767):
+            evaluator.evaluate(
+                obs=_online_qc_obs(qpos=[1.2, 0.0, 0.0, 0.0]),
+                now_ns=2_000_000_000,
+            )
+
+        snapshot = evaluator.finalize_episode()
+
+        self.assertEqual(snapshot.status, "PASS")
+        self.assertEqual(snapshot.error_code, "")
+        self.assertGreaterEqual(snapshot.diagnostics["online_qc_healthy_steps"], 333)
+        self.assertEqual(snapshot.diagnostics["online_qc_train_ready_candidate"], 1)
+
+    def test_online_qc_final_fails_bucket_reference_outlier(self) -> None:
+        from testbed.data.online_qc import OnlineQcConfig, OnlineTrainingQcEvaluator
+
+        reference = _online_qc_reference()
+        reference["bucket_qpos"] = {"p1": -1.0, "p99": 1.0}
+        evaluator = OnlineTrainingQcEvaluator(
+            OnlineQcConfig(
+                reference=reference,
+                fpv_sample_interval_steps=999,
+                min_episode_steps=1,
+                min_healthy_steps=1,
+                min_healthy_fraction=0.0,
+            )
+        )
+
+        for step in range(10):
+            evaluator.evaluate(
+                obs=_online_qc_obs(
+                    qpos=[0.0, 0.0, 0.0, 1.4],
+                    qpos_raw_imu=[0.0, 0.0, 0.0, 1.4],
+                    image_timestamp_ns=2_000_000_000 + step * 20_000_000,
+                ),
+                now_ns=2_000_000_000 + step * 20_000_000,
+            )
+
+        snapshot = evaluator.finalize_episode(recorded_steps=10)
+
+        self.assertEqual(snapshot.status, "FAIL_EPISODE")
+        self.assertEqual(snapshot.error_code, "bucket_reference_outlier")
+        self.assertEqual(snapshot.diagnostics["online_qc_train_ready_candidate"], 0)
+        self.assertEqual(
+            snapshot.diagnostics["online_qc_bucket_reference_status"],
+            "FAIL",
+        )
+        self.assertLess(
+            snapshot.diagnostics["online_qc_bucket_ref_high_margin"],
+            -0.2,
+        )
+
+    def test_online_qc_final_fails_bucket_semantic_drop(self) -> None:
+        from testbed.data.online_qc import OnlineQcConfig, OnlineTrainingQcEvaluator
+
+        reference = _online_qc_reference()
+        reference["bucket_qpos"] = {"p1": -2.0, "p99": 1.0}
+        reference["bucket_semantic"] = _online_qc_bucket_semantic_reference(
+            end_p5=0.8,
+            max_p5=1.2,
+            late_max_p5=1.2,
+            min_p99=-1.0,
+        )
+        evaluator = OnlineTrainingQcEvaluator(
+            OnlineQcConfig(
+                reference=reference,
+                fpv_sample_interval_steps=999,
+                min_episode_steps=1,
+                min_healthy_steps=1,
+                min_healthy_fraction=0.0,
+            )
+        )
+        bucket = np.concatenate(
+            [
+                np.linspace(0.0, 1.1, 20),
+                np.linspace(1.1, 0.0, 40),
+                np.zeros(20),
+            ]
+        )
+        _run_online_qc_bucket_series(evaluator, bucket)
+
+        snapshot = evaluator.finalize_episode(recorded_steps=int(bucket.size))
+
+        self.assertEqual(snapshot.status, "FAIL_EPISODE")
+        self.assertEqual(snapshot.error_code, "bucket_semantic_outlier")
+        self.assertEqual(snapshot.diagnostics["online_qc_train_ready_candidate"], 0)
+        self.assertEqual(
+            snapshot.diagnostics["online_qc_bucket_reference_status"],
+            "WARN",
+        )
+        self.assertEqual(
+            snapshot.diagnostics["online_qc_bucket_semantic_decision"],
+            "drop",
+        )
+        self.assertIn(
+            "bucket_end_or_late_recovery_too_low",
+            snapshot.diagnostics["online_qc_bucket_semantic_notes"],
+        )
+
+    def test_online_qc_final_warns_for_bucket_semantic_review(self) -> None:
+        from testbed.data.online_qc import OnlineQcConfig, OnlineTrainingQcEvaluator
+
+        reference = _online_qc_reference()
+        reference["bucket_qpos"] = {"p1": -2.0, "p99": 1.0}
+        reference["bucket_semantic"] = _online_qc_bucket_semantic_reference(
+            end_p5=0.8,
+            max_p5=0.8,
+            late_max_p5=0.8,
+            min_p99=0.0,
+        )
+        evaluator = OnlineTrainingQcEvaluator(
+            OnlineQcConfig(
+                reference=reference,
+                fpv_sample_interval_steps=999,
+                min_episode_steps=1,
+                min_healthy_steps=1,
+                min_healthy_fraction=0.0,
+            )
+        )
+        bucket = np.full(80, 1.1, dtype=np.float64)
+        _run_online_qc_bucket_series(evaluator, bucket)
+
+        snapshot = evaluator.finalize_episode(recorded_steps=int(bucket.size))
+
+        self.assertEqual(snapshot.status, "WARN_MASK")
+        self.assertEqual(snapshot.error_code, "")
+        self.assertIn("bucket_semantic_review", snapshot.warning_codes)
+        self.assertEqual(snapshot.diagnostics["online_qc_train_ready_candidate"], 1)
+        self.assertEqual(
+            snapshot.diagnostics["online_qc_bucket_semantic_decision"],
+            "review",
+        )
+        self.assertIn(
+            "bucket_min_too_shallow",
+            snapshot.diagnostics["online_qc_bucket_semantic_notes"],
+        )
+
+    def test_online_qc_final_keeps_bucket_reference_warn_when_semantics_pass(self) -> None:
+        from testbed.data.online_qc import OnlineQcConfig, OnlineTrainingQcEvaluator
+
+        reference = _online_qc_reference()
+        reference["bucket_qpos"] = {"p1": -2.0, "p99": 1.0}
+        reference["bucket_semantic"] = _online_qc_bucket_semantic_reference(
+            end_p5=0.8,
+            max_p5=0.8,
+            late_max_p5=0.8,
+            min_p99=1.2,
+        )
+        evaluator = OnlineTrainingQcEvaluator(
+            OnlineQcConfig(
+                reference=reference,
+                fpv_sample_interval_steps=999,
+                min_episode_steps=1,
+                min_healthy_steps=1,
+                min_healthy_fraction=0.0,
+            )
+        )
+        bucket = np.full(80, 1.1, dtype=np.float64)
+        _run_online_qc_bucket_series(evaluator, bucket)
+
+        snapshot = evaluator.finalize_episode(recorded_steps=int(bucket.size))
+
+        self.assertEqual(snapshot.status, "PASS")
+        self.assertEqual(snapshot.error_code, "")
+        self.assertEqual(snapshot.warning_codes, ())
+        self.assertEqual(snapshot.diagnostics["online_qc_train_ready_candidate"], 1)
+        self.assertEqual(
+            snapshot.diagnostics["online_qc_bucket_semantic_decision"],
+            "keep",
+        )
+        self.assertEqual(
+            snapshot.diagnostics["online_qc_bucket_semantic_info"],
+            "bucket_reference_semantic_keep",
+        )
+
+    def test_online_qc_fails_immediately_on_qpos_jump(self) -> None:
+        from testbed.data.online_qc import OnlineQcConfig, OnlineTrainingQcEvaluator
+
+        evaluator = OnlineTrainingQcEvaluator(
+            OnlineQcConfig(
+                reference=_online_qc_reference(),
+                qpos_jump_fail_rad=0.20,
+                fpv_sample_interval_steps=999,
+            )
+        )
+        first = evaluator.evaluate(
+            obs=_online_qc_obs(qpos=[0.0, 0.0, 0.0, 0.0]),
+            now_ns=2_000_000_000,
+        )
+        second = evaluator.evaluate(
+            obs=_online_qc_obs(qpos=[0.21, 0.0, 0.0, 0.0]),
+            now_ns=2_020_000_000,
+        )
+
+        self.assertEqual(first.status, "PASS")
+        self.assertEqual(second.status, "FAIL_EPISODE")
+        self.assertEqual(second.error_code, "qpos_jump")
+
+    def test_online_qc_masks_then_fails_when_raw_imu_qpos_diverges(self) -> None:
+        from testbed.data.online_qc import OnlineQcConfig, OnlineTrainingQcEvaluator
+
+        evaluator = OnlineTrainingQcEvaluator(
+            OnlineQcConfig(
+                reference=_online_qc_reference(),
+                imu_qpos_delta_warn_consecutive_steps=5,
+                imu_qpos_delta_fail_consecutive_steps=25,
+                max_policy_raw_qpos_delta_rad=[0.08, 0.08, 0.08, 0.08],
+                fpv_sample_interval_steps=999,
+            )
+        )
+
+        snapshot = None
+        for _ in range(5):
+            snapshot = evaluator.evaluate(
+                obs=_online_qc_obs(
+                    qpos=[0.0, 0.0, 0.0, 0.0],
+                    qpos_raw_imu=[0.10, 0.0, 0.0, 0.0],
+                ),
+                now_ns=2_000_000_000,
+            )
+        self.assertIsNotNone(snapshot)
+        assert snapshot is not None
+        self.assertEqual(snapshot.status, "WARN_MASK")
+        self.assertIn("imu_qpos_delta_high", snapshot.warning_codes)
+        self.assertTrue(snapshot.train_exclude)
+
+        for _ in range(20):
+            snapshot = evaluator.evaluate(
+                obs=_online_qc_obs(
+                    qpos=[0.0, 0.0, 0.0, 0.0],
+                    qpos_raw_imu=[0.10, 0.0, 0.0, 0.0],
+                ),
+                now_ns=2_000_000_000,
+            )
+        self.assertEqual(snapshot.status, "FAIL_EPISODE")
+        self.assertEqual(snapshot.error_code, "imu_qpos_delta_high")
+
+    def test_online_qc_warns_but_does_not_fail_when_raw_imu_qpos_missing(self) -> None:
+        from testbed.data.online_qc import OnlineQcConfig, OnlineTrainingQcEvaluator
+
+        evaluator = OnlineTrainingQcEvaluator(
+            OnlineQcConfig(reference=_online_qc_reference(), fpv_sample_interval_steps=999)
+        )
+
+        snapshot = evaluator.evaluate(
+            obs=_online_qc_obs(qpos=[0.0, 0.0, 0.0, 0.0]),
+            now_ns=2_000_000_000,
+        )
+
+        self.assertEqual(snapshot.status, "PASS")
+        self.assertEqual(snapshot.error_code, "")
+        self.assertIn("imu_qpos_reference_missing", snapshot.warning_codes)
+        self.assertFalse(snapshot.train_exclude)
+
+    def test_online_qc_config_loads_reference_path_and_missing_path_degrades(self) -> None:
+        from testbed.data.online_qc import OnlineQcConfig
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "online_qc_reference.json"
+            path.write_text(json.dumps(_online_qc_reference()), encoding="utf-8")
+
+            loaded = OnlineQcConfig.from_mapping(
+                {
+                    "enabled": True,
+                    "reference_path": str(path),
+                    "qpos_warn_consecutive_steps": 7,
+                }
+            )
+            missing = OnlineQcConfig.from_mapping(
+                {
+                    "enabled": True,
+                    "reference_path": str(Path(tmpdir) / "missing.json"),
+                }
+            )
+
+        self.assertTrue(loaded.enabled)
+        self.assertEqual(loaded.reference["reference_id"], "unit-reference")
+        self.assertEqual(loaded.qpos_warn_consecutive_steps, 7)
+        self.assertTrue(missing.enabled)
+        self.assertIsNone(missing.reference)
+
+    def test_step_diagnostics_include_online_qc_fields(self) -> None:
+        from testbed.cli.record_real import _build_step_diagnostics
+        from testbed.data.online_qc import OnlineQcSnapshot
+
+        diagnostics = _build_step_diagnostics(
+            obs={},
+            raw_action=np.zeros(4, dtype=np.float32),
+            safe_action=np.zeros(4, dtype=np.float32),
+            action_info=SimpleNamespace(extras={}),
+            action_sample_timestamp_ns=0,
+            action_send_timestamp_ns=0,
+            guard=SimpleNamespace(last_info=SimpleNamespace(triggered=False, reasons=())),
+            control_result={"ack": True, "commanded_action": np.zeros(4)},
+            online_qc=OnlineQcSnapshot(
+                status="WARN_MASK",
+                error_code="",
+                warning_codes=("fpv_drift",),
+                train_exclude=True,
+                diagnostics={
+                    "online_qc_status": "WARN_MASK",
+                    "online_qc_error_code": "",
+                    "online_qc_warning_codes": "fpv_drift",
+                    "train_exclude_mask": 1,
+                },
+            ),
+        )
+
+        self.assertEqual(diagnostics["online_qc_status"], "WARN_MASK")
+        self.assertEqual(diagnostics["online_qc_warning_codes"], "fpv_drift")
+        self.assertEqual(diagnostics["train_exclude_mask"], 1)
+
+    def test_online_qc_fails_immediately_on_bad_fpv_frame(self) -> None:
+        from testbed.data.online_qc import OnlineQcConfig, OnlineTrainingQcEvaluator
+
+        evaluator = OnlineTrainingQcEvaluator(
+            OnlineQcConfig(reference=_online_qc_reference(), fpv_sample_interval_steps=1)
+        )
+
+        black = evaluator.evaluate(
+            obs=_online_qc_obs(
+                qpos=[0.0, 0.0, 0.0, 0.0],
+                qpos_raw_imu=[0.0, 0.0, 0.0, 0.0],
+                image=np.zeros((8, 8, 3), dtype=np.uint8),
+            ),
+            now_ns=2_000_000_000,
+        )
+        self.assertEqual(black.status, "FAIL_EPISODE")
+        self.assertEqual(black.error_code, "fpv_black")
+
+        bad_jpeg = OnlineTrainingQcEvaluator(
+            OnlineQcConfig(reference=_online_qc_reference(), fpv_sample_interval_steps=1)
+        ).evaluate(
+            obs=_online_qc_obs(
+                qpos=[0.0, 0.0, 0.0, 0.0],
+                qpos_raw_imu=[0.0, 0.0, 0.0, 0.0],
+                encoded_image=np.asarray([1, 2, 3, 4], dtype=np.uint8),
+            ),
+            now_ns=2_000_000_000,
+        )
+        self.assertEqual(bad_jpeg.status, "FAIL_EPISODE")
+        self.assertEqual(bad_jpeg.error_code, "fpv_decode_failed")
+
+    def test_online_qc_fails_immediately_on_repeated_fpv_frame(self) -> None:
+        from testbed.data.online_qc import OnlineQcConfig, OnlineTrainingQcEvaluator
+
+        evaluator = OnlineTrainingQcEvaluator(
+            OnlineQcConfig(reference=_online_qc_reference(), fpv_sample_interval_steps=1)
+        )
+        image = _online_qc_pattern_image()
+
+        first = evaluator.evaluate(
+            obs=_online_qc_obs(
+                qpos=[0.0, 0.0, 0.0, 0.0],
+                qpos_raw_imu=[0.0, 0.0, 0.0, 0.0],
+                image=image,
+                image_timestamp_ns=2_000_000_000,
+            ),
+            now_ns=2_000_000_000,
+        )
+        second = evaluator.evaluate(
+            obs=_online_qc_obs(
+                qpos=[0.0, 0.0, 0.0, 0.0],
+                qpos_raw_imu=[0.0, 0.0, 0.0, 0.0],
+                image=image,
+                image_timestamp_ns=2_020_000_000,
+            ),
+            now_ns=2_020_000_000,
+        )
+
+        self.assertEqual(first.status, "PASS")
+        self.assertEqual(second.status, "FAIL_EPISODE")
+        self.assertEqual(second.error_code, "fpv_duplicate")
+
+    def test_online_qc_masks_persistent_fpv_drift_by_default(self) -> None:
+        from testbed.data.online_qc import OnlineQcConfig, OnlineTrainingQcEvaluator
+
+        evaluator = OnlineTrainingQcEvaluator(
+            OnlineQcConfig(
+                reference=_online_qc_reference(),
+                fpv_sample_interval_steps=1,
+                fpv_drift_warn_consecutive_samples=5,
+                fpv_drift_fail_consecutive_samples=25,
+            )
+        )
+
+        snapshot = None
+        for step in range(5):
+            snapshot = evaluator.evaluate(
+                obs=_online_qc_obs(
+                    qpos=[0.0, 0.0, 0.0, 0.0],
+                    qpos_raw_imu=[0.0, 0.0, 0.0, 0.0],
+                    image=_online_qc_bright_drift_image(step),
+                    image_timestamp_ns=2_000_000_000 + step * 20_000_000,
+                ),
+                now_ns=2_000_000_000 + step * 20_000_000,
+            )
+        self.assertIsNotNone(snapshot)
+        assert snapshot is not None
+        self.assertEqual(snapshot.status, "WARN_MASK")
+        self.assertIn("fpv_drift", snapshot.warning_codes)
+        self.assertTrue(snapshot.train_exclude)
+
+        for step in range(5, 25):
+            snapshot = evaluator.evaluate(
+                obs=_online_qc_obs(
+                    qpos=[0.0, 0.0, 0.0, 0.0],
+                    qpos_raw_imu=[0.0, 0.0, 0.0, 0.0],
+                    image=_online_qc_bright_drift_image(step),
+                    image_timestamp_ns=2_000_000_000 + step * 20_000_000,
+                ),
+                now_ns=2_000_000_000 + step * 20_000_000,
+            )
+        self.assertEqual(snapshot.status, "WARN_MASK")
+        self.assertEqual(snapshot.error_code, "")
+        self.assertIn("fpv_drift", snapshot.warning_codes)
+
+    def test_online_qc_can_hard_fail_persistent_fpv_drift(self) -> None:
+        from testbed.data.online_qc import OnlineQcConfig, OnlineTrainingQcEvaluator
+
+        evaluator = OnlineTrainingQcEvaluator(
+            OnlineQcConfig(
+                reference=_online_qc_reference(),
+                fpv_sample_interval_steps=1,
+                fpv_drift_hard_fail=True,
+                fpv_drift_warn_consecutive_samples=5,
+                fpv_drift_fail_consecutive_samples=25,
+            )
+        )
+
+        snapshot = None
+        for step in range(25):
+            snapshot = evaluator.evaluate(
+                obs=_online_qc_obs(
+                    qpos=[0.0, 0.0, 0.0, 0.0],
+                    qpos_raw_imu=[0.0, 0.0, 0.0, 0.0],
+                    image=_online_qc_bright_drift_image(step),
+                    image_timestamp_ns=2_000_000_000 + step * 20_000_000,
+                ),
+                now_ns=2_000_000_000 + step * 20_000_000,
+            )
+        self.assertIsNotNone(snapshot)
+        assert snapshot is not None
+        self.assertEqual(snapshot.status, "FAIL_EPISODE")
+        self.assertEqual(snapshot.error_code, "fpv_drift")
+
+    @unittest.skipUnless(HAS_H5PY, "h5py is required for online QC reference tests")
+    def test_build_online_qc_reference_writes_qpos_and_fpv_stats(self) -> None:
+        from testbed.cli.build_online_qc_reference import build_online_qc_reference
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            dataset_dir = root / "dataset"
+            dataset_dir.mkdir()
+            _write_online_qc_reference_episode(dataset_dir / "episode_0.hdf5", offset=0.0)
+            _write_online_qc_reference_episode(dataset_dir / "episode_1.hdf5", offset=0.2)
+            manifest_path = root / "train_ready_manifest.json"
+            manifest_path.write_text(
+                json.dumps({"train_ready_episode_ids": [0, 1]}),
+                encoding="utf-8",
+            )
+            summary_path = root / "training_qc_summary.json"
+            summary_path.write_text(
+                json.dumps(
+                    {
+                        "reference": {
+                            "qpos": {
+                                "p1": [-9.0, -9.0, -9.0, -9.0],
+                                "p5": [-8.0, -8.0, -8.0, -8.0],
+                                "p95": [8.0, 8.0, 8.0, 8.0],
+                                "p99": [9.0, 9.0, 9.0, 9.0],
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            output_path = root / "online_qc_reference.json"
+
+            reference = build_online_qc_reference(
+                dataset_dir=dataset_dir,
+                manifest_path=manifest_path,
+                training_qc_summary_path=summary_path,
+                output_path=output_path,
+            )
+
+            written = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(written["schema_version"], 1)
+            self.assertEqual(written["episode_ids"], [0, 1])
+            np.testing.assert_allclose(
+                written["qpos"]["p5"],
+                [0.0, 0.1, 0.2, 0.3],
+            )
+            np.testing.assert_allclose(
+                written["qpos"]["p95"],
+                [0.2, 0.3, 0.4, 0.5],
+            )
+            self.assertIn("reference_id", written)
+            self.assertGreater(written["fpv"]["brightness"]["count"], 0)
+            self.assertEqual(len(written["fpv"]["fingerprint"]), 64)
+            self.assertEqual(reference["reference_id"], written["reference_id"])
+
+    @unittest.skipUnless(HAS_H5PY, "h5py is required for online QC reference tests")
+    def test_build_online_qc_reference_writes_bucket_semantic_reference(self) -> None:
+        from testbed.cli.build_online_qc_reference import build_online_qc_reference
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            dataset_dir = root / "dataset"
+            dataset_dir.mkdir()
+            for episode_id in range(5):
+                _write_online_qc_reference_episode(
+                    dataset_dir / f"episode_{episode_id}.hdf5",
+                    offset=float(episode_id) * 0.05,
+                )
+            manifest_path = root / "train_ready_manifest.json"
+            manifest_path.write_text(
+                json.dumps({"train_ready_episode_ids": [0, 1, 2, 3, 4]}),
+                encoding="utf-8",
+            )
+            bucket_qpos_ref = {
+                "count": 123,
+                "p1": -1.5,
+                "p5": -1.2,
+                "median": 0.0,
+                "p95": 1.2,
+                "p99": 1.5,
+            }
+            summary_path = root / "training_qc_summary.json"
+            summary_path.write_text(
+                json.dumps(
+                    {
+                        "strict_pass_episode_ids": [0, 1, 2, 3, 4],
+                        "train_ready_episode_ids": [0, 1, 2, 3, 4],
+                        "reference": {"bucket_qpos": bucket_qpos_ref},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            output_path = root / "online_qc_reference.json"
+
+            reference = build_online_qc_reference(
+                dataset_dir=dataset_dir,
+                manifest_path=manifest_path,
+                training_qc_summary_path=summary_path,
+                output_path=output_path,
+            )
+
+            self.assertEqual(reference["bucket_qpos"], bucket_qpos_ref)
+            self.assertEqual(reference["bucket_semantic"]["count"], 5)
+            self.assertIn("end", reference["bucket_semantic"])
+            self.assertIn("late_max", reference["bucket_semantic"])
+            self.assertEqual(
+                reference["source_reference"]["strict_pass_episode_ids"],
+                [0, 1, 2, 3, 4],
+            )
+            self.assertEqual(
+                reference["source_reference"]["train_ready_episode_ids"],
+                [0, 1, 2, 3, 4],
+            )
+            self.assertEqual(
+                reference["source_reference"]["manifest_path"],
+                str(manifest_path),
+            )
+            self.assertEqual(
+                reference["source_reference"]["training_qc_summary_path"],
+                str(summary_path),
+            )
+            self.assertEqual(len(reference["reference_id"]), 16)
+
+    def test_online_qc_failure_blocks_record_start(self) -> None:
+        from testbed.cli.record_real import _online_qc_blocks_record_start
+        from testbed.data.online_qc import OnlineQcSnapshot
+
+        self.assertTrue(
+            _online_qc_blocks_record_start(
+                OnlineQcSnapshot(
+                    status="FAIL_EPISODE",
+                    error_code="fpv_drift",
+                    train_exclude=True,
+                )
+            )
+        )
+        self.assertFalse(
+            _online_qc_blocks_record_start(
+                OnlineQcSnapshot(
+                    status="WARN_MASK",
+                    error_code="",
+                    warning_codes=("fpv_drift",),
+                    train_exclude=True,
+                )
+            )
+        )
+
+    @unittest.skipUnless(HAS_H5PY, "h5py is required for record mask tests")
+    def test_record_session_backfills_recent_online_qc_mask(self) -> None:
+        from testbed.cli.record_real import RecordSession
+        from testbed.data.recorder import EpisodeRecorder
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            session = RecordSession(
+                recorder_cls=EpisodeRecorder,
+                dataset_dir=root / "dataset",
+                failed_dir=root / "failed",
+                episode_idx=0,
+                metadata={"is_real": True},
+                camera_names=[],
+            )
+            for step in range(3):
+                session.record_step(
+                    obs={
+                        "qpos": np.zeros(4, dtype=np.float32),
+                        "qvel": np.zeros(4, dtype=np.float32),
+                    },
+                    action=np.zeros(4, dtype=np.float32),
+                    diagnostics={"train_exclude_mask": 0},
+                    step_id=step,
+                )
+
+            session.mark_recent_train_exclude(window_steps=2)
+            path = session.save_success()
+
+            import h5py
+
+            with h5py.File(path, "r") as f:
+                np.testing.assert_array_equal(
+                    f["diagnostics/train_exclude_mask"][()],
+                    np.asarray([0, 1, 1]),
+                )
+
+    @unittest.skipUnless(HAS_H5PY, "h5py is required for record mask tests")
+    def test_record_session_final_online_qc_failure_saves_failed_episode(self) -> None:
+        from testbed.cli.record_real import (
+            RecordSession,
+            _save_record_session_with_online_qc_final,
+        )
+        from testbed.data.online_qc import OnlineQcSnapshot
+        from testbed.data.recorder import EpisodeRecorder
+
+        class FinalFailQc:
+            def finalize_episode(self, *, recorded_steps: int) -> OnlineQcSnapshot:
+                self.recorded_steps = int(recorded_steps)
+                return OnlineQcSnapshot(
+                    status="FAIL_EPISODE",
+                    error_code="bucket_semantic_outlier",
+                    train_exclude=True,
+                    diagnostics={
+                        "online_qc_reference_id": "ref-bucket-123",
+                        "online_qc_train_ready_candidate": 0,
+                        "online_qc_bucket_reference_status": "WARN",
+                        "online_qc_bucket_semantic_decision": "drop",
+                        "online_qc_bucket_semantic_notes": (
+                            "bucket_end_or_late_recovery_too_low"
+                        ),
+                    },
+                )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            session = RecordSession(
+                recorder_cls=EpisodeRecorder,
+                dataset_dir=root / "dataset",
+                failed_dir=root / "failed",
+                episode_idx=0,
+                metadata={"is_real": True},
+                camera_names=[],
+            )
+            for step in range(3):
+                session.record_step(
+                    obs={
+                        "qpos": np.zeros(4, dtype=np.float32),
+                        "qvel": np.zeros(4, dtype=np.float32),
+                    },
+                    action=np.zeros(4, dtype=np.float32),
+                    diagnostics={"train_exclude_mask": 0},
+                    step_id=step,
+                )
+            evaluator = FinalFailQc()
+
+            path, saved_success, snapshot = _save_record_session_with_online_qc_final(
+                session,
+                online_qc_evaluator=evaluator,
+                error_time_ns=123,
+            )
+
+            self.assertFalse(saved_success)
+            self.assertEqual(snapshot.error_code, "bucket_semantic_outlier")
+            self.assertEqual(evaluator.recorded_steps, 3)
+            self.assertIn("/failed/", str(path))
+
+            import h5py
+
+            with h5py.File(path, "r") as f:
+                meta = f["metadata"].attrs
+                self.assertFalse(bool(meta["success"]))
+                self.assertEqual(meta["record_stop_reason"], "online_qc_failed")
+                self.assertEqual(meta["record_error_code"], "bucket_semantic_outlier")
+                self.assertEqual(int(meta["record_error_time_ns"]), 123)
+                self.assertEqual(meta["online_qc_final_status"], "FAIL_EPISODE")
+                self.assertEqual(int(meta["online_qc_train_ready_candidate"]), 0)
+                self.assertEqual(meta["online_qc_reference_id"], "ref-bucket-123")
+                self.assertEqual(meta["online_qc_bucket_reference_status"], "WARN")
+                self.assertEqual(meta["online_qc_bucket_semantic_decision"], "drop")
+                self.assertEqual(
+                    meta["online_qc_bucket_semantic_notes"],
+                    "bucket_end_or_late_recovery_too_low",
+                )
+
     def test_action_pump_repeats_latest_action(self) -> None:
         class RecordingController(LowLevelController):
             def __init__(self) -> None:
@@ -2709,6 +3559,246 @@ class RealworldV1Tests(unittest.TestCase):
         self.assertIn("inpos=0", output)
         self.assertIn("stable=1", output)
 
+    def test_record_real_qc_dashboard_shows_fixed_rows_and_dynamic_qc_fields(
+        self,
+    ) -> None:
+        from testbed.cli.record_real import ReceiverHealthSnapshot, _QcDashboard
+        from testbed.data.online_qc import OnlineQcSnapshot
+
+        receiver_health = ReceiverHealthSnapshot(
+            ok=True,
+            error_code="",
+            errors=(),
+            imu_summary="1111",
+            diagnostics={
+                "fpv_age_ms": 12.5,
+                "bridge_snapshot_age_ms": 8.0,
+            },
+        )
+        online_qc = OnlineQcSnapshot(
+            status="WARN_MASK",
+            error_code="",
+            warning_codes=("qpos_outside_p5_p95", "fpv_drift"),
+            train_exclude=True,
+            diagnostics={
+                "online_qc_qpos_warn_count": 37,
+                "online_qc_qpos_fail_count": 4,
+                "online_qc_fpv_drift_score": 1.16,
+                "online_qc_fpv_drift_count": 12,
+                "online_qc_healthy_fraction": 0.42,
+                "online_qc_healthy_steps": 425,
+                "online_qc_train_exclude_steps": 609,
+                "online_qc_train_ready_candidate": 0,
+                "online_qc_bucket_reference_status": "WARN",
+                "online_qc_bucket_ref_high_margin": -0.10,
+                "online_qc_bucket_semantic_decision": "review",
+                "online_qc_bucket_semantic_notes": "bucket_min_too_shallow",
+                "train_exclude_mask": 1,
+            },
+        )
+
+        stream = io.StringIO()
+        dashboard = _QcDashboard(enabled=True, max_events=3)
+        with patch("sys.stdout", stream):
+            dashboard.update(
+                mode="recording",
+                episode_idx=7,
+                saved=2,
+                record_steps=123,
+                receiver_health=receiver_health,
+                online_qc=online_qc,
+                action_info=SimpleNamespace(
+                    extras={"remote_action_seq": 41, "remote_action_stale": 0}
+                ),
+                message="recording",
+            )
+
+        output = stream.getvalue()
+        self.assertIn("mode=recording", output)
+        self.assertIn("episode=7", output)
+        self.assertIn("steps=123", output)
+        self.assertIn("saved=2", output)
+        self.assertIn("qc=WARN_MASK", output)
+        self.assertIn("CHECK", output)
+        self.assertIn("STATE", output)
+        self.assertIn("CODE/WARN", output)
+        self.assertIn("VALUE", output)
+        self.assertIn("COUNT", output)
+        self.assertIn("ACTION", output)
+        self.assertIn("receiver_health", output)
+        self.assertIn("qpos_distribution", output)
+        self.assertIn("bucket_reference", output)
+        self.assertIn("bucket_semantic", output)
+        self.assertIn("fpv_drift", output)
+        self.assertIn("episode_final", output)
+        self.assertIn("qpos_outside_p5_p95", output)
+        self.assertIn("fpv_drift", output)
+        self.assertIn("bucket_min_too_shallow", output)
+        self.assertIn("candidate=0", output)
+        self.assertIn("decision=review", output)
+        self.assertIn("warn=37", output)
+        self.assertIn("fail=4", output)
+        self.assertIn("score=1.16", output)
+        self.assertIn("healthy=425", output)
+        self.assertIn("mask=609", output)
+
+    def test_record_real_qc_dashboard_keeps_recent_warning_events(self) -> None:
+        from testbed.cli.record_real import ReceiverHealthSnapshot, _QcDashboard
+        from testbed.data.online_qc import OnlineQcSnapshot
+
+        dashboard = _QcDashboard(enabled=True, max_events=2)
+        dashboard.add_event("INFO", "first")
+        dashboard.add_event("WARN", "second")
+        dashboard.add_event("FAIL", "third")
+        receiver_health = ReceiverHealthSnapshot(
+            ok=True,
+            error_code="",
+            errors=(),
+            imu_summary="1111",
+            diagnostics={},
+        )
+        online_qc = OnlineQcSnapshot(
+            status="PASS",
+            error_code="",
+            warning_codes=(),
+            train_exclude=False,
+            diagnostics={},
+        )
+
+        stream = io.StringIO()
+        with patch("sys.stdout", stream):
+            dashboard.update(
+                mode="armed",
+                episode_idx=3,
+                saved=1,
+                record_steps=0,
+                receiver_health=receiver_health,
+                online_qc=online_qc,
+                action_info=SimpleNamespace(extras={}),
+                message="ready",
+            )
+
+        output = stream.getvalue()
+        self.assertNotIn("first", output)
+        self.assertIn("second", output)
+        self.assertIn("third", output)
+
+    def test_record_real_qc_event_log_writes_only_warn_fail_events(self) -> None:
+        from testbed.cli.record_real import ReceiverHealthSnapshot, _QcDashboard, _QcEventLogger
+        from testbed.data.online_qc import OnlineQcSnapshot
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            event_path = Path(tmpdir) / "events.jsonl"
+            logger = _QcEventLogger(event_path)
+            dashboard = _QcDashboard(
+                enabled=True,
+                max_events=3,
+                event_logger=logger,
+            )
+            receiver_health = ReceiverHealthSnapshot(
+                ok=True,
+                error_code="",
+                errors=(),
+                imu_summary="1111",
+                diagnostics={},
+            )
+            warn_snapshot = OnlineQcSnapshot(
+                status="WARN_MASK",
+                error_code="",
+                warning_codes=("bucket_semantic_review",),
+                train_exclude=True,
+                diagnostics={
+                    "online_qc_reference_id": "ref-events",
+                    "online_qc_bucket_semantic_decision": "review",
+                },
+            )
+            pass_snapshot = OnlineQcSnapshot(
+                status="PASS",
+                error_code="",
+                warning_codes=(),
+                train_exclude=False,
+                diagnostics={"online_qc_reference_id": "ref-events"},
+            )
+            stream = io.StringIO()
+            with patch("sys.stdout", stream):
+                dashboard.update(
+                    mode="recording",
+                    episode_idx=9,
+                    saved=1,
+                    record_steps=22,
+                    receiver_health=receiver_health,
+                    online_qc=warn_snapshot,
+                    action_info=SimpleNamespace(extras={}),
+                    message="warn",
+                )
+                dashboard.update(
+                    mode="recording",
+                    episode_idx=9,
+                    saved=1,
+                    record_steps=23,
+                    receiver_health=receiver_health,
+                    online_qc=pass_snapshot,
+                    action_info=SimpleNamespace(extras={}),
+                    message="pass",
+                )
+            logger.close()
+
+            events = [
+                json.loads(line)
+                for line in event_path.read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertEqual(len(events), 1)
+            event = events[0]
+            self.assertEqual(event["episode_idx"], 9)
+            self.assertEqual(event["record_steps"], 22)
+            self.assertEqual(event["mode"], "recording")
+            self.assertEqual(event["level"], "WARN")
+            self.assertEqual(event["code"], "bucket_semantic_review")
+            self.assertEqual(event["online_qc_status"], "WARN_MASK")
+            self.assertEqual(event["online_qc_reference_id"], "ref-events")
+            self.assertEqual(
+                event["diagnostics"]["online_qc_bucket_semantic_decision"],
+                "review",
+            )
+
+    def test_record_real_qc_dashboard_marks_fpv_frame_hard_fail(self) -> None:
+        from testbed.cli.record_real import ReceiverHealthSnapshot, _QcDashboard
+        from testbed.data.online_qc import OnlineQcSnapshot
+
+        receiver_health = ReceiverHealthSnapshot(
+            ok=True,
+            error_code="",
+            errors=(),
+            imu_summary="1111",
+            diagnostics={},
+        )
+        online_qc = OnlineQcSnapshot(
+            status="FAIL_EPISODE",
+            error_code="fpv_duplicate",
+            warning_codes=(),
+            train_exclude=True,
+            diagnostics={},
+        )
+        dashboard = _QcDashboard(enabled=True)
+
+        output = dashboard.render(
+            mode="recording",
+            episode_idx=4,
+            saved=0,
+            record_steps=12,
+            receiver_health=receiver_health,
+            online_qc=online_qc,
+            action_info=SimpleNamespace(extras={}),
+            message="",
+        )
+
+        fpv_frame_line = next(
+            line for line in output.splitlines() if line.startswith("fpv_frame")
+        )
+        self.assertIn("FAIL", fpv_frame_line)
+        self.assertIn("fpv_duplicate", fpv_frame_line)
+        self.assertIn("fail", fpv_frame_line)
+
     def test_json_tcp_bridge_mock_server_updates_state(self) -> None:
         if not _can_bind_loopback_socket():
             self.skipTest("loopback socket bind is blocked in this environment")
@@ -3794,6 +4884,144 @@ def _real_diagnostics(length: int) -> dict[str, np.ndarray | list[str]]:
         "controller_timestamp_ns": np.arange(length, dtype=np.int64),
         "commanded_action": np.zeros((length, 4), dtype=np.float32),
     }
+
+
+def _online_qc_reference() -> dict:
+    return {
+        "reference_id": "unit-reference",
+        "qpos": {
+            "p1": [-1.5, -1.5, -1.5, -1.5],
+            "p5": [-1.0, -1.0, -1.0, -1.0],
+            "p95": [1.0, 1.0, 1.0, 1.0],
+            "p99": [1.5, 1.5, 1.5, 1.5],
+        },
+        "fpv": {
+            "brightness": {"median": 80.0, "mad": 5.0, "p1": 50.0, "p99": 110.0},
+            "contrast": {"median": 12.0, "mad": 3.0, "p1": 4.0, "p99": 30.0},
+            "jpeg_size": {"median": 256.0, "mad": 64.0, "p1": 64.0, "p99": 1024.0},
+            "fingerprint": [80.0] * 64,
+        },
+    }
+
+
+def _online_qc_bucket_semantic_reference(
+    *,
+    end_p5: float,
+    max_p5: float,
+    late_max_p5: float,
+    min_p99: float,
+) -> dict:
+    reference: dict[str, object] = {"count": 5}
+    defaults = {
+        "p1": 0.0,
+        "p5": 0.0,
+        "median": 0.0,
+        "p95": 0.0,
+        "p99": 0.0,
+    }
+    for key in (
+        "start",
+        "end",
+        "min",
+        "max",
+        "range",
+        "argmin",
+        "argmax",
+        "early_max",
+        "late_max",
+        "max_jump",
+    ):
+        reference[key] = dict(defaults)
+    reference["end"]["p5"] = float(end_p5)
+    reference["max"]["p5"] = float(max_p5)
+    reference["late_max"]["p5"] = float(late_max_p5)
+    reference["min"]["p99"] = float(min_p99)
+    reference["max_jump"]["p99"] = 0.20
+    return reference
+
+
+def _run_online_qc_bucket_series(evaluator, bucket: np.ndarray) -> None:
+    values = np.asarray(bucket, dtype=np.float64).reshape(-1)
+    for step, bucket_qpos in enumerate(values):
+        qpos = [0.0, 0.0, 0.0, float(bucket_qpos)]
+        evaluator.evaluate(
+            obs=_online_qc_obs(
+                qpos=qpos,
+                qpos_raw_imu=qpos,
+                image_timestamp_ns=2_000_000_000 + step * 20_000_000,
+            ),
+            now_ns=2_000_000_000 + step * 20_000_000,
+        )
+
+
+def _online_qc_obs(
+    *,
+    qpos: list[float],
+    qpos_raw_imu: list[float] | None = None,
+    image: np.ndarray | None = None,
+    encoded_image: np.ndarray | bytes | None = None,
+    image_timestamp_ns: int = 2_000_000_000,
+) -> dict:
+    obs: dict[str, object] = {
+        "qpos": np.asarray(qpos, dtype=np.float32),
+        "qvel": np.zeros(4, dtype=np.float32),
+        "image_timestamp_ns": {"fpv": int(image_timestamp_ns)},
+    }
+    if qpos_raw_imu is not None:
+        obs["qpos_raw_imu"] = np.asarray(qpos_raw_imu, dtype=np.float32)
+    if image is None and encoded_image is None:
+        image = _online_qc_pattern_image()
+    if image is not None:
+        obs["images"] = {"fpv": np.asarray(image, dtype=np.uint8)}
+    if encoded_image is not None:
+        obs["encoded_images"] = {
+            "fpv": {
+                "encoding": "jpeg",
+                "data": encoded_image,
+                "shape": [4, 4, 3],
+            }
+        }
+    return obs
+
+
+def _online_qc_pattern_image() -> np.ndarray:
+    image = np.zeros((8, 8, 3), dtype=np.uint8)
+    image[::2, :, :] = 92
+    image[1::2, :, :] = 68
+    return image
+
+
+def _online_qc_bright_drift_image(step: int) -> np.ndarray:
+    image = np.full((8, 8, 3), 130 + (step % 3), dtype=np.uint8)
+    image[step % 8, (step * 3) % 8, :] = 150
+    return image
+
+
+def _write_online_qc_reference_episode(path: Path, *, offset: float) -> None:
+    from testbed.data.hdf5_io import write_episode
+
+    length = 4
+    qpos = np.tile(
+        np.asarray([offset, offset + 0.1, offset + 0.2, offset + 0.3], dtype=np.float32),
+        (length, 1),
+    )
+    images = np.stack(
+        [
+            np.clip(_online_qc_pattern_image().astype(np.int16) + step, 0, 255).astype(
+                np.uint8
+            )
+            for step in range(length)
+        ]
+    )
+    write_episode(
+        path,
+        qpos=qpos,
+        qvel=np.zeros((length, 4), dtype=np.float32),
+        actions=np.zeros((length, 4), dtype=np.float32),
+        images={"fpv": images},
+        metadata={"is_real": True, "success": 1},
+        diagnostics=_real_diagnostics(length),
+    )
 
 
 if __name__ == "__main__":

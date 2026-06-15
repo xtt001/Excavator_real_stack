@@ -195,6 +195,67 @@ def _receiver_health_blocks_control(
     return True
 
 
+def _online_qc_blocks_record_start(online_qc: Any) -> bool:
+    return str(getattr(online_qc, "status", "")) == "FAIL_EPISODE"
+
+
+def _save_record_session_with_online_qc_final(
+    session: Any,
+    *,
+    online_qc_evaluator: Any | None,
+    error_time_ns: int | None = None,
+    metadata_updates: dict[str, Any] | None = None,
+) -> tuple[Path | None, bool, Any | None]:
+    final_snapshot = None
+    finalize = getattr(online_qc_evaluator, "finalize_episode", None)
+    if callable(finalize):
+        final_snapshot = finalize(recorded_steps=len(session))
+
+    updates = dict(metadata_updates or {})
+    if final_snapshot is not None:
+        updates.update(_online_qc_final_metadata(final_snapshot))
+
+    if _online_qc_blocks_record_start(final_snapshot):
+        path = session.save_failed(
+            error_code=str(getattr(final_snapshot, "error_code", "") or "online_qc_failed"),
+            error_time_ns=int(error_time_ns if error_time_ns is not None else time.time_ns()),
+            stop_reason="online_qc_failed",
+            metadata_updates=updates,
+        )
+        return path, False, final_snapshot
+    path = session.save_success(metadata_updates=updates or None)
+    return path, True, final_snapshot
+
+
+def _online_qc_final_metadata(final_snapshot: Any) -> dict[str, Any]:
+    diagnostics = dict(getattr(final_snapshot, "diagnostics", {}) or {})
+    metadata: dict[str, Any] = {
+        "online_qc_final_status": str(getattr(final_snapshot, "status", "")),
+        "online_qc_final_error_code": str(getattr(final_snapshot, "error_code", "") or ""),
+        "online_qc_final_warning_codes": ",".join(
+            str(code) for code in getattr(final_snapshot, "warning_codes", ()) or ()
+        ),
+    }
+    for key in (
+        "online_qc_reference_id",
+        "online_qc_warning_codes",
+        "online_qc_train_ready_candidate",
+        "online_qc_total_steps",
+        "online_qc_train_exclude_steps",
+        "online_qc_healthy_steps",
+        "online_qc_max_healthy_run",
+        "online_qc_healthy_fraction",
+        "online_qc_bucket_reference_status",
+        "online_qc_bucket_semantic_decision",
+        "online_qc_bucket_semantic_notes",
+    ):
+        if key in diagnostics:
+            metadata[key] = diagnostics[key]
+    if not metadata["online_qc_final_warning_codes"] and "online_qc_warning_codes" in diagnostics:
+        metadata["online_qc_final_warning_codes"] = diagnostics["online_qc_warning_codes"]
+    return metadata
+
+
 def main(prog: str = "tb-record-real") -> None:
     logging.basicConfig(
         level=logging.INFO,
@@ -298,6 +359,20 @@ def main(prog: str = "tb-record-real") -> None:
         ),
     )
     parser.add_argument(
+        "--qc-dashboard",
+        action="store_true",
+        help=(
+            "Refresh a top-like terminal dashboard with receiver health and "
+            "online training-usability QC fields."
+        ),
+    )
+    parser.add_argument(
+        "--qc-event-log",
+        type=Path,
+        default=None,
+        help="Optional JSONL path for de-duplicated online QC WARN/FAIL events.",
+    )
+    parser.add_argument(
         "--wait-for-record-start",
         action="store_true",
         help=(
@@ -329,7 +404,7 @@ def main(prog: str = "tb-record-real") -> None:
         ),
     )
     args = parser.parse_args()
-    if args.live_action_line:
+    if args.live_action_line or args.qc_dashboard:
         logging.getLogger().setLevel(logging.ERROR)
         os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 
@@ -344,6 +419,7 @@ def main(prog: str = "tb-record-real") -> None:
     video_cfg = cfg.setdefault("video", {})
     receiver_cfg = cfg.setdefault("receiver", {})
     receiver_health_cfg = receiver_cfg.setdefault("health", {})
+    receiver_online_qc_cfg = receiver_cfg.setdefault("online_qc", {})
     teleop_meta_cfg = teleop_cfg.setdefault("metadata", {})
 
     from testbed.cli.data_side import (
@@ -443,8 +519,11 @@ def main(prog: str = "tb-record-real") -> None:
 
     from testbed.backends.real.backend import RealExcavatorBackend
     from testbed.backends.real.go_home import GoHomeConfig, GoHomeController
+    from testbed.data.online_qc import OnlineQcConfig, OnlineTrainingQcEvaluator
     from testbed.data.recorder import EpisodeRecorder
     from testbed.runtime.guard import ActionGuard
+
+    online_qc_config = OnlineQcConfig.from_mapping(receiver_online_qc_cfg)
 
     pump_cfg = dict(real_cfg.get("control_pump", {}) or {})
     control_pump_enabled = bool(pump_cfg.get("enabled", False)) and backend_mode == "bridge_tcp"
@@ -619,7 +698,16 @@ def main(prog: str = "tb-record-real") -> None:
     if control_pump is not None:
         control_pump.start()
 
-    live_line = _LiveActionLine(enabled=bool(args.live_action_line))
+    qc_event_logger = (
+        _QcEventLogger(args.qc_event_log) if args.qc_event_log is not None else None
+    )
+    qc_dashboard = _QcDashboard(
+        enabled=bool(args.qc_dashboard),
+        event_logger=qc_event_logger,
+    )
+    live_line = _LiveActionLine(
+        enabled=bool(args.live_action_line) and not bool(args.qc_dashboard)
+    )
     remote_control_loop_enabled = control_pump is not None and input_device == "remote"
     if remote_control_loop_enabled:
         log.info(
@@ -651,6 +739,11 @@ def main(prog: str = "tb-record-real") -> None:
                 break
             action_source.reset()
             guard.reset()
+            online_qc_evaluator = (
+                OnlineTrainingQcEvaluator(online_qc_config)
+                if online_qc_config.enabled
+                else None
+            )
             discard = False
             receiver_mode = "armed"
             record_start_pending = recording_enabled and not wait_for_record_start
@@ -856,6 +949,15 @@ def main(prog: str = "tb-record-real") -> None:
                         action_info=action_info,
                         control_result=control_result,
                     )
+                    online_qc_snapshot = (
+                        online_qc_evaluator.evaluate(
+                            obs=obs,
+                            now_ns=time.time_ns(),
+                            semantic_sample=receiver_mode != "go_home",
+                        )
+                        if online_qc_evaluator is not None
+                        else None
+                    )
                     health_blocks_control = _receiver_health_blocks_control(
                         receiver_health,
                         receiver_mode=receiver_mode,
@@ -869,7 +971,9 @@ def main(prog: str = "tb-record-real") -> None:
 
                     if recording_enabled and wait_for_record_start and record_start_requested:
                         if receiver_mode == "armed" and record_session is None:
-                            if receiver_health.ok:
+                            if receiver_health.ok and not _online_qc_blocks_record_start(
+                                online_qc_snapshot
+                            ):
                                 record_start_pending = True
                                 log.info(
                                     "Record start accepted for episode %d; first HDF5 step is the next frame.",
@@ -877,6 +981,19 @@ def main(prog: str = "tb-record-real") -> None:
                                 )
                                 live_line.message(
                                     f"record_start_accepted episode={episode_idx} next_frame=1"
+                                )
+                            elif _online_qc_blocks_record_start(online_qc_snapshot):
+                                error_code = str(
+                                    getattr(online_qc_snapshot, "error_code", "")
+                                    or "online_qc_failed"
+                                )
+                                log.warning(
+                                    "Record start blocked by online QC: %s",
+                                    error_code,
+                                )
+                                live_line.message(
+                                    "record_start_blocked "
+                                    f"err={error_code}"
                                 )
                             else:
                                 log.warning(
@@ -942,6 +1059,49 @@ def main(prog: str = "tb-record-real") -> None:
                         receiver_mode = "fault"
                         record_start_pending = False
 
+                    if (
+                        online_qc_snapshot is not None
+                        and _online_qc_blocks_record_start(online_qc_snapshot)
+                        and receiver_mode in {"recording", "go_home"}
+                        and record_session is not None
+                    ):
+                        error_time_ns = time.time_ns()
+                        _force_zero_control(obs)
+                        failed_path = record_session.save_failed(
+                            error_code=str(
+                                online_qc_snapshot.error_code or "online_qc_failed"
+                            ),
+                            error_time_ns=error_time_ns,
+                            stop_reason="online_qc_failed",
+                        )
+                        if failed_path is not None:
+                            log.error(
+                                "Record episode %d stopped by online QC %s; saved failed record to %s",
+                                episode_idx,
+                                online_qc_snapshot.error_code,
+                                failed_path,
+                            )
+                            live_line.message(
+                                "mode=armed "
+                                f"err={online_qc_snapshot.error_code} "
+                                f"failed={failed_path}"
+                            )
+                            episode_idx += 1
+                        else:
+                            log.error(
+                                "Record episode %d stopped before any step by online QC %s.",
+                                episode_idx,
+                                online_qc_snapshot.error_code,
+                            )
+                            live_line.message(
+                                f"mode=armed err={online_qc_snapshot.error_code}"
+                            )
+                        record_session = None
+                        go_home_controller = None
+                        receiver_mode = "armed"
+                        record_start_pending = False
+                        guard.reset()
+
                     if (receiver_health.ok or not health_blocks_control) and go_home_requested:
                         go_home_context = _go_home_start_context(
                             receiver_mode,
@@ -1004,6 +1164,17 @@ def main(prog: str = "tb-record-real") -> None:
                         guard_reasons=guard_info.reasons,
                         receiver_health=receiver_health,
                         go_home_update=go_home_update,
+                    )
+                    qc_dashboard.update(
+                        mode=receiver_mode,
+                        episode_idx=episode_idx,
+                        saved=saved,
+                        record_steps=(
+                            len(record_session) if record_session is not None else 0
+                        ),
+                        receiver_health=receiver_health,
+                        online_qc=online_qc_snapshot,
+                        action_info=action_info,
                     )
                     _publish_remote_receiver_status(
                         action_source,
@@ -1096,6 +1267,7 @@ def main(prog: str = "tb-record-real") -> None:
                             guard=guard_info,
                             control_result=control_result,
                             receiver_health=receiver_health,
+                            online_qc=online_qc_snapshot,
                         )
                         _ensure_go_home_step_diagnostics(step_diagnostics)
                         if go_home_update is not None:
@@ -1121,6 +1293,13 @@ def main(prog: str = "tb-record-real") -> None:
                             action_src_id=action_info.source_id,
                             diagnostics=step_diagnostics,
                         )
+                        if (
+                            online_qc_snapshot is not None
+                            and bool(getattr(online_qc_snapshot, "train_exclude", False))
+                        ):
+                            record_session.mark_recent_train_exclude(
+                                window_steps=online_qc_config.mask_backfill_window_steps
+                            )
                         if go_home_update is not None and go_home_update.failed:
                             _hold_remote_control_zero(remote_control_loop)
                             _force_zero_control(obs)
@@ -1176,26 +1355,46 @@ def main(prog: str = "tb-record-real") -> None:
                             _force_zero_control(obs)
                             receiver_mode = "saving"
                             saved_steps = len(record_session)
-                            saved_path = record_session.save_success(
-                                metadata_updates=(
-                                    go_home_controller.metadata()
-                                    if go_home_controller is not None
-                                    else None
-                                ),
+                            saved_path, saved_success, final_qc_snapshot = (
+                                _save_record_session_with_online_qc_final(
+                                    record_session,
+                                    online_qc_evaluator=online_qc_evaluator,
+                                    metadata_updates=(
+                                        go_home_controller.metadata()
+                                        if go_home_controller is not None
+                                        else None
+                                    ),
+                                )
                             )
-                            log.info(
-                                "Saved go-home completed record: %d steps -> %s",
-                                saved_steps,
-                                saved_path,
-                            )
-                            live_line.message(
-                                "go_home_done "
-                                f"final_err={_format_go_home_final_error(go_home_controller)} "
-                                f"saved steps={saved_steps} path={saved_path}"
-                            )
+                            if saved_success:
+                                log.info(
+                                    "Saved go-home completed record: %d steps -> %s",
+                                    saved_steps,
+                                    saved_path,
+                                )
+                                live_line.message(
+                                    "go_home_done "
+                                    f"final_err={_format_go_home_final_error(go_home_controller)} "
+                                    f"saved steps={saved_steps} path={saved_path}"
+                                )
+                                saved += 1
+                            else:
+                                error_code = str(
+                                    getattr(final_qc_snapshot, "error_code", "")
+                                    or "online_qc_failed"
+                                )
+                                log.error(
+                                    "go-home completed episode %d failed final online QC %s; saved failed record to %s",
+                                    episode_idx,
+                                    error_code,
+                                    saved_path,
+                                )
+                                live_line.message(
+                                    "go_home_done online_qc_failed "
+                                    f"err={error_code} failed={saved_path}"
+                                )
                             record_session = None
                             go_home_controller = None
-                            saved += 1
                             episode_idx += 1
                             guard.reset()
                             _release_remote_control(remote_control_loop)
@@ -1204,9 +1403,14 @@ def main(prog: str = "tb-record-real") -> None:
                             )
                             record_start_pending = False
                             if receiver_mode == "armed":
-                                live_line.message(
-                                    f"mode=armed saved_episode={episode_idx - 1} ready_next=1"
-                                )
+                                if saved_success:
+                                    live_line.message(
+                                        f"mode=armed saved_episode={episode_idx - 1} ready_next=1"
+                                    )
+                                else:
+                                    live_line.message(
+                                        f"mode=armed failed_episode={episode_idx - 1} ready_next=1"
+                                    )
                             _publish_remote_receiver_status(
                                 action_source,
                                 receiver_mode=receiver_mode,
@@ -1218,7 +1422,11 @@ def main(prog: str = "tb-record-real") -> None:
                                 record_steps=saved_steps,
                                 saved_path=saved_path,
                                 action_info=action_info,
-                                message="go_home_done_record_saved",
+                                message=(
+                                    "go_home_done_record_saved"
+                                    if saved_success
+                                    else "go_home_done_online_qc_failed"
+                                ),
                             )
                             if saved >= num_episodes:
                                 break
@@ -1227,17 +1435,39 @@ def main(prog: str = "tb-record-real") -> None:
                             continue
                         if len(record_session) >= max_steps:
                             receiver_mode = "saving"
-                            saved_path = record_session.save_success()
-                            log.info(
-                                "Saved real v1 record: %d steps -> %s",
-                                len(record_session),
-                                saved_path,
+                            saved_steps = len(record_session)
+                            saved_path, saved_success, final_qc_snapshot = (
+                                _save_record_session_with_online_qc_final(
+                                    record_session,
+                                    online_qc_evaluator=online_qc_evaluator,
+                                )
                             )
-                            live_line.message(
-                                f"saved steps={len(record_session)} path={saved_path}"
-                            )
+                            if saved_success:
+                                log.info(
+                                    "Saved real v1 record: %d steps -> %s",
+                                    saved_steps,
+                                    saved_path,
+                                )
+                                live_line.message(
+                                    f"saved steps={saved_steps} path={saved_path}"
+                                )
+                                saved += 1
+                            else:
+                                error_code = str(
+                                    getattr(final_qc_snapshot, "error_code", "")
+                                    or "online_qc_failed"
+                                )
+                                log.error(
+                                    "Record episode %d failed final online QC %s; saved failed record to %s",
+                                    episode_idx,
+                                    error_code,
+                                    saved_path,
+                                )
+                                live_line.message(
+                                    "online_qc_failed "
+                                    f"err={error_code} failed={saved_path}"
+                                )
                             record_session = None
-                            saved += 1
                             episode_idx += 1
                             break
                     if not recording_enabled and max_steps > 0 and local_step + 1 >= max_steps:
@@ -1272,6 +1502,9 @@ def main(prog: str = "tb-record-real") -> None:
         if test_logger is not None:
             test_logger.close(stop_reason="aborted" if abort else "complete")
         live_line.finish()
+        qc_dashboard.finish()
+        if qc_event_logger is not None:
+            qc_event_logger.close()
 
     if recording_enabled:
         log.info("Real v1 recording complete: %d / %d episode(s) saved.", saved, num_episodes)
@@ -1552,6 +1785,20 @@ class RecordSession:
     def record_step(self, **kwargs: Any) -> None:
         self.recorder.record(**kwargs)
 
+    def mark_recent_train_exclude(self, *, window_steps: int) -> None:
+        total = len(self.recorder)
+        if total <= 0:
+            return
+        values = self.recorder._diagnostics.setdefault(  # noqa: SLF001
+            "train_exclude_mask",
+            [0] * total,
+        )
+        while len(values) < total:
+            values.append(0)
+        start = max(0, total - max(1, int(window_steps)))
+        for idx in range(start, total):
+            values[idx] = 1
+
     def save_success(self, *, metadata_updates: dict[str, Any] | None = None) -> Path:
         return self.recorder.save(
             success=True,
@@ -1730,8 +1977,21 @@ class ReceiverTestLogger:
             "receiver_health_errors": list(receiver_health.errors),
             "policy_action": extras.get("policy_action"),
             "policy_scaled_action": extras.get("policy_scaled_action"),
+            "policy_assisted_action": extras.get("policy_assisted_action"),
             "policy_returned_action": extras.get("policy_returned_action"),
             "policy_output_mode": str(extras.get("policy_output_mode", "")),
+            "policy_deadzone_assist_enabled": int(
+                extras.get("policy_deadzone_assist_enabled", 0) or 0
+            ),
+            "policy_deadzone_assist_active": int(
+                extras.get("policy_deadzone_assist_active", 0) or 0
+            ),
+            "policy_deadzone_assist_mask": extras.get(
+                "policy_deadzone_assist_mask"
+            ),
+            "policy_deadzone_assist_axes": str(
+                extras.get("policy_deadzone_assist_axes", "")
+            ),
             "policy_qvel_mode": str(extras.get("policy_qvel_mode", "")),
             "policy_qvel_input": extras.get("policy_qvel_input"),
             "policy_error": str(extras.get("policy_error", "")),
@@ -2073,6 +2333,478 @@ class _RemoteControlLoop:
             self._quit_requested = self._quit_requested or bool(quit_now)
 
 
+class _QcEventLogger:
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._fh = self.path.open("a", encoding="utf-8")
+
+    def record(
+        self,
+        *,
+        level: str,
+        code: str,
+        message: str,
+        mode: str,
+        episode_idx: int,
+        record_steps: int,
+        online_qc: Any | None,
+    ) -> None:
+        diagnostics = _qc_diagnostics(online_qc)
+        payload = {
+            "time_ns": time.time_ns(),
+            "episode_idx": int(episode_idx),
+            "record_steps": int(record_steps),
+            "mode": str(mode),
+            "level": str(level),
+            "code": str(code),
+            "message": str(message),
+            "online_qc_status": str(_qc_attr(online_qc, "status", "")),
+            "online_qc_reference_id": str(
+                diagnostics.get("online_qc_reference_id", "")
+            ),
+            "diagnostics": _qc_jsonable(diagnostics),
+        }
+        self._fh.write(json.dumps(payload, sort_keys=True) + "\n")
+        self._fh.flush()
+
+    def close(self) -> None:
+        self._fh.close()
+
+
+class _QcDashboard:
+    _WIDTHS = (18, 10, 30, 34, 16, 12)
+
+    def __init__(
+        self,
+        *,
+        enabled: bool,
+        max_events: int = 8,
+        event_logger: _QcEventLogger | None = None,
+    ) -> None:
+        self.enabled = bool(enabled)
+        self.max_events = max(1, int(max_events))
+        self.event_logger = event_logger
+        self._events: list[tuple[str, str]] = []
+        self._last_event_key: tuple[str, str] | None = None
+        self._rendered = False
+
+    def add_event(self, level: str, message: str) -> None:
+        if not self.enabled:
+            return
+        clean_level = str(level or "INFO").upper()[:8]
+        clean_message = " ".join(str(message or "").split()) or "-"
+        self._events.append((clean_level, clean_message))
+        if len(self._events) > self.max_events:
+            self._events = self._events[-self.max_events :]
+
+    def update(
+        self,
+        *,
+        mode: str,
+        episode_idx: int,
+        saved: int,
+        record_steps: int,
+        receiver_health: ReceiverHealthSnapshot | None,
+        online_qc: Any | None,
+        action_info: Any | None,
+        message: str = "",
+    ) -> None:
+        if not self.enabled:
+            return
+        self._add_snapshot_event(
+            mode=mode,
+            episode_idx=episode_idx,
+            record_steps=record_steps,
+            receiver_health=receiver_health,
+            online_qc=online_qc,
+        )
+        text = self.render(
+            mode=mode,
+            episode_idx=episode_idx,
+            saved=saved,
+            record_steps=record_steps,
+            receiver_health=receiver_health,
+            online_qc=online_qc,
+            action_info=action_info,
+            message=message,
+        )
+        sys.stdout.write("\033[2J\033[H" + text)
+        if not text.endswith("\n"):
+            sys.stdout.write("\n")
+        sys.stdout.flush()
+        self._rendered = True
+
+    def render(
+        self,
+        *,
+        mode: str,
+        episode_idx: int,
+        saved: int,
+        record_steps: int,
+        receiver_health: ReceiverHealthSnapshot | None,
+        online_qc: Any | None,
+        action_info: Any | None,
+        message: str = "",
+    ) -> str:
+        qc_status = _qc_attr(online_qc, "status", "DISABLED")
+        diagnostics = _qc_diagnostics(online_qc)
+        warnings = _qc_warnings(online_qc)
+        extras = getattr(action_info, "extras", {}) or {}
+        remote_seq = extras.get("remote_action_seq", "-")
+        remote_stale = int(bool(extras.get("remote_action_stale", False)))
+        lines = [
+            (
+                "Online QC Dashboard  "
+                f"mode={mode} episode={int(episode_idx)} steps={int(record_steps)} "
+                f"saved={int(saved)} qc={qc_status} remote_seq={remote_seq} "
+                f"stale={remote_stale} msg={message or '-'}"
+            ),
+            _qc_dashboard_row(
+                "CHECK", "STATE", "CODE/WARN", "VALUE", "COUNT", "ACTION"
+            ),
+            "-" * (sum(self._WIDTHS) + len(self._WIDTHS) * 3 - 3),
+        ]
+        for row in (
+            self._receiver_row(receiver_health),
+            self._qpos_row(online_qc, warnings, diagnostics),
+            self._bucket_reference_row(online_qc, diagnostics),
+            self._bucket_semantic_row(online_qc, diagnostics),
+            self._imu_row(online_qc, warnings, diagnostics),
+            self._fpv_frame_row(online_qc, diagnostics),
+            self._fpv_drift_row(online_qc, warnings, diagnostics),
+            self._episode_final_row(online_qc, diagnostics, record_steps),
+        ):
+            lines.append(_qc_dashboard_row(*row))
+        lines.extend(["", "RECENT EVENTS"])
+        if not self._events:
+            lines.append("  -")
+        else:
+            for level, event in self._events[-self.max_events :]:
+                lines.append(f"  {level:<8} {event}")
+        return "\n".join(lines)
+
+    def finish(self) -> None:
+        if not self.enabled or not self._rendered:
+            return
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        self._rendered = False
+
+    def _add_snapshot_event(
+        self,
+        *,
+        mode: str,
+        episode_idx: int,
+        record_steps: int,
+        receiver_health: ReceiverHealthSnapshot | None,
+        online_qc: Any | None,
+    ) -> None:
+        error_code = str(_qc_attr(online_qc, "error_code", "") or "")
+        warnings = _qc_warnings(online_qc)
+        if error_code:
+            event_key = ("FAIL", error_code)
+        elif receiver_health is not None and not receiver_health.ok:
+            event_key = ("FAIL", receiver_health.error_code or "receiver_health")
+        elif warnings:
+            event_key = ("WARN", ",".join(warnings))
+        else:
+            event_key = None
+        if event_key is not None and event_key != self._last_event_key:
+            self.add_event(event_key[0], event_key[1])
+            if self.event_logger is not None:
+                self.event_logger.record(
+                    level=event_key[0],
+                    code=event_key[1],
+                    message=event_key[1],
+                    mode=mode,
+                    episode_idx=episode_idx,
+                    record_steps=record_steps,
+                    online_qc=online_qc,
+                )
+            self._last_event_key = event_key
+
+    def _receiver_row(
+        self, receiver_health: ReceiverHealthSnapshot | None
+    ) -> tuple[str, str, str, str, str, str]:
+        if receiver_health is None:
+            return ("receiver_health", "UNKNOWN", "-", "-", "-", "hold")
+        state = "OK" if receiver_health.ok else "FAIL"
+        diagnostics = receiver_health.diagnostics or {}
+        fpv_age = _qc_format_ms(diagnostics.get("fpv_age_ms"))
+        bridge_age = _qc_format_ms(diagnostics.get("bridge_snapshot_age_ms"))
+        code = receiver_health.error_code or "-"
+        value = (
+            f"fpv_age={fpv_age} bridge={bridge_age} imu={receiver_health.imu_summary}"
+        )
+        return (
+            "receiver_health",
+            state,
+            code,
+            value,
+            f"errors={len(receiver_health.errors)}",
+            "allow" if receiver_health.ok else "hold",
+        )
+
+    def _qpos_row(
+        self,
+        online_qc: Any | None,
+        warnings: tuple[str, ...],
+        diagnostics: dict[str, Any],
+    ) -> tuple[str, str, str, str, str, str]:
+        error_code = str(_qc_attr(online_qc, "error_code", "") or "")
+        qpos_warnings = tuple(code for code in warnings if code.startswith("qpos_"))
+        warn_count = int(diagnostics.get("online_qc_qpos_warn_count", 0) or 0)
+        fail_count = int(diagnostics.get("online_qc_qpos_fail_count", 0) or 0)
+        train_exclude = bool(_qc_attr(online_qc, "train_exclude", False))
+        state = "OK"
+        code = "-"
+        if error_code.startswith("qpos_"):
+            state = "FAIL"
+            code = error_code
+        elif qpos_warnings or warn_count or fail_count:
+            state = "WARN"
+            code = ",".join(qpos_warnings) or "qpos_outside_reference"
+        return (
+            "qpos_distribution",
+            state,
+            code,
+            f"warn={warn_count} fail={fail_count}",
+            f"mask={int(diagnostics.get('online_qc_train_exclude_steps', 0) or 0)}",
+            "mask" if train_exclude else "keep",
+        )
+
+    def _bucket_reference_row(
+        self,
+        online_qc: Any | None,
+        diagnostics: dict[str, Any],
+    ) -> tuple[str, str, str, str, str, str]:
+        error_code = str(_qc_attr(online_qc, "error_code", "") or "")
+        status = str(diagnostics.get("online_qc_bucket_reference_status", "") or "UNKNOWN")
+        state = "MISS" if status == "UNKNOWN" else status
+        if error_code == "bucket_reference_outlier":
+            state = "FAIL"
+        code = error_code if error_code == "bucket_reference_outlier" else status
+        low = _qc_format_float(diagnostics.get("online_qc_bucket_ref_low_margin"))
+        high = _qc_format_float(diagnostics.get("online_qc_bucket_ref_high_margin"))
+        return (
+            "bucket_reference",
+            state,
+            code,
+            f"low={low} high={high}",
+            f"candidate={diagnostics.get('online_qc_train_ready_candidate', '-')}",
+            "fail" if state == "FAIL" else "review" if state in {"WARN", "MISS"} else "keep",
+        )
+
+    def _bucket_semantic_row(
+        self,
+        online_qc: Any | None,
+        diagnostics: dict[str, Any],
+    ) -> tuple[str, str, str, str, str, str]:
+        error_code = str(_qc_attr(online_qc, "error_code", "") or "")
+        decision = str(
+            diagnostics.get("online_qc_bucket_semantic_decision", "") or "-"
+        )
+        notes = str(diagnostics.get("online_qc_bucket_semantic_notes", "") or "-")
+        ref_count = int(
+            diagnostics.get("online_qc_bucket_semantic_reference_count", 0) or 0
+        )
+        if error_code == "bucket_semantic_outlier" or decision == "drop":
+            state = "FAIL"
+        elif decision == "review":
+            state = "WARN"
+        elif decision == "keep":
+            state = "OK"
+        else:
+            state = "MISS" if ref_count == 0 else "OK"
+        return (
+            "bucket_semantic",
+            state,
+            decision,
+            notes,
+            f"ref={ref_count}",
+            "fail" if state == "FAIL" else "review" if state in {"WARN", "MISS"} else "keep",
+        )
+
+    def _imu_row(
+        self,
+        online_qc: Any | None,
+        warnings: tuple[str, ...],
+        diagnostics: dict[str, Any],
+    ) -> tuple[str, str, str, str, str, str]:
+        error_code = str(_qc_attr(online_qc, "error_code", "") or "")
+        imu_warnings = tuple(code for code in warnings if code.startswith("imu_"))
+        state = "OK"
+        code = "-"
+        if error_code.startswith("imu_"):
+            state = "FAIL"
+            code = error_code
+        elif "imu_qpos_reference_missing" in imu_warnings:
+            state = "MISS"
+            code = "imu_qpos_reference_missing"
+        elif imu_warnings:
+            state = "WARN"
+            code = ",".join(imu_warnings)
+        max_delta = diagnostics.get("online_qc_imu_qpos_max_delta_rad")
+        return (
+            "imu_qpos",
+            state,
+            code,
+            f"max_delta={_qc_format_float(max_delta)}",
+            f"count={int(diagnostics.get('online_qc_imu_qpos_delta_count', 0) or 0)}",
+            "fail" if state == "FAIL" else "review" if state != "OK" else "keep",
+        )
+
+    def _fpv_frame_row(
+        self,
+        online_qc: Any | None,
+        diagnostics: dict[str, Any],
+    ) -> tuple[str, str, str, str, str, str]:
+        error_code = str(_qc_attr(online_qc, "error_code", "") or "")
+        frame_error = error_code in {
+            "fpv_decode_failed",
+            "fpv_black",
+            "fpv_black_frame",
+            "fpv_duplicate",
+            "fpv_duplicate_frame",
+        }
+        state = "FAIL" if frame_error else "OK"
+        code = error_code if frame_error else "-"
+        value = (
+            f"brightness={_qc_format_float(diagnostics.get('online_qc_fpv_brightness'))} "
+            f"contrast={_qc_format_float(diagnostics.get('online_qc_fpv_contrast'))}"
+        )
+        return ("fpv_frame", state, code, value, "-", "fail" if frame_error else "keep")
+
+    def _fpv_drift_row(
+        self,
+        online_qc: Any | None,
+        warnings: tuple[str, ...],
+        diagnostics: dict[str, Any],
+    ) -> tuple[str, str, str, str, str, str]:
+        error_code = str(_qc_attr(online_qc, "error_code", "") or "")
+        drift_count = int(diagnostics.get("online_qc_fpv_drift_count", 0) or 0)
+        state = "OK"
+        code = "-"
+        if error_code == "fpv_drift":
+            state = "FAIL"
+            code = error_code
+        elif "fpv_drift" in warnings or drift_count:
+            state = "WARN"
+            code = "fpv_drift"
+        train_exclude = bool(_qc_attr(online_qc, "train_exclude", False))
+        return (
+            "fpv_drift",
+            state,
+            code,
+            f"score={_qc_format_float(diagnostics.get('online_qc_fpv_drift_score'))}",
+            f"samples={drift_count}",
+            "mask" if train_exclude and state == "WARN" else "fail" if state == "FAIL" else "keep",
+        )
+
+    def _episode_final_row(
+        self,
+        online_qc: Any | None,
+        diagnostics: dict[str, Any],
+        record_steps: int,
+    ) -> tuple[str, str, str, str, str, str]:
+        error_code = str(_qc_attr(online_qc, "error_code", "") or "")
+        train_exclude = bool(_qc_attr(online_qc, "train_exclude", False))
+        state = "WARN" if train_exclude else "OK"
+        code = "train_exclude_mask" if train_exclude else "-"
+        if error_code.startswith("episode_"):
+            state = "FAIL"
+            code = error_code
+        healthy_steps = int(diagnostics.get("online_qc_healthy_steps", 0) or 0)
+        healthy_fraction = diagnostics.get("online_qc_healthy_fraction")
+        candidate = diagnostics.get("online_qc_train_ready_candidate", "-")
+        decision = diagnostics.get("online_qc_bucket_semantic_decision", "-") or "-"
+        return (
+            "episode_final",
+            state,
+            code,
+            (
+                f"healthy={healthy_steps} "
+                f"frac={_qc_format_float(healthy_fraction)} "
+                f"candidate={candidate}"
+            ),
+            f"decision={decision}",
+            "fail" if state == "FAIL" else "review" if state == "WARN" else "keep",
+        )
+
+
+def _qc_dashboard_row(
+    check: str,
+    state: str,
+    code: str,
+    value: str,
+    count: str,
+    action: str,
+) -> str:
+    cells = (check, state, code, value, count, action)
+    return " | ".join(
+        _qc_dashboard_cell(cell, width)
+        for cell, width in zip(cells, _QcDashboard._WIDTHS, strict=True)
+    )
+
+
+def _qc_dashboard_cell(value: Any, width: int) -> str:
+    text = " ".join(str(value or "-").split())
+    if len(text) > width:
+        text = text[: max(1, width - 1)] + "~"
+    return f"{text:<{width}}"
+
+
+def _qc_attr(snapshot: Any | None, name: str, default: Any = None) -> Any:
+    if snapshot is None:
+        return default
+    return getattr(snapshot, name, default)
+
+
+def _qc_diagnostics(snapshot: Any | None) -> dict[str, Any]:
+    diagnostics = _qc_attr(snapshot, "diagnostics", {})
+    return dict(diagnostics) if isinstance(diagnostics, dict) else {}
+
+
+def _qc_warnings(snapshot: Any | None) -> tuple[str, ...]:
+    warnings = _qc_attr(snapshot, "warning_codes", ())
+    if warnings is None:
+        return ()
+    return tuple(str(code) for code in warnings)
+
+
+def _qc_jsonable(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _qc_jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_qc_jsonable(item) for item in value]
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def _qc_format_ms(value: Any) -> str:
+    if value is None:
+        return "-"
+    try:
+        return f"{float(value):.1f}ms"
+    except (TypeError, ValueError):
+        return "-"
+
+
+def _qc_format_float(value: Any) -> str:
+    if value is None:
+        return "-"
+    try:
+        return f"{float(value):.2f}"
+    except (TypeError, ValueError):
+        return "-"
+
+
 class _LiveActionLine:
     def __init__(self, *, enabled: bool) -> None:
         self.enabled = bool(enabled)
@@ -2127,6 +2859,16 @@ class _LiveActionLine:
             if control_mode == "policy"
             else "manual" if control_mode == "manual" else "-"
         )
+        assist_enabled = int(extras.get("policy_deadzone_assist_enabled", 0) or 0)
+        assist_active = int(extras.get("policy_deadzone_assist_active", 0) or 0)
+        assist_axes = str(extras.get("policy_deadzone_assist_axes", "") or "")
+        assist_text = (
+            "off"
+            if not assist_enabled
+            else assist_axes
+            if assist_active and assist_axes
+            else "idle"
+        )
         err_text = (
             receiver_health.error_code
             if receiver_health is not None and receiver_health.error_code
@@ -2144,6 +2886,7 @@ class _LiveActionLine:
             f"health={health_text} err={err_text} imu={imu_text} "
             f"{_format_go_home_live_status(mode, go_home_update)}"
             f"hz={hz_text} ctl_ms={control_age_text} "
+            f"assist={assist_text} "
             f"raw={_format_action_line_values(raw_action)} "
             f"send={_format_action_line_values(commanded_action)} "
             f"step={int(step)} "
@@ -2157,7 +2900,7 @@ class _LiveActionLine:
     def message(self, text: str) -> None:
         if not self.enabled:
             return
-        width = max(20, shutil.get_terminal_size((120, 20)).columns)
+        width = max(20, shutil.get_terminal_size((240, 20)).columns)
         text = text[: max(1, width - 1)]
         sys.stdout.write("\r\033[2K" + text)
         sys.stdout.flush()
@@ -2342,6 +3085,7 @@ def _build_step_diagnostics(
     guard,
     control_result: dict[str, Any],
     receiver_health: ReceiverHealthSnapshot | None = None,
+    online_qc: Any | None = None,
 ) -> dict[str, Any]:
     commanded_action = control_result.get("commanded_action")
     if commanded_action is None:
@@ -2387,6 +3131,8 @@ def _build_step_diagnostics(
         diagnostics["plan_rpm"] = np.asarray(obs["plan_rpm"], dtype=np.float32)
     if receiver_health is not None:
         diagnostics.update(receiver_health.diagnostics)
+    if online_qc is not None:
+        diagnostics.update(dict(getattr(online_qc, "diagnostics", {}) or {}))
     for camera_name, timestamp_ns in image_timestamps.items():
         diagnostics[f"image_timestamp_ns_{_sanitize_key(camera_name)}"] = _int_timestamp(
             timestamp_ns
@@ -2467,12 +3213,43 @@ def _add_policy_action_diagnostics(
         extras.get("policy_scaled_action", np.zeros(4)),
         dtype=np.float32,
     )
+    diagnostics["policy_assisted_action"] = np.asarray(
+        extras.get("policy_assisted_action", diagnostics["policy_scaled_action"]),
+        dtype=np.float32,
+    )
     diagnostics["policy_returned_action"] = np.asarray(
         extras.get("policy_returned_action", np.zeros(4)),
         dtype=np.float32,
     )
     diagnostics["policy_action_scale"] = np.asarray(
         extras.get("policy_action_scale", np.ones(4)),
+        dtype=np.float32,
+    )
+    diagnostics["policy_deadzone_assist_enabled"] = int(
+        extras.get("policy_deadzone_assist_enabled", 0) or 0
+    )
+    diagnostics["policy_deadzone_assist_active"] = int(
+        extras.get("policy_deadzone_assist_active", 0) or 0
+    )
+    diagnostics["policy_deadzone_assist_mask"] = np.asarray(
+        extras.get("policy_deadzone_assist_mask", np.zeros(4)),
+        dtype=np.int32,
+    )
+    diagnostics["policy_deadzone_assist_axes"] = str(
+        extras.get("policy_deadzone_assist_axes", "")
+    )
+    diagnostics["policy_deadzone_assist_trigger_fraction"] = float(
+        extras.get("policy_deadzone_assist_trigger_fraction", 0.0) or 0.0
+    )
+    diagnostics["policy_deadzone_assist_min_consecutive_steps"] = _int_timestamp(
+        extras.get("policy_deadzone_assist_min_consecutive_steps")
+    )
+    diagnostics["policy_deadzone_assist_positive"] = np.asarray(
+        extras.get("policy_deadzone_assist_positive", np.zeros(4)),
+        dtype=np.float32,
+    )
+    diagnostics["policy_deadzone_assist_negative"] = np.asarray(
+        extras.get("policy_deadzone_assist_negative", np.zeros(4)),
         dtype=np.float32,
     )
     diagnostics["policy_output_mode"] = str(extras.get("policy_output_mode", ""))
