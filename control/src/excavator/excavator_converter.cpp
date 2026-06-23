@@ -1,20 +1,12 @@
 #include <excavator/internal/excavator_converter.hpp>
 
-#include <algorithm>
 #include <cmath>
-#include <cstdlib>
 
 namespace excavator {
 namespace {
 
-constexpr double kPositionJumpGuardMarginRad = kPi / 360.0;  // 0.5 deg at 50 Hz.
-constexpr int kBucketAxis = 3;
-constexpr double kBucketMaxPositionStepRad = 2.5 * kPi / 180.0;
-constexpr double kBucketVelocityDirectionDeadbandRadS = 0.02;
-constexpr double kBucketDirectionGuardMarginRad = kPi / 720.0;  // 0.25 deg.
-// Maps the quaternion bucket angle back into the legacy policy/home qpos frame.
-constexpr double kDefaultBucketQuaternionPolicyOffsetRad = -0.4060066694119653;
 constexpr float kUninitializedAttitudeEps = 1e-6F;
+constexpr double kBucketQuaternionPolicyOffsetRad = -0.4060066694119653;
 
 double dps_to_radps(double dps) noexcept { return dps * kPi / 180.0; }
 
@@ -40,37 +32,6 @@ double align_swing_to_nonnegative_raw_yaw_branch(double value, double raw_yaw) n
     return align_angle_to_reference_branch(value, raw_yaw);
 }
 
-bool bucket_quaternion_delta_plausible(double delta,
-                                       double velocity,
-                                       double max_delta) noexcept {
-    if (!std::isfinite(delta) || !std::isfinite(velocity) || !std::isfinite(max_delta)) {
-        return false;
-    }
-    if (std::abs(delta) > max_delta) {
-        return false;
-    }
-    if (std::abs(velocity) <= kBucketVelocityDirectionDeadbandRadS ||
-        std::abs(delta) <= kBucketDirectionGuardMarginRad) {
-        return true;
-    }
-    return delta * velocity >= 0.0;
-}
-
-double bucket_velocity_limited_delta(double velocity, double max_delta) noexcept {
-    if (!std::isfinite(velocity) || !std::isfinite(max_delta) ||
-        std::abs(velocity) <= kBucketVelocityDirectionDeadbandRadS) {
-        return 0.0;
-    }
-    const double delta = velocity * kTs;
-    if (delta > max_delta) {
-        return max_delta;
-    }
-    if (delta < -max_delta) {
-        return -max_delta;
-    }
-    return delta;
-}
-
 bool swing_raw_yaw_reference_rad(const ExcavatorHardwareState& hw, double& out) noexcept {
     const auto& imu4 = hw.imu.devices[3];
     if (imu4.online == 0U || imu4.valid_attitude == 0U || imu4.host_rx_time_ns == 0U) {
@@ -82,74 +43,54 @@ bool swing_raw_yaw_reference_rad(const ExcavatorHardwareState& hw, double& out) 
 
 bool all_imu_attitudes_observed(const ExcavatorHardwareState& hw) noexcept {
     for (const auto& imu : hw.imu.devices) {
-        if (imu.valid_attitude == 0U || imu.host_rx_time_ns == 0U) {
+        if (imu.online == 0U || imu.valid_attitude == 0U || imu.host_rx_time_ns == 0U) {
             return false;
         }
     }
     return true;
 }
 
-bool looks_like_uninitialized_attitude(const ExcavatorImuHardwareState::ImuSample& src) noexcept {
-    return src.rpy_raw_deg.cwiseAbs().maxCoeff() <= kUninitializedAttitudeEps &&
-           src.rpy_rad.cwiseAbs().maxCoeff() <= kUninitializedAttitudeEps;
-}
-
-bool imu_quaternion_valid(const ExcavatorImuHardwareState::ImuSample& src) noexcept {
+bool normalized_observed_quaternion(const ExcavatorImuHardwareState::ImuSample& src,
+                                    Eigen::Quaterniond& out) noexcept {
     if (src.online == 0U || src.valid_quaternion == 0U || src.host_rx_time_ns == 0U) {
         return false;
     }
-    const Eigen::Quaternionf& q = src.quaternion;
+    const Eigen::Quaterniond q = src.quaternion.cast<double>();
     if (!std::isfinite(q.w()) || !std::isfinite(q.x()) || !std::isfinite(q.y()) ||
         !std::isfinite(q.z())) {
         return false;
     }
-    const float norm = q.norm();
-    return std::isfinite(norm) && norm > 0.5F && norm < 1.5F;
-}
-
-Eigen::Quaterniond normalized_quaternion(const ExcavatorImuHardwareState::ImuSample& src) noexcept {
-    Eigen::Quaterniond q(
-        static_cast<double>(src.quaternion.w()),
-        static_cast<double>(src.quaternion.x()),
-        static_cast<double>(src.quaternion.y()),
-        static_cast<double>(src.quaternion.z()));
-    q.normalize();
-    return q;
+    const double norm = q.norm();
+    if (!std::isfinite(norm) || norm <= 1e-9) {
+        return false;
+    }
+    out = q;
+    out.normalize();
+    return true;
 }
 
 double signed_twist_angle_rad(const Eigen::Quaterniond& rotation,
                               const Eigen::Vector3d& axis) noexcept {
-    const Eigen::Vector3d unit_axis = axis.normalized();
-    const Eigen::Vector3d vector(rotation.x(), rotation.y(), rotation.z());
-    const double projected = vector.dot(unit_axis);
-    return std::remainder(2.0 * std::atan2(projected, rotation.w()), 2.0 * kPi);
+    return std::remainder(2.0 * std::atan2(rotation.vec().dot(axis), rotation.w()), 2.0 * kPi);
 }
 
-double bucket_quaternion_policy_offset_rad() noexcept {
-    const char* raw = std::getenv("EXCAVATOR_BUCKET_QUATERNION_OFFSET_RAD");
-    if (raw == nullptr || raw[0] == '\0') {
-        return kDefaultBucketQuaternionPolicyOffsetRad;
-    }
-    char* end = nullptr;
-    const double value = std::strtod(raw, &end);
-    if (end == raw || !std::isfinite(value)) {
-        return kDefaultBucketQuaternionPolicyOffsetRad;
-    }
-    return value;
-}
-
-bool bucket_quaternion_position_rad(const ExcavatorHardwareState& hw, double& out) noexcept {
-    const auto& imu1 = hw.imu.devices[0];
-    const auto& imu2 = hw.imu.devices[1];
-    if (!imu_quaternion_valid(imu1) || !imu_quaternion_valid(imu2)) {
+bool bucket_calibrated_position_rad(const ExcavatorHardwareState& hw, double& out) noexcept {
+    Eigen::Quaterniond imu1;
+    Eigen::Quaterniond imu2;
+    if (!normalized_observed_quaternion(hw.imu.devices[0], imu1) ||
+        !normalized_observed_quaternion(hw.imu.devices[1], imu2)) {
         return false;
     }
-    const Eigen::Quaterniond q_imu1 = normalized_quaternion(imu1);
-    const Eigen::Quaterniond q_imu2 = normalized_quaternion(imu2);
-    const Eigen::Quaterniond relative = q_imu2.conjugate() * q_imu1;
+    Eigen::Quaterniond relative = imu2.conjugate() * imu1;
+    relative.normalize();
     out = signed_twist_angle_rad(relative, Eigen::Vector3d::UnitY()) +
-          bucket_quaternion_policy_offset_rad();
+          kBucketQuaternionPolicyOffsetRad;
     return std::isfinite(out);
+}
+
+bool looks_like_uninitialized_attitude(const ExcavatorImuHardwareState::ImuSample& src) noexcept {
+    return src.rpy_raw_deg.cwiseAbs().maxCoeff() <= kUninitializedAttitudeEps &&
+           src.rpy_rad.cwiseAbs().maxCoeff() <= kUninitializedAttitudeEps;
 }
 
 /** 交换前4关节的2/3号位（1234 <-> 1324），其余轴保持不变。 */
@@ -260,8 +201,7 @@ std::array<Eigen::Vector3d, kImuDeviceCount> ExcavatorConverter::continuousImuRp
 
 void ExcavatorConverter::applyPositionContinuity(ExcavatorState& st,
                                                  bool position_observed,
-                                                 const Vector8d& branch_reference,
-                                                 bool bucket_quaternion_observed) {
+                                                 const Vector8d& branch_reference) {
     if (!position_observed && !resp_position_continuous_ready_) {
         return;
     }
@@ -276,33 +216,6 @@ void ExcavatorConverter::applyPositionContinuity(ExcavatorState& st,
         return;
     }
     for (int axis = 0; axis < kAxisCount; ++axis) {
-        const double previous = resp_position_continuous_(axis);
-        double current = unwrap_angle_nearest(previous, st.position(axis));
-        double max_delta = std::abs(st.velocity(axis)) * kTs + kPositionJumpGuardMarginRad;
-        if (axis == kBucketAxis) {
-            max_delta = std::min(max_delta, kBucketMaxPositionStepRad);
-        }
-        const double delta = current - previous;
-        if (axis == kBucketAxis && bucket_quaternion_observed) {
-            if (!bucket_quaternion_delta_plausible(delta, st.velocity(axis), max_delta)) {
-                current = previous + bucket_velocity_limited_delta(st.velocity(axis), max_delta);
-            }
-            resp_position_continuous_(axis) = current;
-            st.position(axis) = current;
-            continue;
-        }
-        if (delta > max_delta) {
-            current = previous + max_delta;
-        } else if (delta < -max_delta) {
-            current = previous - max_delta;
-        }
-        resp_position_continuous_(axis) = current;
-        st.position(axis) = current;
-    }
-    for (int axis = 0; axis < kAxisCount; ++axis) {
-        if (axis == kBucketAxis && bucket_quaternion_observed) {
-            continue;
-        }
         st.position(axis) = align_angle_to_reference_branch(st.position(axis), branch_reference(axis));
         resp_position_continuous_(axis) = st.position(axis);
     }
@@ -317,7 +230,9 @@ bool ExcavatorConverter::hardwareStateToRobotState(const HardwareState& raw_in, 
     st->status = hw->motor.status;
     st->motor_rpm = swap_joint_2_3_on_first4(hw->motor.motor_rpm);
     const auto rpy_rad = continuousImuRpy(*hw);
-    bool position_observed = all_imu_attitudes_observed(*hw);
+    double bucket_position_rad = 0.0;
+    const bool bucket_observed = bucket_calibrated_position_rad(*hw, bucket_position_rad);
+    bool position_observed = all_imu_attitudes_observed(*hw) && bucket_observed;
     if (position_observed) {
         for (const bool ready : imu_rpy_continuous_ready_) {
             if (!ready) {
@@ -326,17 +241,16 @@ bool ExcavatorConverter::hardwareStateToRobotState(const HardwareState& raw_in, 
             }
         }
     }
+    if (!position_observed && !resp_position_continuous_ready_) {
+        return false;
+    }
     fill_kinematic_from_imu_hw(*hw, rpy_rad, *st);
-    // 差分语义：J3=J3-J2，J4=J4-J3（使用变换前值避免串扰）。
-    const double theta2_raw = st->position(1);
-    const double theta3_raw = st->position(2);
-    const double theta4_raw = st->position(3);
-    st->position(2) = theta3_raw - theta2_raw;
-    st->position(3) = theta4_raw - theta3_raw;
-    double bucket_quat_position = 0.0;
-    const bool bucket_quaternion_observed = bucket_quaternion_position_rad(*hw, bucket_quat_position);
-    if (bucket_quaternion_observed) {
-        st->position(3) = bucket_quat_position;
+    // boom/stick 使用 IMU raw deg canonical branch；bucket 使用固定 policy-frame quaternion 标定。
+    st->position(1) = deg_to_rad(static_cast<double>(hw->imu.devices[2].rpy_raw_deg(1)));
+    st->position(2) = deg_to_rad(static_cast<double>(hw->imu.devices[1].rpy_raw_deg(1)) -
+                                 static_cast<double>(hw->imu.devices[2].rpy_raw_deg(1)));
+    if (bucket_observed) {
+        st->position(3) = bucket_position_rad;
     }
     const Vector8d branch_reference = st->position;
 
@@ -345,7 +259,7 @@ bool ExcavatorConverter::hardwareStateToRobotState(const HardwareState& raw_in, 
     const double omega4_raw = st->velocity(3);
     st->velocity(2) = omega3_raw - omega2_raw;
     st->velocity(3) = omega4_raw - omega3_raw;
-    applyPositionContinuity(*st, position_observed, branch_reference, bucket_quaternion_observed);
+    applyPositionContinuity(*st, position_observed, branch_reference);
     double swing_raw_yaw = 0.0;
     if (swing_raw_yaw_reference_rad(*hw, swing_raw_yaw)) {
         st->position(0) =

@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import os
 import socket
 import statistics
 import sys
@@ -19,21 +18,7 @@ from typing import Any
 
 PROTOCOL_VERSION = 1
 AXES = ("swing", "boom", "stick", "bucket")
-BUCKET_QUATERNION_POLICY_OFFSET_ENV = "EXCAVATOR_BUCKET_QUATERNION_OFFSET_RAD"
-BUCKET_QUATERNION_POLICY_OFFSET_DEFAULT_RAD = -0.4060066694119653
-
-
-def bucket_quaternion_policy_offset_rad() -> float:
-    raw = os.environ.get(BUCKET_QUATERNION_POLICY_OFFSET_ENV)
-    if raw is None or raw == "":
-        return BUCKET_QUATERNION_POLICY_OFFSET_DEFAULT_RAD
-    try:
-        value = float(raw)
-    except ValueError:
-        return BUCKET_QUATERNION_POLICY_OFFSET_DEFAULT_RAD
-    if not math.isfinite(value):
-        return BUCKET_QUATERNION_POLICY_OFFSET_DEFAULT_RAD
-    return value
+BUCKET_QUATERNION_POLICY_OFFSET_RAD = -0.4060066694119653
 
 
 class BridgeClient:
@@ -248,51 +233,6 @@ def imu_joint_qpos_from_rpy_rad(imu_debug: dict[str, Any] | None) -> list[float]
     ]
 
 
-def quaternion_wxyz(device: dict[str, Any]) -> list[float] | None:
-    try:
-        if int(device.get("online", 1)) == 0 or int(device.get("valid_quaternion", 0)) == 0:
-            return None
-    except (TypeError, ValueError):
-        return None
-    quat = to_float_list(device.get("quaternion_wxyz"), 4)
-    if not finite_list(quat):
-        return None
-    norm = math.sqrt(sum(float(v) * float(v) for v in quat))
-    if not math.isfinite(norm) or norm <= 0.5 or norm >= 1.5:
-        return None
-    return [float(v) / norm for v in quat]
-
-
-def quaternion_multiply(lhs: list[float], rhs: list[float]) -> list[float]:
-    lw, lx, ly, lz = lhs
-    rw, rx, ry, rz = rhs
-    return [
-        lw * rw - lx * rx - ly * ry - lz * rz,
-        lw * rx + lx * rw + ly * rz - lz * ry,
-        lw * ry - lx * rz + ly * rw + lz * rx,
-        lw * rz + lx * ry - ly * rx + lz * rw,
-    ]
-
-
-def quaternion_conjugate(quat: list[float]) -> list[float]:
-    return [quat[0], -quat[1], -quat[2], -quat[3]]
-
-
-def bucket_qpos_from_quaternion_rad(devices: list[Any]) -> float | None:
-    if len(devices) < 2 or not isinstance(devices[0], dict) or not isinstance(devices[1], dict):
-        return None
-    imu1_q = quaternion_wxyz(devices[0])
-    imu2_q = quaternion_wxyz(devices[1])
-    if imu1_q is None or imu2_q is None:
-        return None
-    relative = quaternion_multiply(quaternion_conjugate(imu2_q), imu1_q)
-    return (
-        2.0 * math.atan2(relative[2], relative[0])
-        + bucket_quaternion_policy_offset_rad()
-        + math.pi
-    ) % (2.0 * math.pi) - math.pi
-
-
 def imu_joint_qpos_raw_deg(imu_debug: dict[str, Any] | None) -> list[float] | None:
     if not isinstance(imu_debug, dict):
         return None
@@ -309,22 +249,64 @@ def imu_joint_qpos_raw_deg(imu_debug: dict[str, Any] | None) -> list[float] | No
             return None
         return rpy[axis_index]
 
+    def bucket_quaternion_qpos_deg() -> float | None:
+        def quaternion(device_index: int) -> tuple[float, float, float, float] | None:
+            device = devices[device_index]
+            if not isinstance(device, dict):
+                return None
+            try:
+                if int(device.get("online", 1)) == 0 or int(device.get("valid_quaternion", 1)) == 0:
+                    return None
+            except (TypeError, ValueError):
+                return None
+            q = to_float_list(device.get("quaternion_wxyz"), 4)
+            if not finite_list(q):
+                return None
+            norm = math.sqrt(sum(float(v) * float(v) for v in q))
+            if not math.isfinite(norm) or norm <= 1e-9:
+                return None
+            return tuple(float(v) / norm for v in q)
+
+        def conjugate(q: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+            w, x, y, z = q
+            return (w, -x, -y, -z)
+
+        def multiply(
+            a: tuple[float, float, float, float],
+            b: tuple[float, float, float, float],
+        ) -> tuple[float, float, float, float]:
+            aw, ax, ay, az = a
+            bw, bx, by, bz = b
+            return (
+                aw * bw - ax * bx - ay * by - az * bz,
+                aw * bx + ax * bw + ay * bz - az * by,
+                aw * by - ax * bz + ay * bw + az * bx,
+                aw * bz + ax * by - ay * bx + az * bw,
+            )
+
+        imu1 = quaternion(0)
+        imu2 = quaternion(1)
+        if imu1 is None or imu2 is None:
+            return None
+        relative = multiply(conjugate(imu2), imu1)
+        twist = math.remainder(2.0 * math.atan2(relative[2], relative[0]), 2.0 * math.pi)
+        bucket_rad = twist + BUCKET_QUATERNION_POLICY_OFFSET_RAD
+        if not math.isfinite(bucket_rad):
+            return None
+        return math.degrees(bucket_rad)
+
     imu1_y = rpy_raw_deg(0, 1)
     imu2_y = rpy_raw_deg(1, 1)
     imu3_y = rpy_raw_deg(2, 1)
     imu4_z = rpy_raw_deg(3, 2)
-    if None in (imu1_y, imu2_y, imu3_y, imu4_z):
+    bucket_deg = bucket_quaternion_qpos_deg()
+    if None in (imu1_y, imu2_y, imu3_y, imu4_z, bucket_deg):
         return None
-    bucket_qpos_rad = bucket_qpos_from_quaternion_rad(devices)
-    if bucket_qpos_rad is None:
-        bucket_qpos_deg = float(imu1_y) - float(imu2_y)
-    else:
-        bucket_qpos_deg = bucket_qpos_rad * 180.0 / math.pi
     return [
         float(imu4_z),
         float(imu3_y),
         float(imu2_y) - float(imu3_y),
-        bucket_qpos_deg,
+        float(bucket_deg),
     ]
 
 
@@ -885,7 +867,7 @@ def main() -> int:
             "qvel_bridge is the qvel currently returned by read_state.",
             "qvel_qpos_diff is finite-difference qpos using bridge timestamps.",
             "qpos/qpos_deg are the current joint pose in radians/degrees.",
-            "qpos_raw_imu/qpos_raw_imu_deg are reconstructed before qpos continuity filtering; bucket uses relative quaternion when valid and falls back to imu_debug.rpy_raw_deg.",
+            "qpos_raw_imu/qpos_raw_imu_deg reconstruct swing/boom/stick from imu_debug.rpy_raw_deg; bucket is IMU1/IMU2 quaternion relative twist plus the fixed policy offset, not raw pitch diff.",
             "qpos_folded_imu/qpos_folded_imu_deg are reconstructed from imu_debug.rpy_rad after per-axis angle folding.",
             "qpos_policy_minus_raw_imu is the shortest-angle delta from raw IMU joint pose to policy qpos.",
             "qpos_policy_minus_raw_imu_deg_direct is policy_deg - raw_imu_deg without branch wrapping.",

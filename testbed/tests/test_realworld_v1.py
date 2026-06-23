@@ -125,16 +125,6 @@ def _wait_until_remote_seq_stored(
 
 
 class RealworldV1Tests(unittest.TestCase):
-    def setUp(self) -> None:
-        self._bucket_offset_patch = patch.dict(
-            os.environ,
-            {"EXCAVATOR_BUCKET_QUATERNION_OFFSET_RAD": "0.0"},
-        )
-        self._bucket_offset_patch.start()
-
-    def tearDown(self) -> None:
-        self._bucket_offset_patch.stop()
-
     def test_remote_action_protocol_round_trip(self) -> None:
         frame = encode_remote_action_update(
             seq=7,
@@ -1515,14 +1505,11 @@ class RealworldV1Tests(unittest.TestCase):
                 }
             )
 
-    def test_go_home_controller_uses_bucket_quaternion_for_raw_feedback(
+    def test_go_home_controller_uses_bucket_quaternion_calibration_for_raw_feedback(
         self,
     ) -> None:
-        bucket_rad = float(np.deg2rad(59.40))
-
-        def pitch_quat_wxyz(pitch_deg: float) -> list[float]:
-            half = float(np.deg2rad(pitch_deg)) * 0.5
-            return [float(np.cos(half)), 0.0, float(np.sin(half)), 0.0]
+        bucket_rad = float(np.deg2rad(35.580032040155814))
+        direct_pitch_diff_rad = float(np.deg2rad(60.35999774932861))
 
         cfg = GoHomeConfig.from_mapping(
             {
@@ -1544,15 +1531,25 @@ class RealworldV1Tests(unittest.TestCase):
                         "online": 1,
                         "valid_attitude": 1,
                         "valid_quaternion": 1,
-                        "rpy_raw_deg": [0.0, -56.47, 0.0],
-                        "quaternion_wxyz": pitch_quat_wxyz(25.26),
+                        "rpy_raw_deg": [0.0, 11.6899995803833, 0.0],
+                        "quaternion_wxyz": [
+                            0.09324929118156433,
+                            0.10031034052371979,
+                            0.01631910540163517,
+                            -0.9904467463493347,
+                        ],
                     },
                     {
                         "online": 1,
                         "valid_attitude": 1,
                         "valid_quaternion": 1,
-                        "rpy_raw_deg": [0.0, -34.14, 0.0],
-                        "quaternion_wxyz": pitch_quat_wxyz(-34.14),
+                        "rpy_raw_deg": [0.0, -48.66999816894531, 0.0],
+                        "quaternion_wxyz": [
+                            0.7082435488700867,
+                            0.2577011287212372,
+                            -0.3223798871040344,
+                            0.5727660655975342,
+                        ],
                     },
                     {"online": 1, "valid_attitude": 1, "rpy_raw_deg": [0.0, 0.0, 0.0]},
                     {"online": 1, "valid_attitude": 1, "rpy_raw_deg": [0.0, 0.0, 0.0]},
@@ -1569,18 +1566,23 @@ class RealworldV1Tests(unittest.TestCase):
             bucket_rad,
             places=5,
         )
+        self.assertNotAlmostEqual(
+            float(result.diagnostics["go_home_raw_imu_qpos"][3]),
+            direct_pitch_diff_rad,
+            places=3,
+        )
 
-    def test_go_home_controller_applies_bucket_quaternion_policy_offset(
+    def test_go_home_controller_ignores_legacy_bucket_quaternion_policy_offset_env(
         self,
     ) -> None:
-        legacy_offset = -0.4060066694119653
+        bucket_rad = float(np.deg2rad(-23.262468611471))
 
         def pitch_quat_wxyz(pitch_deg: float) -> list[float]:
             half = float(np.deg2rad(pitch_deg)) * 0.5
             return [float(np.cos(half)), 0.0, float(np.sin(half)), 0.0]
 
         obs = {
-            "qpos": np.array([0.0, 0.0, 0.0, legacy_offset], dtype=np.float32),
+            "qpos": np.array([0.0, 0.0, 0.0, bucket_rad], dtype=np.float32),
             "qvel": np.zeros(4, dtype=np.float32),
             "imu_debug": {
                 "devices": [
@@ -1588,7 +1590,7 @@ class RealworldV1Tests(unittest.TestCase):
                         "online": 1,
                         "valid_attitude": 1,
                         "valid_quaternion": 1,
-                        "rpy_raw_deg": [0.0, 0.0, 0.0],
+                        "rpy_raw_deg": [0.0, 23.0, 0.0],
                         "quaternion_wxyz": pitch_quat_wxyz(0.0),
                     },
                     {
@@ -1606,7 +1608,7 @@ class RealworldV1Tests(unittest.TestCase):
         cfg = GoHomeConfig.from_mapping(
             {
                 "enabled": True,
-                "home_pose_rad": [0.0, 0.0, 0.0, legacy_offset],
+                "home_pose_rad": [0.0, 0.0, 0.0, bucket_rad],
                 "near_tolerance_rad": [999.0, 999.0, 999.0, 999.0],
                 "success_tolerance_rad": [0.05, 0.05, 0.05, 0.05],
                 "max_policy_raw_qpos_delta_rad": [0.08, 0.08, 0.08, 0.08],
@@ -1615,7 +1617,7 @@ class RealworldV1Tests(unittest.TestCase):
         assert cfg is not None
         with patch.dict(
             os.environ,
-            {"EXCAVATOR_BUCKET_QUATERNION_OFFSET_RAD": str(legacy_offset)},
+            {"EXCAVATOR_BUCKET_QUATERNION_OFFSET_RAD": "1.2345"},
         ):
             controller = GoHomeController(cfg)
             controller.start(obs)
@@ -1624,13 +1626,15 @@ class RealworldV1Tests(unittest.TestCase):
         self.assertEqual(result.diagnostics["go_home_feedback_consistent"], 1)
         self.assertAlmostEqual(
             float(result.diagnostics["go_home_raw_imu_qpos"][3]),
-            legacy_offset,
+            bucket_rad,
             places=5,
         )
 
-    def test_go_home_controller_limits_bucket_quaternion_branch_jump(
+    def test_go_home_controller_keeps_bucket_calibration_without_history_limit(
         self,
     ) -> None:
+        bucket_rad = float(np.deg2rad(120.0 - 23.262468611471))
+
         def pitch_quat_wxyz(pitch_deg: float) -> list[float]:
             half = float(np.deg2rad(pitch_deg)) * 0.5
             return [float(np.cos(half)), 0.0, float(np.sin(half)), 0.0]
@@ -1681,21 +1685,67 @@ class RealworldV1Tests(unittest.TestCase):
         self.assertEqual(result.diagnostics["go_home_feedback_consistent"], 1)
         self.assertAlmostEqual(
             float(result.diagnostics["go_home_raw_imu_qpos"][3]),
-            float(np.deg2rad(2.5)),
+            bucket_rad,
             places=5,
         )
         self.assertAlmostEqual(
             float(result.diagnostics["go_home_policy_raw_delta"][3]),
-            -float(np.deg2rad(2.5)),
+            -bucket_rad,
             places=5,
         )
+
+    def test_log_imu_qvel_quality_raw_qpos_uses_bucket_quaternion_calibration(
+        self,
+    ) -> None:
+        script_path = (
+            Path(__file__).resolve().parents[2] / "scripts" / "log_imu_qvel_quality.py"
+        )
+        spec = importlib.util.spec_from_file_location("log_imu_qvel_quality", script_path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        qpos_raw_imu_deg = module.imu_joint_qpos_raw_deg(
+            {
+                "devices": [
+                    {
+                        "online": 1,
+                        "valid_attitude": 1,
+                        "valid_quaternion": 1,
+                        "rpy_raw_deg": [0.0, 11.679999351501465, 0.0],
+                        "quaternion_wxyz": [
+                            0.09814400225877762,
+                            0.10027111321687698,
+                            0.015918726101517677,
+                            -0.9899841547012329,
+                        ],
+                    },
+                    {
+                        "online": 1,
+                        "valid_attitude": 1,
+                        "valid_quaternion": 1,
+                        "rpy_raw_deg": [0.0, -48.96999740600586, 0.0],
+                        "quaternion_wxyz": [
+                            0.7065725922584534,
+                            0.26049181818962097,
+                            -0.3232657313346863,
+                            0.5730680227279663,
+                        ],
+                    },
+                    {"online": 1, "valid_attitude": 1, "rpy_raw_deg": [0.0, 0.0, 0.0]},
+                    {"online": 1, "valid_attitude": 1, "rpy_raw_deg": [0.0, 0.0, 0.0]},
+                ],
+            }
+        )
+
+        assert qpos_raw_imu_deg is not None
+        self.assertAlmostEqual(qpos_raw_imu_deg[3], 36.1900328319635, places=5)
+        self.assertNotAlmostEqual(qpos_raw_imu_deg[3], 60.649996757507324, places=3)
 
     def test_go_home_controller_allows_imu_debug_bucket_raw_branch_for_done(
         self,
     ) -> None:
-        def pitch_quat_wxyz(pitch_deg: float) -> list[float]:
-            half = float(np.deg2rad(pitch_deg)) * 0.5
-            return [float(np.cos(half)), 0.0, float(np.sin(half)), 0.0]
+        bucket_rad = float(np.deg2rad(35.580032040155814))
 
         obs = {
             "qpos": np.zeros(4, dtype=np.float32),
@@ -1706,15 +1756,25 @@ class RealworldV1Tests(unittest.TestCase):
                         "online": 1,
                         "valid_attitude": 1,
                         "valid_quaternion": 1,
-                        "rpy_raw_deg": [0.0, 23.0, 0.0],
-                        "quaternion_wxyz": pitch_quat_wxyz(23.0),
+                        "rpy_raw_deg": [0.0, 11.6899995803833, 0.0],
+                        "quaternion_wxyz": [
+                            0.09324929118156433,
+                            0.10031034052371979,
+                            0.01631910540163517,
+                            -0.9904467463493347,
+                        ],
                     },
                     {
                         "online": 1,
                         "valid_attitude": 1,
                         "valid_quaternion": 1,
-                        "rpy_raw_deg": [0.0, 0.0, 0.0],
-                        "quaternion_wxyz": pitch_quat_wxyz(0.0),
+                        "rpy_raw_deg": [0.0, -48.66999816894531, 0.0],
+                        "quaternion_wxyz": [
+                            0.7082435488700867,
+                            0.2577011287212372,
+                            -0.3223798871040344,
+                            0.5727660655975342,
+                        ],
                     },
                     {"online": 1, "valid_attitude": 1, "rpy_raw_deg": [0.0, 0.0, 0.0]},
                     {"online": 1, "valid_attitude": 1, "rpy_raw_deg": [0.0, 0.0, 0.0]},
@@ -1728,7 +1788,7 @@ class RealworldV1Tests(unittest.TestCase):
                 "near_tolerance_rad": [999.0, 999.0, 999.0, 999.0],
                 "success_tolerance_rad": [0.05, 0.05, 0.05, 0.05],
                 "center_tolerance_rad": [0.02, 0.02, 0.02, 0.02],
-                "max_policy_raw_qpos_delta_rad": [0.08, 0.08, 0.08, 0.08],
+                "max_policy_raw_qpos_delta_rad": [999.0, 999.0, 999.0, 0.08],
                 "qvel_stable_rad_s": [0.02, 0.02, 0.02, 0.02],
                 "dwell_s": 0.0,
             }
@@ -1743,7 +1803,7 @@ class RealworldV1Tests(unittest.TestCase):
         self.assertEqual(result.diagnostics["go_home_feedback_consistent"], 1)
         self.assertAlmostEqual(
             float(result.diagnostics["go_home_policy_raw_delta"][3]),
-            -float(np.deg2rad(23.0)),
+            -bucket_rad,
             places=5,
         )
 

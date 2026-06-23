@@ -30,8 +30,7 @@ private:
     std::array<Eigen::Vector3d, kImuDeviceCount> continuousImuRpy(const ExcavatorHardwareState& hw);
     void applyPositionContinuity(ExcavatorState& st,
                                  bool position_observed,
-                                 const Vector8d& branch_reference,
-                                 bool bucket_quaternion_observed);
+                                 const Vector8d& branch_reference);
 
     Vector8d resp_velocity_bias_sum_ = Vector8d::Zero();
     Vector8d resp_velocity_bias_ = Vector8d::Zero();

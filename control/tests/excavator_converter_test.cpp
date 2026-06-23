@@ -1,15 +1,14 @@
 #include <excavator/internal/excavator_converter.hpp>
 
 #include <cmath>
-#include <cstdlib>
 #include <iostream>
 #include <string>
 
 namespace {
 
-constexpr double kBucketQuaternionPolicyOffsetRad = -0.4060066694119653;
-
 double deg_to_rad(double deg) { return deg * excavator::kPi / 180.0; }
+
+constexpr double kBucketQuaternionPolicyOffsetDeg = -23.262468611471;
 
 Eigen::Quaternionf pitch_quaternion(double pitch_deg) {
     return Eigen::Quaternionf(Eigen::AngleAxisf(
@@ -28,23 +27,11 @@ void expect_near(double got, double want, const std::string& message) {
     }
 }
 
-void expect_less(double got, double limit, const std::string& message) {
-    if (!(got < limit)) {
-        std::cerr << message << ": got=" << got << " limit=" << limit << "\n";
+void expect_not_near(double got, double unwanted, const std::string& message) {
+    if (std::abs(got - unwanted) <= 1e-3) {
+        std::cerr << message << ": got=" << got << " unwanted=" << unwanted << "\n";
         std::exit(1);
     }
-}
-
-void expect_greater(double got, double limit, const std::string& message) {
-    if (!(got > limit)) {
-        std::cerr << message << ": got=" << got << " limit=" << limit << "\n";
-        std::exit(1);
-    }
-}
-
-void set_bucket_quaternion_offset(double value) {
-    const std::string raw = std::to_string(value);
-    setenv("EXCAVATOR_BUCKET_QUATERNION_OFFSET_RAD", raw.c_str(), 1);
 }
 
 void make_valid_imu(excavator::ExcavatorHardwareState& hw,
@@ -74,12 +61,26 @@ void make_valid_imu(excavator::ExcavatorHardwareState& hw,
     hw.imu.devices[3].quaternion = yaw_quaternion(imu4_yaw_deg);
 }
 
+void set_bucket_quaternions(excavator::ExcavatorHardwareState& hw,
+                            const Eigen::Quaternionf& imu1,
+                            const Eigen::Quaternionf& imu2) {
+    hw.imu.devices[0].quaternion = imu1.normalized();
+    hw.imu.devices[1].quaternion = imu2.normalized();
+}
+
+Eigen::Quaternionf q_wxyz(double w, double x, double y, double z) {
+    return Eigen::Quaternionf(static_cast<float>(w),
+                              static_cast<float>(x),
+                              static_cast<float>(y),
+                              static_cast<float>(z));
+}
+
 void test_raw_yaw_branch_survives_startup() {
     excavator::ExcavatorConverter converter;
     excavator::ExcavatorHardwareState invalid_hw;
     excavator::ExcavatorState out;
-    if (!converter.hardwareStateToRobotState(invalid_hw, out)) {
-        std::cerr << "invalid startup conversion failed\n";
+    if (converter.hardwareStateToRobotState(invalid_hw, out)) {
+        std::cerr << "invalid startup conversion should not publish robot state\n";
         std::exit(1);
     }
 
@@ -93,7 +94,7 @@ void test_raw_yaw_branch_survives_startup() {
     expect_near(out.position(0), deg_to_rad(222.50), "swing should use raw yaw branch");
     expect_near(out.position(1), deg_to_rad(32.53), "boom wrong");
     expect_near(out.position(2), deg_to_rad(-99.85), "stick wrong");
-    expect_near(out.position(3), deg_to_rad(22.50), "bucket wrong");
+    expect_near(out.position(3), deg_to_rad(22.50 + kBucketQuaternionPolicyOffsetDeg), "bucket wrong");
 }
 
 void test_default_valid_attitude_does_not_lock_yaw_branch() {
@@ -102,8 +103,8 @@ void test_default_valid_attitude_does_not_lock_yaw_branch() {
     excavator::ExcavatorState out;
 
     make_valid_imu(hw, 0.0, 0.0, 0.0, 0.0);
-    if (!converter.hardwareStateToRobotState(hw, out)) {
-        std::cerr << "default valid conversion failed\n";
+    if (converter.hardwareStateToRobotState(hw, out)) {
+        std::cerr << "default valid snapshot should not publish before qpos is ready\n";
         std::exit(1);
     }
 
@@ -151,237 +152,232 @@ void test_swing_velocity_sign_matches_raw_yaw() {
     expect_near(out.velocity(0), deg_to_rad(5.0), "swing velocity sign should match yaw change");
 }
 
-void test_bucket_uses_relative_quaternion_when_euler_branch_flips() {
+void test_bucket_uses_quaternion_policy_frame_for_133653_csv_fixture() {
     excavator::ExcavatorConverter converter;
     excavator::ExcavatorHardwareState hw;
     excavator::ExcavatorState out;
 
-    make_valid_imu(hw, 24.76, -35.08, 0.0, 222.50);
+    make_valid_imu(hw, 11.6899995803833, -48.66999816894531, 0.0, 222.50);
+    set_bucket_quaternions(
+        hw,
+        q_wxyz(0.09324929118156433, 0.10031034052371979, 0.01631910540163517,
+               -0.9904467463493347),
+        q_wxyz(0.7082435488700867, 0.2577011287212372, -0.3223798871040344,
+               0.5727660655975342));
     if (!converter.hardwareStateToRobotState(hw, out)) {
-        std::cerr << "bucket quaternion baseline conversion failed\n";
+        std::cerr << "bucket 133653 csv conversion failed\n";
         std::exit(1);
     }
-    const double previous = out.position(3);
-    expect_near(previous, deg_to_rad(59.84), "bucket quaternion baseline wrong");
-
-    make_valid_imu(hw, -56.47, -34.14, 0.0, 222.50);
-    hw.imu.devices[0].quaternion = pitch_quaternion(25.26);
-    hw.imu.devices[1].quaternion = pitch_quaternion(-34.14);
-    hw.imu.devices[0].gyro_dps(1) = -10.0F;
-    hw.imu.devices[1].gyro_dps(1) = 0.0F;
-    if (!converter.hardwareStateToRobotState(hw, out)) {
-        std::cerr << "bucket quaternion branch-flip conversion failed\n";
-        std::exit(1);
-    }
-
-    expect_less(out.position(3), previous, "bucket quaternion should allow the small physical step");
-    expect_near(out.position(3), deg_to_rad(59.40), "bucket quaternion should ignore folded Euler pitch");
+    expect_near(out.position(3), deg_to_rad(35.580032040155814),
+                "bucket should match 133653 calibrated policy qpos");
+    expect_not_near(out.position(3), deg_to_rad(60.35999774932861),
+                    "bucket must not use direct raw pitch diff for 133653");
 }
 
-void test_bucket_falls_back_to_euler_when_quaternion_missing() {
+void test_bucket_corrects_130940_csv_fixture_without_old_branch() {
     excavator::ExcavatorConverter converter;
     excavator::ExcavatorHardwareState hw;
     excavator::ExcavatorState out;
 
-    make_valid_imu(hw, -20.0, -30.0, 0.0, 222.50);
-    hw.imu.devices[0].valid_quaternion = 0U;
+    make_valid_imu(hw, 11.679999351501465, -48.96999740600586, 0.0, 222.50);
+    set_bucket_quaternions(
+        hw,
+        q_wxyz(0.09814400225877762, 0.10027111321687698, 0.015918726101517677,
+               -0.9899841547012329),
+        q_wxyz(0.7065725922584534, 0.26049181818962097, -0.3232657313346863,
+               0.5730680227279663));
     if (!converter.hardwareStateToRobotState(hw, out)) {
-        std::cerr << "bucket missing quaternion fallback conversion failed\n";
+        std::cerr << "bucket 130940 csv conversion failed\n";
         std::exit(1);
     }
-    expect_near(out.position(3), deg_to_rad(10.0), "missing bucket quaternion should fall back to Euler");
+    expect_near(out.position(3), deg_to_rad(36.1900328319635),
+                "bucket should repair 130940 to calibrated raw-imu qpos");
+    expect_not_near(out.position(3), deg_to_rad(11.670000076293945),
+                    "bucket must not keep old wrong final branch for 130940");
+    expect_not_near(out.position(3), deg_to_rad(60.649996757507324),
+                    "bucket must not use direct raw pitch diff for 130940");
 }
 
-void test_bucket_quaternion_position_is_absolute() {
-    excavator::ExcavatorConverter converter;
+void test_bucket_calibrated_value_ignores_gyro_and_restart_history() {
+    excavator::ExcavatorConverter converter_with_history;
     excavator::ExcavatorHardwareState hw;
-    excavator::ExcavatorState out;
+    excavator::ExcavatorState with_history;
 
-    make_valid_imu(hw, -20.0, -30.0, 0.0, 222.50);
-    if (!converter.hardwareStateToRobotState(hw, out)) {
-        std::cerr << "bucket baseline conversion failed\n";
-        std::exit(1);
-    }
-    expect_near(out.position(3), deg_to_rad(10.0), "bucket baseline wrong");
-
-    excavator::ExcavatorConverter converter2;
-    make_valid_imu(hw, 10.0, -30.0, 0.0, 222.50);
-    if (!converter2.hardwareStateToRobotState(hw, out)) {
-        std::cerr << "bucket absolute quaternion conversion failed\n";
-        std::exit(1);
-    }
-    expect_near(out.position(3), deg_to_rad(40.0), "initial valid bucket quaternion should be absolute");
-}
-
-void test_bucket_euler_fallback_is_rate_limited_when_quaternion_missing() {
-    excavator::ExcavatorConverter converter;
-    excavator::ExcavatorHardwareState hw;
-    excavator::ExcavatorState out;
-
-    make_valid_imu(hw, -20.0, -30.0, 0.0, 222.50);
-    hw.imu.devices[0].valid_quaternion = 0U;
-    if (!converter.hardwareStateToRobotState(hw, out)) {
-        std::cerr << "bucket euler fallback baseline conversion failed\n";
-        std::exit(1);
-    }
-    expect_near(out.position(3), deg_to_rad(10.0), "bucket euler fallback baseline wrong");
-
-    make_valid_imu(hw, 10.0, -30.0, 0.0, 222.50);
-    hw.imu.devices[0].valid_quaternion = 0U;
-    if (!converter.hardwareStateToRobotState(hw, out)) {
-        std::cerr << "bucket euler fallback outlier conversion failed\n";
-        std::exit(1);
-    }
-    expect_near(out.position(3), deg_to_rad(10.5), "missing quaternion fallback should be rate limited");
-}
-
-void test_bucket_quaternion_anchors_through_euler_branch_fold() {
-    excavator::ExcavatorConverter converter;
-    excavator::ExcavatorHardwareState hw;
-    excavator::ExcavatorState out;
-
-    make_valid_imu(hw, -88.84, -31.66, 0.0, 222.50);
-    hw.imu.devices[0].gyro_dps(1) = -14.2F;
-    hw.imu.devices[1].gyro_dps(1) = -0.7F;
-    if (!converter.hardwareStateToRobotState(hw, out)) {
-        std::cerr << "bucket quaternion branch-fold baseline conversion failed\n";
-        std::exit(1);
-    }
-    expect_near(out.position(3), deg_to_rad(-57.18), "bucket quaternion branch-fold baseline wrong");
-
-    make_valid_imu(hw, -88.75, -31.67, 0.0, 222.50);
-    hw.imu.devices[0].gyro_dps(1) = -14.3F;
-    hw.imu.devices[1].gyro_dps(1) = -0.6F;
-    if (!converter.hardwareStateToRobotState(hw, out)) {
-        std::cerr << "bucket quaternion branch-fold next conversion failed\n";
-        std::exit(1);
-    }
-    expect_near(out.position(3), deg_to_rad(-57.08), "valid quaternion should anchor bucket through Euler branch fold");
-}
-
-void test_bucket_quaternion_raw_jump_is_gyro_limited_when_direction_conflicts() {
-    excavator::ExcavatorConverter converter;
-    excavator::ExcavatorHardwareState hw;
-    excavator::ExcavatorState out;
-
-    make_valid_imu(hw, -54.20, -31.33, 0.0, 222.50);
-    hw.imu.devices[0].gyro_dps(1) = 3.8F;
-    hw.imu.devices[1].gyro_dps(1) = -0.5F;
-    if (!converter.hardwareStateToRobotState(hw, out)) {
-        std::cerr << "bucket raw jump baseline conversion failed\n";
-        std::exit(1);
-    }
-    const double previous = out.position(3);
-    expect_near(previous, deg_to_rad(-22.87), "bucket raw jump baseline wrong");
-
-    make_valid_imu(hw, -85.99, -31.78, 0.0, 222.50);
-    hw.imu.devices[0].gyro_dps(1) = 1.4F;
-    hw.imu.devices[1].gyro_dps(1) = -0.8F;
-    if (!converter.hardwareStateToRobotState(hw, out)) {
-        std::cerr << "bucket raw jump conversion failed\n";
+    make_valid_imu(hw, 0.0, 0.0, 0.0, 222.50);
+    if (!converter_with_history.hardwareStateToRobotState(hw, with_history)) {
+        std::cerr << "bucket restart-history baseline conversion failed\n";
         std::exit(1);
     }
 
-    expect_greater(out.position(3), previous, "bucket raw jump should not move against gyro");
-    expect_less(out.position(3) - previous,
-                deg_to_rad(0.10),
-                "direction-conflicting bucket raw jump should only take a gyro-sized step");
-}
-
-void test_bucket_quaternion_rejects_two_pi_alias_from_latest_log() {
-    excavator::ExcavatorConverter converter;
-    excavator::ExcavatorHardwareState hw;
-    excavator::ExcavatorState out;
-
-    make_valid_imu(hw, -148.65, 0.0, 0.0, 222.50);
-    hw.imu.devices[0].gyro_dps(1) = 38.0F;
-    hw.imu.devices[1].gyro_dps(1) = 0.0F;
-    if (!converter.hardwareStateToRobotState(hw, out)) {
-        std::cerr << "bucket latest-log alias baseline conversion failed\n";
-        std::exit(1);
-    }
-    double previous = out.position(3);
-    expect_near(previous, deg_to_rad(-148.65), "bucket latest-log alias baseline wrong");
-
-    const double raw_bucket_deg[] = {161.16, 114.14, 79.01, 55.42, 26.42, 19.13, 13.18, 8.87};
-    for (const double raw_deg : raw_bucket_deg) {
-        make_valid_imu(hw, raw_deg, 0.0, 0.0, 222.50);
-        hw.imu.devices[0].gyro_dps(1) = 38.0F;
-        hw.imu.devices[1].gyro_dps(1) = 0.0F;
-        if (!converter.hardwareStateToRobotState(hw, out)) {
-            std::cerr << "bucket latest-log alias crossing conversion failed\n";
-            std::exit(1);
-        }
-        expect_greater(out.position(3), previous, "bucket alias crossing should follow gyro direction");
-        expect_less(out.position(3) - previous,
-                    deg_to_rad(1.0),
-                    "bucket alias crossing should not snap to raw-2pi branch");
-        expect_greater(out.position(3),
-                       -excavator::kPi,
-                       "bucket alias crossing should stay in the finite policy branch");
-        previous = out.position(3);
-    }
-}
-
-void test_bucket_quaternion_applies_legacy_policy_offset() {
-    set_bucket_quaternion_offset(kBucketQuaternionPolicyOffsetRad);
-    excavator::ExcavatorConverter converter;
-    excavator::ExcavatorHardwareState hw;
-    excavator::ExcavatorState out;
-
-    make_valid_imu(hw, -43.66, -37.59, 5.77, 216.70);
-    if (!converter.hardwareStateToRobotState(hw, out)) {
-        std::cerr << "bucket quaternion policy-offset conversion failed\n";
-        std::exit(1);
-    }
-
-    expect_near(out.position(3),
-                deg_to_rad(-6.07) + kBucketQuaternionPolicyOffsetRad,
-                "bucket quaternion should preserve legacy policy qpos frame");
-    set_bucket_quaternion_offset(0.0);
-}
-
-void test_bucket_quaternion_does_not_unwrap_pi_branch_without_motion() {
-    excavator::ExcavatorConverter converter;
-    excavator::ExcavatorHardwareState hw;
-    excavator::ExcavatorState out;
-
-    make_valid_imu(hw, 179.0, 0.0, 0.0, 222.50);
-    hw.imu.devices[0].quaternion = pitch_quaternion(179.0);
+    make_valid_imu(hw, 222.50, 0.0, 0.0, 222.50);
+    hw.imu.devices[0].quaternion = pitch_quaternion(59.40);
     hw.imu.devices[1].quaternion = pitch_quaternion(0.0);
-    if (!converter.hardwareStateToRobotState(hw, out)) {
-        std::cerr << "bucket pi branch baseline conversion failed\n";
+    hw.imu.devices[0].gyro_dps(1) = 0.0F;
+    hw.imu.devices[1].gyro_dps(1) = 0.0F;
+    if (!converter_with_history.hardwareStateToRobotState(hw, with_history)) {
+        std::cerr << "bucket restart-history raw conversion failed\n";
         std::exit(1);
     }
-    expect_near(out.position(3), deg_to_rad(179.0), "bucket pi branch baseline wrong");
 
-    make_valid_imu(hw, -179.0, 0.0, 0.0, 222.50);
-    hw.imu.devices[0].quaternion = pitch_quaternion(-179.0);
-    hw.imu.devices[1].quaternion = pitch_quaternion(0.0);
-    if (!converter.hardwareStateToRobotState(hw, out)) {
-        std::cerr << "bucket pi branch crossing conversion failed\n";
+    excavator::ExcavatorConverter converter_without_history;
+    excavator::ExcavatorState without_history;
+    if (!converter_without_history.hardwareStateToRobotState(hw, without_history)) {
+        std::cerr << "bucket no-history raw conversion failed\n";
         std::exit(1);
     }
-    expect_near(out.position(3), deg_to_rad(179.0), "zero-gyro bucket should not unwrap across pi");
+
+    const double expected = deg_to_rad(59.40 + kBucketQuaternionPolicyOffsetDeg);
+    expect_near(with_history.position(3), expected, "bucket history must not change calibrated qpos");
+    expect_near(without_history.position(3), expected, "bucket startup must use same calibrated qpos");
+    expect_not_near(with_history.position(3), deg_to_rad(222.50),
+                    "bucket must not use direct raw pitch branch as calibrated qpos");
+}
+
+void test_fresh_invalid_bucket_quaternion_does_not_publish_uncalibrated_qpos() {
+    excavator::ExcavatorConverter converter;
+    excavator::ExcavatorHardwareState hw;
+    excavator::ExcavatorState out;
+
+    make_valid_imu(hw, 123.0, 0.0, 0.0, 222.50);
+    hw.imu.devices[0].valid_quaternion = 0U;
+    hw.imu.devices[0].rpy_rad(1) = static_cast<float>(deg_to_rad(123.0));
+    hw.imu.devices[0].rpy_raw_deg(1) = 123.0F;
+    if (converter.hardwareStateToRobotState(hw, out)) {
+        std::cerr << "fresh invalid bucket quaternion should not publish uncalibrated bucket qpos\n";
+        std::exit(1);
+    }
+}
+
+void test_ready_invalid_bucket_quaternion_holds_previous_calibrated_qpos() {
+    excavator::ExcavatorConverter converter;
+    excavator::ExcavatorHardwareState hw;
+    excavator::ExcavatorState out;
+
+    make_valid_imu(hw, 10.0, 20.0, 30.0, 222.50);
+    if (!converter.hardwareStateToRobotState(hw, out)) {
+        std::cerr << "invalid quaternion hold baseline conversion failed\n";
+        std::exit(1);
+    }
+    const double previous_bucket = out.position(3);
+
+    hw.imu.devices[0].valid_quaternion = 0U;
+    hw.imu.devices[0].rpy_raw_deg(1) = 200.0F;
+    hw.imu.devices[0].rpy_rad(1) = static_cast<float>(deg_to_rad(-160.0));
+    hw.imu.devices[0].quaternion = pitch_quaternion(-160.0);
+    if (!converter.hardwareStateToRobotState(hw, out)) {
+        std::cerr << "ready invalid bucket quaternion should hold previous qpos\n";
+        std::exit(1);
+    }
+
+    expect_near(out.position(3), previous_bucket,
+                "invalid bucket quaternion must hold previous calibrated qpos");
+    expect_not_near(out.position(3), deg_to_rad(-160.0),
+                    "invalid bucket quaternion must not publish folded rpy bucket");
+}
+
+void test_boom_raw_deg_ignores_restart_history() {
+    excavator::ExcavatorConverter converter_with_history;
+    excavator::ExcavatorHardwareState hw;
+    excavator::ExcavatorState with_history;
+
+    make_valid_imu(hw, 0.0, 0.0, 0.0, 222.50);
+    if (!converter_with_history.hardwareStateToRobotState(hw, with_history)) {
+        std::cerr << "boom restart-history baseline conversion failed\n";
+        std::exit(1);
+    }
+
+    make_valid_imu(hw, 0.0, 0.0, 222.50, 222.50);
+    hw.imu.devices[2].rpy_rad(1) = static_cast<float>(deg_to_rad(-137.50));
+    hw.imu.devices[2].quaternion = pitch_quaternion(-137.50);
+    if (!converter_with_history.hardwareStateToRobotState(hw, with_history)) {
+        std::cerr << "boom restart-history raw conversion failed\n";
+        std::exit(1);
+    }
+
+    excavator::ExcavatorConverter converter_without_history;
+    excavator::ExcavatorState without_history;
+    if (!converter_without_history.hardwareStateToRobotState(hw, without_history)) {
+        std::cerr << "boom no-history raw conversion failed\n";
+        std::exit(1);
+    }
+
+    expect_near(with_history.position(1), deg_to_rad(222.50), "boom history must not create another 2pi branch");
+    expect_near(without_history.position(1), deg_to_rad(222.50), "boom startup must use same raw-deg branch");
+}
+
+void test_stick_raw_deg_ignores_restart_history() {
+    excavator::ExcavatorConverter converter_with_history;
+    excavator::ExcavatorHardwareState hw;
+    excavator::ExcavatorState with_history;
+
+    make_valid_imu(hw, 0.0, 0.0, 0.0, 222.50);
+    if (!converter_with_history.hardwareStateToRobotState(hw, with_history)) {
+        std::cerr << "stick restart-history baseline conversion failed\n";
+        std::exit(1);
+    }
+
+    make_valid_imu(hw, 0.0, 222.50, 0.0, 222.50);
+    hw.imu.devices[1].rpy_rad(1) = static_cast<float>(deg_to_rad(-137.50));
+    hw.imu.devices[1].quaternion = pitch_quaternion(-137.50);
+    if (!converter_with_history.hardwareStateToRobotState(hw, with_history)) {
+        std::cerr << "stick restart-history raw conversion failed\n";
+        std::exit(1);
+    }
+
+    excavator::ExcavatorConverter converter_without_history;
+    excavator::ExcavatorState without_history;
+    if (!converter_without_history.hardwareStateToRobotState(hw, without_history)) {
+        std::cerr << "stick no-history raw conversion failed\n";
+        std::exit(1);
+    }
+
+    expect_near(with_history.position(2), deg_to_rad(222.50), "stick history must not create another 2pi branch");
+    expect_near(without_history.position(2), deg_to_rad(222.50), "stick startup must use same raw-deg branch");
+}
+
+void test_offline_imu_holds_previous_raw_deg_qpos() {
+    excavator::ExcavatorConverter converter;
+    excavator::ExcavatorHardwareState hw;
+    excavator::ExcavatorState out;
+
+    make_valid_imu(hw, 10.0, 20.0, 30.0, 222.50);
+    if (!converter.hardwareStateToRobotState(hw, out)) {
+        std::cerr << "offline hold baseline conversion failed\n";
+        std::exit(1);
+    }
+    const double previous_bucket = out.position(3);
+    expect_near(previous_bucket, deg_to_rad(-10.0 + kBucketQuaternionPolicyOffsetDeg),
+                "offline hold baseline bucket wrong");
+
+    hw.imu.devices[0].online = 0U;
+    hw.imu.devices[0].valid_attitude = 1U;
+    hw.imu.devices[0].host_rx_time_ns = 9000U;
+    hw.imu.devices[0].rpy_raw_deg(1) = 200.0F;
+    hw.imu.devices[0].rpy_rad(1) = static_cast<float>(deg_to_rad(-160.0));
+    hw.imu.devices[0].quaternion = pitch_quaternion(-160.0);
+    if (!converter.hardwareStateToRobotState(hw, out)) {
+        std::cerr << "offline hold conversion failed\n";
+        std::exit(1);
+    }
+
+    expect_near(out.position(3), previous_bucket, "offline imu raw pitch must not update bucket qpos");
 }
 
 }  // namespace
 
 int main() {
-    set_bucket_quaternion_offset(0.0);
     test_raw_yaw_branch_survives_startup();
     test_default_valid_attitude_does_not_lock_yaw_branch();
     test_yaw_zero_crossing_is_unwrapped();
     test_swing_velocity_sign_matches_raw_yaw();
-    test_bucket_uses_relative_quaternion_when_euler_branch_flips();
-    test_bucket_falls_back_to_euler_when_quaternion_missing();
-    test_bucket_quaternion_position_is_absolute();
-    test_bucket_euler_fallback_is_rate_limited_when_quaternion_missing();
-    test_bucket_quaternion_anchors_through_euler_branch_fold();
-    test_bucket_quaternion_raw_jump_is_gyro_limited_when_direction_conflicts();
-    test_bucket_quaternion_rejects_two_pi_alias_from_latest_log();
-    test_bucket_quaternion_applies_legacy_policy_offset();
-    test_bucket_quaternion_does_not_unwrap_pi_branch_without_motion();
+    test_bucket_uses_quaternion_policy_frame_for_133653_csv_fixture();
+    test_bucket_corrects_130940_csv_fixture_without_old_branch();
+    test_bucket_calibrated_value_ignores_gyro_and_restart_history();
+    test_fresh_invalid_bucket_quaternion_does_not_publish_uncalibrated_qpos();
+    test_ready_invalid_bucket_quaternion_holds_previous_calibrated_qpos();
+    test_boom_raw_deg_ignores_restart_history();
+    test_stick_raw_deg_ignores_restart_history();
+    test_offline_imu_holds_previous_raw_deg_qpos();
     std::cout << "excavator_converter_test OK\n";
     return 0;
 }
