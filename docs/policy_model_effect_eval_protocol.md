@@ -15,6 +15,8 @@
 4. 图和 CSV 必须同时保留：`action_timeseries.png` 用于看动作形态，
    `actions.csv` 用于统计局部窗口的幅值、方向和持续时间。
 5. 使用视觉输入的模型必须做 FPV 敏感性检查，不能只做同一 episode 的正常 replay。
+6. 每次训练完成后的离线 eval 必须包含固定 qpos、多 FPV 替换 replay。这个检查不是
+   live 前临时加测，而是训练 checkpoint 是否可进入 shadow/live 的固定 gate。
 
 ## 现有可用工具
 
@@ -150,6 +152,75 @@ python3 scripts/calibrate_axis_response.py \
 
 每次对比两个或多个模型时，必须保证 dataset、manifest、episode、窗口长度、
 checkpoint 选择和 temporal aggregation 设置一致。
+
+### 0. 训练后固定 qpos / 多 FPV gate
+
+每次新训练产出 checkpoint bundle 后，必须先跑固定 qpos、多 FPV 替换 replay，再决定
+是否进入 shadow 或 live control。这个 gate 用来检查模型是否把土堆纹理、阴影、光照、
+相机微偏或 dump 后画面细节当成动作阶段信号。
+
+固定原则：
+
+- qpos/action 轨迹来自目标 episode，保持不变。
+- FPV 图像来自多个 episode 或 held-out/live-like 画面。
+- 使用 `--image-step-mode nearest_qpos` 优先匹配相近姿态；如果匹配质量差，这个
+  FPV 替换结果只能标记为 `inconclusive`，不能当作 pass。
+- 输出必须按起步窗口、任务动作窗口、结束/回收窗口分别统计，不允许只看整体 MAE。
+
+推荐最小覆盖：
+
+| 类别 | 目的 |
+| --- | --- |
+| 训练集内 qpos + 同 episode FPV | 确认正常 replay 没退化 |
+| 训练集内 qpos + early/late 其它 FPV | 检查视角子域变化 |
+| return-like qpos + live-like 或 held-out FPV | 检查 return 动作是否被画面削弱 |
+| terminal/end qpos + live-like 或 held-out FPV | 检查尾段是否被画面诱发多动 |
+
+命令模板：
+
+```bash
+PYTHONPATH=/home/pingfan/Excavator_real_stack/testbed \
+MPLCONFIGDIR=/tmp/excavator_mpl \
+python -m testbed.cli.offline_policy_eval \
+  --bundle-dir <MODEL_BUNDLE_DIR> \
+  --dataset-dir /data/pingfan/Excavator_real_stack_data/external_usb_datasets/real_teleop_v1_repaired_20hz_v1 \
+  --episode-id <QPOS_ACTION_EPISODE> \
+  --image-episode-id <FPV_EPISODE> \
+  --image-step-mode nearest_qpos \
+  --output-dir <OUTPUT_DIR>
+```
+
+每个 `<OUTPUT_DIR>` 必须保留：
+
+- `summary.json`
+- `actions.csv`
+- `actions.npz`
+- `action_timeseries.png`
+- `action_distribution.png`
+
+固定 qpos / 多 FPV gate 的报告表至少包含：
+
+| 字段 | 含义 |
+| --- | --- |
+| `model_bundle` | checkpoint bundle |
+| `qpos_action_episode` | 提供 qpos/action 的 episode |
+| `fpv_episode` | 提供 FPV 的 episode |
+| `image_step_mode` | 通常为 `nearest_qpos` |
+| `image_match_p95` | `summary.json` 中的 qpos 匹配质量指标 |
+| `window` | `start40`、主动作段、`end80` 等 |
+| `policy_any_effective_pct` | 按死区表计算的有效动作比例 |
+| `same_axis_dir_effective_pct` | expert 有效时同轴同向比例 |
+| `extra_or_wrong_pct` | expert 不需要该轴/方向时的额外或错误有效动作 |
+| `decision` | `pass`、`fail` 或 `inconclusive` |
+
+判定口径：
+
+- 如果正常 replay 通过，但替换 FPV 后关键窗口动作低于死区或方向明显改变，模型不能进入
+  control，只能继续 shadow 或回到数据/训练改进。
+- 如果替换 FPV 后尾段 `extra_or_wrong_pct` 明显高于当前 baseline，同样不能进入 control。
+- 如果 `image_match_metrics` 显示 qpos 匹配很差，本次结果记为 `inconclusive`，需要换
+  episode 或改用更合适的 image mapping。
+- 这个 gate 通过不代表模型一定能 live 成功；它只是 live 前必须满足的最低离线条件。
 
 ### 1. 起步窗口
 
