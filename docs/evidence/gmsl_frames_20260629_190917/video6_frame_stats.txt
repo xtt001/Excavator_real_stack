@@ -1,0 +1,5 @@
+frame=0 y_mean=92.360379 y_std=38.424853 y_min=0 y_max=250 jpg_size=700707
+frame=1 y_mean=92.378501 y_std=38.430416 y_min=1 y_max=251 jpg_size=700486
+frame=2 y_mean=92.350829 y_std=38.419268 y_min=1 y_max=251 jpg_size=700749
+frame=3 y_mean=92.355065 y_std=38.432267 y_min=1 y_max=251 jpg_size=700480
+frame=4 y_mean=92.346768 y_std=38.428780 y_min=1 y_max=252 jpg_size=700737
