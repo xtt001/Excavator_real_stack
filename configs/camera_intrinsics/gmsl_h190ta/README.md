@@ -14,3 +14,7 @@ The distortion model is OpenCV fisheye with `K` and `D = [k1, k2, k3, k4]`.
 Runtime code should keep raw captures and transformed outputs versioned so
 training and live inference use the same camera order, orientation, and
 undistortion settings.
+
+Use `tools/gmsl_camera_config/import_h190ta_intrinsics.py` to import additional
+same-model H190TA vendor `*.txt` intrinsics into `manifest.json`; do not copy
+`K/D` values from another physical lens.

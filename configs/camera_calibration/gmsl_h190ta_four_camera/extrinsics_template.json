@@ -1,0 +1,66 @@
+{
+  "version": "gmsl_h190ta_four_camera_extrinsics_template_20260630",
+  "status": "template_pending_field_calibration",
+  "coordinate_convention": {
+    "camera_frame": "OpenCV camera frame: x right, y down, z forward",
+    "mount_frame": "To be assigned in field notes for each camera mount",
+    "transform_direction": "mount_T_camera",
+    "units": "meters"
+  },
+  "calibration_target": {
+    "type": "checkerboard",
+    "inner_corners": [8, 6],
+    "square_size_mm": 25.0,
+    "target_svg": "docs/assets/gmsl_chessboard_8x6_25mm_a4.svg",
+    "print_scale": "100_percent_no_fit_to_page"
+  },
+  "cameras": [
+    {
+      "camera_key": "video6",
+      "serial": "H190TA-I06031459",
+      "device_hint": "/dev/video6",
+      "extrinsics_status": "pending_calibration",
+      "mount_link": "pending_field_assignment",
+      "mount_T_camera": null,
+      "solve_pnp_rms_px": null,
+      "calibration_evidence_dir": null
+    },
+    {
+      "camera_key": "video7",
+      "serial": "H190TA-I06031460",
+      "device_hint": "/dev/video7",
+      "extrinsics_status": "pending_calibration",
+      "mount_link": "pending_field_assignment",
+      "mount_T_camera": null,
+      "solve_pnp_rms_px": null,
+      "calibration_evidence_dir": null
+    },
+    {
+      "camera_key": "pending_h190ta_0",
+      "serial": "pending_intrinsics_import",
+      "device_hint": "pending_field_mapping",
+      "extrinsics_status": "pending_calibration",
+      "mount_link": "pending_field_assignment",
+      "mount_T_camera": null,
+      "solve_pnp_rms_px": null,
+      "calibration_evidence_dir": null
+    },
+    {
+      "camera_key": "pending_h190ta_1",
+      "serial": "pending_intrinsics_import",
+      "device_hint": "pending_field_mapping",
+      "extrinsics_status": "pending_calibration",
+      "mount_link": "pending_field_assignment",
+      "mount_T_camera": null,
+      "solve_pnp_rms_px": null,
+      "calibration_evidence_dir": null
+    }
+  ],
+  "acceptance_checks": {
+    "minimum_valid_frames_per_camera": 12,
+    "minimum_board_pose_diversity": "near, far, left, right, upper, lower, tilted",
+    "store_raw_frames": true,
+    "store_mount_photos": true,
+    "store_reprojection_error": true
+  }
+}

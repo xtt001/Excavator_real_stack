@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="297mm" height="210mm" viewBox="0 0 297 210">
+  <metadata>GMSL calibration checkerboard; inner_corners_cols=8; inner_corners_rows=6; square_size_mm=25; page=A4_landscape; print_scale=100_percent</metadata>
+  <rect x="0" y="0" width="297" height="210" fill="#ffffff"/>
+  <text x="148.5" y="8" font-family="Arial, sans-serif" font-size="4" text-anchor="middle" fill="#000000">GMSL checkerboard: 8x6 inner corners, 25 mm squares, print at 100%</text>
+  <g id="checkerboard" transform="translate(36 17.5)">
+    <rect x="0" y="0" width="225" height="175" fill="#ffffff" stroke="#000000" stroke-width="0.2"/>
+    <rect x="0" y="0" width="25" height="25" fill="#000000"/>
+    <rect x="50" y="0" width="25" height="25" fill="#000000"/>
+    <rect x="100" y="0" width="25" height="25" fill="#000000"/>
+    <rect x="150" y="0" width="25" height="25" fill="#000000"/>
+    <rect x="200" y="0" width="25" height="25" fill="#000000"/>
+    <rect x="25" y="25" width="25" height="25" fill="#000000"/>
+    <rect x="75" y="25" width="25" height="25" fill="#000000"/>
+    <rect x="125" y="25" width="25" height="25" fill="#000000"/>
+    <rect x="175" y="25" width="25" height="25" fill="#000000"/>
+    <rect x="0" y="50" width="25" height="25" fill="#000000"/>
+    <rect x="50" y="50" width="25" height="25" fill="#000000"/>
+    <rect x="100" y="50" width="25" height="25" fill="#000000"/>
+    <rect x="150" y="50" width="25" height="25" fill="#000000"/>
+    <rect x="200" y="50" width="25" height="25" fill="#000000"/>
+    <rect x="25" y="75" width="25" height="25" fill="#000000"/>
+    <rect x="75" y="75" width="25" height="25" fill="#000000"/>
+    <rect x="125" y="75" width="25" height="25" fill="#000000"/>
+    <rect x="175" y="75" width="25" height="25" fill="#000000"/>
+    <rect x="0" y="100" width="25" height="25" fill="#000000"/>
+    <rect x="50" y="100" width="25" height="25" fill="#000000"/>
+    <rect x="100" y="100" width="25" height="25" fill="#000000"/>
+    <rect x="150" y="100" width="25" height="25" fill="#000000"/>
+    <rect x="200" y="100" width="25" height="25" fill="#000000"/>
+    <rect x="25" y="125" width="25" height="25" fill="#000000"/>
+    <rect x="75" y="125" width="25" height="25" fill="#000000"/>
+    <rect x="125" y="125" width="25" height="25" fill="#000000"/>
+    <rect x="175" y="125" width="25" height="25" fill="#000000"/>
+    <rect x="0" y="150" width="25" height="25" fill="#000000"/>
+    <rect x="50" y="150" width="25" height="25" fill="#000000"/>
+    <rect x="100" y="150" width="25" height="25" fill="#000000"/>
+    <rect x="150" y="150" width="25" height="25" fill="#000000"/>
+    <rect x="200" y="150" width="25" height="25" fill="#000000"/>
+  </g>
+  <g id="scale-check" stroke="#000000" fill="#000000" font-family="Arial, sans-serif" font-size="3.5">
+    <line x1="98.5" y1="202" x2="198.5" y2="202" stroke-width="0.4"/>
+    <line x1="98.5" y1="199" x2="98.5" y2="205" stroke-width="0.4"/>
+    <line x1="198.5" y1="199" x2="198.5" y2="205" stroke-width="0.4"/>
+    <text x="148.5" y="207" text-anchor="middle">100 mm print scale check</text>
+  </g>
+</svg>

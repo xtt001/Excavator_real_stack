@@ -1,0 +1,102 @@
+{
+  "version": "gmsl_h190ta_110hfov_virtual_rectilinear_v1",
+  "intrinsics_manifest": "configs/camera_intrinsics/gmsl_h190ta/manifest.json",
+  "purpose": "Versioned four-camera image preprocessing policy for ACT experiments and realtime implementation.",
+  "output": {
+    "width": 384,
+    "height": 216,
+    "color_space": "RGB",
+    "layout": "HWC",
+    "resize_filter": "linear"
+  },
+  "default_transform": {
+    "projection": "virtual_rectilinear",
+    "hfov_deg": 110.0,
+    "vfov_source": "derived_from_output_aspect",
+    "yaw_deg": 0.0,
+    "pitch_down_deg": 0.0,
+    "roll_deg": 0.0,
+    "crop_policy": "allow_content_loss_for_reasonable_rectilinear_view"
+  },
+  "camera_order": [
+    "video6",
+    "video7",
+    "pending_h190ta_0",
+    "pending_h190ta_1"
+  ],
+  "cameras": [
+    {
+      "camera_key": "video6",
+      "device_hint": "/dev/video6",
+      "serial": "H190TA-I06031459",
+      "model": "H190TA",
+      "intrinsics_status": "available",
+      "orientation": "normal",
+      "extrinsics_status": "pending_calibration",
+      "mount_link": "pending_field_assignment",
+      "transform": {
+        "projection": "virtual_rectilinear",
+        "hfov_deg": 110.0,
+        "yaw_deg": 0.0,
+        "pitch_down_deg": 20.0,
+        "roll_deg": 0.0
+      }
+    },
+    {
+      "camera_key": "video7",
+      "device_hint": "/dev/video7",
+      "serial": "H190TA-I06031460",
+      "model": "H190TA",
+      "intrinsics_status": "available",
+      "orientation": "rotate_180",
+      "extrinsics_status": "pending_calibration",
+      "mount_link": "pending_field_assignment",
+      "transform": {
+        "projection": "virtual_rectilinear",
+        "hfov_deg": 110.0,
+        "yaw_deg": 0.0,
+        "pitch_down_deg": 0.0,
+        "roll_deg": 0.0
+      }
+    },
+    {
+      "camera_key": "pending_h190ta_0",
+      "device_hint": "pending_field_mapping",
+      "serial": "pending_intrinsics_import",
+      "model": "H190TA",
+      "intrinsics_status": "pending_import",
+      "orientation": "pending_field_evidence",
+      "extrinsics_status": "pending_calibration",
+      "mount_link": "pending_field_assignment",
+      "transform": {
+        "projection": "virtual_rectilinear",
+        "hfov_deg": 110.0,
+        "yaw_deg": 0.0,
+        "pitch_down_deg": 0.0,
+        "roll_deg": 0.0
+      }
+    },
+    {
+      "camera_key": "pending_h190ta_1",
+      "device_hint": "pending_field_mapping",
+      "serial": "pending_intrinsics_import",
+      "model": "H190TA",
+      "intrinsics_status": "pending_import",
+      "orientation": "pending_field_evidence",
+      "extrinsics_status": "pending_calibration",
+      "mount_link": "pending_field_assignment",
+      "transform": {
+        "projection": "virtual_rectilinear",
+        "hfov_deg": 110.0,
+        "yaw_deg": 0.0,
+        "pitch_down_deg": 0.0,
+        "roll_deg": 0.0
+      }
+    }
+  ],
+  "notes": [
+    "Do not use pending_h190ta_* entries for runtime remap until their vendor intrinsics are imported.",
+    "video6 uses pitch_down_deg=20 based on frame review; video7 uses pitch_down_deg=0.",
+    "The same H190TA model defaults to 110 degree HFOV virtual rectilinear preprocessing, but each camera still needs its own intrinsics and field-verified orientation."
+  ]
+}
