@@ -124,6 +124,29 @@ Go-home completion uses `success_tolerance_rad` plus stable velocity and
 positioning. If a joint consistently stalls just outside center, widen only that
 joint's success tolerance and keep the center band as the preferred target.
 
+## GMSL Camera Bring-Up
+
+The GMSL bring-up script keeps the current safe default camera set:
+
+```bash
+scripts/bring_up_gmsl_cameras.sh
+```
+
+By default this configures `/dev/video6` and `/dev/video7`. For four-camera
+bring-up, pass the actual GMSL video ids explicitly. Valid ids are `0` through
+`7`; the script rejects anything outside that range.
+
+```bash
+GMSL_VIDEO_DEVICES="0 1 6 7" scripts/bring_up_gmsl_cameras.sh
+```
+
+To check the resolved configuration without loading modules or touching
+devices:
+
+```bash
+GMSL_PRINT_CONFIG_ONLY=1 GMSL_VIDEO_DEVICES="0 1 6 7" scripts/bring_up_gmsl_cameras.sh
+```
+
 ## Data Collection Wrapper
 
 On the slave, use the managed stack script for the current real-machine

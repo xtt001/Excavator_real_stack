@@ -4,7 +4,8 @@ set -euo pipefail
 DRIVER_DIR="${GMSL_DRIVER_DIR:-/home/mundane/SG8A_AGON_G2Y_A1_AGX_Orin_YUV_JP6.2_L4TR36.4.3}"
 
 MODEL="${GMSL_CAMERA_MODEL:-sg3s_isx031}"
-VIDEO_DEVICES="${GMSL_VIDEO_DEVICES:-6 7}"
+VIDEO_DEVICES_RAW="${GMSL_VIDEO_DEVICES-6 7}"
+VIDEO_DEVICES=""
 TRIG_MODE="${GMSL_TRIG_MODE:-2}"
 TRIG_PIN="${GMSL_TRIG_PIN:-0x00020007}"
 PIXEL_FORMAT="${GMSL_PIXEL_FORMAT:-UYVY}"
@@ -31,6 +32,28 @@ write_sysfs() {
 
     run_as_root sh -c "printf '%s\n' '$value' > '$path'"
 }
+
+normalize_video_devices() {
+    local raw="$1"
+    local normalized=()
+
+    if [[ "${raw}" =~ ^[[:space:]]*$ ]]; then
+        red_print "GMSL_VIDEO_DEVICES must include at least one video device id from 0 to 7"
+        exit 2
+    fi
+
+    for dev in ${raw}; do
+        if [[ ! "${dev}" =~ ^[0-7]$ ]]; then
+            red_print "Invalid GMSL_VIDEO_DEVICES entry '${dev}': must be an integer from 0 to 7"
+            exit 2
+        fi
+        normalized+=("${dev}")
+    done
+
+    VIDEO_DEVICES="${normalized[*]}"
+}
+
+normalize_video_devices "${VIDEO_DEVICES_RAW}"
 
 case "${MODEL}" in
     sg8_ox08bc|SG8-OX08BC|SG8-OX08BC-5300-GMSL2-Hxxx)
@@ -75,6 +98,16 @@ case "${MODEL}" in
         ;;
 esac
 
+green_print "GMSL driver dir: ${DRIVER_DIR}"
+green_print "GMSL model: ${MODEL}"
+green_print "Link speed enable_3G_0=${ENABLE_3G_0} enable_3G_1=${ENABLE_3G_1}"
+green_print "Video format: ${WIDTH}x${HEIGHT}, pixelformat=${PIXEL_FORMAT}, sensor_mode=${SENSOR_MODE}, trig_mode=${TRIG_MODE}, trig_pin=${TRIG_PIN}"
+green_print "Video devices: ${VIDEO_DEVICES}"
+
+if [[ "${GMSL_PRINT_CONFIG_ONLY:-0}" == "1" ]]; then
+    exit 0
+fi
+
 if [[ ! -d "${DRIVER_DIR}" ]]; then
     red_print "GMSL driver directory not found: ${DRIVER_DIR}"
     red_print "Set GMSL_DRIVER_DIR to the SENSING SG8A driver package directory."
@@ -89,12 +122,6 @@ for required in ko/max96712.ko ko/sgx-yuv-gmsl2.ko ko/pwm-gpio.ko boost_clock.sh
         exit 2
     fi
 done
-
-green_print "GMSL driver dir: ${DRIVER_DIR}"
-green_print "GMSL model: ${MODEL}"
-green_print "Link speed enable_3G_0=${ENABLE_3G_0} enable_3G_1=${ENABLE_3G_1}"
-green_print "Video format: ${WIDTH}x${HEIGHT}, pixelformat=${PIXEL_FORMAT}, sensor_mode=${SENSOR_MODE}, trig_mode=${TRIG_MODE}, trig_pin=${TRIG_PIN}"
-green_print "Video devices: ${VIDEO_DEVICES}"
 
 green_print "Loading camera kernel modules..."
 run_as_root rmmod sgx_yuv_gmsl2 2>/dev/null || true
