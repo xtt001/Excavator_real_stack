@@ -132,9 +132,22 @@ cmake --build build/gmsl_latency_benchmark -j
 - [ ] Run OpenCV remap benchmark for the calibrated cameras.
 - [ ] After all four intrinsics are imported, run four-camera remap benchmark.
 - [ ] Save JSON results under `artifacts/gmsl_latency/`.
+- [ ] Generate a latency summary:
+
+```bash
+python3 tools/gmsl_latency_benchmark/summarize_latency_json.py \
+  artifacts/gmsl_latency/capture_only_four_camera.json \
+  artifacts/gmsl_latency/opencv_remap_video6_video7.json \
+  --output-markdown artifacts/gmsl_latency/summary.md \
+  --output-csv artifacts/gmsl_latency/summary.csv \
+  --process-p95-budget-ms 4.0
+```
+
 - [ ] Record `tegrastats` during each benchmark.
 - [ ] Decide whether OpenCV path is enough or whether we must move to
       GStreamer/NVMM plus fused CUDA preprocessing.
+- [ ] Use `docs/gmsl_realtime_preprocessing_optimization_plan_20260630.md`
+      as the decision gate before writing production CUDA code.
 
 ## 7. Preprocessing And Training Readiness
 

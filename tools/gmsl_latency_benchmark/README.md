@@ -43,6 +43,17 @@ The JSON report contains per-camera `read_ms`, `color_ms`, `upload_ms`,
 `remap_ms`, `download_ms`, `rotate_ms`, `process_ms`, and `frame_ms` summaries.
 Each summary reports `mean`, `p50`, `p95`, `p99`, and `max`.
 
+Summarize one or more JSON reports after the run:
+
+```bash
+python3 tools/gmsl_latency_benchmark/summarize_latency_json.py \
+  artifacts/gmsl_latency/capture_only_four_camera.json \
+  artifacts/gmsl_latency/opencv_remap_video6_video7.json \
+  --output-markdown artifacts/gmsl_latency/summary.md \
+  --output-csv artifacts/gmsl_latency/summary.csv \
+  --process-p95-budget-ms 4.0
+```
+
 ## Capture-Only Four-Camera Baseline
 
 Use this first when not all four cameras have intrinsics in the manifest yet:

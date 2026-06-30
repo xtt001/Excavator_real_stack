@@ -122,7 +122,7 @@ build/gmsl_latency_benchmark/gmsl_latency_benchmark \
   --output-json artifacts/gmsl_latency/opencv_cpu_remap_video6_video7.json
 ```
 
-## 6. 看结果
+## 6. 汇总结果
 
 JSON 每路会有这些字段：
 
@@ -138,6 +138,26 @@ JSON 每路会有这些字段：
 重点看每路 `p50/p95/p99/max`，不要只看平均值。4 ms 目标建议先以 `process_ms p95`
 为硬指标候选，同时记录 `frame_ms p95` 判断 capture 是否拖慢了整体循环。
 
+跑完一组或多组 benchmark 后，用汇总脚本生成 Markdown 和 CSV：
+
+```bash
+python3 tools/gmsl_latency_benchmark/summarize_latency_json.py \
+  artifacts/gmsl_latency/capture_only_four_camera.json \
+  artifacts/gmsl_latency/opencv_remap_video6_video7.json \
+  --output-markdown artifacts/gmsl_latency/summary.md \
+  --output-csv artifacts/gmsl_latency/summary.csv \
+  --process-p95-budget-ms 4.0
+```
+
+如果 capture-only 也要设置硬预算，可以额外传：
+
+```bash
+--frame-p95-budget-ms 4.0
+```
+
+默认情况下，非 capture-only 结果按 `process_ms p95 <= 4.0 ms` 标记 `PASS` / `FAIL`；
+capture-only 结果在未设置 `--frame-p95-budget-ms` 时标记为 `INFO`，用于判断输入路径是否值得继续优化。
+
 ## 7. 初步判断规则
 
 - 如果 capture-only 的 `frame_ms p95` 已明显高于 4 ms，先排查 V4L2/GStreamer 输入路径、
@@ -146,6 +166,12 @@ JSON 每路会有这些字段：
   明显高于 4 ms，说明当前 OpenCV CPU/GPU 往返路径不适合生产。
 - 如果 `download_ms` 占比大，生产路径应避免下载回 CPU，直接输出 policy tensor。
 - 如果 `read_ms max` 偶发很高，保留原始 JSON，结合 `tegrastats` 判断是否有温度、频率或队列抖动。
+
+生产化优化路线见：
+
+```text
+docs/gmsl_realtime_preprocessing_optimization_plan_20260630.md
+```
 
 ## 8. 同步记录系统状态
 
