@@ -11,6 +11,17 @@ cameras.
 - `extrinsics_template.json` records the field calibration contract and
   placeholders for `mount_T_camera`.
 
+Useful checks and field capture helpers:
+
+```bash
+python3 tools/gmsl_camera_config/validate_gmsl_camera_config.py
+python3 tools/gmsl_camera_config/capture_gmsl_contact_sheet.py --dry-run-plan --json
+```
+
+The contact-sheet helper skips `pending_import` cameras by default. Use
+`--require-all` after all four intrinsics are imported to make pending entries a
+hard error.
+
 Only `video6` and `video7` have imported intrinsics at this point. The
 `pending_h190ta_*` entries are placeholders for the two same-model cameras
 whose vendor intrinsics still need to be imported. Do not use those pending

@@ -57,6 +57,7 @@ ready.
 
 ```bash
 python3 -m json.tool configs/camera_intrinsics/gmsl_h190ta/manifest.json >/tmp/gmsl_intrinsics.check.json
+python3 tools/gmsl_camera_config/validate_gmsl_camera_config.py
 PYTHONPATH=$PWD/testbed python -m pytest testbed/tests/test_gmsl_camera_intrinsics.py
 ```
 
@@ -68,10 +69,26 @@ PYTHONPATH=$PWD/testbed python -m pytest testbed/tests/test_gmsl_camera_intrinsi
 GMSL_PRINT_CONFIG_ONLY=1 GMSL_VIDEO_DEVICES="..." scripts/bring_up_gmsl_cameras.sh
 ```
 
+- [ ] Preview the configured capture order without opening cameras:
+
+```bash
+python3 tools/gmsl_camera_config/capture_gmsl_contact_sheet.py \
+  --mapping configs/camera_calibration/gmsl_h190ta_four_camera/camera_mount_mapping.json \
+  --dry-run-plan \
+  --json
+```
+
 - [ ] Run real GMSL bring-up with the same four device ids.
 - [ ] Save `v4l2-ctl --all` output for each camera.
-- [ ] Capture raw frame evidence for all four cameras.
-- [ ] Save a four-camera contact sheet.
+- [ ] Capture raw frame evidence and a contact sheet:
+
+```bash
+python3 tools/gmsl_camera_config/capture_gmsl_contact_sheet.py \
+  --mapping configs/camera_calibration/gmsl_h190ta_four_camera/camera_mount_mapping.json \
+  --output-dir artifacts/gmsl_contact_sheet/$(date +%Y%m%d_%H%M%S) \
+  --json
+```
+
 - [ ] Confirm and record orientation for each camera.
 - [ ] Check whether `eye_left` / `eye_right` need `rotate_180`.
 - [ ] Check whether `eye_left` / `eye_right` need a non-zero

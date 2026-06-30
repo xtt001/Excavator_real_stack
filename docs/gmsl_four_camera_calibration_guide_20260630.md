@@ -37,6 +37,34 @@ configs/camera_calibration/gmsl_h190ta_four_camera/preprocess_manifest.json
 stick_top, stick_bottom, eye_left, eye_right
 ```
 
+现场修改任何相机映射或内参后，先运行配置一致性校验：
+
+```bash
+python3 tools/gmsl_camera_config/validate_gmsl_camera_config.py --json
+```
+
+当前只有两路内参已导入时，输出里 `eye_left` / `eye_right` 会在 `pending_cameras` 中；
+这不是错误。等四路内参都导入后，`pending_cameras` 应为空。
+
+抓取画面证据前，可以先看取帧计划，不会打开相机：
+
+```bash
+python3 tools/gmsl_camera_config/capture_gmsl_contact_sheet.py \
+  --mapping configs/camera_calibration/gmsl_h190ta_four_camera/camera_mount_mapping.json \
+  --dry-run-plan \
+  --json
+```
+
+真实采集时，工具会按 `training_camera_order` 抓取已导入内参的相机，保存原始帧、带标签预览图、
+`contact_sheet.jpg` 和 `capture_manifest.json`：
+
+```bash
+python3 tools/gmsl_camera_config/capture_gmsl_contact_sheet.py \
+  --mapping configs/camera_calibration/gmsl_h190ta_four_camera/camera_mount_mapping.json \
+  --output-dir artifacts/gmsl_contact_sheet/$(date +%Y%m%d_%H%M%S) \
+  --json
+```
+
 ## 2. 打印标定板
 
 打印这个 SVG：
@@ -91,6 +119,7 @@ python3 tools/gmsl_camera_config/import_h190ta_intrinsics.py \
 
 ```bash
 python3 -m json.tool configs/camera_intrinsics/gmsl_h190ta/manifest.json >/tmp/gmsl_h190ta_manifest.check.json
+python3 tools/gmsl_camera_config/validate_gmsl_camera_config.py
 PYTHONPATH=$PWD/testbed python -m pytest testbed/tests/test_gmsl_camera_intrinsics.py
 ```
 
