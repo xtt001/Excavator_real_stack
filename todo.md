@@ -154,6 +154,22 @@ python3 tools/gmsl_latency_benchmark/summarize_latency_json.py \
 - [ ] Update `preprocess_manifest.json` after final orientation and pitch are
       confirmed for all four positions.
 - [ ] Generate visual samples for all four 110 deg virtual rectilinear views.
+- [ ] Generate precomputed remap maps after all four intrinsics and preprocess
+      transforms are locked:
+
+```text
+configs/camera_remap/gmsl_h190ta_four_camera/
+  remap_manifest.json
+  stick_top_map_float32.bin
+  stick_bottom_map_float32.bin
+  eye_left_map_float32.bin
+  eye_right_map_float32.bin
+```
+
+- [ ] Record `remap_manifest` hash in training data, runtime config, latency
+      summary, and any future fused CUDA preprocessing output.
+- [ ] Rebuild remap maps whenever intrinsics, output size, HFOV, pitch,
+      yaw/roll, orientation, or camera order changes.
 - [ ] Verify train/inference camera order remains:
       `stick_top`, `stick_bottom`, `eye_left`, `eye_right`.
 - [ ] Decide first training input set:
@@ -171,6 +187,8 @@ python3 tools/gmsl_latency_benchmark/summarize_latency_json.py \
 - [ ] Four orientations are confirmed.
 - [ ] Four raw evidence frames and one contact sheet are saved.
 - [ ] Four-camera latency benchmark JSON exists.
+- [ ] Precomputed remap-map generation work item is either complete or
+      explicitly scheduled with required source manifest hashes.
 - [ ] Calibration target images and mount photos are saved.
 - [ ] Next code step is clear: measured extrinsics manifest or realtime CUDA
       preprocessing implementation.

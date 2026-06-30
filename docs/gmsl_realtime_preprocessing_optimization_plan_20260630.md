@@ -72,7 +72,43 @@ python3 tools/gmsl_latency_benchmark/summarize_latency_json.py \
 - 可以先保留 OpenCV 路径作为短期工程 baseline。
 - 仍需保留 JSON 和系统状态作为回归基线，避免后续相机数、分辨率或模型输入变化后失控。
 
-## 5. fused CUDA 目标接口
+## 5. 预计算 remap map
+
+无论短期继续用 OpenCV，还是后续切到 fused CUDA，都应把 per-camera remap map 预计算列为正式待办。
+运行时不应每帧从内参重新解算 fisheye 几何，而应在初始化阶段读取或生成一次 map，实时循环只做查表采样。
+
+建议产物：
+
+```text
+configs/camera_remap/gmsl_h190ta_four_camera/
+  remap_manifest.json
+  stick_top_map_float32.bin
+  stick_bottom_map_float32.bin
+  eye_left_map_float32.bin
+  eye_right_map_float32.bin
+```
+
+`remap_manifest.json` 至少记录：
+
+- `mount_position`, `camera_key`, `serial`, `intrinsics_file`
+- `output_width`, `output_height`, `hfov_deg`, `pitch_down_deg`, `orientation`
+- `map_format`, `map_file`, `map_sha256`
+- `source_intrinsics_manifest_sha256`, `source_preprocess_manifest_sha256`
+
+收益：
+
+- 把 fisheye 反投影、虚拟视角、pitch/orientation 等几何计算移出逐帧路径。
+- 训练、推理、benchmark 可以引用同一个 map hash，防止 transform 版本漂移。
+- OpenCV baseline 可以读取同一份 map；后续 CUDA kernel 也可以复用同一份采样表。
+- fused CUDA 可把 `remap + resize + rotate + normalize + layout transform` 合成一次 kernel，并直接输出 policy tensor。
+
+失效规则：
+
+- 任一路内参、输出尺寸、HFOV、pitch、yaw、roll、orientation 或相机顺序变化，必须重新生成 map。
+- 训练数据 manifest、runtime config、latency summary 都应记录所用 `remap_manifest` hash。
+- 每次 map 更新后，重新生成 contact sheet 和 latency summary。
+
+## 6. fused CUDA 目标接口
 
 生产实现建议只在数据证明需要后再写，目标接口保持窄：
 
@@ -89,7 +125,7 @@ output: policy tensor in fixed camera order, fixed size, normalized layout
 - `31460/stick_top` 保留 `rotate_180`，`31459/stick_bottom` 保留 `pitch_down_deg=20`，除非现场证据更新。
 - 每次 kernel 或输入路径变更后，重新生成 contact sheet 和 latency summary。
 
-## 6. 外参和几何融合
+## 7. 外参和几何融合
 
 外参求解放在安装结构固定、棋盘格多姿态证据齐全之后。短期 ACT 输入不依赖高精度多相机几何融合，
 但需要工程化记录每路安装位置、orientation、pitch、内参和证据目录。
