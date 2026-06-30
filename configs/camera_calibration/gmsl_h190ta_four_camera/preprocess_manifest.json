@@ -1,6 +1,7 @@
 {
   "version": "gmsl_h190ta_110hfov_virtual_rectilinear_v1",
   "intrinsics_manifest": "configs/camera_intrinsics/gmsl_h190ta/manifest.json",
+  "mount_mapping": "configs/camera_calibration/gmsl_h190ta_four_camera/camera_mount_mapping.json",
   "purpose": "Versioned four-camera image preprocessing policy for ACT experiments and realtime implementation.",
   "output": {
     "width": 384,
@@ -19,14 +20,21 @@
     "crop_policy": "allow_content_loss_for_reasonable_rectilinear_view"
   },
   "camera_order": [
-    "video6",
     "video7",
+    "video6",
     "pending_h190ta_0",
     "pending_h190ta_1"
+  ],
+  "position_order": [
+    "stick_top",
+    "stick_bottom",
+    "eye_left",
+    "eye_right"
   ],
   "cameras": [
     {
       "camera_key": "video6",
+      "mount_position": "stick_bottom",
       "device_hint": "/dev/video6",
       "serial": "H190TA-I06031459",
       "model": "H190TA",
@@ -44,6 +52,7 @@
     },
     {
       "camera_key": "video7",
+      "mount_position": "stick_top",
       "device_hint": "/dev/video7",
       "serial": "H190TA-I06031460",
       "model": "H190TA",
@@ -61,6 +70,7 @@
     },
     {
       "camera_key": "pending_h190ta_0",
+      "mount_position": "eye_left",
       "device_hint": "pending_field_mapping",
       "serial": "pending_intrinsics_import",
       "model": "H190TA",
@@ -78,6 +88,7 @@
     },
     {
       "camera_key": "pending_h190ta_1",
+      "mount_position": "eye_right",
       "device_hint": "pending_field_mapping",
       "serial": "pending_intrinsics_import",
       "model": "H190TA",
@@ -96,7 +107,7 @@
   ],
   "notes": [
     "Do not use pending_h190ta_* entries for runtime remap until their vendor intrinsics are imported.",
-    "video6 uses pitch_down_deg=20 based on frame review; video7 uses pitch_down_deg=0.",
+    "stick_bottom/video6/31459 uses pitch_down_deg=20 based on frame review; stick_top/video7/31460 uses pitch_down_deg=0.",
     "The same H190TA model defaults to 110 degree HFOV virtual rectilinear preprocessing, but each camera still needs its own intrinsics and field-verified orientation."
   ]
 }

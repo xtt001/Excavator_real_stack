@@ -18,13 +18,23 @@
 
 当前已定：
 
-- `video6` / `H190TA-I06031459`：`pitch_down_deg = 20`
-- `video7` / `H190TA-I06031460`：`pitch_down_deg = 0`，并保留 `rotate_180`
+- `stick_top`：`video7` / `H190TA-I06031460`，`pitch_down_deg = 0`，并保留 `rotate_180`
+- `stick_bottom`：`video6` / `H190TA-I06031459`，`pitch_down_deg = 20`
+- `eye_left`：待导入内参和现场 `/dev/videoN` 映射
+- `eye_right`：待导入内参和现场 `/dev/videoN` 映射
 
 配置入口：
 
 ```text
+configs/camera_calibration/gmsl_h190ta_four_camera/camera_mount_mapping.json
 configs/camera_calibration/gmsl_h190ta_four_camera/preprocess_manifest.json
+```
+
+`camera_mount_mapping.json` 是物理安装位置到 serial、camera key、device hint 和内参文件的主映射。
+训练/推理的相机顺序应优先按物理位置读：
+
+```text
+stick_top, stick_bottom, eye_left, eye_right
 ```
 
 ## 2. 打印标定板
@@ -110,7 +120,7 @@ artifacts/gmsl_extrinsics_YYYYMMDD/
 `notes.md` 至少记录：
 
 - 每路相机物理安装位置和朝向。
-- 每路 `/dev/videoN`、serial、camera key。
+- 每路 `/dev/videoN`、serial、camera key、mount position。
 - 标定板打印尺寸复核结果。
 - 标定板相对车体或安装 link 的测量方式。
 - 哪些帧用于标定，哪些帧因模糊、遮挡、棋盘格不完整被剔除。
@@ -162,6 +172,7 @@ configs/camera_calibration/gmsl_h190ta_four_camera/extrinsics_template.json
 这一步只准备现场采集和配置落点。拿到四路内参、标定图和板位姿记录后，再做：
 
 1. 把 `pending_h190ta_*` 替换成正式 `videoN` camera key。
-2. 用标定图求解每路 `mount_T_camera`。
-3. 生成带重投影误差和 evidence 路径的正式外参 manifest。
-4. 把 110 度 virtual rectilinear map 预计算到实时 CUDA/GStreamer preprocessing 路径。
+2. 更新 `camera_mount_mapping.json` 中 `eye_left` / `eye_right` 的 serial、device hint 和内参文件。
+3. 用标定图求解每路 `mount_T_camera`。
+4. 生成带重投影误差和 evidence 路径的正式外参 manifest。
+5. 把 110 度 virtual rectilinear map 预计算到实时 CUDA/GStreamer preprocessing 路径。

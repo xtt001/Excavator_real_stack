@@ -1,0 +1,69 @@
+{
+  "version": "gmsl_h190ta_mount_mapping_20260630",
+  "purpose": "Map physical camera mount positions to camera keys, device hints, serials, and intrinsics files.",
+  "intrinsics_manifest": "configs/camera_intrinsics/gmsl_h190ta/manifest.json",
+  "preprocess_manifest": "configs/camera_calibration/gmsl_h190ta_four_camera/preprocess_manifest.json",
+  "extrinsics_template": "configs/camera_calibration/gmsl_h190ta_four_camera/extrinsics_template.json",
+  "position_order": [
+    "stick_top",
+    "stick_bottom",
+    "eye_left",
+    "eye_right"
+  ],
+  "training_camera_order": [
+    "stick_top",
+    "stick_bottom",
+    "eye_left",
+    "eye_right"
+  ],
+  "mounts": [
+    {
+      "mount_position": "stick_top",
+      "mount_link": "stick",
+      "camera_key": "video7",
+      "device_hint": "/dev/video7",
+      "serial": "H190TA-I06031460",
+      "intrinsics_file": "H190TA-I06031460.txt",
+      "intrinsics_status": "available",
+      "orientation": "rotate_180",
+      "preprocess_profile": "virtual_rectilinear_hfov110_pitch0",
+      "notes": "Evidence frame was upside down; keep rotate_180. User mapping: 31460 is stick top."
+    },
+    {
+      "mount_position": "stick_bottom",
+      "mount_link": "stick",
+      "camera_key": "video6",
+      "device_hint": "/dev/video6",
+      "serial": "H190TA-I06031459",
+      "intrinsics_file": "H190TA-I06031459.txt",
+      "intrinsics_status": "available",
+      "orientation": "normal",
+      "preprocess_profile": "virtual_rectilinear_hfov110_pitch_down20",
+      "notes": "User mapping: 31459 is stick bottom."
+    },
+    {
+      "mount_position": "eye_left",
+      "mount_link": "eye",
+      "camera_key": "pending_h190ta_0",
+      "device_hint": "pending_field_mapping",
+      "serial": "pending_intrinsics_import",
+      "intrinsics_file": "pending_intrinsics_import",
+      "intrinsics_status": "pending_import",
+      "orientation": "pending_field_evidence",
+      "preprocess_profile": "virtual_rectilinear_hfov110_pending_pitch",
+      "notes": "Same H190TA model; import this physical lens intrinsics before runtime remap."
+    },
+    {
+      "mount_position": "eye_right",
+      "mount_link": "eye",
+      "camera_key": "pending_h190ta_1",
+      "device_hint": "pending_field_mapping",
+      "serial": "pending_intrinsics_import",
+      "intrinsics_file": "pending_intrinsics_import",
+      "intrinsics_status": "pending_import",
+      "orientation": "pending_field_evidence",
+      "preprocess_profile": "virtual_rectilinear_hfov110_pending_pitch",
+      "notes": "Same H190TA model; import this physical lens intrinsics before runtime remap."
+    }
+  ]
+}

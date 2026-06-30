@@ -9,6 +9,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INTRINSICS_DIR = REPO_ROOT / "configs" / "camera_intrinsics" / "gmsl_h190ta"
 CALIB_DIR = REPO_ROOT / "configs" / "camera_calibration" / "gmsl_h190ta_four_camera"
+MOUNT_MAPPING = CALIB_DIR / "camera_mount_mapping.json"
 PREPROCESS_MANIFEST = CALIB_DIR / "preprocess_manifest.json"
 EXTRINSICS_TEMPLATE = CALIB_DIR / "extrinsics_template.json"
 BOARD_SVG = REPO_ROOT / "docs" / "assets" / "gmsl_chessboard_8x6_25mm_a4.svg"
@@ -29,8 +30,10 @@ def test_four_camera_preprocess_manifest_tracks_110hfov_policy() -> None:
     cameras = {camera["camera_key"]: camera for camera in manifest["cameras"]}
     assert len(cameras) == 4
     assert cameras["video6"]["intrinsics_status"] == "available"
+    assert cameras["video6"]["mount_position"] == "stick_bottom"
     assert cameras["video6"]["transform"]["pitch_down_deg"] == 20.0
     assert cameras["video7"]["intrinsics_status"] == "available"
+    assert cameras["video7"]["mount_position"] == "stick_top"
     assert cameras["video7"]["transform"]["pitch_down_deg"] == 0.0
 
     pending = [camera for camera in cameras.values() if camera["intrinsics_status"] == "pending_import"]
@@ -39,6 +42,35 @@ def test_four_camera_preprocess_manifest_tracks_110hfov_policy() -> None:
         assert camera["model"] == "H190TA"
         assert camera["transform"]["hfov_deg"] == 110.0
         assert camera["extrinsics_status"] == "pending_calibration"
+
+
+def test_camera_mount_mapping_tracks_physical_positions_and_serials() -> None:
+    mapping = json.loads(MOUNT_MAPPING.read_text(encoding="utf-8"))
+
+    assert mapping["version"] == "gmsl_h190ta_mount_mapping_20260630"
+    assert mapping["intrinsics_manifest"] == "configs/camera_intrinsics/gmsl_h190ta/manifest.json"
+    assert mapping["preprocess_manifest"] == (
+        "configs/camera_calibration/gmsl_h190ta_four_camera/preprocess_manifest.json"
+    )
+    assert mapping["position_order"] == ["stick_top", "stick_bottom", "eye_left", "eye_right"]
+
+    by_position = {entry["mount_position"]: entry for entry in mapping["mounts"]}
+    assert set(by_position) == {"stick_top", "stick_bottom", "eye_left", "eye_right"}
+
+    assert by_position["stick_top"]["serial"] == "H190TA-I06031460"
+    assert by_position["stick_top"]["camera_key"] == "video7"
+    assert by_position["stick_top"]["intrinsics_file"] == "H190TA-I06031460.txt"
+    assert by_position["stick_top"]["intrinsics_status"] == "available"
+
+    assert by_position["stick_bottom"]["serial"] == "H190TA-I06031459"
+    assert by_position["stick_bottom"]["camera_key"] == "video6"
+    assert by_position["stick_bottom"]["intrinsics_file"] == "H190TA-I06031459.txt"
+    assert by_position["stick_bottom"]["intrinsics_status"] == "available"
+
+    assert by_position["eye_left"]["intrinsics_status"] == "pending_import"
+    assert by_position["eye_right"]["intrinsics_status"] == "pending_import"
+
+    assert mapping["training_camera_order"] == ["stick_top", "stick_bottom", "eye_left", "eye_right"]
 
 
 def test_extrinsics_template_and_printable_board_contract() -> None:
@@ -52,6 +84,12 @@ def test_extrinsics_template_and_printable_board_contract() -> None:
     assert extrinsics["calibration_target"]["target_svg"] == "docs/assets/gmsl_chessboard_8x6_25mm_a4.svg"
     assert len(extrinsics["cameras"]) == 4
     assert all(camera["extrinsics_status"] == "pending_calibration" for camera in extrinsics["cameras"])
+    assert {camera["mount_position"] for camera in extrinsics["cameras"]} == {
+        "stick_top",
+        "stick_bottom",
+        "eye_left",
+        "eye_right",
+    }
 
     assert 'width="297mm"' in board_svg
     assert 'height="210mm"' in board_svg

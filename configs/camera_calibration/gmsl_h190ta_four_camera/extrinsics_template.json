@@ -1,6 +1,7 @@
 {
   "version": "gmsl_h190ta_four_camera_extrinsics_template_20260630",
   "status": "template_pending_field_calibration",
+  "mount_mapping": "configs/camera_calibration/gmsl_h190ta_four_camera/camera_mount_mapping.json",
   "coordinate_convention": {
     "camera_frame": "OpenCV camera frame: x right, y down, z forward",
     "mount_frame": "To be assigned in field notes for each camera mount",
@@ -17,6 +18,7 @@
   "cameras": [
     {
       "camera_key": "video6",
+      "mount_position": "stick_bottom",
       "serial": "H190TA-I06031459",
       "device_hint": "/dev/video6",
       "extrinsics_status": "pending_calibration",
@@ -27,6 +29,7 @@
     },
     {
       "camera_key": "video7",
+      "mount_position": "stick_top",
       "serial": "H190TA-I06031460",
       "device_hint": "/dev/video7",
       "extrinsics_status": "pending_calibration",
@@ -37,6 +40,7 @@
     },
     {
       "camera_key": "pending_h190ta_0",
+      "mount_position": "eye_left",
       "serial": "pending_intrinsics_import",
       "device_hint": "pending_field_mapping",
       "extrinsics_status": "pending_calibration",
@@ -47,6 +51,7 @@
     },
     {
       "camera_key": "pending_h190ta_1",
+      "mount_position": "eye_right",
       "serial": "pending_intrinsics_import",
       "device_hint": "pending_field_mapping",
       "extrinsics_status": "pending_calibration",
