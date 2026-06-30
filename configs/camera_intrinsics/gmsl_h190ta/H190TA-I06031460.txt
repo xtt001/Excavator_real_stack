@@ -1,0 +1,22 @@
+type= fisheye
+imageWidth= 1920
+imageHeight= 1536
+fx= 566.4632339311
+fy= 566.5263505191
+cx= 955.8176802437
+cy= 773.6265352840
+k1= 0.0327065528
+k2= -0.0161016088
+k3= 0.0015105518
+k4= -0.0001529193
+
+PixelSize= 3.0000 um
+IdealLensFocalLength= 1.6850 mm
+RealLensFocalLength_x= 1.6994 [offset: 0.0144] mm (4.79657) pixel
+RealLensFocalLength_y= 1.6996 [offset: 0.0146] mm (4.85968) pixel
+
+RMS_MEAN= 0.0180
+RMS_Max= 0.0251
+RMS_Min= 0.0145
+COD_X= -4.1823
+COD_Y= 5.6265

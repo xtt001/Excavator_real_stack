@@ -1,0 +1,37 @@
+{
+  "version": "gmsl_h190ta_20260630",
+  "distortion_model": "opencv_fisheye",
+  "image_width": 1920,
+  "image_height": 1536,
+  "evidence_dir": "docs/evidence/gmsl_frames_20260629_190917",
+  "cameras": [
+    {
+      "camera_key": "video6",
+      "device_hint": "/dev/video6",
+      "serial": "H190TA-I06031459",
+      "intrinsics_file": "H190TA-I06031459.txt",
+      "orientation": "normal",
+      "upside_down": false,
+      "K": [
+        [564.52909345, 0.0, 963.2480654072],
+        [0.0, 564.0325234858, 766.1421471663],
+        [0.0, 0.0, 1.0]
+      ],
+      "D": [0.0339082869, -0.0158314506, -0.0000680984, 0.0004041576]
+    },
+    {
+      "camera_key": "video7",
+      "device_hint": "/dev/video7",
+      "serial": "H190TA-I06031460",
+      "intrinsics_file": "H190TA-I06031460.txt",
+      "orientation": "rotate_180",
+      "upside_down": true,
+      "K": [
+        [566.4632339311, 0.0, 955.8176802437],
+        [0.0, 566.5263505191, 773.626535284],
+        [0.0, 0.0, 1.0]
+      ],
+      "D": [0.0327065528, -0.0161016088, 0.0015105518, -0.0001529193]
+    }
+  ]
+}
