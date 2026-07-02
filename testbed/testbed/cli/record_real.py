@@ -187,7 +187,7 @@ def _receiver_health_blocks_control(
     errors = set(str(error) for error in getattr(receiver_health, "errors", ()) or ())
     if (
         errors
-        and errors <= {"fpv_stale"}
+        and errors <= {"fpv_stale", "camera_stale"}
         and not has_record_session
         and receiver_mode in {"armed", "go_home"}
     ):
@@ -559,6 +559,7 @@ def main(prog: str = "tb-record-real") -> None:
         control_hz=control_hz,
         image_width=int(real_cfg.get("image_width", 160)),
         image_height=int(real_cfg.get("image_height", 120)),
+        camera_names=camera_names,
         mock_velocity_scale_rad_s=float(real_cfg.get("mock_velocity_scale_rad_s", 0.5)),
     )
     action_source = _build_action_source(input_device, teleop_cfg, dt=dt)
@@ -1639,6 +1640,8 @@ class ReceiverHealthEvaluator:
         require_remote_action: bool = False,
         bridge_snapshot_timeout_ms: float = 200.0,
         fpv_max_stale_ms: float = 1000.0,
+        primary_camera: str = "fpv",
+        camera_max_stale_ms: float | None = None,
         imu_require_online: bool = True,
         imu_require_valid_attitude: bool = True,
     ) -> None:
@@ -1647,6 +1650,10 @@ class ReceiverHealthEvaluator:
         self.require_remote_action = bool(require_remote_action)
         self.bridge_snapshot_timeout_ms = float(bridge_snapshot_timeout_ms)
         self.fpv_max_stale_ms = float(fpv_max_stale_ms)
+        self.primary_camera = str(primary_camera or "fpv")
+        self.camera_max_stale_ms = float(
+            self.fpv_max_stale_ms if camera_max_stale_ms is None else camera_max_stale_ms
+        )
         self.imu_require_online = bool(imu_require_online)
         self.imu_require_valid_attitude = bool(imu_require_valid_attitude)
 
@@ -1671,6 +1678,10 @@ class ReceiverHealthEvaluator:
                 cfg.get("bridge_snapshot_timeout_ms", 200.0)
             ),
             fpv_max_stale_ms=float(cfg.get("fpv_max_stale_ms", 1000.0)),
+            primary_camera=str(cfg.get("primary_camera", "fpv")),
+            camera_max_stale_ms=float(
+                cfg.get("camera_max_stale_ms", cfg.get("fpv_max_stale_ms", 1000.0))
+            ),
             imu_require_online=bool(cfg.get("imu_require_online", True)),
             imu_require_valid_attitude=bool(
                 cfg.get("imu_require_valid_attitude", True)
@@ -1700,7 +1711,14 @@ class ReceiverHealthEvaluator:
         bridge_age_ms = _float_or_default(
             sensor_health.get("bridge_snapshot_age_ms"), -1.0
         )
+        camera_age_ms = _camera_age_ms(
+            obs,
+            camera_name=self.primary_camera,
+            now_ns=now_ns,
+        )
         fpv_age_ms = _fpv_age_ms(obs, now_ns=now_ns)
+        if self.primary_camera != "fpv" and fpv_age_ms < 0.0:
+            fpv_age_ms = camera_age_ms
 
         extras = getattr(action_info, "extras", {}) or {}
         remote_connected = bool(extras.get("remote_action_connected", False))
@@ -1724,8 +1742,10 @@ class ReceiverHealthEvaluator:
                         )
                 if bridge_age_ms < 0.0 or bridge_age_ms > self.bridge_snapshot_timeout_ms:
                     errors.append("bridge_stale")
-                if fpv_age_ms < 0.0 or fpv_age_ms > self.fpv_max_stale_ms:
-                    errors.append("fpv_stale")
+                if camera_age_ms < 0.0 or camera_age_ms > self.camera_max_stale_ms:
+                    errors.append(
+                        "fpv_stale" if self.primary_camera == "fpv" else "camera_stale"
+                    )
 
             if self.require_remote_action:
                 if not remote_connected:
@@ -1743,6 +1763,8 @@ class ReceiverHealthEvaluator:
             "imu_online": online.astype(np.int32, copy=True),
             "imu_valid_attitude": valid_attitude.astype(np.int32, copy=True),
             "fpv_age_ms": float(fpv_age_ms),
+            "camera_primary": self.primary_camera,
+            "camera_age_ms": float(camera_age_ms),
             "bridge_snapshot_age_ms": float(bridge_age_ms),
             "remote_action_connected": int(remote_connected),
             "controller_ack": int(controller_ack),
@@ -3064,9 +3086,16 @@ def _float_or_default(value: Any, default: float) -> float:
 
 
 def _fpv_age_ms(obs: dict[str, Any], *, now_ns: int) -> float:
+    return _camera_age_ms(obs, camera_name="fpv", now_ns=now_ns)
+
+
+def _camera_age_ms(obs: dict[str, Any], *, camera_name: str, now_ns: int) -> float:
     image_timestamps = obs.get("image_timestamp_ns") or {}
     if isinstance(image_timestamps, dict):
-        timestamp_ns = _primary_image_timestamp_ns(image_timestamps)
+        if str(camera_name) in image_timestamps:
+            timestamp_ns = _int_timestamp(image_timestamps[str(camera_name)])
+        else:
+            timestamp_ns = _primary_image_timestamp_ns(image_timestamps)
     else:
         timestamp_ns = _int_timestamp(image_timestamps)
     if timestamp_ns <= 0:
@@ -3137,6 +3166,32 @@ def _build_step_diagnostics(
         diagnostics[f"image_timestamp_ns_{_sanitize_key(camera_name)}"] = _int_timestamp(
             timestamp_ns
         )
+    image_metadata = obs.get("image_metadata") or {}
+    if isinstance(image_metadata, dict):
+        for camera_name, metadata in image_metadata.items():
+            if not isinstance(metadata, dict):
+                continue
+            safe_camera = _sanitize_key(camera_name)
+            for key in (
+                "sequence",
+                "flags",
+                "v4l2_timestamp_ns",
+                "v4l2_error",
+                "group_id",
+                "group_target_v4l2_timestamp_ns",
+                "group_skew_ns",
+                "group_valid",
+                "group_camera_count",
+            ):
+                if key in metadata:
+                    diagnostics[f"image_{key}_{safe_camera}"] = _int_timestamp(metadata.get(key))
+            if "group_skew_ms" in metadata:
+                diagnostics[f"image_group_skew_ms_{safe_camera}"] = float(
+                    metadata.get("group_skew_ms") or 0.0
+                )
+            for key in ("timestamp_clock", "timestamp_source", "group_source"):
+                if key in metadata:
+                    diagnostics[f"image_{key}_{safe_camera}"] = str(metadata.get(key) or "")
     _add_remote_action_diagnostics(diagnostics, extras)
     _add_policy_action_diagnostics(diagnostics, extras)
     _add_policy_remote_diagnostics(diagnostics, extras)

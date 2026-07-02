@@ -18,18 +18,16 @@ python3 tools/gmsl_camera_config/validate_gmsl_camera_config.py
 python3 tools/gmsl_camera_config/capture_gmsl_contact_sheet.py --dry-run-plan --json
 ```
 
-The contact-sheet helper skips `pending_import` cameras by default. Use
-`--require-all` after all four intrinsics are imported to make pending entries a
-hard error.
+If a future camera is marked `pending_import`, the contact-sheet helper skips it
+by default. Use `--require-all` to make pending entries a hard error.
 
-Only `video6` and `video7` have imported intrinsics at this point. The
-`pending_h190ta_*` entries are placeholders for the two same-model cameras
-whose vendor intrinsics still need to be imported. Do not use those pending
-entries for runtime remap.
+All four H190TA vendor intrinsics are imported. `video4` and `video5` use
+`pitch_down_deg=10` based on field preview and still need extrinsics before
+final policy runtime use.
 
 Current confirmed physical mapping:
 
 - `stick_top` -> `H190TA-I06031460` -> `video7`
 - `stick_bottom` -> `H190TA-I06031459` -> `video6`
-- `eye_left` -> pending intrinsics import
-- `eye_right` -> pending intrinsics import
+- `eye_left` -> `H190TA-I06031461` -> `video4` -> `pitch_down_deg=10`
+- `eye_right` -> `H190TA-I06031462` -> `video5` -> `pitch_down_deg=10`

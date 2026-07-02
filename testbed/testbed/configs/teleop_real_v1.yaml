@@ -8,8 +8,8 @@ real:
   # 默认从端落盘；主端录数据改为 data_side: host
   data_side: slave
   control_hz: 50
-  image_width: 160
-  image_height: 120
+  image_width: 384
+  image_height: 216
   mock_velocity_scale_rad_s: 0.5
   control_pump:
     # bridge_tcp 真机模式下启用：独立线程按 50Hz(20ms) 重复发送最后一次安全速度命令。
@@ -223,7 +223,7 @@ phase_labeling:
 task:
   task_name: real_excavation_teleop_v1
   dataset_dir: data/real_teleop_v1
-  camera_names: ["fpv"]
+  camera_names: ["video4", "video5", "video6", "video7"]
   max_steps: 1000
   control_hz: 50
   record_hz: 50
@@ -234,7 +234,7 @@ task:
 sync:
   time_source: sensor_or_ros_header_stamp
   max_observation_skew_ms: 40.0
-  required_cameras: ["fpv"]
+  required_cameras: ["video4", "video5", "video6", "video7"]
   record_action_sample_time: true
   record_action_send_time: true
 
@@ -250,6 +250,8 @@ receiver:
     mode: strict
     bridge_snapshot_timeout_ms: 200
     fpv_max_stale_ms: 1000
+    primary_camera: video4
+    camera_max_stale_ms: 1000
     imu_require_online: true
     imu_require_valid_attitude: true
     quarantine_failed_records: true

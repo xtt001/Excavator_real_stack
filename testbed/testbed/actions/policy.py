@@ -44,6 +44,7 @@ class PolicyActionSource(ActionSource):
         policy: Any,
         source_id: str,
         camera_name: str = "fpv",
+        camera_names: list[str] | tuple[str, ...] | None = None,
         action_scale: float | list[float] | tuple[float, ...] | np.ndarray = 1.0,
         clip: float = 1.0,
         output_mode: str = "shadow_zero",
@@ -66,6 +67,9 @@ class PolicyActionSource(ActionSource):
         self._policy = policy
         self._source_id = str(source_id)
         self._camera_name = str(camera_name)
+        self._camera_names = _camera_names_list(camera_names, default=self._camera_name)
+        if not self._camera_names:
+            raise ValueError("camera_names must not be empty")
         self._action_scale = _broadcast_action_scale(action_scale)
         self._clip = float(clip)
         self._output_mode = str(output_mode)
@@ -96,10 +100,26 @@ class PolicyActionSource(ActionSource):
             device=cfg.get("device"),
             temporal_agg=bool(cfg.get("temporal_agg", True)),
         )
+        camera_names = cfg.get("camera_names", cfg.get("cameras"))
+        policy_camera_names = (
+            list(getattr(policy, "camera_names"))
+            if hasattr(policy, "camera_names")
+            else []
+        )
+        if camera_names is None and policy_camera_names:
+            camera_names = policy_camera_names
+        parsed_camera_names = _camera_names_list(camera_names, default=str(cfg.get("camera", "fpv")))
+        if policy_camera_names and parsed_camera_names != policy_camera_names:
+            raise ValueError(
+                "teleop.policy.camera_names does not match the loaded policy bundle: "
+                f"config={parsed_camera_names!r} bundle={policy_camera_names!r}"
+            )
+        camera_name = str(cfg.get("camera", parsed_camera_names[0]))
         return cls(
             policy=policy,
             source_id=str(cfg.get("source_id", f"policy:act:{bundle_dir.name}")),
-            camera_name=str(cfg.get("camera", "fpv")),
+            camera_name=camera_name,
+            camera_names=parsed_camera_names,
             action_scale=cfg.get("action_scale", 1.0),
             clip=float(cfg.get("clip", 1.0)),
             output_mode=str(cfg.get("output_mode", "shadow_zero")),
@@ -210,6 +230,7 @@ class PolicyActionSource(ActionSource):
         policy_obs = _policy_obs_from_real_obs(
             obs,
             camera_name=self._camera_name,
+            camera_names=self._camera_names,
             qvel_override=qvel,
         )
         return policy_obs, qvel
@@ -380,23 +401,36 @@ def _act_policy_config_from_resolved(resolved: dict[str, Any]) -> dict[str, Any]
 def _policy_obs_from_real_obs(
     obs: dict[str, Any],
     *,
-    camera_name: str,
+    camera_name: str | None = None,
+    camera_names: list[str] | tuple[str, ...] | None = None,
     qvel_override: np.ndarray | None = None,
 ) -> dict[str, Any]:
     if "qpos" not in obs:
         raise KeyError("observation missing qpos")
     if "qvel" not in obs:
         raise KeyError("observation missing qvel")
-    image = _resolve_camera_image(obs, camera_name=camera_name)
-    return {
+    names = _camera_names_list(camera_names, default=(camera_name or "fpv"))
+    if not names:
+        raise ValueError("camera_names must not be empty")
+    policy_obs = {
         "qpos": np.asarray(obs["qpos"], dtype=np.float32),
         "qvel": (
             np.asarray(qvel_override, dtype=np.float32)
             if qvel_override is not None
             else np.asarray(obs["qvel"], dtype=np.float32)
         ),
-        f"image_{camera_name}": image,
     }
+    for name in names:
+        policy_obs[f"image_{name}"] = _resolve_camera_image(obs, camera_name=name)
+    return policy_obs
+
+
+def _camera_names_list(value: Any, *, default: str = "fpv") -> list[str]:
+    if value is None:
+        return [str(default)]
+    if isinstance(value, str):
+        return [value]
+    return [str(name) for name in value]
 
 
 def _resolve_camera_image(obs: dict[str, Any], *, camera_name: str) -> np.ndarray:

@@ -32,6 +32,138 @@
 ### 关联文件/配置
 ```
 
+## 2026-07-02 GMSL 四路录制链路与 IMU/CAN 掉线记录
+
+### 现象
+
+切到 GMSL 四路相机后，从端 receiver/policy_remote 能启动并持续读到四路图像，
+但真机链路反复进入 `fault`。日志中主要表现为：
+
+- receiver health 报 `imu_missing:*`，常见组合包括 `imu_missing:0`、
+  `imu_missing:0,1`、`imu_missing:0,3` 和短时 `imu_missing:0,1,2,3`。
+- `can2` 曾出现 BUS-OFF；停止运行后再看实时 `candump can2` 可能为空，不能代表
+  运行时没有 CAN 数据。
+- `can3` 能持续看到 IMU 原始帧，且当前 latest raw capture 里 `can2/can3` 都有数据。
+- 四路 GMSL 图像链路本身稳定，未看到图像预处理成为当前瓶颈。
+
+### 影响
+
+- IMU health 不稳定会阻止 receiver 进入可录制/可控制的健康状态；即使图像链路可用，
+  HDF5 录制也不应在 IMU fault 状态下作为有效训练数据。
+- 当前画面处理速度不是主要风险。更大的风险是 IMU/CAN 掉线导致 observation 中 qpos/qvel
+  不可信。
+- HDF5 保存是 episode 结束时同步写入，会有数秒 `saving` 间隔；但在线录制主循环不会因为
+  每步 HDF5 写盘而被堵住。
+
+### 出现原因
+
+截至本记录，IMU 问题还不能断言为单一根因。已有证据支持：
+
+- `can2` 内核日志在现场时间窗内有 BUS-OFF：
+  `2026-07-02 17:23:47` 和 `2026-07-02 17:28:56`。
+- receiver/policy steps 记录到 IMU online bit 反复变化，不是单纯因为当前进程已停止而看不到。
+- `imu_qvel` 长日志显示四路 IMU 并非全程 online，其中 IMU 0、IMU 1 掉线占比高。
+- 最新一轮 bridge 启动后，`candump -ta can2 can3` 能抓到两路原始 CAN 帧：
+  60 秒内 `can2=16264` 帧，`can3=36240` 帧。
+
+因此当前判断是：IMU/CAN 侧存在间歇性链路或设备健康问题，需要继续用原始 CAN、kernel journal、
+receiver health 和 IMU/qvel 日志做对应分析。不要把问题归因到 GMSL 图像处理。
+
+### 触发场景
+
+- 从端执行 `scripts/slave_real_stack.sh run --force --policy-remote`，bridge 使用
+  `--can-if can2 --imu-if can3`。
+- IMU online/attitude health 丢失时，receiver 进入 `fault`。
+- 如果 `can2` 进入 BUS-OFF，后续直接 `candump can2` 可能为空；需要先确认 link state，
+  必要时重新 bring up 或重启现场 stack。
+
+### 诊断命令
+
+检查最新从端启动目录：
+
+```bash
+ssh slave-jetson '
+cd /media/mundane/D/Excavator_real_stack
+find artifacts/slave_stack -maxdepth 1 -mindepth 1 -type d \
+  -printf "%T@ %TY-%Tm-%Td %TH:%TM:%TS %p\n" | sort -nr | head
+'
+```
+
+检查 CAN 状态：
+
+```bash
+ssh slave-jetson 'ip -details -statistics link show can2; ip -details -statistics link show can3'
+```
+
+抓原始 CAN 数据，推荐输出为 CSV：
+
+```bash
+ssh slave-jetson '
+cd /media/mundane/D/Excavator_real_stack
+mkdir -p artifacts/imu_can_raw_csv_$(date +%Y%m%d_%H%M%S)
+timeout 60s candump -ta can2 can3 > artifacts/imu_can_raw_csv_YYYYMMDD_HHMMSS/candump_can2_can3_ta_60s.log
+'
+```
+
+过滤 kernel 里的 CAN 事件：
+
+```bash
+ssh slave-jetson '
+journalctl --since "30 min ago" --no-pager |
+grep -Ei "can|imu|bus|mttcan|bridge|receiver|fault|error" || true
+'
+```
+
+### 短期解决
+
+- IMU 未修好前，不要把 fault 状态下的 HDF5 当作有效训练数据。
+- 若需要给硬件/固件侧分析，优先提供原始 CAN CSV、kernel journal、receiver log、
+  `imu_qvel` JSONL/summary，而不是只提供当前空的 `candump`。
+- 相机链路保持当前 GMSL grouped/JPEG 路径，不要回退到 full-resolution raw 或 RGBA 中间帧。
+- `video4/video5` 的 `V4L2_BUF_FLAG_ERROR` 仍要统计，但已有动态画面和录制 benchmark 显示它没有
+  直接阻断图像内容、CUDA 预处理或 SHM 发布。
+
+### 长期解决
+
+- 明确 IMU index、CAN raw address、物理安装位置和 CAN 接口的映射，避免把 `can2` 控制总线和
+  `can3` IMU 诊断总线混用。
+- 对 `can2` BUS-OFF 增加启动后状态检查和日志采集，必要时自动重启接口或在启动脚本中明确失败。
+- 如果 IMU 掉线仍复现，做分层验证：
+  1. 只跑 bridge，不跑相机，抓 `can2/can3` 原始 CSV。
+  2. 跑 bridge + GMSL，不录 HDF5，检查 IMU health 是否变化。
+  3. 跑完整 receiver/test-log，不开始有效 HDF5，检查 health 与 action/observation 时间戳。
+  4. IMU 稳定后再做 10 秒真实 HDF5 保存验证。
+- 后续如果要减少 episode 结束保存停顿，再把 HDF5 writer 改成异步 recorder；这不是当前阻塞主因。
+
+### 验证方式
+
+IMU/CAN 修复后的最低验收：
+
+- `ip -details -statistics link show can2 can3` 均保持 `ERROR-ACTIVE`，没有新增 BUS-OFF。
+- 60 秒 `candump -ta can2 can3` 转 CSV 后，接口和 CAN ID 计数稳定。
+- receiver/test-log 中 `receiver_health_ok=1` 占比接近 100%，不再持续出现 `imu_missing:*`。
+- `imu_qvel` 中 `imu_health.online` 四路长期为 `[1,1,1,1]`，host rx age p95 不异常。
+- 四路 GMSL 仍满足 `drops=0`、`missing=0`、`cuda_fail=0`。
+- HDF5 10 秒真实录制能完成保存，diagnostics 中四路 `image_timestamp_ns_*` 和 IMU/qpos/qvel 字段可追溯。
+
+GMSL 图像链路已有性能证据：
+
+- 最新 GMSL preprocess：四路 `drops=0`、`missing=0`、`cuda_fail=0`。
+- CUDA preprocess kernel p95 约 `0.9 ms`。
+- 最新 receiver/test-log：四路 image skew p95 `0.264 ms`，p99 `0.440 ms`。
+- 3000 步 GMSL grouped benchmark：HDF5 `435 MB`，主循环 p95 `35.7 ms`，HDF5 save `3.7 s`。
+- 外置 USB 当前 direct write 约 `104 MB/s`。
+
+### 关联文件/配置
+
+- 当前启动手册：`docs/host_slave_start_commands.md`
+- 当前 GMSL policy/record config：`testbed/testbed/configs/policy_real_gmsl_four_camera_v1.yaml`
+- GMSL preprocess manifest：`configs/camera_calibration/gmsl_h190ta_four_camera/preprocess_manifest.json`
+- 旧日志分析包：`artifacts/imu_existing_logs_20260702_175348`
+- 最新原始 CAN CSV：`artifacts/imu_can_raw_csv_20260702_180030/candump_can2_can3_ta_60s.csv`
+- 最新原始 CAN summary：`artifacts/imu_can_raw_csv_20260702_180030/candump_can2_can3_ta_60s_summary.json`
+- GMSL HDF5 benchmark：`artifacts/gmsl_recording_benchmark_grouped_20260701_153431/recording_benchmark_summary.json`
+
 ## 2026-05-28 摇杆映射和 go-home 方向排查记录
 
 ### 现象

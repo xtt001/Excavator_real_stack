@@ -15,6 +15,32 @@
     "target_svg": "docs/assets/gmsl_chessboard_8x6_25mm_a4.svg",
     "print_scale": "100_percent_no_fit_to_page"
   },
+  "stereo_pairs": [
+    {
+      "pair_name": "eye_left_eye_right",
+      "left_camera_key": "video4",
+      "right_camera_key": "video5",
+      "extrinsics_status": "pending_calibration",
+      "transform_direction": "right_T_left",
+      "opencv_stereo_convention": "X_right = R * X_left + T",
+      "right_T_left": null,
+      "stereo_rms_px": null,
+      "valid_pair_count": null,
+      "calibration_evidence_dir": null
+    },
+    {
+      "pair_name": "stick_bottom_stick_top",
+      "left_camera_key": "video6",
+      "right_camera_key": "video7",
+      "extrinsics_status": "pending_calibration",
+      "transform_direction": "right_T_left",
+      "opencv_stereo_convention": "X_right = R * X_left + T",
+      "right_T_left": null,
+      "stereo_rms_px": null,
+      "valid_pair_count": null,
+      "calibration_evidence_dir": null
+    }
+  ],
   "cameras": [
     {
       "camera_key": "video6",
@@ -39,10 +65,10 @@
       "calibration_evidence_dir": null
     },
     {
-      "camera_key": "pending_h190ta_0",
+      "camera_key": "video4",
       "mount_position": "eye_left",
-      "serial": "pending_intrinsics_import",
-      "device_hint": "pending_field_mapping",
+      "serial": "H190TA-I06031461",
+      "device_hint": "/dev/video4",
       "extrinsics_status": "pending_calibration",
       "mount_link": "pending_field_assignment",
       "mount_T_camera": null,
@@ -50,10 +76,10 @@
       "calibration_evidence_dir": null
     },
     {
-      "camera_key": "pending_h190ta_1",
+      "camera_key": "video5",
       "mount_position": "eye_right",
-      "serial": "pending_intrinsics_import",
-      "device_hint": "pending_field_mapping",
+      "serial": "H190TA-I06031462",
+      "device_hint": "/dev/video5",
       "extrinsics_status": "pending_calibration",
       "mount_link": "pending_field_assignment",
       "mount_T_camera": null,

@@ -98,6 +98,10 @@ class ACTAdapter(Policy):
         self._t = 0
         self._all_time_actions = None
 
+    @property
+    def camera_names(self) -> list[str]:
+        return list(self._camera_names)
+
     # ── inference ─────────────────────────────────────────────────────────────
 
     def predict(self, obs: dict) -> np.ndarray:

@@ -26,3 +26,10 @@ endforeach()
 if(GMSL_HAS_CUDA_WARPING)
   target_compile_definitions(gmsl_latency_benchmark PRIVATE GMSL_HAVE_CUDA_WARPING=1)
 endif()
+
+add_executable(v4l2_timestamp_probe src/v4l2_timestamp_probe.cpp)
+target_include_directories(
+  v4l2_timestamp_probe
+  PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../bridge/third_party
+)

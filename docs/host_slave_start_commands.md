@@ -69,6 +69,131 @@ cd ~/Excavator_real_stack
 不等于已经同步成功。正式启动链路前以这条主端校时命令为准；校时完成后再到
 Jetson 终端启动从端链路。从端启动脚本只负责启动链路，不再检查或修改系统时间。
 
+### 1.5. 从端执行 GMSL 四路相机 bring-up
+
+如果当前只需要相机 bring-up、抓帧、标定或 GMSL 诊断，不启动 real bridge/receiver，
+可以在已经 SSH 登录的从端终端直接执行：
+
+```bash
+cd /media/mundane/D/Excavator_real_stack
+GMSL_VIDEO_DEVICES="4 5 6 7" ./scripts/bring_up_gmsl_cameras.sh
+```
+
+脚本内部会按需调用 `sudo` 加载内核模块、配置 PWM 和 boost clock；如果当前 sudo
+凭据已过期，终端会提示输入 Jetson 的 sudo 密码。
+
+期望配置为四路 H190TA：
+
+```text
+/dev/video4  UYVY  1920x1536
+/dev/video5  UYVY  1920x1536
+/dev/video6  UYVY  1920x1536
+/dev/video7  UYVY  1920x1536
+```
+
+### 1.6. Eye 外参标定手动操作
+
+本节只标定 `eye_left` / `eye_right`，也就是 `video4` / `video5` 这一对。输出的相对外参为
+`video5_T_video4`，字段名是 `right_T_left`，OpenCV 约定为：
+
+```text
+X_right = R * X_left + T
+```
+
+先做单帧 smoke，确认棋盘格能被两路同时识别。标定板需要同时完整出现在
+`video4` 和 `video5` 中，建议占画面宽度约 15% 到 30%，采样瞬间保持静止。
+下面两个脚本会把人工可读的准备、进度和成功提示输出到终端 `stderr`；`--json | tee ...`
+保存的仍是纯 JSON。
+
+```bash
+cd /media/mundane/D/Excavator_real_stack
+
+export RUN_DIR=artifacts/gmsl_extrinsics_eye_test_$(date +%Y%m%d_%H%M%S)
+mkdir -p "${RUN_DIR}"
+
+python3 tools/gmsl_camera_config/capture_gmsl_stereo_pairs.py \
+  --left video4=/dev/video4 \
+  --right video5=/dev/video5 \
+  --output-dir "${RUN_DIR}/video4_video5" \
+  --count 1 \
+  --interval-s 0 \
+  --image-format png \
+  --warmup-frames 10 \
+  --json | tee "${RUN_DIR}/capture_video4_video5.json"
+
+python3 tools/gmsl_camera_config/calibrate_gmsl_stereo_pair.py \
+  --intrinsics-manifest configs/camera_intrinsics/gmsl_h190ta/manifest.json \
+  --left video4 \
+  --right video5 \
+  --pairs-json "${RUN_DIR}/video4_video5/pairs.json" \
+  --output-json "${RUN_DIR}/video4_video5/stereo_calibration_smoke.json" \
+  --annotated-dir "${RUN_DIR}/video4_video5/annotated" \
+  --min-valid-pairs 1 \
+  --json | tee "${RUN_DIR}/solve_video4_video5_smoke.json"
+```
+
+smoke 通过时应看到：
+
+```text
+status = ok
+valid_pair_count = 1
+left_found = true
+right_found = true
+```
+
+如果 `valid_pair_count = 0`，先打开 `${RUN_DIR}/video4_video5/annotated/` 下的角点图看原因。
+常见原因是棋盘格太远、太小、反光、模糊、被手遮挡，或没有被两路同时完整看到。
+
+smoke 通过后，正式采 30 对。采集时移动棋盘格覆盖近/远、左/右、上/下和轻微倾斜姿态；
+不要只在画面中心重复采样。
+
+```bash
+cd /media/mundane/D/Excavator_real_stack
+
+export RUN_DIR=artifacts/gmsl_extrinsics_eye_$(date +%Y%m%d_%H%M%S)
+mkdir -p "${RUN_DIR}"
+
+python3 tools/gmsl_camera_config/capture_gmsl_stereo_pairs.py \
+  --left video4=/dev/video4 \
+  --right video5=/dev/video5 \
+  --output-dir "${RUN_DIR}/video4_video5" \
+  --count 30 \
+  --interval-s 1.0 \
+  --image-format png \
+  --warmup-frames 10 \
+  --json | tee "${RUN_DIR}/capture_video4_video5.json"
+
+python3 tools/gmsl_camera_config/calibrate_gmsl_stereo_pair.py \
+  --intrinsics-manifest configs/camera_intrinsics/gmsl_h190ta/manifest.json \
+  --left video4 \
+  --right video5 \
+  --pairs-json "${RUN_DIR}/video4_video5/pairs.json" \
+  --output-json "${RUN_DIR}/video4_video5/stereo_calibration.json" \
+  --annotated-dir "${RUN_DIR}/video4_video5/annotated" \
+  --min-valid-pairs 12 \
+  --json | tee "${RUN_DIR}/solve_video4_video5.json"
+```
+
+正式结果重点检查：
+
+```bash
+python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+run_dir = Path(os.environ["RUN_DIR"])
+data = json.loads((run_dir / "video4_video5/stereo_calibration.json").read_text())
+print("status:", data.get("status"))
+print("valid_pair_count:", data.get("valid_pair_count"), "/", data.get("total_pair_count"))
+print("rms_px:", data.get("rms_px"))
+print("right_T_left:", json.dumps(data.get("right_T_left"), indent=2))
+PY
+```
+
+通过线先按 `status=ok`、`valid_pair_count >= 12` 判断；`rms_px` 先以小于 `2 px`
+作为现场可用线，最终是否固化还要复查 annotated 角点图和采样姿态覆盖。
+
 ### 2. 从端启动链路
 
 正式录制或 policy control 时，启动全链路和唯一 receiver：
@@ -103,6 +228,9 @@ cd /media/mundane/D/Excavator_real_stack
 
 ### 3. 从端另开终端看 CAN
 
+`can2` 是主 CAN/control 状态检查通道；下面这条只用于看 `18F021F6` 等控制/状态帧，
+不是 IMU 诊断入口：
+
 ```bash
 candump -ta can2,18F021F6:1FFFFFFF
 ```
@@ -113,6 +241,21 @@ candump -ta can2,18F021F6:1FFFFFFF
 cd /media/mundane/D/Excavator_real_stack
 ./scripts/imu_can_probe.py --interface can3 --duration-s 3 --require-four
 ```
+
+如果 IMU 掉线，优先抓 `can3` 的原始日志：
+
+```bash
+timeout 60s candump -ta can3,0:0,#FFFFFFFF > /tmp/can3_imu_$(date +%Y%m%d_%H%M%S).log
+```
+
+如果怀疑现场接线或脚本使用了 `can2`，先查 `can2` 状态：
+
+```bash
+ip -details -statistics link show can2
+```
+
+`can2` 进入 `BUS-OFF` / `state DOWN` 时，`candump can2` 可能为空；此时不能用
+`can2` 的空日志判断 IMU 是否还在发帧。
 
 ### 4. 从端另开终端持续记录 IMU/qvel
 

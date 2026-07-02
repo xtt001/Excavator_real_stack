@@ -33,12 +33,25 @@ CONTROL_MODE="${EXCAVATOR_CONTROL_MODE:-open_loop_motor_speed}"
 FPV_MAX_STALE_MS="${EXCAVATOR_FPV_MAX_STALE_MS:-1000}"
 FPV_SHM_NAME="${EXCAVATOR_FPV_SHM_NAME:-excavator_fpv_v1}"
 FPV_SHM_TIMEOUT_S="${EXCAVATOR_FPV_SHM_TIMEOUT_S:-45}"
+CAMERA_STACK="${EXCAVATOR_CAMERA_STACK:-gmsl}"
+GMSL_SHM_PREFIX="${EXCAVATOR_GMSL_SHM_PREFIX:-excavator_gmsl_}"
+GMSL_GATEWAY_CAMERAS="${EXCAVATOR_GMSL_GATEWAY_CAMERAS:-video4=${GMSL_SHM_PREFIX}video4,video5=${GMSL_SHM_PREFIX}video5,video6=${GMSL_SHM_PREFIX}video6,video7=${GMSL_SHM_PREFIX}video7}"
+GMSL_PREPROCESS_BIN="${EXCAVATOR_GMSL_PREPROCESS_BIN:-${ROOT_DIR}/tools/gmsl_realtime_capture/build/gmsl_realtime_preprocess_probe}"
+GMSL_PREPROCESS_CAMERA_ARGS="${EXCAVATOR_GMSL_PREPROCESS_CAMERA_ARGS:---camera video4=/dev/video4 --camera video5=/dev/video5 --camera video6=/dev/video6 --camera video7=/dev/video7}"
+GMSL_PREPROCESS_MANIFEST="${EXCAVATOR_GMSL_PREPROCESS_MANIFEST:-${ROOT_DIR}/configs/camera_calibration/gmsl_h190ta_four_camera/preprocess_manifest.json}"
+GMSL_INTRINSICS_MANIFEST="${EXCAVATOR_GMSL_INTRINSICS_MANIFEST:-${ROOT_DIR}/configs/camera_intrinsics/gmsl_h190ta/manifest.json}"
+GMSL_BUFFERS="${EXCAVATOR_GMSL_BUFFERS:-8}"
 STARTUP_TIMEOUT_S="${EXCAVATOR_STARTUP_TIMEOUT_S:-45}"
 RECEIVER_STOP_TIMEOUT_S="${EXCAVATOR_RECEIVER_STOP_TIMEOUT_S:-${EXCAVATOR_RECORDER_STOP_TIMEOUT_S:-180}}"
 EXCAVATOR_SKIP_PIP_INSTALL="${EXCAVATOR_SKIP_PIP_INSTALL:-1}"
 
-SERVICES=(bridge orbbec fpv gateway receiver)
-STOP_ORDER=(receiver gateway fpv orbbec bridge)
+if [[ "${CAMERA_STACK}" == "gmsl" ]]; then
+  SERVICES=(bridge gmsl gateway receiver)
+  STOP_ORDER=(receiver gateway gmsl bridge)
+else
+  SERVICES=(bridge orbbec fpv gateway receiver)
+  STOP_ORDER=(receiver gateway fpv orbbec bridge)
+fi
 STARTED_SERVICES=()
 
 usage() {
@@ -53,7 +66,7 @@ Usage:
   scripts/slave_real_stack.sh tail [service]
 
 Default start services:
-  bridge, Orbbec camera, FPV SHM subscriber, gateway, receiver.
+  bridge, GMSL four-camera preprocess publisher, gateway, receiver.
 
 Use "run" when you want one foreground terminal that shows logs and stops the
 managed services on Ctrl+C.
@@ -70,6 +83,9 @@ Common environment overrides:
   EXCAVATOR_CAN_IF=can2 EXCAVATOR_IMU_IF=can3
   EXCAVATOR_PID_YAML=/media/mundane/D/Excavator_real_stack/control/config/joint_pid.yaml
   EXCAVATOR_CONTROL_MODE=open_loop_motor_speed
+  EXCAVATOR_CAMERA_STACK=gmsl                 # gmsl | orbbec
+  EXCAVATOR_GMSL_PREPROCESS_BIN=/media/mundane/D/Excavator_real_stack/tools/gmsl_realtime_capture/build/gmsl_realtime_preprocess_probe
+  EXCAVATOR_GMSL_GATEWAY_CAMERAS=video4=excavator_gmsl_video4,video5=excavator_gmsl_video5,video6=excavator_gmsl_video6,video7=excavator_gmsl_video7
   EXCAVATOR_RECEIVER_INPUT=remote
   EXCAVATOR_RECEIVER_RECORD_MODE=config       # config | record | no-record
   EXCAVATOR_POLICY_OUTPUT_MODE=control        # optional for policy/policy_remote
@@ -95,11 +111,11 @@ die() {
 }
 
 apply_policy_remote_profile() {
-  CONFIG_PATH="${EXCAVATOR_TELEOP_CONFIG:-${ROOT_DIR}/testbed/testbed/configs/policy_real_one_dig_v1.yaml}"
+  CONFIG_PATH="${EXCAVATOR_TELEOP_CONFIG:-${ROOT_DIR}/testbed/testbed/configs/policy_real_gmsl_four_camera_v1.yaml}"
   RECEIVER_INPUT="${EXCAVATOR_RECEIVER_INPUT:-policy_remote}"
   RECEIVER_RECORD_MODE="${EXCAVATOR_RECEIVER_RECORD_MODE:-record}"
-  POLICY_OUTPUT_MODE="${EXCAVATOR_POLICY_OUTPUT_MODE:-control}"
-  POLICY_ACTION_SCALE="${EXCAVATOR_POLICY_ACTION_SCALE:-1.0}"
+  POLICY_OUTPUT_MODE="${EXCAVATOR_POLICY_OUTPUT_MODE:-}"
+  POLICY_ACTION_SCALE="${EXCAVATOR_POLICY_ACTION_SCALE:-}"
   DATASET_DIR="${EXCAVATOR_DATASET_DIR:-${USB_MOUNT}/real_teleop_v1}"
   TEST_LOG_DIR="${EXCAVATOR_TEST_LOG_DIR:-${USB_MOUNT}/policy_control_tests}"
   NUM_EPISODES="${EXCAVATOR_NUM_EPISODES:-1000000}"
@@ -188,6 +204,31 @@ wait_for_shm() {
     sleep 0.5
   done
   die "FPV SHM was not created: ${shm_path}. Check $(log_dir)/orbbec.log and $(log_dir)/fpv.log"
+}
+
+wait_for_gmsl_shm() {
+  local deadline=$((SECONDS + FPV_SHM_TIMEOUT_S))
+  local mapping camera shm_name all_present
+  local -a mappings
+  while (( SECONDS < deadline )); do
+    all_present=1
+    IFS=',' read -r -a mappings <<<"${GMSL_GATEWAY_CAMERAS}"
+    for mapping in "${mappings[@]}"; do
+      [[ -n "${mapping}" ]] || continue
+      camera="${mapping%%=*}"
+      shm_name="${mapping#*=}"
+      if [[ "${camera}" == "${mapping}" || -z "${shm_name}" || ! -e "/dev/shm/${shm_name#/}" ]]; then
+        all_present=0
+        break
+      fi
+    done
+    if [[ "${all_present}" == "1" ]]; then
+      log "GMSL SHM is present for: ${GMSL_GATEWAY_CAMERAS}"
+      return 0
+    fi
+    sleep 0.5
+  done
+  die "GMSL SHM was not created for all cameras: ${GMSL_GATEWAY_CAMERAS}. Check $(log_dir)/gmsl.log"
 }
 
 check_started() {
@@ -294,6 +335,7 @@ stop_stack() {
     sync "${DATASET_DIR}" 2>/dev/null || sync
   fi
   stop_service gateway TERM 8
+  stop_service gmsl INT 12
   stop_service fpv INT 10
   stop_service orbbec INT 10
   stop_service bridge TERM 8
@@ -326,6 +368,10 @@ prepare_start() {
   local run_id log_dir_path
   [[ -x "${ROOT_DIR}/bridge/build/excavator_real_bridge" ]] \
     || die "missing bridge binary: ${ROOT_DIR}/bridge/build/excavator_real_bridge"
+  if [[ "${CAMERA_STACK}" == "gmsl" ]]; then
+    [[ -x "${GMSL_PREPROCESS_BIN}" ]] \
+      || die "missing GMSL preprocess binary: ${GMSL_PREPROCESS_BIN}. Build tools/gmsl_realtime_capture on the Jetson first."
+  fi
   run_id="$(date +%Y%m%d_%H%M%S)"
   log_dir_path="${LOG_ROOT}/${run_id}"
   mkdir -p "${PID_DIR}" "${log_dir_path}"
@@ -358,6 +404,8 @@ start_stack() {
   export PID_YAML_PATH SESSION_ID NUM_EPISODES MAX_STEPS BRIDGE_TIMEOUT CONTROL_MODE
   export EXCAVATOR_SKIP_PIP_INSTALL
   export FPV_MAX_STALE_MS FPV_SHM_NAME
+  export CAMERA_STACK GMSL_SHM_PREFIX GMSL_GATEWAY_CAMERAS GMSL_PREPROCESS_BIN
+  export GMSL_PREPROCESS_CAMERA_ARGS GMSL_PREPROCESS_MANIFEST GMSL_INTRINSICS_MANIFEST GMSL_BUFFERS
   export EXCAVATOR_ORBBEC_WS="${EXCAVATOR_ORBBEC_WS:-${HOME}/orbbec_ws}"
   export EXCAVATOR_ROS_WS="${EXCAVATOR_ROS_WS:-${EXCAVATOR_ORBBEC_WS}}"
   export EXCAVATOR_SKIP_PIP_INSTALL="${skip_pip}"
@@ -387,21 +435,50 @@ start_stack() {
   wait_for_port "${CONTROL_HOST}" "${CONTROL_PORT}" bridge
 
   if [[ "${no_camera}" != "1" ]]; then
-    start_service orbbec bash -lc '
-      cd "${ROOT_DIR}"
-      exec ./scripts/start_orbbec_fpv_camera.sh
-    '
-    start_service fpv bash -lc '
-      cd "${ROOT_DIR}"
-      exec ./scripts/start_fpv_subscriber_py.sh
-    '
-    wait_for_shm
+    case "${CAMERA_STACK}" in
+      gmsl)
+        start_service gmsl bash -lc '
+          cd "${ROOT_DIR}"
+          read -r -a camera_args <<<"${GMSL_PREPROCESS_CAMERA_ARGS}"
+          exec "${GMSL_PREPROCESS_BIN}" \
+            "${camera_args[@]}" \
+            --manifest "${GMSL_INTRINSICS_MANIFEST}" \
+            --preprocess-manifest "${GMSL_PREPROCESS_MANIFEST}" \
+            --frames 0 \
+            --buffers "${GMSL_BUFFERS}" \
+            --publish-shm \
+            --shm-prefix "${GMSL_SHM_PREFIX}" \
+            --detail-frames 0
+        '
+        wait_for_gmsl_shm
+        ;;
+      orbbec)
+        start_service orbbec bash -lc '
+          cd "${ROOT_DIR}"
+          exec ./scripts/start_orbbec_fpv_camera.sh
+        '
+        start_service fpv bash -lc '
+          cd "${ROOT_DIR}"
+          exec ./scripts/start_fpv_subscriber_py.sh
+        '
+        wait_for_shm
+        ;;
+      *)
+        die "invalid EXCAVATOR_CAMERA_STACK=${CAMERA_STACK}; expected gmsl or orbbec"
+        ;;
+    esac
   fi
 
   start_service gateway bash -lc '
     cd "${ROOT_DIR}"
+    if [[ "${CAMERA_STACK}" == "gmsl" ]]; then
+      export EXCAVATOR_CAMERA_SOURCE=gmsl
+      export EXCAVATOR_GMSL_GATEWAY_CAMERAS="${GMSL_GATEWAY_CAMERAS}"
+    else
+      export EXCAVATOR_CAMERA_SOURCE=fpv
+    fi
     exec ./scripts/start_bridge_gateway.sh \
-      --fpv-source auto \
+      --fpv-source "${EXCAVATOR_FPV_SOURCE:-auto}" \
       --fpv-max-stale-ms "${FPV_MAX_STALE_MS}"
   '
   wait_for_port "${GATEWAY_HOST}" "${GATEWAY_PORT}" gateway
@@ -470,7 +547,8 @@ start_stack() {
 }
 
 status_stack() {
-  local name pid state args pids
+  local name pid state args pids mapping shm_name
+  local -a mappings
   printf 'log_dir=%s\n' "$(log_dir)"
   for name in "${SERVICES[@]}"; do
     pid="$(service_pid "${name}")"
@@ -492,7 +570,18 @@ status_stack() {
   else
     printf 'usb not mounted: %s\n' "${USB_MOUNT}"
   fi
-  if [[ -e "/dev/shm/${FPV_SHM_NAME#/}" ]]; then
+  if [[ "${CAMERA_STACK}" == "gmsl" ]]; then
+    IFS=',' read -r -a mappings <<<"${GMSL_GATEWAY_CAMERAS}"
+    for mapping in "${mappings[@]}"; do
+      [[ -n "${mapping}" ]] || continue
+      shm_name="${mapping#*=}"
+      if [[ -e "/dev/shm/${shm_name#/}" ]]; then
+        printf 'gmsl shm present: /dev/shm/%s\n' "${shm_name#/}"
+      else
+        printf 'gmsl shm missing: /dev/shm/%s\n' "${shm_name#/}"
+      fi
+    done
+  elif [[ -e "/dev/shm/${FPV_SHM_NAME#/}" ]]; then
     printf 'fpv shm present: /dev/shm/%s\n' "${FPV_SHM_NAME#/}"
   else
     printf 'fpv shm missing: /dev/shm/%s\n' "${FPV_SHM_NAME#/}"

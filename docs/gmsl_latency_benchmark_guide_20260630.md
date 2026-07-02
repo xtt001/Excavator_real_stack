@@ -38,16 +38,16 @@ git pull
 GMSL_PRINT_CONFIG_ONLY=1 GMSL_VIDEO_DEVICES="6 7" scripts/bring_up_gmsl_cameras.sh
 ```
 
-四路测试时把 `GMSL_VIDEO_DEVICES` 改成现场真实的 `0..7` 编号，例如：
+四路测试时把 `GMSL_VIDEO_DEVICES` 改成现场真实编号。当前现场四路为 `4 5 6 7`：
 
 ```bash
-GMSL_PRINT_CONFIG_ONLY=1 GMSL_VIDEO_DEVICES="0 1 6 7" scripts/bring_up_gmsl_cameras.sh
+GMSL_PRINT_CONFIG_ONLY=1 GMSL_VIDEO_DEVICES="4 5 6 7" scripts/bring_up_gmsl_cameras.sh
 ```
 
 确认后再执行真实 bring-up：
 
 ```bash
-GMSL_VIDEO_DEVICES="6 7" scripts/bring_up_gmsl_cameras.sh
+GMSL_VIDEO_DEVICES="4 5 6 7" scripts/bring_up_gmsl_cameras.sh
 ```
 
 ## 3. 编译 benchmark
@@ -78,15 +78,15 @@ build/gmsl_latency_benchmark/gmsl_latency_benchmark \
   --output-json artifacts/gmsl_latency/capture_only_video6_video7.json
 ```
 
-四路相机示例，设备号按现场真实情况替换：
+四路相机：
 
 ```bash
 mkdir -p artifacts/gmsl_latency
 
 build/gmsl_latency_benchmark/gmsl_latency_benchmark \
   --capture-only \
-  --raw-camera video0=/dev/video0 \
-  --raw-camera video1=/dev/video1 \
+  --raw-camera video4=/dev/video4 \
+  --raw-camera video5=/dev/video5 \
   --raw-camera video6=/dev/video6 \
   --raw-camera video7=/dev/video7 \
   --frames 300 \
@@ -94,20 +94,24 @@ build/gmsl_latency_benchmark/gmsl_latency_benchmark \
   --output-json artifacts/gmsl_latency/capture_only_four_camera.json
 ```
 
-## 5. 当前 OpenCV 去畸变基线
+## 5. 当前 384x216 预处理去畸变基线
 
-当前仓库只登记了 `video6` 和 `video7` 的 H190TA 内参，所以先对这两路跑完整 OpenCV
-fisheye remap 分段计时：
+当前四路 H190TA 内参都已导入。先按
+`configs/camera_calibration/gmsl_h190ta_four_camera/preprocess_manifest.json`
+跑完整连续采集和 384x216 virtual rectilinear remap 分段计时：
 
 ```bash
 mkdir -p artifacts/gmsl_latency
 
 build/gmsl_latency_benchmark/gmsl_latency_benchmark \
-  --camera video6=/dev/video6 \
+  --preprocess-manifest configs/camera_calibration/gmsl_h190ta_four_camera/preprocess_manifest.json \
   --camera video7=/dev/video7 \
+  --camera video6=/dev/video6 \
+  --camera video4=/dev/video4 \
+  --camera video5=/dev/video5 \
   --frames 300 \
   --warmup 30 \
-  --output-json artifacts/gmsl_latency/opencv_remap_video6_video7.json
+  --output-json artifacts/gmsl_latency/current_preprocess_four_camera.json
 ```
 
 如果要强制 CPU 路径做对照：
@@ -115,11 +119,14 @@ build/gmsl_latency_benchmark/gmsl_latency_benchmark \
 ```bash
 build/gmsl_latency_benchmark/gmsl_latency_benchmark \
   --cpu \
-  --camera video6=/dev/video6 \
+  --preprocess-manifest configs/camera_calibration/gmsl_h190ta_four_camera/preprocess_manifest.json \
   --camera video7=/dev/video7 \
+  --camera video6=/dev/video6 \
+  --camera video4=/dev/video4 \
+  --camera video5=/dev/video5 \
   --frames 300 \
   --warmup 30 \
-  --output-json artifacts/gmsl_latency/opencv_cpu_remap_video6_video7.json
+  --output-json artifacts/gmsl_latency/current_preprocess_four_camera_cpu.json
 ```
 
 ## 6. 汇总结果
@@ -143,7 +150,7 @@ JSON 每路会有这些字段：
 ```bash
 python3 tools/gmsl_latency_benchmark/summarize_latency_json.py \
   artifacts/gmsl_latency/capture_only_four_camera.json \
-  artifacts/gmsl_latency/opencv_remap_video6_video7.json \
+  artifacts/gmsl_latency/current_preprocess_four_camera.json \
   --output-markdown artifacts/gmsl_latency/summary.md \
   --output-csv artifacts/gmsl_latency/summary.csv \
   --process-p95-budget-ms 4.0
@@ -190,3 +197,46 @@ v4l2-ctl --all -d /dev/video7 > artifacts/gmsl_latency/video7_v4l2_all.txt
 
 四路时对每一路都保存一份 `v4l2-ctl --all`。这些文件和 JSON 一起用于后续判断是否需要
 GStreamer/NVMM、VPI/NPP 或 fused CUDA kernel。
+
+## 9. 当前时间戳来源
+
+需要记录相机帧时间戳时，优先使用直接 V4L2 `ioctl` 路径，不要依赖 OpenCV
+`VideoCapture` 或 libv4l 包装层。当前仓库提供 probe：
+
+```bash
+build/gmsl_latency_benchmark/v4l2_timestamp_probe \
+  --device /dev/video4 \
+  --frames 120 \
+  --warmup 8 \
+  --buffers 4 \
+  --output-json artifacts/gmsl_latency/video4_timestamp.json
+```
+
+2026-07-01 在当前 SG8A + SG3S-ISX031 四路现场配置上，直接 `VIDIOC_DQBUF`
+看到的结果是：
+
+- `/dev/video4`、`/dev/video5`、`/dev/video6`、`/dev/video7` 的
+  `timestamp_clock = monotonic`。
+- `timestamp_source = eof`，即当前用户态拿到的是 V4L2/VI buffer 的 EOF
+  时间戳，不是已经证实的相机曝光开始时间戳。
+- 四路 timestamp interval p50/p95 都为 `33.334 ms`，与 30 fps 触发周期一致。
+- `video4`、`video5` 当前 buffer flags 带 `V4L2_BUF_FLAG_ERROR`，但 sequence
+  和 timestamp 连续；这需要作为 QC 字段记录，不能直接忽略。
+- SG8A 驱动包设备树里当前各 sensor mode 的 `embedded_metadata_height = "0"`，
+  所以现有图像流没有额外 embedded metadata 行可解析相机侧时间戳。
+
+因此，短期 HDF5/在线队列应记录：
+
+```text
+camera_key, serial, device, v4l2_sequence, v4l2_timestamp_ns,
+v4l2_timestamp_clock, v4l2_timestamp_source, v4l2_flags,
+host_arrival_mono_ns
+```
+
+如果后续需要更精确的曝光开始时间戳，优化方向是：
+
+- 向森云确认 SG3S-ISX031 / M3A 对应型号是否支持 embedded metadata 或寄存器形式的
+  frame counter / exposure timestamp。
+- 若支持，修改设备树和驱动，使 `embedded_metadata_height > 0` 并在用户态保存/解析。
+- 若只能依赖 Jetson VI timestamp，继续查 Tegra VI 驱动 timestamp source，确认是否能切到
+  SOF 或记录 `descr->status.sof_timestamp`。

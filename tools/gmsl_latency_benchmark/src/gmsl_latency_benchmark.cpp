@@ -38,15 +38,24 @@ struct CameraConfig {
     std::string key;
     std::string device;
     std::string serial;
+    std::string mount_position;
     bool raw_only{false};
     bool rotate_180{false};
+    bool use_preprocess{false};
     cv::Size image_size;
+    cv::Size output_size;
     cv::Mat K;
     cv::Mat D;
+    std::string projection{"opencv_fisheye"};
+    double hfov_deg{0.0};
+    double yaw_deg{0.0};
+    double pitch_down_deg{0.0};
+    double roll_deg{0.0};
 };
 
 struct Options {
     std::string manifest{"configs/camera_intrinsics/gmsl_h190ta/manifest.json"};
+    std::string preprocess_manifest;
     std::vector<CameraRequest> cameras;
     std::string output_json;
     int width{0};
@@ -102,6 +111,7 @@ void usage() {
         << "  --raw-camera NAME=/dev/videoN Capture-only camera without intrinsics; repeat as needed.\n\n"
         << "Benchmark options:\n"
         << "  --manifest PATH               Intrinsics manifest JSON.\n"
+        << "  --preprocess-manifest PATH    Four-camera preprocessing manifest; uses virtual_rectilinear output/pitch.\n"
         << "  --frames N                    Measured frame count per camera after warmup. Default: 300.\n"
         << "  --warmup N                    Warmup frames per camera before measuring. Default: 30.\n"
         << "  --width N --height N          Capture size override.\n"
@@ -140,6 +150,8 @@ Options parseArgs(int argc, char** argv) {
             std::exit(0);
         } else if (arg == "--manifest") {
             opts.manifest = valueFor(i, argc, argv, arg);
+        } else if (arg == "--preprocess-manifest") {
+            opts.preprocess_manifest = valueFor(i, argc, argv, arg);
         } else if (arg == "--camera") {
             opts.cameras.push_back(parseCameraRequest(valueFor(i, argc, argv, arg), false));
         } else if (arg == "--raw-camera") {
@@ -172,6 +184,9 @@ Options parseArgs(int argc, char** argv) {
     }
     if (opts.cameras.empty()) {
         throw std::runtime_error("at least one --camera or --raw-camera is required");
+    }
+    if (!opts.preprocess_manifest.empty() && opts.capture_only) {
+        throw std::runtime_error("--preprocess-manifest cannot be used with --capture-only");
     }
     if (opts.frames <= 0) {
         throw std::runtime_error("--frames must be positive");
@@ -238,6 +253,9 @@ CameraConfig scaleCameraForRuntime(const CameraConfig& camera, const Options& op
     }
     CameraConfig scaled = camera;
     scaled.image_size = cv::Size(opts.width, opts.height);
+    if (!scaled.use_preprocess) {
+        scaled.output_size = scaled.image_size;
+    }
     if (!camera.raw_only) {
         const double sx = static_cast<double>(opts.width) / static_cast<double>(camera.image_size.width);
         const double sy = static_cast<double>(opts.height) / static_cast<double>(camera.image_size.height);
@@ -265,6 +283,7 @@ CameraConfig loadCalibratedCamera(const Json& manifest, const CameraRequest& req
         cfg.raw_only = false;
         cfg.rotate_180 = opts.rotate_from_manifest && camera.value("orientation", "normal") == "rotate_180";
         cfg.image_size = cv::Size(manifest.at("image_width").get<int>(), manifest.at("image_height").get<int>());
+        cfg.output_size = cfg.image_size;
         cfg.K = parseK(camera);
         cfg.D = parseD(camera);
         return scaleCameraForRuntime(cfg, opts);
@@ -272,9 +291,46 @@ CameraConfig loadCalibratedCamera(const Json& manifest, const CameraRequest& req
     throw std::runtime_error("camera key not found in manifest: " + request.key);
 }
 
+double jsonNumberOr(const Json& doc, const std::string& key, double default_value) {
+    if (!doc.contains(key) || doc.at(key).is_null()) {
+        return default_value;
+    }
+    return doc.at(key).get<double>();
+}
+
+void applyPreprocessConfig(const Json& preprocess, CameraConfig* cfg) {
+    if (cfg == nullptr || cfg->raw_only) {
+        return;
+    }
+    const Json& output = preprocess.at("output");
+    const cv::Size output_size(output.at("width").get<int>(), output.at("height").get<int>());
+    for (const auto& camera : preprocess.at("cameras")) {
+        if (camera.at("camera_key").get<std::string>() != cfg->key) {
+            continue;
+        }
+        const Json& transform = camera.at("transform");
+        const std::string projection = transform.at("projection").get<std::string>();
+        if (projection != "virtual_rectilinear") {
+            throw std::runtime_error("unsupported preprocess projection for " + cfg->key + ": " + projection);
+        }
+        cfg->mount_position = camera.value("mount_position", "");
+        cfg->use_preprocess = true;
+        cfg->output_size = output_size;
+        cfg->projection = projection;
+        cfg->hfov_deg = transform.at("hfov_deg").get<double>();
+        cfg->yaw_deg = jsonNumberOr(transform, "yaw_deg", 0.0);
+        cfg->pitch_down_deg = jsonNumberOr(transform, "pitch_down_deg", 0.0);
+        cfg->roll_deg = jsonNumberOr(transform, "roll_deg", 0.0);
+        return;
+    }
+    throw std::runtime_error("camera key not found in preprocess manifest: " + cfg->key);
+}
+
 std::vector<CameraConfig> loadCameraConfigs(const Options& opts) {
     Json manifest;
+    Json preprocess;
     bool manifest_loaded = false;
+    bool preprocess_loaded = false;
     std::vector<CameraConfig> configs;
     for (const CameraRequest& request : opts.cameras) {
         if (request.raw_only) {
@@ -285,6 +341,7 @@ std::vector<CameraConfig> loadCameraConfigs(const Options& opts) {
             cfg.raw_only = true;
             cfg.rotate_180 = false;
             cfg.image_size = opts.width > 0 ? cv::Size(opts.width, opts.height) : cv::Size();
+            cfg.output_size = cfg.image_size;
             configs.push_back(cfg);
             continue;
         }
@@ -292,9 +349,117 @@ std::vector<CameraConfig> loadCameraConfigs(const Options& opts) {
             manifest = loadJson(opts.manifest);
             manifest_loaded = true;
         }
-        configs.push_back(loadCalibratedCamera(manifest, request, opts));
+        CameraConfig cfg = loadCalibratedCamera(manifest, request, opts);
+        if (!opts.preprocess_manifest.empty()) {
+            if (!preprocess_loaded) {
+                preprocess = loadJson(opts.preprocess_manifest);
+                preprocess_loaded = true;
+            }
+            applyPreprocessConfig(preprocess, &cfg);
+        }
+        configs.push_back(cfg);
     }
     return configs;
+}
+
+struct Mat3 {
+    double m[3][3];
+};
+
+Mat3 multiply(const Mat3& a, const Mat3& b) {
+    Mat3 out{};
+    for (int r = 0; r < 3; ++r) {
+        for (int c = 0; c < 3; ++c) {
+            for (int k = 0; k < 3; ++k) {
+                out.m[r][c] += a.m[r][k] * b.m[k][c];
+            }
+        }
+    }
+    return out;
+}
+
+double degToRad(double degrees) {
+    return degrees * CV_PI / 180.0;
+}
+
+Mat3 rotationX(double degrees) {
+    const double t = degToRad(degrees);
+    const double c = std::cos(t);
+    const double s = std::sin(t);
+    return Mat3{{{1.0, 0.0, 0.0}, {0.0, c, -s}, {0.0, s, c}}};
+}
+
+Mat3 rotationY(double degrees) {
+    const double t = degToRad(degrees);
+    const double c = std::cos(t);
+    const double s = std::sin(t);
+    return Mat3{{{c, 0.0, s}, {0.0, 1.0, 0.0}, {-s, 0.0, c}}};
+}
+
+Mat3 rotationZ(double degrees) {
+    const double t = degToRad(degrees);
+    const double c = std::cos(t);
+    const double s = std::sin(t);
+    return Mat3{{{c, -s, 0.0}, {s, c, 0.0}, {0.0, 0.0, 1.0}}};
+}
+
+void buildVirtualRectilinearMaps(const CameraConfig& camera, cv::Mat* map_x, cv::Mat* map_y) {
+    if (camera.output_size.width <= 0 || camera.output_size.height <= 0) {
+        throw std::runtime_error("invalid preprocess output size for " + camera.key);
+    }
+    if (camera.hfov_deg <= 0.0 || camera.hfov_deg >= 180.0) {
+        throw std::runtime_error("invalid hfov_deg for " + camera.key + ": " + std::to_string(camera.hfov_deg));
+    }
+    map_x->create(camera.output_size, CV_32FC1);
+    map_y->create(camera.output_size, CV_32FC1);
+
+    const double fx = camera.K.at<double>(0, 0);
+    const double fy = camera.K.at<double>(1, 1);
+    const double cx_in = camera.K.at<double>(0, 2);
+    const double cy_in = camera.K.at<double>(1, 2);
+    const double k1 = camera.D.at<double>(0, 0);
+    const double k2 = camera.D.at<double>(1, 0);
+    const double k3 = camera.D.at<double>(2, 0);
+    const double k4 = camera.D.at<double>(3, 0);
+
+    const double focal = (static_cast<double>(camera.output_size.width) * 0.5) /
+                         std::tan(degToRad(camera.hfov_deg) * 0.5);
+    const double cx_out = (static_cast<double>(camera.output_size.width) - 1.0) * 0.5;
+    const double cy_out = (static_cast<double>(camera.output_size.height) - 1.0) * 0.5;
+
+    const Mat3 r = multiply(
+        multiply(rotationZ(camera.roll_deg), rotationY(camera.yaw_deg)),
+        rotationX(-camera.pitch_down_deg));
+
+    for (int y = 0; y < camera.output_size.height; ++y) {
+        for (int x = 0; x < camera.output_size.width; ++x) {
+            const double vx = (static_cast<double>(x) - cx_out) / focal;
+            const double vy = (static_cast<double>(y) - cy_out) / focal;
+            const double vz = 1.0;
+
+            const double sx = r.m[0][0] * vx + r.m[0][1] * vy + r.m[0][2] * vz;
+            const double sy = r.m[1][0] * vx + r.m[1][1] * vy + r.m[1][2] * vz;
+            const double sz = r.m[2][0] * vx + r.m[2][1] * vy + r.m[2][2] * vz;
+            const double xn = sx / sz;
+            const double yn = sy / sz;
+            const double radius = std::sqrt(xn * xn + yn * yn);
+
+            double scale = 1.0;
+            if (radius > 1e-12) {
+                const double theta = std::atan(radius);
+                const double theta2 = theta * theta;
+                const double theta4 = theta2 * theta2;
+                const double theta6 = theta4 * theta2;
+                const double theta8 = theta4 * theta4;
+                const double theta_d =
+                    theta * (1.0 + k1 * theta2 + k2 * theta4 + k3 * theta6 + k4 * theta8);
+                scale = theta_d / radius;
+            }
+
+            map_x->at<float>(y, x) = static_cast<float>(fx * xn * scale + cx_in);
+            map_y->at<float>(y, x) = static_cast<float>(fy * yn * scale + cy_in);
+        }
+    }
 }
 
 void buildFisheyeMaps(
@@ -303,12 +468,16 @@ void buildFisheyeMaps(
     double fov_scale,
     cv::Mat* map_x,
     cv::Mat* map_y) {
+    if (camera.use_preprocess) {
+        buildVirtualRectilinearMaps(camera, map_x, map_y);
+        return;
+    }
     cv::Mat R = cv::Mat::eye(3, 3, CV_64F);
     cv::Mat new_K;
     cv::fisheye::estimateNewCameraMatrixForUndistortRectify(
-        camera.K, camera.D, camera.image_size, R, new_K, balance, camera.image_size, fov_scale);
+        camera.K, camera.D, camera.image_size, R, new_K, balance, camera.output_size, fov_scale);
     cv::fisheye::initUndistortRectifyMap(
-        camera.K, camera.D, R, new_K, camera.image_size, CV_32FC1, *map_x, *map_y);
+        camera.K, camera.D, R, new_K, camera.output_size, CV_32FC1, *map_x, *map_y);
 }
 
 cv::Mat ensureBgr(const cv::Mat& frame) {
@@ -580,8 +749,19 @@ Json resultToJson(const CameraResult& result) {
     out["camera_key"] = result.config.key;
     out["device"] = result.config.device;
     out["serial"] = result.config.serial;
+    out["mount_position"] = result.config.mount_position;
     out["raw_only"] = result.config.raw_only;
     out["rotate_180"] = result.config.rotate_180;
+    out["use_preprocess"] = result.config.use_preprocess;
+    out["input_width"] = result.config.image_size.width;
+    out["input_height"] = result.config.image_size.height;
+    out["output_width"] = result.config.output_size.width;
+    out["output_height"] = result.config.output_size.height;
+    out["projection"] = result.config.projection;
+    out["hfov_deg"] = result.config.hfov_deg;
+    out["yaw_deg"] = result.config.yaw_deg;
+    out["pitch_down_deg"] = result.config.pitch_down_deg;
+    out["roll_deg"] = result.config.roll_deg;
     out["used_gpu"] = result.used_gpu;
     out["frames_seen"] = result.frames_seen;
     out["warmup_frames"] = result.warmup_frames;
@@ -598,6 +778,7 @@ Json reportToJson(const Options& opts, const std::vector<CameraResult>& results)
     report["latency_boundary"] =
         "cap.read returned buffer to preprocessing output ready; display, recording, policy forward, and control are excluded";
     report["manifest"] = opts.manifest;
+    report["preprocess_manifest"] = opts.preprocess_manifest;
     report["frames"] = opts.frames;
     report["warmup"] = opts.warmup;
     report["capture_only"] = opts.capture_only;
@@ -619,7 +800,11 @@ void printSummary(const std::vector<CameraResult>& results) {
         const Json frame = summarize(result.samples.frame_ms);
         std::cout << result.config.key << " device=" << result.config.device
                   << " measured=" << result.measured_frames
-                  << " mode=" << (result.used_gpu ? "gpu" : "cpu_or_capture_only");
+                  << " mode=" << (result.used_gpu ? "gpu" : "cpu_or_capture_only")
+                  << " output=" << result.config.output_size.width << "x" << result.config.output_size.height;
+        if (result.config.use_preprocess) {
+            std::cout << " pitch_down_deg=" << result.config.pitch_down_deg;
+        }
         if (!result.error.empty()) {
             std::cout << " error=\"" << result.error << "\"";
         }

@@ -28,6 +28,7 @@ class TimestampedSample:
     payload: Any
     source: str = ""
     receive_time_ns: int | None = None
+    metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if int(self.timestamp_ns) <= 0:
@@ -166,6 +167,11 @@ class SynchronizedObservationBuilder:
             str(name): int(sample.timestamp_ns)
             for name, sample in image_samples.items()
         }
+        image_metadata = {
+            str(name): dict(sample.metadata)
+            for name, sample in image_samples.items()
+            if getattr(sample, "metadata", None)
+        }
         sync_timestamp_ns = int(joint_sample.timestamp_ns)
         skews = [abs(ts_ns - sync_timestamp_ns) for ts_ns in image_timestamps.values()]
         if action_timestamp_ns is not None:
@@ -203,6 +209,8 @@ class SynchronizedObservationBuilder:
         )
         if action_timestamp_ns is not None:
             observation["action_timestamp_ns"] = int(action_timestamp_ns)
+        if image_metadata:
+            observation["image_metadata"] = image_metadata
         for key in ("imu_debug", "qpos_raw_imu", "qpos_raw_imu_deg"):
             if key in joint_payload:
                 observation[key] = joint_payload[key]

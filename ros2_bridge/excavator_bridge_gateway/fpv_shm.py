@@ -11,6 +11,7 @@ from typing import Optional
 
 MAGIC = 0x46505631
 VERSION = 1
+GMSL_VERSION = 2
 MUTEX_SIZE = 40  # Linux x86_64 glibc pthread_mutex_t
 HEADER_SIZE = 8 + MUTEX_SIZE + 8 + 8 + 4 + 4 + 4 + 4
 MAX_WIDTH = 640
@@ -27,6 +28,8 @@ class FpvFrame:
     width: int
     height: int
     rgb: bytes
+    v4l2_timestamp_ns: int | None = None
+    v4l2_flags: int | None = None
 
 
 def _shm_path(name: str) -> str:
@@ -86,10 +89,20 @@ class FpvShmReader:
 
     def read_latest(self) -> Optional[FpvFrame]:
         if self._mm is None:
-            return None
+            try:
+                self._mm = _open_map(self._name, create=False)
+            except OSError:
+                return None
         magic, version = struct.unpack_from("<II", self._mm, 0)
-        if magic != MAGIC or version != VERSION:
+        if magic != MAGIC or version not in (VERSION, GMSL_VERSION):
             return None
+        v4l2_timestamp_ns: int | None = None
+        v4l2_flags: int | None = None
+        if version >= GMSL_VERSION:
+            raw_v4l2_timestamp_ns, raw_v4l2_flags = struct.unpack_from("<QI", self._mm, 8)
+            if raw_v4l2_timestamp_ns > 0:
+                v4l2_timestamp_ns = int(raw_v4l2_timestamp_ns)
+                v4l2_flags = int(raw_v4l2_flags)
         timestamp_ns, receive_ns, seq, width, height, nbytes = struct.unpack_from(
             "<QQIIII", self._mm, 48
         )
@@ -105,6 +118,8 @@ class FpvShmReader:
             width=int(width),
             height=int(height),
             rgb=rgb,
+            v4l2_timestamp_ns=v4l2_timestamp_ns,
+            v4l2_flags=v4l2_flags,
         )
 
     def is_fresh(self, max_age_ms: int) -> bool:

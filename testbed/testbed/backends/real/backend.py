@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Sequence
 
 import numpy as np
 
@@ -66,12 +66,16 @@ class RealExcavatorBackend(Backend):
         control_hz: float = 50.0,
         image_width: int = 160,
         image_height: int = 120,
+        camera_names: Sequence[str] = ("fpv",),
         mock_velocity_scale_rad_s: float = 0.5,
     ) -> None:
         self._control_hz = float(control_hz)
         self._dt = 1.0 / self._control_hz if self._control_hz > 0 else 0.02
         self._controller_mode = str(controller_mode)
         self._state_reader_mode = str(state_reader_mode)
+        self._camera_names = tuple(str(name) for name in camera_names)
+        if not self._camera_names:
+            raise ValueError("at least one camera name is required")
         self._step_id = 0
         self._last_obs: dict[str, Any] | None = None
         self._sync_builder = sync_builder or SynchronizedObservationBuilder(
@@ -91,6 +95,7 @@ class RealExcavatorBackend(Backend):
             self._bridge_client = InProcessMockBridgeClient(
                 image_width=image_width,
                 image_height=image_height,
+                camera_names=self._camera_names,
                 velocity_scale_rad_s=mock_velocity_scale_rad_s,
             )
 
@@ -119,6 +124,7 @@ class RealExcavatorBackend(Backend):
             self._state_reader = MockStateReader(
                 image_width=image_width,
                 image_height=image_height,
+                camera_names=self._camera_names,
                 velocity_scale_rad_s=mock_velocity_scale_rad_s,
             )
         elif state_reader_mode == "bridge_mock":

@@ -1,0 +1,51 @@
+# ACT smoke training config for the four-camera GMSL runtime contract.
+# This uses the static benchmark episode only to produce a loadable bundle for
+# policy_remote bring-up. It is not a production control policy.
+
+task:
+  task_name: real_gmsl_four_camera_smoke_v1
+  equipment_model: real_excavator
+  dataset_dir: artifacts/gmsl_recording_benchmark_20260701_152402
+  num_episodes: 1
+  episode_len:
+  camera_names:
+    - video4
+    - video5
+    - video6
+    - video7
+  backend:
+    name: real
+    dt: 0.0333333333
+
+policy:
+  class: ACT
+  device: cpu
+  low_dim_keys:
+    - qpos
+    - qvel
+  act_params:
+    chunk_size: 20
+    kl_weight: 10.0
+    hidden_dim: 128
+    dim_feedforward: 512
+
+train:
+  lr: 1.0e-5
+  num_epochs: 1
+  batch_size: 1
+  seed: 0
+  device: cpu
+  num_workers: 0
+  prefetch_factor:
+  persistent_workers: false
+  pin_memory: false
+  split_seed: 0
+  train_split_ratio: 0.8
+  reuse_split: false
+  val_every: 1
+  save_latest_every: 1
+  checkpoint_every: 1
+  plot_every: 1
+  amp: false
+  amp_dtype: auto
+  ckpt_dir: policy_bundles/real_gmsl_four_camera_v1

@@ -10,7 +10,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TOOL_DIR = REPO_ROOT / "tools" / "gmsl_latency_benchmark"
 SOURCE = TOOL_DIR / "src" / "gmsl_latency_benchmark.cpp"
+TIMESTAMP_SOURCE = TOOL_DIR / "src" / "v4l2_timestamp_probe.cpp"
 SUMMARY_TOOL = TOOL_DIR / "summarize_latency_json.py"
+GST_VPI_PROBE = TOOL_DIR / "gst_vpi_probe.py"
 README = TOOL_DIR / "README.md"
 GUIDE = REPO_ROOT / "docs" / "gmsl_latency_benchmark_guide_20260630.md"
 OPTIMIZATION_PLAN = REPO_ROOT / "docs" / "gmsl_realtime_preprocessing_optimization_plan_20260630.md"
@@ -19,7 +21,9 @@ CMAKE = TOOL_DIR / "CMakeLists.txt"
 
 def test_gmsl_latency_benchmark_files_exist() -> None:
     assert SOURCE.is_file()
+    assert TIMESTAMP_SOURCE.is_file()
     assert SUMMARY_TOOL.is_file()
+    assert GST_VPI_PROBE.is_file()
     assert README.is_file()
     assert GUIDE.is_file()
     assert OPTIMIZATION_PLAN.is_file()
@@ -35,6 +39,7 @@ def test_gmsl_latency_benchmark_cli_contract() -> None:
         "--frames",
         "--warmup",
         "--output-json",
+        "--preprocess-manifest",
         "--capture-only",
         "--cpu",
         "--no-rotate",
@@ -65,13 +70,24 @@ def test_gmsl_latency_benchmark_docs_include_field_runbook() -> None:
     assert "cmake -S tools/gmsl_latency_benchmark" in readme
     assert "--camera video6=/dev/video6" in readme
     assert "--camera video7=/dev/video7" in readme
+    assert "--camera video4=/dev/video4" in readme
+    assert "--camera video5=/dev/video5" in readme
+    assert "--preprocess-manifest configs/camera_calibration/gmsl_h190ta_four_camera/preprocess_manifest.json" in readme
+    assert "gst_vpi_probe.py" in readme
+    assert "vpi-remap" in readme
+    assert "gst-capture --gst-format uyvy" in readme
+    assert "v4l2_timestamp_probe" in readme
+    assert "timestamp_source" in readme
     assert "--output-json artifacts/gmsl_latency" in readme
 
     assert "GMSL_PRINT_CONFIG_ONLY=1" in guide
-    assert "GMSL_VIDEO_DEVICES=\"6 7\"" in guide
+    assert "GMSL_VIDEO_DEVICES=\"4 5 6 7\"" in guide
     assert "capture-only" in guide
+    assert "current_preprocess_four_camera.json" in guide
     assert "p50/p95/p99/max" in guide
     assert "summarize_latency_json.py" in guide
+    assert "timestamp_source = eof" in guide
+    assert "embedded_metadata_height" in guide
 
     assert "GStreamer/NVMM" in OPTIMIZATION_PLAN.read_text(encoding="utf-8")
     assert "fused CUDA" in OPTIMIZATION_PLAN.read_text(encoding="utf-8")

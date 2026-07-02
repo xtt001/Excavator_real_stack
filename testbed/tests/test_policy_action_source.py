@@ -346,6 +346,23 @@ class PolicyActionSourceTests(unittest.TestCase):
         np.testing.assert_allclose(converted["qvel"], [0.1, 0.2, 0.3, 0.4])
         self.assertEqual(converted["image_fpv"].shape, (8, 10, 3))
 
+    def test_policy_obs_converts_multiple_cameras(self) -> None:
+        obs = _obs()
+        obs["images"] = {
+            "video4": np.zeros((8, 10, 3), dtype=np.uint8),
+            "video5": np.ones((8, 10, 3), dtype=np.uint8),
+            "video6": np.full((8, 10, 3), 2, dtype=np.uint8),
+            "video7": np.full((8, 10, 3), 3, dtype=np.uint8),
+        }
+
+        converted = _policy_obs_from_real_obs(
+            obs,
+            camera_names=["video4", "video5", "video6", "video7"],
+        )
+
+        self.assertEqual(converted["image_video4"].shape, (8, 10, 3))
+        self.assertEqual(converted["image_video7"].shape, (8, 10, 3))
+
     def test_policy_diagnostics_are_added_to_record_step(self) -> None:
         diagnostics: dict = {}
         _add_policy_action_diagnostics(

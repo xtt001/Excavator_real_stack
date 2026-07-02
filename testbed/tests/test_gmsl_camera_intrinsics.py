@@ -40,9 +40,19 @@ def test_gmsl_h190ta_manifest_matches_raw_intrinsics() -> None:
     assert manifest["image_height"] == 1536
 
     cameras = {camera["camera_key"]: camera for camera in manifest["cameras"]}
-    assert set(cameras) == {"video6", "video7"}
+    assert set(cameras) == {"video4", "video5", "video6", "video7"}
 
     expected = {
+        "video4": {
+            "serial": "H190TA-I06031461",
+            "orientation": "normal",
+            "upside_down": False,
+        },
+        "video5": {
+            "serial": "H190TA-I06031462",
+            "orientation": "normal",
+            "upside_down": False,
+        },
         "video6": {
             "serial": "H190TA-I06031459",
             "orientation": "normal",
@@ -50,8 +60,8 @@ def test_gmsl_h190ta_manifest_matches_raw_intrinsics() -> None:
         },
         "video7": {
             "serial": "H190TA-I06031460",
-            "orientation": "rotate_180",
-            "upside_down": True,
+            "orientation": "normal",
+            "upside_down": False,
         },
     }
     for camera_key, expected_camera in expected.items():

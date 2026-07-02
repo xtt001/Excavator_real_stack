@@ -138,6 +138,9 @@ def _sample_to_payload(sample: TimestampedSample, *, image: bool) -> dict[str, A
         "source": str(sample.source),
         "receive_time_ns": sample.receive_time_ns,
     }
+    metadata = dict(getattr(sample, "metadata", {}) or {})
+    if metadata:
+        payload["metadata"] = _jsonable(metadata)
     if image:
         payload["payload"] = _image_to_payload(sample.payload)
     else:
@@ -161,6 +164,11 @@ def _sample_from_payload(payload: Mapping[str, Any], *, image: bool) -> Timestam
             None
             if payload.get("receive_time_ns") is None
             else int(payload.get("receive_time_ns"))
+        ),
+        metadata=(
+            dict(payload.get("metadata") or {})
+            if isinstance(payload.get("metadata") or {}, Mapping)
+            else {}
         ),
     )
 

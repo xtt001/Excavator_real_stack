@@ -29,6 +29,6 @@ build/gmsl_realtime_undistort/gmsl_realtime_undistort --camera video6 --display
 build/gmsl_realtime_undistort/gmsl_realtime_undistort --camera video7 --display
 ```
 
-`video7` is mapped to `H190TA-I06031460` and applies `rotate_180` after
-undistortion because its evidence frame is upside-down. Use `--no-rotate` only
-when diagnosing raw device orientation.
+`video7` is mapped to `H190TA-I06031460` and is normal orientation in the
+current install. Use `--no-rotate` only when diagnosing a temporary manifest
+orientation override.

@@ -241,9 +241,8 @@ bool ExcavatorConverter::hardwareStateToRobotState(const HardwareState& raw_in, 
             }
         }
     }
-    if (!position_observed && !resp_position_continuous_ready_) {
-        return false;
-    }
+    // Even before all four IMUs are usable for policy qpos, propagate raw IMU
+    // health/debug so the receiver can report the actual missing devices.
     fill_kinematic_from_imu_hw(*hw, rpy_rad, *st);
     // boom/stick 使用 IMU raw deg canonical branch；bucket 使用固定 policy-frame quaternion 标定。
     st->position(1) = deg_to_rad(static_cast<double>(hw->imu.devices[2].rpy_raw_deg(1)));
