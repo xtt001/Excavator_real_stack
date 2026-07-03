@@ -1,5 +1,5 @@
 """
-tb-dataset-videos — Export stored FPV images from HDF5 episodes as MP4 videos.
+tb-dataset-videos — Export stored camera images from HDF5 episodes as MP4 videos.
 
 Offline utility: reads images directly from HDF5 files.
 
@@ -11,8 +11,8 @@ Usage
     # Single episode
     tb-dataset-videos data/real_teleop_v1/episode_0.hdf5
 
-    # Custom output directory and camera
-    tb-dataset-videos data/real_teleop_v1/ -o runs/videos/v1 --camera fpv
+    # Custom output directory and explicit camera
+    tb-dataset-videos data/real_teleop_v1/ -o runs/videos/v1 --camera video4
 
     # Specific episodes by index
     tb-dataset-videos data/real_teleop_v1/ --indices 0 3 5 10
@@ -24,8 +24,11 @@ import argparse
 import logging
 import re
 from pathlib import Path
+from typing import Any
 
 import numpy as np
+
+from testbed.data.camera_contract import select_primary_camera
 
 log = logging.getLogger(__name__)
 
@@ -78,6 +81,18 @@ def _save_video(frames: list[np.ndarray], path: Path, fps: int = 50) -> None:
     writer.release()
 
 
+def _select_camera(
+    *,
+    images: dict[str, Any],
+    metadata: dict[str, Any],
+    requested_camera: str,
+) -> str:
+    camera = str(requested_camera or "auto").strip() or "auto"
+    if camera.lower() != "auto":
+        return camera
+    return select_primary_camera(metadata=metadata, raw_group=images)
+
+
 def main() -> None:
     logging.basicConfig(
         level=logging.INFO,
@@ -92,8 +107,8 @@ def main() -> None:
                         help="Path to a single episode .hdf5 or a directory of episodes.")
     parser.add_argument("-o", "--output-dir", type=Path, default=None,
                         help="Output directory for videos. Defaults to <dataset_dir>/videos/.")
-    parser.add_argument("--camera", type=str, default="fpv",
-                        help="Camera name to extract (default: fpv).")
+    parser.add_argument("--camera", type=str, default="auto",
+                        help="Camera name to extract, or auto to select from episode metadata/images.")
     parser.add_argument("--fps", type=int, default=None,
                         help="Video FPS. If omitted, reads control_hz from episode metadata.")
     parser.add_argument("--indices", type=int, nargs="+", default=None,
@@ -122,17 +137,22 @@ def main() -> None:
     for ep_idx, ep_path in enumerate(episodes):
         ep = read_episode(ep_path)
         images = ep.get("images", {})
-        cam_images = images.get(args.camera)
+        meta = ep.get("metadata", {})
+        camera = _select_camera(
+            images=images,
+            metadata=meta,
+            requested_camera=args.camera,
+        )
+        cam_images = images.get(camera)
 
         if cam_images is None or len(cam_images) == 0:
             log.warning(
                 "[%d/%d] %s — no '%s' images found, skipping.",
-                ep_idx + 1, len(episodes), ep_path.name, args.camera,
+                ep_idx + 1, len(episodes), ep_path.name, camera,
             )
             skipped += 1
             continue
 
-        meta = ep.get("metadata", {})
         fps = args.fps or int(meta.get("control_hz", 50))
 
         out_path = output_dir / f"{ep_path.stem}.mp4"
@@ -140,8 +160,8 @@ def main() -> None:
         _save_video(frames, out_path, fps=fps)
 
         log.info(
-            "[%d/%d] %s → %s  (%d frames, %dx%d, %d fps)",
-            ep_idx + 1, len(episodes), ep_path.name, out_path.name,
+            "[%d/%d] %s [%s] → %s  (%d frames, %dx%d, %d fps)",
+            ep_idx + 1, len(episodes), ep_path.name, camera, out_path.name,
             len(frames), frames[0].shape[1], frames[0].shape[0], fps,
         )
         exported += 1

@@ -46,13 +46,43 @@ def _expect(condition: bool, message: str, response: dict[str, Any]) -> None:
         raise RuntimeError(f"{message}; response={response}")
 
 
+def _parse_expected_cameras(raw: str | None) -> list[str]:
+    if raw is None or not str(raw).strip():
+        return ["fpv"]
+    cameras = [part.strip() for part in str(raw).split(",") if part.strip()]
+    return cameras or ["fpv"]
+
+
+def _expect_read_state_contract(
+    state: dict[str, Any],
+    *,
+    expected_cameras: list[str],
+) -> None:
+    payload = state.get("payload", {})
+    _expect(state.get("ok") is True, "read_state should succeed after watchdog", state)
+    _expect("joint" in payload, "read_state should include joint sample", state)
+    images = payload.get("images", {})
+    missing = [camera for camera in expected_cameras if camera not in images]
+    _expect(
+        not missing,
+        f"read_state should include expected image camera(s): {','.join(expected_cameras)}",
+        state,
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=9876)
     parser.add_argument("--heartbeat-timeout-ms", type=int, default=500)
+    parser.add_argument(
+        "--expect-cameras",
+        default=None,
+        help="Comma-separated camera names expected in read_state images. Defaults to fpv.",
+    )
     parser.add_argument("--shutdown", action="store_true")
     args = parser.parse_args()
+    expected_cameras = _parse_expected_cameras(args.expect_cameras)
 
     with socket.create_connection((args.host, args.port), timeout=5.0) as sock:
         sock.settimeout(5.0)
@@ -83,9 +113,7 @@ def main() -> int:
 
         time.sleep(max(args.heartbeat_timeout_ms / 1000.0 + 0.25, 0.3))
         state = _request(sock, "read_state.request", {"step_id": 0})
-        _expect(state.get("ok") is True, "read_state should succeed after watchdog", state)
-        _expect("joint" in state.get("payload", {}), "read_state should include joint sample", state)
-        _expect("fpv" in state.get("payload", {}).get("images", {}), "read_state should include fpv image", state)
+        _expect_read_state_contract(state, expected_cameras=expected_cameras)
 
         if args.shutdown:
             shutdown = _request(sock, "shutdown.request")
