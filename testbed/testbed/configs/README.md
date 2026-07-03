@@ -5,9 +5,12 @@ This branch keeps only real-excavator configs.
 | Goal | Config | Entry |
 |---|---|---|
 | Safe teleop receiver/record | `testbed/configs/teleop_real_v1.yaml` | `tb-receiver-real` |
-| One-dig policy shadow/control | `testbed/configs/policy_real_one_dig_v1.yaml` | `tb-receiver-real --input policy` |
+| GMSL four-camera policy shadow/control | `testbed/configs/policy_real_gmsl_four_camera_v1.yaml` | `tb-receiver-real --input policy` |
+| Legacy one-dig FPV policy shadow/control | `testbed/configs/policy_real_one_dig_v1.yaml` | `tb-receiver-real --input policy` |
 | Offline ACT training | `testbed/configs/act_real_v1.yaml` | `tb-train` |
 | Offline ACT training, repaired 20Hz data | `testbed/configs/act_real_20hz_v1.yaml` | `tb-train` |
+| Offline ACT training, GMSL four-camera qpos baseline | `testbed/configs/act_real_gmsl_four_camera_qpos_v1.yaml` | `tb-train` |
+| Offline ACT training, GMSL four-camera qpos+qvel comparison | `testbed/configs/act_real_gmsl_four_camera_qpos_qvel_v1.yaml` | `tb-train` |
 | Build online QC reference bundle | HDF5 dataset + manifest inputs | `tb-build-online-qc-reference` |
 
 ## `teleop_real_v1.yaml`
@@ -82,10 +85,43 @@ limits copied from `training_qc_summary.json` and bucket semantic statistics
 computed from strict-PASS episodes. Rebuild the bundle whenever the training QC
 reference set changes.
 
+## `policy_real_gmsl_four_camera_v1.yaml`
+
+Defines the current four-camera GMSL policy receiver. The expected local bundle
+is `policy_bundles/real_gmsl_four_camera_v1/` with:
+
+- `policy_best.ckpt`
+- `dataset_stats.pkl`
+- `resolved_config.yaml`
+- optional `run_metadata.json`
+
+The bundle `resolved_config.yaml` must contain:
+
+```yaml
+task:
+  camera_names: [video4, video5, video6, video7]
+```
+
+Use `scripts/run_policy_shadow_check.sh` for the default field preflight. It
+checks the bundle files and the camera contract before starting `shadow_zero`.
+
+## GMSL four-camera ACT training configs
+
+Use these after GMSL HDF5 has been recorded, resampled to 20Hz, and checked by
+training QC under
+`/media/mundane/EXTERNAL_USB/real_gmsl_four_camera_20hz_v1`.
+
+- `act_real_gmsl_four_camera_qpos_v1.yaml` is the qpos-only baseline.
+- `act_real_gmsl_four_camera_qpos_qvel_v1.yaml` is the qpos+qvel comparison.
+
+Both configs use the same `train_ready_manifest.json` and camera order
+`[video4, video5, video6, video7]`. Recording can keep qvel in HDF5 even when
+the training run uses only qpos.
+
 ## `policy_real_one_dig_v1.yaml`
 
-Defines a policy-backed receiver for the real one-dig checkpoint. The expected
-local bundle is `policy_bundles/real_one_dig_v1/` with:
+Defines the legacy single-FPV receiver for the real one-dig checkpoint. The
+expected local bundle is `policy_bundles/real_one_dig_v1/` with:
 
 - `policy_best.ckpt`
 - `dataset_stats.pkl`
@@ -102,7 +138,7 @@ shadow checks pass, use `output_mode: control` for the full one-dig test window.
 Normal data collection remains on `teleop_real_v1.yaml`; use
 `--record` only when you intentionally want HDF5 sessions from this config.
 
-Local dry run:
+Local dry run for the legacy FPV bundle:
 
 ```bash
 tb-receiver-real \

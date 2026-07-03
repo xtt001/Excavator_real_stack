@@ -48,8 +48,8 @@ teleop:
   policy:
     bundle_dir: policy_bundles/real_one_dig_v1
     source_id: policy:act:real_one_dig_v1
-    camera: video4
-    camera_names: ["video4", "video5", "video6", "video7"]
+    camera: fpv
+    camera_names: ["fpv"]
     temporal_agg: true
     output_mode: shadow_zero
     qvel_mode: zero
@@ -131,7 +131,7 @@ teleop:
     output_dir: runs/policy_control_tests
     flush_every_steps: 20
     capture_images: true
-    image_camera: video4
+    image_camera: fpv
     image_interval_steps: 20
     image_policy_only: true
     image_dir: camera_frames
@@ -140,7 +140,7 @@ teleop:
 task:
   task_name: real_one_dig_v1_policy_test
   dataset_dir: data/policy_shadow_real_one_dig_v1
-  camera_names: ["video4", "video5", "video6", "video7"]
+  camera_names: ["fpv"]
   max_steps: 4000
   control_hz: 50
   record_hz: 50
@@ -151,7 +151,7 @@ task:
 sync:
   time_source: sensor_or_ros_header_stamp
   max_observation_skew_ms: 40.0
-  required_cameras: ["video4", "video5", "video6", "video7"]
+  required_cameras: ["fpv"]
   record_action_sample_time: true
   record_action_send_time: true
 
@@ -167,7 +167,7 @@ receiver:
     mode: strict
     bridge_snapshot_timeout_ms: 200
     fpv_max_stale_ms: 1000
-    primary_camera: video4
+    primary_camera: fpv
     camera_max_stale_ms: 1000
     imu_require_online: true
     imu_require_valid_attitude: true

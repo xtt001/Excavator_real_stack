@@ -204,12 +204,12 @@ cd /media/mundane/D/Excavator_real_stack
 ```
 
 这个终端同时托管底层链路和唯一的 `policy_remote` receiver。按一次 `Ctrl+C`
-会先停止 receiver，再停止 gateway、FPV、相机和 bridge。
-`--policy-remote` 会自动使用 `policy_real_one_dig_v1.yaml`、`policy_remote` input、
-`control` output、`action_scale=1.0`、USB HDF5 目录和 policy test log 目录。
+会先停止 receiver，再停止 gateway、相机链路和 bridge。
+`--policy-remote` 会自动使用 `policy_real_gmsl_four_camera_v1.yaml`、`policy_remote` input、
+`control` output、`action_scale=1.0`、GMSL 四路相机、USB HDF5 目录和 policy test log 目录。
 
 如果当前只是检查 IMU/qvel，不想启动 receiver，使用下面这个命令。它会启动
-bridge、Orbbec、FPV、gateway，但不开 receiver：
+bridge、GMSL 预处理和 gateway，但不开 receiver：
 
 ```bash
 cd /media/mundane/D/Excavator_real_stack
@@ -408,8 +408,9 @@ export LD_LIBRARY_PATH="$PWD/.venv/lib/python3.10/site-packages/nvidia/cu12/lib$
 ./scripts/run_policy_shadow_check.sh
 ```
 
-脚本会先确认 `policy_bundles/real_one_dig_v1/` 下的 `policy_best.ckpt`、
-`dataset_stats.pkl`、`resolved_config.yaml` 是否存在，然后跑 `shadow_zero`，
+脚本会先确认 `policy_bundles/real_gmsl_four_camera_v1/` 下的 `policy_best.ckpt`、
+`dataset_stats.pkl`、`resolved_config.yaml` 是否存在，并检查 bundle 的
+`camera_names` 是 `video4,video5,video6,video7`，然后跑 `shadow_zero`，
 最后打印方便现场判断的关键数据：
 
 - `Bundle verdict`
@@ -526,8 +527,10 @@ C++ bridge `8766`：
 如果输出提示 `imu_debug missing`，说明当前运行的 bridge 还是旧二进制，只能看到
 `imu_health`，看不到每个 IMU 的 gyro/rpy/accel 原始值。需要重新编译并重启 bridge。
 
-HDF5 中图像默认写到 `/observations/encoded_images/fpv`，格式为逐帧 JPEG。
-gateway 只在 FPV SHM 帧序号变化时压缩一次，并缓存给 `read_state`，避免 receiver
+GMSL HDF5 中图像默认按相机名写到 `/observations/encoded_images/video4`、
+`/observations/encoded_images/video5`、`/observations/encoded_images/video6`、
+`/observations/encoded_images/video7`，格式为逐帧 JPEG。
+gateway 只在相机 SHM 帧序号变化时压缩一次，并缓存给 `read_state`，避免 receiver
 高频读状态时重复压缩同一帧影响控制链路。
 训练和 QC 会自动解码；`camera_fps` 仍由真实 image timestamp 估计，不等于
 `record_hz` 或 control pump 的 50Hz。
@@ -601,7 +604,7 @@ pygame `joystick 0`，右侧物理摇杆是 pygame `joystick 1`；左侧控制 `
 - 按左侧按钮 `2` 前，receiver 处于 receive/armed 状态，会接收和下发控制，但不会写入 HDF5。
 - 按左侧按钮 `2` 后开始正式 HDF5 录制；从端 `slave_real_stack.sh run --force --policy-remote` 终端按一次 `Ctrl+C`
   会先下发零命令，再停止当前 episode 并保存已有数据；主端 `teleop_remote` 的 `Ctrl+C` 只断开 sender。
-- go-home 启用前需要在 `testbed/testbed/configs/policy_real_one_dig_v1.yaml` 中配置
+- go-home 启用前需要在 `testbed/testbed/configs/policy_real_gmsl_four_camera_v1.yaml` 中配置
   `teleop.recording.go_home.home_pose_rad` 并设为 `enabled: true`，也可以用
   `./scripts/calibrate_home_pose_from_current.sh` 从当前姿态采样写入。
 - `swing` 是圆周角，`216°` 和 `-144°` 是同一物理分支附近。go-home、phase label

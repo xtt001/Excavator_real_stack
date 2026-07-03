@@ -21,8 +21,9 @@ if [[ -d "${CU12_LIB}" ]]; then
   export LD_LIBRARY_PATH="${CU12_LIB}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 fi
 
-CONFIG="${CONFIG:-testbed/testbed/configs/policy_real_one_dig_v1.yaml}"
-BUNDLE_DIR="${BUNDLE_DIR:-policy_bundles/real_one_dig_v1}"
+CONFIG="${CONFIG:-testbed/testbed/configs/policy_real_gmsl_four_camera_v1.yaml}"
+BUNDLE_DIR="${BUNDLE_DIR:-policy_bundles/real_gmsl_four_camera_v1}"
+EXPECT_CAMERA_NAMES="${EXPECT_CAMERA_NAMES:-video4,video5,video6,video7}"
 TEST_LOG_DIR="${TEST_LOG_DIR:-/media/mundane/EXTERNAL_USB/policy_control_tests}"
 MAX_STEPS="${MAX_STEPS:-500}"
 BRIDGE_HOST="${BRIDGE_HOST:-127.0.0.1}"
@@ -30,7 +31,9 @@ BRIDGE_PORT="${BRIDGE_PORT:-8765}"
 BRIDGE_TIMEOUT="${BRIDGE_TIMEOUT:-2.0}"
 
 echo "TEST ONLY: checking policy bundle and running shadow_zero."
-"${PYTHON}" scripts/summarize_policy_test_log.py --bundle-dir "${BUNDLE_DIR}"
+"${PYTHON}" scripts/summarize_policy_test_log.py \
+  --bundle-dir "${BUNDLE_DIR}" \
+  --expect-camera-names "${EXPECT_CAMERA_NAMES}"
 
 "${PYTHON}" -m testbed.cli.record_real \
   --config "${CONFIG}" \

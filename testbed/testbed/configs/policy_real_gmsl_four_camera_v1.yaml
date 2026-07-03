@@ -1,7 +1,7 @@
 # Runtime config for four-camera GMSL policy_remote bring-up.
-# The current default bundle is a smoke bundle trained from the static GMSL
-# benchmark episode; replace policy.bundle_dir with a real train-ready bundle
-# before enabling live model control.
+# policy.bundle_dir must point at a complete four-camera ACT bundle whose
+# resolved_config.yaml declares camera_names [video4, video5, video6, video7].
+# Keep output_mode shadow_zero until the bundle has passed field preflight.
 
 real:
   backend: mock

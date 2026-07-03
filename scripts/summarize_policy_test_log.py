@@ -14,6 +14,8 @@ import sys
 from pathlib import Path
 from typing import Any, Iterable
 
+import yaml
+
 
 REQUIRED_BUNDLE_FILES = (
     "policy_best.ckpt",
@@ -39,6 +41,15 @@ def main() -> int:
         default=None,
         help="Optional policy bundle directory to check before log summary.",
     )
+    parser.add_argument(
+        "--expect-camera-names",
+        type=str,
+        default=None,
+        help=(
+            "Optional comma-separated camera_names contract expected in "
+            "bundle/resolved_config.yaml, for example video4,video5,video6,video7."
+        ),
+    )
     parser.add_argument("--expect-output-mode", type=str, default=None)
     parser.add_argument(
         "--allow-stop-reason",
@@ -63,7 +74,10 @@ def main() -> int:
 
     ok = True
     if args.bundle_dir is not None:
-        ok = _print_bundle_check(args.bundle_dir) and ok
+        ok = _print_bundle_check(
+            args.bundle_dir,
+            expected_camera_names=_parse_expected_camera_names(args.expect_camera_names),
+        ) and ok
 
     run_dir = _resolve_run_dir(args.run_dir, args.latest)
     if run_dir is None:
@@ -87,7 +101,17 @@ def main() -> int:
     return 0 if ok else 2
 
 
-def _print_bundle_check(bundle_dir: Path) -> bool:
+def _parse_expected_camera_names(raw: str | None) -> list[str] | None:
+    if raw is None:
+        return None
+    return [part.strip() for part in str(raw).split(",") if part.strip()]
+
+
+def _print_bundle_check(
+    bundle_dir: Path,
+    *,
+    expected_camera_names: list[str] | None = None,
+) -> bool:
     bundle = Path(bundle_dir)
     print(f"Bundle: {bundle}")
     ok = True
@@ -103,8 +127,37 @@ def _print_bundle_check(bundle_dir: Path) -> bool:
         print(f"  OK run_metadata.json {_format_bytes(optional.stat().st_size)}")
     else:
         print("  WARN run_metadata.json missing")
+    if expected_camera_names is not None:
+        ok = _print_camera_contract_check(
+            bundle / "resolved_config.yaml",
+            expected_camera_names=expected_camera_names,
+        ) and ok
     print(f"Bundle verdict: {'OK' if ok else 'NOT OK'}")
     return ok
+
+
+def _print_camera_contract_check(
+    resolved_config_path: Path,
+    *,
+    expected_camera_names: list[str],
+) -> bool:
+    if not resolved_config_path.exists():
+        return False
+    try:
+        resolved = yaml.safe_load(resolved_config_path.read_text(encoding="utf-8")) or {}
+    except Exception as exc:
+        print(f"  ERROR resolved_config.yaml unreadable: {type(exc).__name__}: {exc}")
+        return False
+    task_cfg = resolved.get("task", {}) or {}
+    actual_camera_names = [str(name) for name in task_cfg.get("camera_names", ["fpv"])]
+    if actual_camera_names != expected_camera_names:
+        print(
+            "  MISMATCH camera_names "
+            f"expected={expected_camera_names!r} actual={actual_camera_names!r}"
+        )
+        return False
+    print(f"  OK camera_names {actual_camera_names!r}")
+    return True
 
 
 def _resolve_run_dir(run_dir: Path | None, latest_root: Path | None) -> Path | None:
