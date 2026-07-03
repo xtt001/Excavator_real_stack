@@ -26,11 +26,11 @@ def _run_config_check(*, devices: str | None = None) -> subprocess.CompletedProc
     )
 
 
-def test_bring_up_gmsl_cameras_keeps_video6_video7_default() -> None:
+def test_bring_up_gmsl_cameras_uses_four_camera_default() -> None:
     result = _run_config_check()
 
     assert result.returncode == 0
-    assert "Video devices: 6 7" in result.stdout
+    assert "Video devices: 4 5 6 7" in result.stdout
 
 
 def test_bring_up_gmsl_cameras_accepts_four_explicit_devices_in_0_to_7_range() -> None:

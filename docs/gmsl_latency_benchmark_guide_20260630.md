@@ -32,13 +32,13 @@ cd /media/mundane/D/Excavator_real_stack
 git pull
 ```
 
-先确认 bring-up 设备列表。当前默认仍是 `video6 video7`：
+先确认 bring-up 设备列表。当前默认是现场四路 `4 5 6 7`：
 
 ```bash
-GMSL_PRINT_CONFIG_ONLY=1 GMSL_VIDEO_DEVICES="6 7" scripts/bring_up_gmsl_cameras.sh
+GMSL_PRINT_CONFIG_ONLY=1 scripts/bring_up_gmsl_cameras.sh
 ```
 
-四路测试时把 `GMSL_VIDEO_DEVICES` 改成现场真实编号。当前现场四路为 `4 5 6 7`：
+如果现场 `/dev/videoN` 映射变化，再显式覆盖 `GMSL_VIDEO_DEVICES`：
 
 ```bash
 GMSL_PRINT_CONFIG_ONLY=1 GMSL_VIDEO_DEVICES="4 5 6 7" scripts/bring_up_gmsl_cameras.sh

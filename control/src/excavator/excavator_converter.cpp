@@ -241,8 +241,9 @@ bool ExcavatorConverter::hardwareStateToRobotState(const HardwareState& raw_in, 
             }
         }
     }
-    // Even before all four IMUs are usable for policy qpos, propagate raw IMU
-    // health/debug so the receiver can report the actual missing devices.
+    const bool can_publish_position = position_observed || resp_position_continuous_ready_;
+    // Keep state_out populated for diagnostics, but do not report a publishable
+    // robot state until qpos has a valid branch or a previous value to hold.
     fill_kinematic_from_imu_hw(*hw, rpy_rad, *st);
     // boom/stick 使用 IMU raw deg canonical branch；bucket 使用固定 policy-frame quaternion 标定。
     st->position(1) = deg_to_rad(static_cast<double>(hw->imu.devices[2].rpy_raw_deg(1)));
@@ -258,6 +259,9 @@ bool ExcavatorConverter::hardwareStateToRobotState(const HardwareState& raw_in, 
     const double omega4_raw = st->velocity(3);
     st->velocity(2) = omega3_raw - omega2_raw;
     st->velocity(3) = omega4_raw - omega3_raw;
+    if (!can_publish_position) {
+        return false;
+    }
     applyPositionContinuity(*st, position_observed, branch_reference);
     double swing_raw_yaw = 0.0;
     if (swing_raw_yaw_reference_rad(*hw, swing_raw_yaw)) {

@@ -462,9 +462,24 @@ bool process_packet(excavator_api::ExcavatorControl& control,
     return false;
 }
 
+void print_usage(const char* argv0) {
+    std::cout << "Usage: " << argv0
+              << " [--pid-yaml PATH] [--host IPv4] [--port PORT]"
+                 " [--can-if IFACE] [--imu-if IFACE] [--can-sim 0|1]"
+                 " [--imu-sim 0|1] [--can-bus 0|1]\n";
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg == "--help" || arg == "-h") {
+            print_usage(argv[0]);
+            return 0;
+        }
+    }
+
     std::string host = "127.0.0.1";
     int port = 29753;
     std::string can_if = "can0";
