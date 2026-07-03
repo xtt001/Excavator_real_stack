@@ -10,6 +10,8 @@ from typing import Any
 import h5py
 import numpy as np
 
+from testbed.data.camera_contract import select_primary_camera
+
 
 REQUIRED_DIAGNOSTICS = {
     "raw_action",
@@ -53,6 +55,7 @@ def run_episode_qc(
             _check_diagnostics(f, errors=errors, warnings=warnings, metrics=metrics)
             _check_images(
                 f,
+                metadata=metadata,
                 errors=errors,
                 warnings=warnings,
                 metrics=metrics,
@@ -188,6 +191,7 @@ def _check_diagnostics(
 def _check_images(
     f: h5py.File,
     *,
+    metadata: dict[str, Any],
     errors: list[str],
     warnings: list[str],
     metrics: dict[str, Any],
@@ -200,13 +204,23 @@ def _check_images(
     if raw_group is None and encoded_group is None:
         errors.append("missing_fpv_images")
         return
-    group = raw_group if raw_group is not None else encoded_group
-    assert group is not None
-    if "fpv" not in group:
+    camera_name = select_primary_camera(
+        metadata=metadata,
+        raw_group=raw_group,
+        encoded_group=encoded_group,
+    )
+    dataset = None
+    encoded = False
+    if raw_group is not None and camera_name in raw_group:
+        dataset = raw_group[camera_name]
+    elif encoded_group is not None and camera_name in encoded_group:
+        dataset = encoded_group[camera_name]
+        encoded = True
+    if dataset is None:
         errors.append("missing_fpv_camera")
         return
-    dataset = group["fpv"]
     frame_count = int(dataset.shape[0]) if dataset.shape else 0
+    metrics["fpv_camera_name"] = camera_name
     metrics["fpv_frame_count"] = frame_count
     if frame_count <= 0:
         errors.append("fpv_empty")
@@ -218,7 +232,7 @@ def _check_images(
     for idx in indices:
         try:
             frame = dataset[idx]
-            if raw_group is not None:
+            if not encoded:
                 arr = np.asarray(frame, dtype=np.uint8)
             else:
                 arr = _decode_jpeg(np.asarray(frame, dtype=np.uint8).reshape(-1))

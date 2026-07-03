@@ -20,6 +20,7 @@ from testbed.data.bucket_semantic import (
     bucket_semantic_reference,
     moving_average,
 )
+from testbed.data.camera_contract import sanitize_camera_key, select_primary_camera
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
@@ -209,11 +210,16 @@ def episode_training_metrics(
         action = np.asarray(f["action"][()], dtype=np.float32)
         diagnostics = f.get("diagnostics")
         metadata = _metadata(f)
+        primary_camera = select_primary_camera(
+            metadata=metadata,
+            raw_group=f.get("observations/images"),
+            encoded_group=f.get("observations/encoded_images"),
+        )
         timestamps_ns = _read_optional(diagnostics, "joint_timestamp_ns")
         if timestamps_ns is None:
             timestamps_ns = _read_optional(f.get("timestamps"), "step_ns")
-        image_ts = _read_optional(diagnostics, "image_timestamp_ns_fpv")
-        fpv_age = _read_optional(diagnostics, "fpv_age_ms")
+        image_ts = _read_camera_timestamp(diagnostics, primary_camera)
+        fpv_age = _read_camera_age(diagnostics, primary_camera)
         sync_skew = _read_optional(diagnostics, "sync_max_skew_ns")
         controller_ack = _read_optional(diagnostics, "controller_ack")
         receiver_health = _read_optional(diagnostics, "receiver_health_ok")
@@ -224,7 +230,7 @@ def episode_training_metrics(
         go_home_requested = _read_optional(diagnostics, "go_home_requested")
         go_home_running = _read_optional(diagnostics, "go_home_running")
         repair_mask = _read_repair_mask(f)
-        fpv_decode = _sample_fpv_decode_metrics(f)
+        fpv_decode = _sample_fpv_decode_metrics(f, camera_name=primary_camera)
 
     n_steps = int(action.shape[0]) if action.ndim else 0
     source_total_steps = _source_total_steps(path=path, metadata=metadata, fallback=n_steps)
@@ -329,6 +335,7 @@ def episode_training_metrics(
         "qvel_residual_p95_stick": qvel_residual["p95_abs"][2],
         "qvel_residual_p95_bucket": qvel_residual["p95_abs"][3],
         "fpv_unique_fps": fpv["unique_fps"],
+        "fpv_camera_name": primary_camera,
         "fpv_duplicate_ratio": fpv["duplicate_ratio"],
         "fpv_gap_gt100_count": fpv["gap_gt100_count"],
         "fpv_gap_gt150_count": fpv["gap_gt150_count"],
@@ -565,13 +572,24 @@ def _fpv_time_metrics(*, image_ts: np.ndarray | None) -> dict[str, float | int]:
     }
 
 
-def _sample_fpv_decode_metrics(f: h5py.File, *, limit: int = 24) -> dict[str, float | int]:
+def _sample_fpv_decode_metrics(
+    f: h5py.File,
+    *,
+    camera_name: str = "fpv",
+    limit: int = 24,
+) -> dict[str, float | int]:
+    camera_name = str(camera_name or "fpv")
     raw_group = f.get("observations/images")
     encoded_group = f.get("observations/encoded_images")
-    group = raw_group if raw_group is not None else encoded_group
-    if group is None or "fpv" not in group:
+    dataset = None
+    encoded = False
+    if raw_group is not None and camera_name in raw_group:
+        dataset = raw_group[camera_name]
+    elif encoded_group is not None and camera_name in encoded_group:
+        dataset = encoded_group[camera_name]
+        encoded = True
+    if dataset is None:
         return {"bad_sample_count": 1, "black_sample_ratio": 1.0, "near_duplicate_sample_ratio": 1.0}
-    dataset = group["fpv"]
     count = int(dataset.shape[0]) if dataset.shape else 0
     if count <= 0:
         return {"bad_sample_count": 1, "black_sample_ratio": 1.0, "near_duplicate_sample_ratio": 1.0}
@@ -581,7 +599,7 @@ def _sample_fpv_decode_metrics(f: h5py.File, *, limit: int = 24) -> dict[str, fl
     bad = 0
     for idx in indices:
         try:
-            if raw_group is not None:
+            if not encoded:
                 frame = np.asarray(dataset[idx], dtype=np.uint8)
             else:
                 frame = _decode_jpeg(np.asarray(dataset[idx], dtype=np.uint8).reshape(-1))
@@ -597,6 +615,48 @@ def _sample_fpv_decode_metrics(f: h5py.File, *, limit: int = 24) -> dict[str, fl
         "black_sample_ratio": float(np.mean(np.asarray(means) <= 5.0)),
         "near_duplicate_sample_ratio": float(duplicate),
     }
+
+
+def _read_camera_timestamp(
+    diagnostics: h5py.Group | None,
+    camera_name: str,
+) -> np.ndarray | None:
+    safe_camera = sanitize_camera_key(camera_name)
+    names = (
+        ["image_timestamp_ns_fpv", "image_timestamp_ns"]
+        if camera_name == "fpv"
+        else [f"image_timestamp_ns_{safe_camera}", "image_timestamp_ns", "image_timestamp_ns_fpv"]
+    )
+    return _read_first_optional(diagnostics, names)
+
+
+def _read_camera_age(
+    diagnostics: h5py.Group | None,
+    camera_name: str,
+) -> np.ndarray | None:
+    safe_camera = sanitize_camera_key(camera_name)
+    names = (
+        ["fpv_age_ms", "camera_age_ms"]
+        if camera_name == "fpv"
+        else [
+            f"camera_age_ms_{safe_camera}",
+            f"{safe_camera}_age_ms",
+            "camera_age_ms",
+            "fpv_age_ms",
+        ]
+    )
+    return _read_first_optional(diagnostics, names)
+
+
+def _read_first_optional(
+    diagnostics: h5py.Group | None,
+    names: list[str],
+) -> np.ndarray | None:
+    for name in names:
+        value = _read_optional(diagnostics, name)
+        if value is not None:
+            return value
+    return None
 
 
 def _decode_jpeg(data: np.ndarray) -> np.ndarray:

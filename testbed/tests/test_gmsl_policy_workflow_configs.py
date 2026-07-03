@@ -100,8 +100,19 @@ def test_policy_runtime_configs_keep_gmsl_and_legacy_fpv_contracts_separate() ->
     assert gmsl_cfg["teleop"]["policy"]["camera_names"] == expected_gmsl
     assert gmsl_cfg["task"]["camera_names"] == expected_gmsl
     assert gmsl_cfg["sync"]["required_cameras"] == expected_gmsl
+    assert gmsl_cfg["receiver"]["online_qc"]["primary_camera"] == "video4"
 
     assert one_dig_cfg["teleop"]["policy"]["bundle_dir"] == "policy_bundles/real_one_dig_v1"
     assert one_dig_cfg["teleop"]["policy"]["camera_names"] == ["fpv"]
     assert one_dig_cfg["task"]["camera_names"] == ["fpv"]
     assert one_dig_cfg["sync"]["required_cameras"] == ["fpv"]
+    assert one_dig_cfg["receiver"]["online_qc"]["primary_camera"] == "fpv"
+
+
+def test_teleop_recording_config_declares_gmsl_online_qc_primary_camera() -> None:
+    cfg = _load_yaml(CONFIG_DIR / "teleop_real_v1.yaml")
+
+    expected_gmsl = ["video4", "video5", "video6", "video7"]
+    assert cfg["task"]["camera_names"] == expected_gmsl
+    assert cfg["receiver"]["health"]["primary_camera"] == "video4"
+    assert cfg["receiver"]["online_qc"]["primary_camera"] == "video4"

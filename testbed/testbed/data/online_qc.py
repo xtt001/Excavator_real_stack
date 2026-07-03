@@ -26,6 +26,7 @@ class OnlineQcConfig:
     enabled: bool = True
     reference: dict[str, Any] | None = None
     reference_path: str | None = None
+    primary_camera: str = "fpv"
     mask_backfill_window_steps: int = 5
     qpos_warn_consecutive_steps: int = 5
     qpos_fail_consecutive_steps: int = 25
@@ -60,6 +61,7 @@ class OnlineQcConfig:
             enabled=bool(cfg.get("enabled", False)),
             reference=reference if isinstance(reference, dict) else None,
             reference_path=str(reference_path) if reference_path else None,
+            primary_camera=str(cfg.get("primary_camera", "fpv") or "fpv"),
             mask_backfill_window_steps=int(cfg.get("mask_backfill_window_steps", 5)),
             qpos_warn_consecutive_steps=int(cfg.get("qpos_warn_consecutive_steps", 5)),
             qpos_fail_consecutive_steps=int(cfg.get("qpos_fail_consecutive_steps", 25)),
@@ -254,6 +256,7 @@ class OnlineTrainingQcEvaluator:
             "online_qc_qpos_fail_count": int(self._qpos_fail_count),
             "online_qc_imu_qpos_delta": imu_delta.astype(np.float32, copy=True),
             "online_qc_imu_qpos_delta_count": int(self._imu_qpos_delta_count),
+            "online_qc_primary_camera": str(self.config.primary_camera or "fpv"),
             "online_qc_fpv_sampled": int(fpv_metrics["sampled"]),
             "online_qc_fpv_brightness": float(fpv_metrics["brightness"]),
             "online_qc_fpv_contrast": float(fpv_metrics["contrast"]),
@@ -446,8 +449,9 @@ class OnlineTrainingQcEvaluator:
         return (self._step_count - 1) % interval == 0
 
     def _evaluate_fpv(self, obs: dict[str, Any]) -> dict[str, Any]:
+        camera_name = str(self.config.primary_camera or "fpv")
         try:
-            frame, jpeg_size = _fpv_frame(obs)
+            frame, jpeg_size = _camera_frame(obs, camera_name=camera_name)
         except Exception:
             return {
                 "error": "fpv_decode_failed",
@@ -515,16 +519,21 @@ def _raw_imu_qpos(obs: dict[str, Any]) -> np.ndarray:
 
 
 def _fpv_frame(obs: dict[str, Any]) -> tuple[np.ndarray, float]:
+    return _camera_frame(obs, camera_name="fpv")
+
+
+def _camera_frame(obs: dict[str, Any], *, camera_name: str) -> tuple[np.ndarray, float]:
+    camera_name = str(camera_name or "fpv")
     images = obs.get("images")
-    if isinstance(images, dict) and "fpv" in images:
-        frame = np.asarray(images["fpv"], dtype=np.uint8)
+    if isinstance(images, dict) and camera_name in images:
+        frame = np.asarray(images[camera_name], dtype=np.uint8)
         if frame.size == 0:
-            raise ValueError("empty fpv image")
+            raise ValueError(f"empty {camera_name} image")
         return frame, float(frame.nbytes)
 
     encoded_images = obs.get("encoded_images")
-    if isinstance(encoded_images, dict) and "fpv" in encoded_images:
-        payload = encoded_images["fpv"]
+    if isinstance(encoded_images, dict) and camera_name in encoded_images:
+        payload = encoded_images[camera_name]
         if isinstance(payload, dict):
             data = payload.get("data", payload.get("bytes", b""))
         else:
@@ -532,7 +541,7 @@ def _fpv_frame(obs: dict[str, Any]) -> tuple[np.ndarray, float]:
         encoded = np.asarray(data, dtype=np.uint8).reshape(-1)
         return _decode_jpeg(encoded), float(encoded.size)
 
-    raise ValueError("missing fpv image")
+    raise ValueError(f"missing {camera_name} image")
 
 
 def _decode_jpeg(data: np.ndarray) -> np.ndarray:

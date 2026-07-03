@@ -515,6 +515,11 @@ def main(prog: str = "tb-record-real") -> None:
     )
     sync_max_slop_ns = int(float(sync_cfg.get("max_observation_skew_ms", 40.0)) * 1_000_000)
     camera_names: list[str] = list(task_cfg.get("camera_names", ["fpv"]))
+    _default_online_qc_primary_camera(
+        receiver_online_qc_cfg,
+        receiver_health_cfg=receiver_health_cfg,
+        camera_names=camera_names,
+    )
     record_config_yaml = _dump_yaml_config(cfg)
 
     from testbed.backends.real.backend import RealExcavatorBackend
@@ -3361,6 +3366,23 @@ def _primary_image_timestamp_ns(image_timestamps: dict[str, Any]) -> int:
     for _name, timestamp_ns in sorted(image_timestamps.items()):
         return _int_timestamp(timestamp_ns)
     return 0
+
+
+def _default_online_qc_primary_camera(
+    online_qc_cfg: dict[str, Any],
+    *,
+    receiver_health_cfg: dict[str, Any],
+    camera_names: list[str],
+) -> str:
+    raw = online_qc_cfg.get("primary_camera")
+    if raw:
+        return str(raw)
+    primary = receiver_health_cfg.get("primary_camera")
+    if not primary and camera_names:
+        primary = camera_names[0]
+    primary_name = str(primary or "fpv")
+    online_qc_cfg["primary_camera"] = primary_name
+    return primary_name
 
 
 def _int_timestamp(value: Any, *, default: int = 0) -> int:

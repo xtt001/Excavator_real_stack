@@ -12,6 +12,7 @@ from typing import Any
 import h5py
 import numpy as np
 
+from testbed.data.camera_contract import select_primary_camera
 from testbed.data.online_qc import _decode_jpeg, _fingerprint
 from testbed.data.training_qc import (
     _bucket_semantic_features,
@@ -44,6 +45,7 @@ def build_online_qc_reference(
     jpeg_size: list[float] = []
     fingerprints: list[np.ndarray] = []
     qpos_rows: list[np.ndarray] = []
+    camera_names: set[str] = set()
 
     for episode_id in episode_ids:
         path = dataset_dir / f"episode_{episode_id}.hdf5"
@@ -51,11 +53,12 @@ def build_online_qc_reference(
             continue
         with h5py.File(path, "r") as f:
             qpos_rows.extend(_iter_qpos_rows(f))
-            for frame, size in _iter_fpv_frames(f):
+            for frame, size, camera_name in _iter_fpv_frames(f):
                 brightness.append(float(np.mean(frame)) if frame.size else 0.0)
                 contrast.append(float(np.std(frame)) if frame.size else 0.0)
                 jpeg_size.append(float(size))
                 fingerprints.append(_fingerprint(frame))
+                camera_names.add(camera_name)
 
     qpos_reference = _qpos_reference(qpos_rows)
     fingerprint = (
@@ -85,6 +88,7 @@ def build_online_qc_reference(
             "train_ready_episode_ids": train_ready_episode_ids,
         },
         "fpv": {
+            "camera_names": sorted(camera_names),
             "brightness": _stats(brightness),
             "contrast": _stats(contrast),
             "jpeg_size": _stats(jpeg_size),
@@ -138,18 +142,36 @@ def _coerce_episode_ids(raw: Any) -> list[int]:
     return out
 
 
-def _iter_fpv_frames(f: h5py.File) -> list[tuple[np.ndarray, float]]:
-    if "observations/images/fpv" in f:
-        data = f["observations/images/fpv"]
-        return [(np.asarray(data[idx], dtype=np.uint8), float(data[idx].nbytes)) for idx in range(int(data.shape[0]))]
-    if "observations/encoded_images/fpv" in f:
-        data = f["observations/encoded_images/fpv"]
+def _iter_fpv_frames(f: h5py.File) -> list[tuple[np.ndarray, float, str]]:
+    raw_group = f.get("observations/images")
+    encoded_group = f.get("observations/encoded_images")
+    camera_name = select_primary_camera(
+        metadata=_metadata(f),
+        raw_group=raw_group,
+        encoded_group=encoded_group,
+    )
+    if raw_group is not None and camera_name in raw_group:
+        data = raw_group[camera_name]
+        return [
+            (np.asarray(data[idx], dtype=np.uint8), float(data[idx].nbytes), camera_name)
+            for idx in range(int(data.shape[0]))
+        ]
+    if encoded_group is not None and camera_name in encoded_group:
+        data = encoded_group[camera_name]
         frames = []
         for idx in range(int(data.shape[0])):
             encoded = np.asarray(data[idx], dtype=np.uint8).reshape(-1)
-            frames.append((_decode_jpeg(encoded), float(encoded.size)))
+            frames.append((_decode_jpeg(encoded), float(encoded.size), camera_name))
         return frames
     return []
+
+
+def _metadata(f: h5py.File) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    if "metadata" in f:
+        out.update(dict(f["metadata"].attrs))
+    out.update(dict(f.attrs))
+    return out
 
 
 def _iter_qpos_rows(f: h5py.File) -> list[np.ndarray]:

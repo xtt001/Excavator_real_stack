@@ -921,6 +921,7 @@ class RealworldV1Tests(unittest.TestCase):
                     "enabled": True,
                     "reference_path": str(path),
                     "qpos_warn_consecutive_steps": 7,
+                    "primary_camera": "video4",
                 }
             )
             missing = OnlineQcConfig.from_mapping(
@@ -933,6 +934,7 @@ class RealworldV1Tests(unittest.TestCase):
         self.assertTrue(loaded.enabled)
         self.assertEqual(loaded.reference["reference_id"], "unit-reference")
         self.assertEqual(loaded.qpos_warn_consecutive_steps, 7)
+        self.assertEqual(loaded.primary_camera, "video4")
         self.assertTrue(missing.enabled)
         self.assertIsNone(missing.reference)
 
@@ -997,6 +999,33 @@ class RealworldV1Tests(unittest.TestCase):
         )
         self.assertEqual(bad_jpeg.status, "FAIL_EPISODE")
         self.assertEqual(bad_jpeg.error_code, "fpv_decode_failed")
+
+    def test_online_qc_uses_configured_primary_camera_for_gmsl_frames(self) -> None:
+        from testbed.data.online_qc import OnlineQcConfig, OnlineTrainingQcEvaluator
+
+        evaluator = OnlineTrainingQcEvaluator(
+            OnlineQcConfig(
+                reference=_online_qc_reference(),
+                fpv_sample_interval_steps=1,
+                primary_camera="video4",
+            )
+        )
+
+        snapshot = evaluator.evaluate(
+            obs=_online_qc_obs(
+                qpos=[0.0, 0.0, 0.0, 0.0],
+                qpos_raw_imu=[0.0, 0.0, 0.0, 0.0],
+                image=_online_qc_pattern_image(),
+                image_timestamp_ns=2_000_000_000,
+                camera_name="video4",
+            ),
+            now_ns=2_000_000_000,
+        )
+
+        self.assertEqual(snapshot.status, "PASS")
+        self.assertEqual(snapshot.error_code, "")
+        self.assertEqual(snapshot.diagnostics["online_qc_primary_camera"], "video4")
+        self.assertEqual(snapshot.diagnostics["online_qc_fpv_sampled"], 1)
 
     def test_online_qc_fails_immediately_on_repeated_fpv_frame(self) -> None:
         from testbed.data.online_qc import OnlineQcConfig, OnlineTrainingQcEvaluator
@@ -1224,6 +1253,41 @@ class RealworldV1Tests(unittest.TestCase):
                 str(summary_path),
             )
             self.assertEqual(len(reference["reference_id"]), 16)
+
+    @unittest.skipUnless(HAS_H5PY, "h5py is required for online QC reference tests")
+    def test_build_online_qc_reference_uses_gmsl_primary_camera_frames(self) -> None:
+        from testbed.cli.build_online_qc_reference import build_online_qc_reference
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            dataset_dir = root / "dataset"
+            dataset_dir.mkdir()
+            _write_online_qc_reference_episode(
+                dataset_dir / "episode_0.hdf5",
+                offset=0.0,
+                camera_name="video4",
+            )
+            manifest_path = root / "train_ready_manifest.json"
+            manifest_path.write_text(
+                json.dumps({"train_ready_episode_ids": [0]}),
+                encoding="utf-8",
+            )
+            summary_path = root / "training_qc_summary.json"
+            summary_path.write_text(
+                json.dumps({"strict_pass_episode_ids": [0], "reference": {}}),
+                encoding="utf-8",
+            )
+            output_path = root / "online_qc_reference.json"
+
+            reference = build_online_qc_reference(
+                dataset_dir=dataset_dir,
+                manifest_path=manifest_path,
+                training_qc_summary_path=summary_path,
+                output_path=output_path,
+            )
+
+            self.assertGreater(reference["fpv"]["brightness"]["count"], 0)
+            self.assertEqual(reference["fpv"]["camera_names"], ["video4"])
 
     def test_online_qc_failure_blocks_record_start(self) -> None:
         from testbed.cli.record_real import _online_qc_blocks_record_start
@@ -4313,6 +4377,61 @@ class RealworldV1Tests(unittest.TestCase):
             self.assertIn("usable_with_gap_mask", metrics["training_info"])
             self.assertEqual(metrics["fpv_gap_mask_status"], "usable_with_gap_mask")
 
+    @unittest.skipUnless(HAS_H5PY, "h5py is required for training QC tests")
+    def test_training_qc_uses_gmsl_primary_camera_for_fpv_metrics(self) -> None:
+        from testbed.data.hdf5_io import write_episode
+        from testbed.data.training_qc import TrainingQcThresholds, episode_training_metrics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "episode_1.hdf5"
+            n = 40
+            diagnostics = _real_diagnostics(n)
+            image_ts = np.arange(n, dtype=np.int64) * 50_000_000 + 1_000_000_000
+            diagnostics.update(
+                {
+                    "image_timestamp_ns": image_ts,
+                    "image_timestamp_ns_video4": image_ts,
+                    "joint_timestamp_ns": np.arange(n, dtype=np.int64) * 50_000_000,
+                    "camera_age_ms": np.full(n, 10.0),
+                    "sync_max_skew_ns": np.zeros(n, dtype=np.int64),
+                    "receiver_health_ok": np.ones(n, dtype=np.int8),
+                    "imu_online": np.ones((n, 4), dtype=np.int32),
+                    "imu_valid_attitude": np.ones((n, 4), dtype=np.int32),
+                    "source_time_gap_ms": np.zeros(n, dtype=np.float32),
+                    "train_exclude_mask": np.zeros(n, dtype=np.uint8),
+                }
+            )
+            frames = np.zeros((n, 4, 4, 3), dtype=np.uint8) + 30
+            frames[:, 0, 0, 0] = np.arange(n, dtype=np.uint8)
+            write_episode(
+                path,
+                qpos=np.zeros((n, 4), dtype=np.float32),
+                qvel=np.zeros((n, 4), dtype=np.float32),
+                actions=np.zeros((n, 4), dtype=np.float32),
+                images={"video4": frames},
+                metadata={
+                    "is_real": True,
+                    "success": 1,
+                    "camera_names": "video4,video5,video6,video7",
+                },
+                diagnostics=diagnostics,
+            )
+
+            metrics = episode_training_metrics(
+                path,
+                reference_stats=None,
+                thresholds=TrainingQcThresholds(fpv_unique_fps_fail_hz=10.0),
+                make_plot=False,
+                plot_dir=None,
+            )
+
+            self.assertEqual(metrics["training_status"], "PASS")
+            self.assertEqual(metrics["fpv_camera_name"], "video4")
+            self.assertGreater(metrics["fpv_unique_fps"], 10.0)
+            self.assertEqual(metrics["fpv_decode_bad_sample_count"], 0)
+            self.assertEqual(metrics["fpv_black_sample_ratio"], 0.0)
+            self.assertNotIn("fpv_decode_or_black", metrics["training_warnings"])
+
     @unittest.skipUnless(HAS_TORCH, "torch is required for ACT data loader tests")
     def test_training_sampler_excludes_windows_crossing_gap_mask(self) -> None:
         from testbed.data.dataset import _valid_start_indices
@@ -4735,6 +4854,43 @@ class RealworldV1Tests(unittest.TestCase):
             self.assertIn("fpv_black_frames", result["errors"])
             self.assertTrue((Path(tmpdir) / "qc" / "episode_0.json").exists())
 
+    @unittest.skipUnless(HAS_H5PY, "h5py is required for episode QC tests")
+    def test_episode_qc_accepts_gmsl_primary_camera_frames(self) -> None:
+        from testbed.data.episode_qc import run_episode_qc
+        from testbed.data.hdf5_io import write_episode
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "episode_0.hdf5"
+            frames = np.zeros((4, 4, 4, 3), dtype=np.uint8) + 30
+            frames[:, 0, 0, 0] = np.arange(4, dtype=np.uint8)
+            write_episode(
+                path,
+                qpos=np.zeros((4, 4), dtype=np.float32),
+                qvel=np.zeros((4, 4), dtype=np.float32),
+                actions=np.zeros((4, 4), dtype=np.float32),
+                images={"video4": frames},
+                rewards=np.zeros(4, dtype=np.float32),
+                metadata={
+                    "is_real": True,
+                    "platform": "real_excavator",
+                    "success": 1,
+                    "camera_names": "video4,video5,video6,video7",
+                    "qpos_units": "rad",
+                    "qvel_units": "rad/s",
+                    "hydraulic_cylinder_available": False,
+                },
+                step_ids=np.arange(4, dtype=np.int64),
+                step_ns=np.arange(1, 5, dtype=np.int64),
+                diagnostics=_real_diagnostics(4),
+            )
+
+            result = run_episode_qc(path, output_dir=Path(tmpdir) / "qc")
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["errors"], [])
+            self.assertEqual(result["metrics"]["fpv_camera_name"], "video4")
+            self.assertEqual(result["metrics"]["fpv_frame_count"], 4)
+
     @unittest.skipUnless(HAS_H5PY, "h5py is required for phase label tests")
     def test_phase_labeler_uses_shortest_swing_home_error(self) -> None:
         from testbed.data.phase_labeler import PhaseLabelConfig, _home_distance, _near_home
@@ -5021,21 +5177,23 @@ def _online_qc_obs(
     image: np.ndarray | None = None,
     encoded_image: np.ndarray | bytes | None = None,
     image_timestamp_ns: int = 2_000_000_000,
+    camera_name: str = "fpv",
 ) -> dict:
+    camera_name = str(camera_name)
     obs: dict[str, object] = {
         "qpos": np.asarray(qpos, dtype=np.float32),
         "qvel": np.zeros(4, dtype=np.float32),
-        "image_timestamp_ns": {"fpv": int(image_timestamp_ns)},
+        "image_timestamp_ns": {camera_name: int(image_timestamp_ns)},
     }
     if qpos_raw_imu is not None:
         obs["qpos_raw_imu"] = np.asarray(qpos_raw_imu, dtype=np.float32)
     if image is None and encoded_image is None:
         image = _online_qc_pattern_image()
     if image is not None:
-        obs["images"] = {"fpv": np.asarray(image, dtype=np.uint8)}
+        obs["images"] = {camera_name: np.asarray(image, dtype=np.uint8)}
     if encoded_image is not None:
         obs["encoded_images"] = {
-            "fpv": {
+            camera_name: {
                 "encoding": "jpeg",
                 "data": encoded_image,
                 "shape": [4, 4, 3],
@@ -5057,10 +5215,16 @@ def _online_qc_bright_drift_image(step: int) -> np.ndarray:
     return image
 
 
-def _write_online_qc_reference_episode(path: Path, *, offset: float) -> None:
+def _write_online_qc_reference_episode(
+    path: Path,
+    *,
+    offset: float,
+    camera_name: str = "fpv",
+) -> None:
     from testbed.data.hdf5_io import write_episode
 
     length = 4
+    camera_name = str(camera_name)
     qpos = np.tile(
         np.asarray([offset, offset + 0.1, offset + 0.2, offset + 0.3], dtype=np.float32),
         (length, 1),
@@ -5073,14 +5237,22 @@ def _write_online_qc_reference_episode(path: Path, *, offset: float) -> None:
             for step in range(length)
         ]
     )
+    image_ts = np.arange(length, dtype=np.int64) * 50_000_000 + 1_000_000_000
+    diagnostics = _real_diagnostics(length)
+    diagnostics.update(
+        {
+            "image_timestamp_ns": image_ts,
+            f"image_timestamp_ns_{camera_name}": image_ts,
+        }
+    )
     write_episode(
         path,
         qpos=qpos,
         qvel=np.zeros((length, 4), dtype=np.float32),
         actions=np.zeros((length, 4), dtype=np.float32),
-        images={"fpv": images},
-        metadata={"is_real": True, "success": 1},
-        diagnostics=_real_diagnostics(length),
+        images={camera_name: images},
+        metadata={"is_real": True, "success": 1, "camera_names": camera_name},
+        diagnostics=diagnostics,
     )
 
 
