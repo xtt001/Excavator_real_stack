@@ -83,7 +83,7 @@ teleop:
     wait_for_start: true
     go_home:
       enabled: true
-      home_pose_rad: [3.777900, 0.118000, -0.724500, -0.613100]
+      home_pose_rad: [4.275603, 0.126388, -0.743711, -0.571487]
       near_tolerance_rad: [999.0, 999.0, 999.0, 999.0]
       success_tolerance_rad: [0.05, 0.05, 0.08, 0.04]
       max_policy_raw_qpos_delta_rad: [0.08, 0.08, 0.08, 0.08]
@@ -186,3 +186,11 @@ receiver:
     fpv_drift_fail_consecutive_samples: 25
     fpv_drift_hard_fail: false
     fpv_black_mean_threshold: 5.0
+
+safety:
+  deadman_enabled: true
+  estop_enabled: true
+  manual_override_enabled: true
+  sensor_timeout_s: 1.0
+  action_clip: 1.0
+  max_delta_per_step: 1.0

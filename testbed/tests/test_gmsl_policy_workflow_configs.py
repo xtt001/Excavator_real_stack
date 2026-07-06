@@ -101,6 +101,8 @@ def test_policy_runtime_configs_keep_gmsl_and_legacy_fpv_contracts_separate() ->
     assert gmsl_cfg["task"]["camera_names"] == expected_gmsl
     assert gmsl_cfg["sync"]["required_cameras"] == expected_gmsl
     assert gmsl_cfg["receiver"]["online_qc"]["primary_camera"] == "video4"
+    assert gmsl_cfg["safety"]["action_clip"] == 1.0
+    assert gmsl_cfg["safety"]["max_delta_per_step"] == 1.0
 
     assert one_dig_cfg["teleop"]["policy"]["bundle_dir"] == "policy_bundles/real_one_dig_v1"
     assert one_dig_cfg["teleop"]["policy"]["camera_names"] == ["fpv"]
