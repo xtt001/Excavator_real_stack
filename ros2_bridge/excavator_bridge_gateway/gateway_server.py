@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 JSON/TCP 网关：testbed 连此端口；控制请求转发到 excavator_real_bridge；
-read_state 中用 FPV 或 GMSL 共享内存替换占位图。不修改 bridge/src/excavator_real_bridge.cpp。
+read_state 中按配置拼接 FPV/GMSL 图像，或在无相机诊断模式下返回空图像集。
+不修改 bridge/src/excavator_real_bridge.cpp。
 """
 
 from __future__ import annotations
@@ -445,6 +446,8 @@ class BridgeGateway:
         )
 
     def _camera_samples(self) -> dict[str, Any]:
+        if self.camera_source == "none":
+            return {}
         if self.camera_source == "gmsl":
             return self._gmsl_group_samples()
         return {"fpv": self._fpv_sample()}
@@ -607,7 +610,7 @@ def main() -> None:
     parser.add_argument("--control-host", default="127.0.0.1")
     parser.add_argument("--control-port", type=int, default=8766)
     parser.add_argument("--control-timeout", type=float, default=1.0)
-    parser.add_argument("--camera-source", choices=["fpv", "gmsl"], default="fpv")
+    parser.add_argument("--camera-source", choices=["none", "fpv", "gmsl"], default="fpv")
     parser.add_argument("--fpv-source", choices=["auto", "shm", "placeholder"], default="auto")
     parser.add_argument("--fpv-shm-name", default="excavator_fpv_v1")
     parser.add_argument("--fpv-max-stale-ms", type=int, default=500)

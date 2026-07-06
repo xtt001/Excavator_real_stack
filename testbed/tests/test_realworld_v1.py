@@ -3997,6 +3997,54 @@ class RealworldV1Tests(unittest.TestCase):
         self.assertEqual(sample["source"], "ros2_compressed_fpv")
         self.assertEqual(sample["payload"]["shape"], [2, 3, 3])
 
+    def test_gateway_none_camera_source_returns_empty_images(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        ros2_bridge_path = str(repo_root / "ros2_bridge")
+        sys.path.insert(0, ros2_bridge_path)
+        try:
+            from excavator_bridge_gateway.gateway_server import BridgeGateway
+        finally:
+            sys.path.remove(ros2_bridge_path)
+
+        gateway = BridgeGateway(
+            listen_host="127.0.0.1",
+            listen_port=0,
+            control_host="127.0.0.1",
+            control_port=8766,
+            control_timeout_s=1.0,
+            camera_source="none",
+            fpv_source="shm",
+            fpv_shm_name="missing_no_camera_test_shm",
+            fpv_max_stale_ms=1,
+            fpv_encoding="raw",
+            fpv_jpeg_quality=95,
+            fpv_jpeg_cache_hz=30.0,
+            gmsl_cameras={"video4": "missing_gmsl_shm"},
+            gmsl_max_group_skew_ms=5.0,
+            gmsl_group_timeout_ms=1.0,
+            placeholder_width=8,
+            placeholder_height=6,
+        )
+
+        def fake_upstream(_request_type, _payload):
+            return {
+                "ok": True,
+                "payload": {
+                    "joint": {
+                        "timestamp_ns": 1,
+                        "payload": {"qpos": [0.0, 0.0, 0.0, 0.0]},
+                    }
+                },
+            }
+
+        gateway._upstream_response = fake_upstream
+        response = gateway.handle_message(
+            {"type": "read_state.request", "payload": {"step_id": 1}}
+        )
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["payload"]["images"], {})
+
     @unittest.skipUnless(HAS_CV2, "cv2 is required for JPEG gateway tests")
     def test_gateway_can_return_jpeg_fpv_payload(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]

@@ -223,8 +223,9 @@ cd /media/mundane/D/Excavator_real_stack
 ./scripts/slave_real_stack.sh run --force --no-receiver --no-camera
 ```
 
-上面两个 `--no-receiver` 模式下，IMU/qvel 日志脚本仍然连接默认 gateway
-`127.0.0.1:8765`；不要改成 `--port 8766`。
+`--no-camera` 会让 gateway 进入无相机模式，`read_state` 只转发 joint/IMU 状态并返回空
+`images`，不会再等待 GMSL/FPV 共享内存。上面两个 `--no-receiver` 模式下，IMU/qvel
+日志脚本仍然连接默认 gateway `127.0.0.1:8765`；不要改成 `--port 8766`。
 
 ### 3. 从端另开终端看 CAN
 
@@ -487,9 +488,10 @@ IMU 高速 ch1 协议的帧数，`cmd_counts_by_raw_addr` 可用于看每个 IMU
 
 IMU/qvel 只读日志。用于检查上电后陀螺仪原始值、bridge 返回的 qvel，以及 qpos
 差分得到的 qvel 是否一致。这个脚本不启动 receiver/sender，也不发送动作；正式现场
-全链路运行时默认连接从端本机 gateway `127.0.0.1:8765`，记录文件优先写到
-`/media/mundane/EXTERNAL_USB/imu_qvel_tests/`。`--duration-s 0` 表示一直记录到
-手动 `Ctrl+C`。
+全链路运行时默认连接从端本机 gateway `127.0.0.1:8765`。如果从端是
+`--no-receiver --no-camera` 启动，仍然使用默认 `8765`，gateway 会跳过图像字段。
+记录文件优先写到 `/media/mundane/EXTERNAL_USB/imu_qvel_tests/`。`--duration-s 0`
+表示一直记录到手动 `Ctrl+C`。
 
 ```bash
 cd /media/mundane/D/Excavator_real_stack

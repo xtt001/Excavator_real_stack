@@ -6,6 +6,8 @@ STATE_DIR="${EXCAVATOR_SLAVE_STACK_STATE_DIR:-/tmp/excavator_slave_stack}"
 PID_DIR="${STATE_DIR}/pids"
 LOG_ROOT="${EXCAVATOR_SLAVE_STACK_LOG_ROOT:-${ROOT_DIR}/artifacts/slave_stack}"
 LOG_DIR_FILE="${STATE_DIR}/log_dir"
+CAMERA_MODE_FILE="${STATE_DIR}/camera_mode"
+LOG_VIEW="${EXCAVATOR_LOG_VIEW:-dashboard}"
 
 CONTROL_HOST="${EXCAVATOR_CONTROL_HOST:-127.0.0.1}"
 CONTROL_PORT="${EXCAVATOR_CONTROL_PORT:-8766}"
@@ -15,6 +17,8 @@ RECEIVER_PORT="${EXCAVATOR_REMOTE_ACTION_PORT:-8770}"
 CAN_IF="${EXCAVATOR_CAN_IF:-can2}"
 IMU_IF="${EXCAVATOR_IMU_IF:-can3}"
 CAN_BITRATE="${EXCAVATOR_CAN_BITRATE:-250000}"
+IMU_RAW_CAN_LOG="${EXCAVATOR_IMU_RAW_CAN_LOG:-1}"
+IMU_RAW_CAN_LOG_IF="${EXCAVATOR_IMU_RAW_CAN_LOG_IF:-${IMU_IF}}"
 USB_LABEL="${EXCAVATOR_USB_LABEL:-EXTERNAL_USB}"
 USB_MOUNT="${EXCAVATOR_USB_MOUNT:-/media/${USER}/EXTERNAL_USB}"
 DATASET_DIR="${EXCAVATOR_DATASET_DIR:-${USB_MOUNT}/real_teleop_v1}"
@@ -46,11 +50,11 @@ RECEIVER_STOP_TIMEOUT_S="${EXCAVATOR_RECEIVER_STOP_TIMEOUT_S:-${EXCAVATOR_RECORD
 EXCAVATOR_SKIP_PIP_INSTALL="${EXCAVATOR_SKIP_PIP_INSTALL:-1}"
 
 if [[ "${CAMERA_STACK}" == "gmsl" ]]; then
-  SERVICES=(bridge gmsl gateway receiver)
-  STOP_ORDER=(receiver gateway gmsl bridge)
+  SERVICES=(canraw bridge gmsl gateway receiver)
+  STOP_ORDER=(receiver gateway gmsl bridge canraw)
 else
-  SERVICES=(bridge orbbec fpv gateway receiver)
-  STOP_ORDER=(receiver gateway fpv orbbec bridge)
+  SERVICES=(canraw bridge orbbec fpv gateway receiver)
+  STOP_ORDER=(receiver gateway fpv orbbec bridge canraw)
 fi
 STARTED_SERVICES=()
 
@@ -74,6 +78,8 @@ managed services on Ctrl+C.
 Common profiles:
   --policy-remote  Start the single field receiver for manual teleop, go-home,
                    recording, and policy control toggle.
+  --no-camera      Do not start camera services; gateway read_state returns
+                   empty images for read-only IMU/qvel diagnostics.
 
 Common environment overrides:
   EXCAVATOR_USB_MOUNT=/media/mundane/EXTERNAL_USB
@@ -81,6 +87,8 @@ Common environment overrides:
   EXCAVATOR_ORBBEC_WS=/home/mundane/orbbec_ws
   EXCAVATOR_ROS_WS=/home/mundane/orbbec_ws
   EXCAVATOR_CAN_IF=can2 EXCAVATOR_IMU_IF=can3
+  EXCAVATOR_IMU_RAW_CAN_LOG=1                 # set 0 to disable background candump
+  EXCAVATOR_IMU_RAW_CAN_LOG_IF=can3           # defaults to EXCAVATOR_IMU_IF
   EXCAVATOR_PID_YAML=/media/mundane/D/Excavator_real_stack/control/config/joint_pid.yaml
   EXCAVATOR_CONTROL_MODE=open_loop_motor_speed
   EXCAVATOR_CAMERA_STACK=gmsl                 # gmsl | orbbec
@@ -94,6 +102,7 @@ Common environment overrides:
   EXCAVATOR_NUM_EPISODES=1000000
   EXCAVATOR_RECEIVER_STOP_TIMEOUT_S=180
   EXCAVATOR_SKIP_PIP_INSTALL=1
+  EXCAVATOR_LOG_VIEW=dashboard              # dashboard | plain
 
 Compatibility:
   --no-recorder and "tail recorder" remain aliases for receiver.
@@ -339,6 +348,7 @@ stop_stack() {
   stop_service fpv INT 10
   stop_service orbbec INT 10
   stop_service bridge TERM 8
+  stop_service canraw INT 5
   if [[ "${force}" == "1" ]]; then
     force_stop_stale
   fi
@@ -365,10 +375,11 @@ setup_can() {
 }
 
 prepare_start() {
+  local no_camera="${1:-0}"
   local run_id log_dir_path
   [[ -x "${ROOT_DIR}/bridge/build/excavator_real_bridge" ]] \
     || die "missing bridge binary: ${ROOT_DIR}/bridge/build/excavator_real_bridge"
-  if [[ "${CAMERA_STACK}" == "gmsl" ]]; then
+  if [[ "${CAMERA_STACK}" == "gmsl" && "${no_camera}" != "1" ]]; then
     [[ -x "${GMSL_PREPROCESS_BIN}" ]] \
       || die "missing GMSL preprocess binary: ${GMSL_PREPROCESS_BIN}. Build tools/gmsl_realtime_capture on the Jetson first."
   fi
@@ -397,12 +408,18 @@ start_stack() {
     require_port_free "${RECEIVER_PORT}" receiver
   fi
 
-  prepare_start
+  prepare_start "${no_camera}"
+  if [[ "${no_camera}" == "1" ]]; then
+    printf 'none\n' >"${CAMERA_MODE_FILE}"
+  else
+    printf '%s\n' "${CAMERA_STACK}" >"${CAMERA_MODE_FILE}"
+  fi
   export ROOT_DIR CONTROL_HOST CONTROL_PORT GATEWAY_HOST GATEWAY_PORT RECEIVER_PORT
-  export CAN_IF IMU_IF DATASET_DIR CONFIG_PATH RECEIVER_INPUT RECEIVER_RECORD_MODE
+  export CAN_IF IMU_IF IMU_RAW_CAN_LOG_IF DATASET_DIR CONFIG_PATH RECEIVER_INPUT RECEIVER_RECORD_MODE
   export POLICY_OUTPUT_MODE POLICY_ACTION_SCALE TEST_LOG_DIR
   export PID_YAML_PATH SESSION_ID NUM_EPISODES MAX_STEPS BRIDGE_TIMEOUT CONTROL_MODE
   export EXCAVATOR_SKIP_PIP_INSTALL
+  export EXCAVATOR_NO_CAMERA="${no_camera}"
   export FPV_MAX_STALE_MS FPV_SHM_NAME
   export CAMERA_STACK GMSL_SHM_PREFIX GMSL_GATEWAY_CAMERAS GMSL_PREPROCESS_BIN
   export GMSL_PREPROCESS_CAMERA_ARGS GMSL_PREPROCESS_MANIFEST GMSL_INTRINSICS_MANIFEST GMSL_BUFFERS
@@ -415,6 +432,14 @@ start_stack() {
   fi
   if [[ "${skip_can}" != "1" ]]; then
     setup_can
+  fi
+
+  if [[ "${IMU_RAW_CAN_LOG}" == "1" ]]; then
+    command -v candump >/dev/null 2>&1 || die "candump not found; install can-utils or set EXCAVATOR_IMU_RAW_CAN_LOG=0"
+    start_service canraw bash -lc '
+      printf "[slave-stack] recording raw IMU CAN: candump -ta %s\n" "${IMU_RAW_CAN_LOG_IF}" >&2
+      exec candump -ta "${IMU_RAW_CAN_LOG_IF}"
+    '
   fi
 
   start_service bridge bash -lc '
@@ -471,7 +496,9 @@ start_stack() {
 
   start_service gateway bash -lc '
     cd "${ROOT_DIR}"
-    if [[ "${CAMERA_STACK}" == "gmsl" ]]; then
+    if [[ "${EXCAVATOR_NO_CAMERA}" == "1" ]]; then
+      export EXCAVATOR_CAMERA_SOURCE=none
+    elif [[ "${CAMERA_STACK}" == "gmsl" ]]; then
       export EXCAVATOR_CAMERA_SOURCE=gmsl
       export EXCAVATOR_GMSL_GATEWAY_CAMERAS="${GMSL_GATEWAY_CAMERAS}"
     else
@@ -543,13 +570,23 @@ start_stack() {
   fi
 
   log "started. log dir: $(log_dir)"
-  log "host teleop can now connect to slave port ${RECEIVER_PORT}"
+  if [[ "${no_receiver}" == "1" ]]; then
+    log "receiver disabled; host teleop port ${RECEIVER_PORT} is not listening"
+  else
+    log "host teleop can now connect to slave port ${RECEIVER_PORT}"
+  fi
 }
 
 status_stack() {
-  local name pid state args pids mapping shm_name
+  local name pid state args pids mapping shm_name camera_mode
   local -a mappings
+  if [[ -s "${CAMERA_MODE_FILE}" ]]; then
+    camera_mode="$(cat "${CAMERA_MODE_FILE}")"
+  else
+    camera_mode="${CAMERA_STACK}"
+  fi
   printf 'log_dir=%s\n' "$(log_dir)"
+  printf 'camera_mode=%s\n' "${camera_mode}"
   for name in "${SERVICES[@]}"; do
     pid="$(service_pid "${name}")"
     if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
@@ -570,7 +607,9 @@ status_stack() {
   else
     printf 'usb not mounted: %s\n' "${USB_MOUNT}"
   fi
-  if [[ "${CAMERA_STACK}" == "gmsl" ]]; then
+  if [[ "${camera_mode}" == "none" ]]; then
+    printf 'camera disabled: read_state images are empty\n'
+  elif [[ "${camera_mode}" == "gmsl" ]]; then
     IFS=',' read -r -a mappings <<<"${GMSL_GATEWAY_CAMERAS}"
     for mapping in "${mappings[@]}"; do
       [[ -n "${mapping}" ]] || continue
@@ -595,6 +634,235 @@ show_logs() {
   ls -1 "${dir}" 2>/dev/null || true
 }
 
+dashboard_logs() {
+  local dir="$1"
+  local service_list
+  service_list="$(IFS=,; printf '%s' "${SERVICES[*]}")"
+  EXCAVATOR_DASH_PID_DIR="${PID_DIR}" \
+  EXCAVATOR_DASH_CAN_IF="${CAN_IF}" \
+  EXCAVATOR_DASH_IMU_IF="${IMU_IF}" \
+  EXCAVATOR_DASH_CONTROL_PORT="${CONTROL_PORT}" \
+  EXCAVATOR_DASH_GATEWAY_PORT="${GATEWAY_PORT}" \
+  EXCAVATOR_DASH_RECEIVER_PORT="${RECEIVER_PORT}" \
+  python3 - "${dir}" "${service_list}" <<'PY'
+from __future__ import annotations
+
+import glob
+import os
+import re
+import select
+import shutil
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+
+log_dir = Path(sys.argv[1])
+services = [item for item in sys.argv[2].split(",") if item]
+pid_dir = Path(os.environ.get("EXCAVATOR_DASH_PID_DIR", ""))
+can_if = os.environ.get("EXCAVATOR_DASH_CAN_IF", "-")
+imu_if = os.environ.get("EXCAVATOR_DASH_IMU_IF", "-")
+ports = (
+    os.environ.get("EXCAVATOR_DASH_CONTROL_PORT", "-"),
+    os.environ.get("EXCAVATOR_DASH_GATEWAY_PORT", "-"),
+    os.environ.get("EXCAVATOR_DASH_RECEIVER_PORT", "-"),
+)
+
+log_files = sorted(glob.glob(str(log_dir / "*.log")))
+if not log_files:
+    print(f"[slave-stack] no log files found under {log_dir}", flush=True)
+    raise SystemExit(0)
+
+ansi_re = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+field_re = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=(\[[^\]]*\]|[^ ]*)")
+timestamp_re = re.compile(r"(20[0-9]{2}-[0-9]{2}-[0-9]{2} [0-9:,]+ .*)")
+
+receiver_status = ""
+last_event = "waiting for log events"
+current_service = "-"
+top_rows = 8
+
+
+def term_size() -> tuple[int, int]:
+    size = shutil.get_terminal_size((160, 40))
+    return max(12, size.lines), max(40, size.columns)
+
+
+def fit(text: str, width: int) -> str:
+    text = text.replace("\t", " ")
+    if len(text) <= width:
+        return text
+    if width <= 1:
+        return text[:width]
+    return text[: width - 1] + "~"
+
+
+def fields(text: str) -> dict[str, str]:
+    return {key: value for key, value in field_re.findall(text)}
+
+
+def service_state(name: str) -> str:
+    pid_file = pid_dir / f"{name}.pid"
+    try:
+        pid = pid_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        return f"{name}:stopped"
+    if not pid.isdigit():
+        return f"{name}:badpid"
+    if Path(f"/proc/{pid}").exists():
+        return f"{name}:run({pid})"
+    return f"{name}:dead({pid})"
+
+
+def receiver_lines(width: int) -> tuple[str, str, str]:
+    if not receiver_status:
+        return ("receiver: waiting for first live status", "", "")
+    data = fields(receiver_status)
+    line1 = (
+        "receiver "
+        f"mode={data.get('mode', '-')} control={data.get('control', '-')} "
+        f"health={data.get('health', '-')} err={data.get('err', '-')} "
+        f"imu={data.get('imu', '-')} hz={data.get('hz', '-')} "
+        f"ctl_ms={data.get('ctl_ms', '-')} step={data.get('step', '-')} "
+        f"ack={data.get('ack', '-')} fault={data.get('fault', '-')}"
+    )
+    line2 = (
+        "action   "
+        f"raw={data.get('raw', '-')} send={data.get('send', '-')} "
+        f"remote_ms={data.get('remote_ms', '-')} stale={data.get('stale', '-')} "
+        f"drop={data.get('drop', '-')} age={data.get('age', '-')} "
+        f"guard={data.get('guard', '-')}"
+    )
+    home = ""
+    if "home" in data:
+        home = (
+            "go_home "
+            f"home={data.get('home', '-')} t={data.get('t', '-')} "
+            f"maxerr={data.get('maxerr', '-')} rawmaxerr={data.get('rawmaxerr', '-')} "
+            f"maxaxis={data.get('maxaxis', '-')} target={data.get('target', '-')} "
+            f"wrongdir={data.get('wrongdir', '-')} hrawerr={data.get('hrawerr', '-')}"
+        )
+    return fit(line1, width), fit(line2, width), fit(home, width)
+
+
+def draw_top() -> None:
+    rows, cols = term_size()
+    service_text = " ".join(service_state(name) for name in services)
+    recv1, recv2, recv3 = receiver_lines(cols)
+    lines = [
+        "Excavator slave stack dashboard | Ctrl+C stops managed services",
+        f"log_dir={log_dir}",
+        f"can={can_if} imu={imu_if} ports bridge/gateway/receiver={ports[0]}/{ports[1]}/{ports[2]}",
+        f"services {service_text}",
+        recv1,
+        recv2,
+        recv3,
+        f"last_event {last_event}",
+    ]
+    rows_used = min(top_rows, rows - 3)
+    sys.stdout.write("\0337")
+    for row in range(rows_used):
+        sys.stdout.write(f"\033[{row + 1};1H\033[K{fit(lines[row], cols)}")
+    sys.stdout.write(f"\033[{rows_used + 1};{rows}r")
+    sys.stdout.write("\0338")
+    sys.stdout.flush()
+
+
+def scroll_event(text: str) -> None:
+    global last_event
+    clean = fit(text, term_size()[1])
+    last_event = clean
+    rows, _ = term_size()
+    sys.stdout.write(f"\033[{rows};1H\033[K{clean}\n")
+    sys.stdout.flush()
+
+
+def service_from_header(text: str) -> str | None:
+    match = re.match(r"==> (.*) <==", text)
+    if not match:
+        return None
+    name = Path(match.group(1)).name
+    return name[:-4] if name.endswith(".log") else name
+
+
+def emit(raw: bytes) -> None:
+    global current_service, receiver_status
+    text = raw.decode(errors="replace")
+    text = ansi_re.sub("", text).strip()
+    if not text:
+        return
+    header_service = service_from_header(text)
+    if header_service is not None:
+        current_service = header_service
+        return
+    if text.startswith("mode="):
+        receiver_status = text
+        event_match = timestamp_re.search(text)
+        if event_match:
+            scroll_event(f"[receiver] {event_match.group(1)}")
+        draw_top()
+        return
+    scroll_event(f"[{current_service}] {text}")
+    draw_top()
+
+
+proc = subprocess.Popen(
+    ["tail", "-n", "80", "-F", *log_files],
+    stdout=subprocess.PIPE,
+    stderr=subprocess.STDOUT,
+    bufsize=0,
+)
+
+def terminate(_signum: int, _frame: object) -> None:
+    proc.terminate()
+    raise KeyboardInterrupt
+
+
+signal.signal(signal.SIGTERM, terminate)
+signal.signal(signal.SIGINT, terminate)
+
+sys.stdout.write("\033[?25l\033[2J\033[H")
+draw_top()
+rows, _ = term_size()
+sys.stdout.write(f"\033[{min(top_rows, rows - 3) + 1};1H")
+sys.stdout.flush()
+
+buffer = bytearray()
+next_draw = 0.0
+try:
+    assert proc.stdout is not None
+    fd = proc.stdout.fileno()
+    while True:
+        now = time.monotonic()
+        if now >= next_draw:
+            draw_top()
+            next_draw = now + 1.0
+        ready, _, _ = select.select([fd], [], [], 0.2)
+        if not ready:
+            if proc.poll() is not None:
+                break
+            continue
+        chunk = os.read(fd, 4096)
+        if not chunk:
+            if proc.poll() is not None:
+                break
+            continue
+        for byte in chunk:
+            if byte in (10, 13):
+                emit(bytes(buffer))
+                buffer.clear()
+            else:
+                buffer.append(byte)
+finally:
+    if proc.poll() is None:
+        proc.terminate()
+    sys.stdout.write("\033[r\033[?25h\n")
+    sys.stdout.flush()
+PY
+}
+
 tail_logs() {
   local service="${1:-}"
   local dir
@@ -602,6 +870,10 @@ tail_logs() {
   if [[ -n "${service}" ]]; then
     service="$(canonical_service "${service}")"
     tail -n 80 -f "${dir}/${service}.log"
+    return
+  fi
+  if [[ "${LOG_VIEW}" == "dashboard" && -t 1 ]] && command -v python3 >/dev/null 2>&1; then
+    dashboard_logs "${dir}"
     return
   fi
   tail -n 80 -f "${dir}"/*.log
