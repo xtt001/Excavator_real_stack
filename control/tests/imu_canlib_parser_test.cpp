@@ -11,8 +11,10 @@ namespace {
 
 using canlib::ImuDefaultCanFrameParser;
 using canlib::ImuRxAccumulator;
+using canlib::imu_quaternion_halves_synchronized;
 using canlib::kImuCanPayloadBytes;
 using canlib::kImuDeviceCount;
+using canlib::kImuQuaternionHalfSyncWindowNs;
 
 std::array<std::uint8_t, kImuCanPayloadBytes> zeros() {
     return {};
@@ -52,6 +54,13 @@ std::array<std::uint8_t, kImuCanPayloadBytes> euler_payload(
 std::array<std::uint8_t, kImuCanPayloadBytes> status_payload(std::uint8_t flags) {
     auto out = zeros();
     out[4] = flags;
+    return out;
+}
+
+std::array<std::uint8_t, kImuCanPayloadBytes> f32_payload(float a, float b) {
+    std::array<std::uint8_t, kImuCanPayloadBytes> out{};
+    std::memcpy(&out[0], &a, sizeof(float));
+    std::memcpy(&out[4], &b, sizeof(float));
     return out;
 }
 
@@ -136,6 +145,28 @@ void test_raw_euler_degrees_preserved() {
     expect_near(sample.yaw_rad, -32.31F * kPi / 180.0F, "yaw rad wrong");
 }
 
+void test_quaternion_halves_require_sync_window() {
+    ImuDefaultCanFrameParser parser;
+    std::array<ImuRxAccumulator, kImuDeviceCount> partials{};
+    parser.parseFrame(frame_id(4, 4), f32_payload(0.3F, 0.4F), partials);
+    auto& sample = partials[3];
+    expect(sample.has_quat_2, "quat half 2 missing");
+    expect(!imu_quaternion_halves_synchronized(sample), "single quat half should not be synchronized");
+
+    parser.parseFrame(frame_id(3, 4), f32_payload(0.1F, 0.2F), partials);
+    expect(sample.has_quat_1, "quat half 1 missing");
+    expect(sample.quat_1_rx_ns != 0U, "quat half 1 rx time missing");
+    expect(sample.quat_2_rx_ns != 0U, "quat half 2 rx time missing");
+    expect(imu_quaternion_halves_synchronized(sample), "fresh quat halves should be synchronized");
+    expect_near(sample.q0, 0.1F, "q0 wrong");
+    expect_near(sample.q1, 0.2F, "q1 wrong");
+    expect_near(sample.q2, 0.3F, "q2 wrong");
+    expect_near(sample.q3, 0.4F, "q3 wrong");
+
+    sample.quat_1_rx_ns = sample.quat_2_rx_ns + kImuQuaternionHalfSyncWindowNs + 1U;
+    expect(!imu_quaternion_halves_synchronized(sample), "stale quat halves should not be synchronized");
+}
+
 }  // namespace
 
 int main() {
@@ -144,6 +175,7 @@ int main() {
         test_one_based_addresses();
         test_missing_addresses_remain_absent();
         test_raw_euler_degrees_preserved();
+        test_quaternion_halves_require_sync_window();
     } catch (const std::exception& exc) {
         std::cerr << "imu_canlib_parser_test failed: " << exc.what() << "\n";
         return 1;

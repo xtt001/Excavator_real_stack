@@ -19,6 +19,7 @@ from typing import Any
 PROTOCOL_VERSION = 1
 AXES = ("swing", "boom", "stick", "bucket")
 BUCKET_QUATERNION_POLICY_OFFSET_RAD = -0.4060066694119653
+BUCKET_PRIMARY_CHART_MIN_STRENGTH = 0.35
 
 
 class BridgeClient:
@@ -233,7 +234,99 @@ def imu_joint_qpos_from_rpy_rad(imu_debug: dict[str, Any] | None) -> list[float]
     ]
 
 
-def imu_joint_qpos_raw_deg(imu_debug: dict[str, Any] | None) -> list[float] | None:
+def _quaternion_from_devices(
+    devices: list[Any], device_index: int
+) -> tuple[float, float, float, float] | None:
+    device = devices[device_index]
+    if not isinstance(device, dict):
+        return None
+    try:
+        if int(device.get("online", 1)) == 0 or int(device.get("valid_quaternion", 1)) == 0:
+            return None
+    except (TypeError, ValueError):
+        return None
+    q = to_float_list(device.get("quaternion_wxyz"), 4)
+    if not finite_list(q):
+        return None
+    assert q is not None
+    norm = math.sqrt(sum(float(v) * float(v) for v in q))
+    if not math.isfinite(norm) or norm <= 1e-9:
+        return None
+    return tuple(float(v) / norm for v in q)
+
+
+def _bucket_quaternion_charts_rad(
+    devices: list[Any],
+) -> tuple[float, float, float, float] | None:
+    imu1 = _quaternion_from_devices(devices, 0)
+    imu2 = _quaternion_from_devices(devices, 1)
+    if imu1 is None or imu2 is None:
+        return None
+    w2, x2, y2, z2 = imu2
+    w1, x1, y1, z1 = imu1
+    rel_w = w2 * w1 + x2 * x1 + y2 * y1 + z2 * z1
+    rel_x = w2 * x1 - x2 * w1 - y2 * z1 + z2 * y1
+    rel_y = w2 * y1 + x2 * z1 - y2 * w1 - z2 * x1
+    rel_z = w2 * z1 - x2 * y1 + y2 * x1 - z2 * w1
+    norm = math.sqrt(rel_w * rel_w + rel_x * rel_x + rel_y * rel_y + rel_z * rel_z)
+    if not math.isfinite(norm) or norm <= 1e-9:
+        return None
+    rel_w /= norm
+    rel_x /= norm
+    rel_y /= norm
+    rel_z /= norm
+    primary = (
+        math.remainder(2.0 * math.atan2(rel_y, rel_w), 2.0 * math.pi)
+        + BUCKET_QUATERNION_POLICY_OFFSET_RAD
+    )
+    secondary = math.remainder(-2.0 * math.atan2(rel_x, rel_z), 2.0 * math.pi)
+    primary_strength = math.hypot(rel_w, rel_y)
+    secondary_strength = math.hypot(rel_x, rel_z)
+    if not all(
+        math.isfinite(v)
+        for v in (primary, secondary, primary_strength, secondary_strength)
+    ):
+        return None
+    return primary, secondary, primary_strength, secondary_strength
+
+
+class BucketQuaternionPhaseTracker:
+    def __init__(self) -> None:
+        self._ready = False
+        self._primary_phase_rad = 0.0
+        self._secondary_phase_rad = 0.0
+        self._bucket_rad = 0.0
+
+    def update_from_devices(self, devices: list[Any]) -> float | None:
+        charts = _bucket_quaternion_charts_rad(devices)
+        if charts is None:
+            return None
+        primary, secondary, primary_strength, secondary_strength = charts
+        if not self._ready:
+            self._primary_phase_rad = primary
+            self._secondary_phase_rad = secondary
+            self._bucket_rad = primary
+            self._ready = True
+            return self._bucket_rad
+        use_secondary = (
+            primary_strength < BUCKET_PRIMARY_CHART_MIN_STRENGTH
+            and secondary_strength > primary_strength
+        )
+        primary_delta = math.remainder(primary - self._primary_phase_rad, 2.0 * math.pi)
+        secondary_delta = math.remainder(
+            secondary - self._secondary_phase_rad, 2.0 * math.pi
+        )
+        self._bucket_rad += secondary_delta if use_secondary else primary_delta
+        self._primary_phase_rad = primary
+        self._secondary_phase_rad = secondary
+        return self._bucket_rad
+
+
+def imu_joint_qpos_raw_deg(
+    imu_debug: dict[str, Any] | None,
+    *,
+    bucket_tracker: BucketQuaternionPhaseTracker | None = None,
+) -> list[float] | None:
     if not isinstance(imu_debug, dict):
         return None
     devices = imu_debug.get("devices")
@@ -249,57 +342,16 @@ def imu_joint_qpos_raw_deg(imu_debug: dict[str, Any] | None) -> list[float] | No
             return None
         return rpy[axis_index]
 
-    def bucket_quaternion_qpos_deg() -> float | None:
-        def quaternion(device_index: int) -> tuple[float, float, float, float] | None:
-            device = devices[device_index]
-            if not isinstance(device, dict):
-                return None
-            try:
-                if int(device.get("online", 1)) == 0 or int(device.get("valid_quaternion", 1)) == 0:
-                    return None
-            except (TypeError, ValueError):
-                return None
-            q = to_float_list(device.get("quaternion_wxyz"), 4)
-            if not finite_list(q):
-                return None
-            norm = math.sqrt(sum(float(v) * float(v) for v in q))
-            if not math.isfinite(norm) or norm <= 1e-9:
-                return None
-            return tuple(float(v) / norm for v in q)
-
-        def conjugate(q: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
-            w, x, y, z = q
-            return (w, -x, -y, -z)
-
-        def multiply(
-            a: tuple[float, float, float, float],
-            b: tuple[float, float, float, float],
-        ) -> tuple[float, float, float, float]:
-            aw, ax, ay, az = a
-            bw, bx, by, bz = b
-            return (
-                aw * bw - ax * bx - ay * by - az * bz,
-                aw * bx + ax * bw + ay * bz - az * by,
-                aw * by - ax * bz + ay * bw + az * bx,
-                aw * bz + ax * by - ay * bx + az * bw,
-            )
-
-        imu1 = quaternion(0)
-        imu2 = quaternion(1)
-        if imu1 is None or imu2 is None:
-            return None
-        relative = multiply(conjugate(imu2), imu1)
-        twist = math.remainder(2.0 * math.atan2(relative[2], relative[0]), 2.0 * math.pi)
-        bucket_rad = twist + BUCKET_QUATERNION_POLICY_OFFSET_RAD
-        if not math.isfinite(bucket_rad):
-            return None
-        return math.degrees(bucket_rad)
-
     imu1_y = rpy_raw_deg(0, 1)
     imu2_y = rpy_raw_deg(1, 1)
     imu3_y = rpy_raw_deg(2, 1)
     imu4_z = rpy_raw_deg(3, 2)
-    bucket_deg = bucket_quaternion_qpos_deg()
+    if bucket_tracker is not None:
+        bucket_rad = bucket_tracker.update_from_devices(devices)
+    else:
+        charts = _bucket_quaternion_charts_rad(devices)
+        bucket_rad = None if charts is None else charts[0]
+    bucket_deg = None if bucket_rad is None else math.degrees(bucket_rad)
     if None in (imu1_y, imu2_y, imu3_y, imu4_z, bucket_deg):
         return None
     return [
@@ -563,6 +615,7 @@ def main() -> int:
     last_qpos: list[float] | None = None
     last_joint_ts_ns: int | None = None
     last_read_wall_ns: int | None = None
+    bucket_qpos_tracker = BucketQuaternionPhaseTracker()
     window: deque[dict[str, Any]] = deque()
     qvel_samples: list[list[float | None]] = []
     qpos_samples: list[list[float]] = []
@@ -639,7 +692,9 @@ def main() -> int:
                     imu_debug = None
                 raw_imu_qvel = gyro_joint_qvel_rad_s(imu_debug)
                 qpos_folded_imu = imu_joint_qpos_from_rpy_rad(imu_debug)
-                qpos_raw_imu_deg = imu_joint_qpos_raw_deg(imu_debug)
+                qpos_raw_imu_deg = imu_joint_qpos_raw_deg(
+                    imu_debug, bucket_tracker=bucket_qpos_tracker
+                )
                 qpos_raw_imu = deg_to_rad(qpos_raw_imu_deg)
                 qpos_policy_minus_raw_imu = qpos_delta_rad(qpos, qpos_raw_imu)
                 qpos_policy_minus_raw_imu_deg_direct = vec_minus(rad_to_deg(qpos), qpos_raw_imu_deg)

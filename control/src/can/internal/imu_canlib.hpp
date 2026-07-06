@@ -14,6 +14,7 @@ namespace canlib {
 inline constexpr std::uint8_t kImuDeviceCount = 4U;
 inline constexpr std::uint16_t kImuBaseIdHighSpeedCh1 = 0x200U;
 inline constexpr std::size_t kImuCanPayloadBytes = 8U;
+inline constexpr std::uint64_t kImuQuaternionHalfSyncWindowNs = 5'000'000ULL;
 
 // 单设备分包累加状态（高速 ch1 解析用）
 struct ImuRxAccumulator {
@@ -41,11 +42,23 @@ struct ImuRxAccumulator {
     float q1{0.0F};
     float q2{0.0F};
     float q3{0.0F};
+    std::uint64_t quat_1_rx_ns{0};
+    std::uint64_t quat_2_rx_ns{0};
 
     std::uint32_t timestamp_ms{0};
     std::uint8_t valid_flags{0};
     std::uint64_t last_rx_ns{0};
 };
+
+inline bool imu_quaternion_halves_synchronized(const ImuRxAccumulator& acc) noexcept {
+    if (!acc.has_quat_1 || !acc.has_quat_2 || acc.quat_1_rx_ns == 0U || acc.quat_2_rx_ns == 0U) {
+        return false;
+    }
+    const std::uint64_t delta = acc.quat_1_rx_ns > acc.quat_2_rx_ns
+                                    ? acc.quat_1_rx_ns - acc.quat_2_rx_ns
+                                    : acc.quat_2_rx_ns - acc.quat_1_rx_ns;
+    return delta <= kImuQuaternionHalfSyncWindowNs;
+}
 
 // 预留：替换 parse_frame；默认实现与当前协议一致
 class ImuCanFrameParser {

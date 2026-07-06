@@ -34,6 +34,13 @@ void expect_not_near(double got, double unwanted, const std::string& message) {
     }
 }
 
+void expect_abs_less(double got, double limit, const std::string& message) {
+    if (std::abs(got) >= limit) {
+        std::cerr << message << ": got=" << got << " limit=" << limit << "\n";
+        std::exit(1);
+    }
+}
+
 void make_valid_imu(excavator::ExcavatorHardwareState& hw,
                     double imu1_pitch_deg,
                     double imu2_pitch_deg,
@@ -196,6 +203,37 @@ void test_bucket_corrects_130940_csv_fixture_without_old_branch() {
                     "bucket must not keep old wrong final branch for 130940");
     expect_not_near(out.position(3), deg_to_rad(60.649996757507324),
                     "bucket must not use direct raw pitch diff for 130940");
+}
+
+void test_bucket_uses_secondary_quaternion_chart_near_primary_singularity() {
+    excavator::ExcavatorConverter converter;
+    excavator::ExcavatorHardwareState hw;
+    excavator::ExcavatorState out;
+
+    make_valid_imu(hw, -24.0, -47.0, 0.0, 222.50);
+    set_bucket_quaternions(
+        hw,
+        q_wxyz(-0.018099, 0.508006, 0.013423, 0.861059),
+        q_wxyz(1.0, 0.0, 0.0, 0.0));
+    if (!converter.hardwareStateToRobotState(hw, out)) {
+        std::cerr << "bucket secondary-chart baseline conversion failed\n";
+        std::exit(1);
+    }
+    const double previous_bucket = out.position(3);
+
+    set_bucket_quaternions(
+        hw,
+        q_wxyz(0.008364, 0.503180, 0.018671, 0.863939),
+        q_wxyz(1.0, 0.0, 0.0, 0.0));
+    if (!converter.hardwareStateToRobotState(hw, out)) {
+        std::cerr << "bucket secondary-chart crossing conversion failed\n";
+        std::exit(1);
+    }
+
+    expect_abs_less(out.position(3) - previous_bucket, deg_to_rad(2.0),
+                    "bucket should use secondary quaternion chart near primary atan2 singularity");
+    expect_not_near(out.position(3), deg_to_rad(108.47552842420737),
+                    "bucket must not publish primary-chart singular branch");
 }
 
 void test_bucket_calibrated_value_ignores_gyro_and_restart_history() {
@@ -372,6 +410,7 @@ int main() {
     test_swing_velocity_sign_matches_raw_yaw();
     test_bucket_uses_quaternion_policy_frame_for_133653_csv_fixture();
     test_bucket_corrects_130940_csv_fixture_without_old_branch();
+    test_bucket_uses_secondary_quaternion_chart_near_primary_singularity();
     test_bucket_calibrated_value_ignores_gyro_and_restart_history();
     test_fresh_invalid_bucket_quaternion_does_not_publish_uncalibrated_qpos();
     test_ready_invalid_bucket_quaternion_holds_previous_calibrated_qpos();

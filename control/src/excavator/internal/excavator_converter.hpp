@@ -31,6 +31,10 @@ private:
     void applyPositionContinuity(ExcavatorState& st,
                                  bool position_observed,
                                  const Vector8d& branch_reference);
+    double bucketContinuousPositionRad(double primary_phase_rad,
+                                       double secondary_phase_rad,
+                                       double primary_strength,
+                                       double secondary_strength);
 
     Vector8d resp_velocity_bias_sum_ = Vector8d::Zero();
     Vector8d resp_velocity_bias_ = Vector8d::Zero();
@@ -40,6 +44,10 @@ private:
     std::array<bool, kImuDeviceCount> imu_rpy_continuous_ready_{};
     Vector8d resp_position_continuous_ = Vector8d::Zero();
     bool resp_position_continuous_ready_{false};
+    double bucket_primary_phase_rad_{0.0};
+    double bucket_secondary_phase_rad_{0.0};
+    double bucket_position_continuous_rad_{0.0};
+    bool bucket_phase_continuous_ready_{false};
 };
 
 }  // namespace excavator

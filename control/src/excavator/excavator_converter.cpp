@@ -7,6 +7,14 @@ namespace {
 
 constexpr float kUninitializedAttitudeEps = 1e-6F;
 constexpr double kBucketQuaternionPolicyOffsetRad = -0.4060066694119653;
+constexpr double kBucketPrimaryChartMinStrength = 0.35;
+
+struct BucketQuaternionCharts {
+    double primary_phase_rad{0.0};
+    double secondary_phase_rad{0.0};
+    double primary_strength{0.0};
+    double secondary_strength{0.0};
+};
 
 double dps_to_radps(double dps) noexcept { return dps * kPi / 180.0; }
 
@@ -74,7 +82,8 @@ double signed_twist_angle_rad(const Eigen::Quaterniond& rotation,
     return std::remainder(2.0 * std::atan2(rotation.vec().dot(axis), rotation.w()), 2.0 * kPi);
 }
 
-bool bucket_calibrated_position_rad(const ExcavatorHardwareState& hw, double& out) noexcept {
+bool bucket_quaternion_charts(const ExcavatorHardwareState& hw,
+                              BucketQuaternionCharts& out) noexcept {
     Eigen::Quaterniond imu1;
     Eigen::Quaterniond imu2;
     if (!normalized_observed_quaternion(hw.imu.devices[0], imu1) ||
@@ -83,9 +92,15 @@ bool bucket_calibrated_position_rad(const ExcavatorHardwareState& hw, double& ou
     }
     Eigen::Quaterniond relative = imu2.conjugate() * imu1;
     relative.normalize();
-    out = signed_twist_angle_rad(relative, Eigen::Vector3d::UnitY()) +
-          kBucketQuaternionPolicyOffsetRad;
-    return std::isfinite(out);
+    out.primary_phase_rad =
+        signed_twist_angle_rad(relative, Eigen::Vector3d::UnitY()) +
+        kBucketQuaternionPolicyOffsetRad;
+    out.secondary_phase_rad =
+        std::remainder(-2.0 * std::atan2(relative.x(), relative.z()), 2.0 * kPi);
+    out.primary_strength = std::hypot(relative.w(), relative.y());
+    out.secondary_strength = std::hypot(relative.x(), relative.z());
+    return std::isfinite(out.primary_phase_rad) && std::isfinite(out.secondary_phase_rad) &&
+           std::isfinite(out.primary_strength) && std::isfinite(out.secondary_strength);
 }
 
 bool looks_like_uninitialized_attitude(const ExcavatorImuHardwareState::ImuSample& src) noexcept {
@@ -221,6 +236,31 @@ void ExcavatorConverter::applyPositionContinuity(ExcavatorState& st,
     }
 }
 
+double ExcavatorConverter::bucketContinuousPositionRad(double primary_phase_rad,
+                                                       double secondary_phase_rad,
+                                                       double primary_strength,
+                                                       double secondary_strength) {
+    if (!bucket_phase_continuous_ready_) {
+        bucket_primary_phase_rad_ = primary_phase_rad;
+        bucket_secondary_phase_rad_ = secondary_phase_rad;
+        bucket_position_continuous_rad_ = primary_phase_rad;
+        bucket_phase_continuous_ready_ = true;
+        return bucket_position_continuous_rad_;
+    }
+
+    const bool use_secondary_chart =
+        primary_strength < kBucketPrimaryChartMinStrength &&
+        secondary_strength > primary_strength;
+    const double primary_delta =
+        std::remainder(primary_phase_rad - bucket_primary_phase_rad_, 2.0 * kPi);
+    const double secondary_delta =
+        std::remainder(secondary_phase_rad - bucket_secondary_phase_rad_, 2.0 * kPi);
+    bucket_position_continuous_rad_ += use_secondary_chart ? secondary_delta : primary_delta;
+    bucket_primary_phase_rad_ = primary_phase_rad;
+    bucket_secondary_phase_rad_ = secondary_phase_rad;
+    return bucket_position_continuous_rad_;
+}
+
 bool ExcavatorConverter::hardwareStateToRobotState(const HardwareState& raw_in, RobotState& state_out) {
     const auto* hw = asHardwareState(raw_in);
     auto* st = asState(state_out);
@@ -230,8 +270,8 @@ bool ExcavatorConverter::hardwareStateToRobotState(const HardwareState& raw_in, 
     st->status = hw->motor.status;
     st->motor_rpm = swap_joint_2_3_on_first4(hw->motor.motor_rpm);
     const auto rpy_rad = continuousImuRpy(*hw);
-    double bucket_position_rad = 0.0;
-    const bool bucket_observed = bucket_calibrated_position_rad(*hw, bucket_position_rad);
+    BucketQuaternionCharts bucket_charts;
+    const bool bucket_observed = bucket_quaternion_charts(*hw, bucket_charts);
     bool position_observed = all_imu_attitudes_observed(*hw) && bucket_observed;
     if (position_observed) {
         for (const bool ready : imu_rpy_continuous_ready_) {
@@ -250,9 +290,8 @@ bool ExcavatorConverter::hardwareStateToRobotState(const HardwareState& raw_in, 
     st->position(2) = deg_to_rad(static_cast<double>(hw->imu.devices[1].rpy_raw_deg(1)) -
                                  static_cast<double>(hw->imu.devices[2].rpy_raw_deg(1)));
     if (bucket_observed) {
-        st->position(3) = bucket_position_rad;
+        st->position(3) = bucket_charts.primary_phase_rad;
     }
-    const Vector8d branch_reference = st->position;
 
     const double omega2_raw = st->velocity(1);
     const double omega3_raw = st->velocity(2);
@@ -262,6 +301,13 @@ bool ExcavatorConverter::hardwareStateToRobotState(const HardwareState& raw_in, 
     if (!can_publish_position) {
         return false;
     }
+    if (position_observed) {
+        st->position(3) = bucketContinuousPositionRad(bucket_charts.primary_phase_rad,
+                                                     bucket_charts.secondary_phase_rad,
+                                                     bucket_charts.primary_strength,
+                                                     bucket_charts.secondary_strength);
+    }
+    const Vector8d branch_reference = st->position;
     applyPositionContinuity(*st, position_observed, branch_reference);
     double swing_raw_yaw = 0.0;
     if (swing_raw_yaw_reference_rad(*hw, swing_raw_yaw)) {

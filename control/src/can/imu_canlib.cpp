@@ -93,7 +93,8 @@ void builtin_imu_apply_can_payload_to_partials(std::uint16_t can_id,
     const std::uint8_t cmd = static_cast<std::uint8_t>((can_id >> 3U) & 0x07U);
     auto& pf = partials[idx];
 
-    pf.last_rx_ns = now_ns();
+    const std::uint64_t rx_ns = now_ns();
+    pf.last_rx_ns = rx_ns;
     switch (cmd) {
         case 0x00:  // 欧拉角：roll/pitch 为有符号 0.01°，yaw 为无符号 0.01°。
             pf.roll_raw_deg = static_cast<float>(get_i16_le(payload, 0)) * 0.01F;
@@ -120,11 +121,13 @@ void builtin_imu_apply_can_payload_to_partials(std::uint16_t can_id,
             pf.q0 = get_f32_le(payload, 0);
             pf.q1 = get_f32_le(payload, 4);
             pf.has_quat_1 = true;
+            pf.quat_1_rx_ns = rx_ns;
             break;
         case 0x04:  // 四元数2 q2 q3
             pf.q2 = get_f32_le(payload, 0);
             pf.q3 = get_f32_le(payload, 4);
             pf.has_quat_2 = true;
+            pf.quat_2_rx_ns = rx_ns;
             break;
         case 0x05:  // 数据状态
             pf.timestamp_ms = get_u32_le(payload, 0);
@@ -368,7 +371,8 @@ struct ImuCanLib::Impl {
                              ? 1U
                              : 0U;
             dst.valid_attitude = ((pf.valid_flags & 0x01U) != 0U) ? 1U : 0U;
-            dst.valid_quaternion = (pf.has_quat_1 && pf.has_quat_2) ? 1U : 0U;
+            const bool quaternion_synced = imu_quaternion_halves_synchronized(pf);
+            dst.valid_quaternion = quaternion_synced ? 1U : 0U;
             dst.valid_gyro = ((pf.valid_flags & 0x02U) != 0U) ? 1U : 0U;
             dst.valid_accel = ((pf.valid_flags & 0x04U) != 0U) ? 1U : 0U;
             dst.imu_timestamp_ms = pf.timestamp_ms;

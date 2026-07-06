@@ -19,6 +19,7 @@ from testbed.backends.real.contracts import (
 
 _BUCKET_AXIS = 3
 _BUCKET_QUATERNION_POLICY_OFFSET_RAD = -0.4060066694119653
+_BUCKET_PRIMARY_CHART_MIN_STRENGTH = 0.35
 
 
 def _vector4(value: Any, *, name: str, default: Sequence[float] | None = None) -> np.ndarray:
@@ -419,6 +420,7 @@ class GoHomeController:
         self._raw_error = np.zeros(REAL_ACTION_DIM, dtype=np.float32)
         self._raw_imu_qpos = np.zeros(REAL_ACTION_DIM, dtype=np.float32)
         self._has_raw_imu_qpos = False
+        self._bucket_raw_imu_tracker = _BucketQuaternionPhaseTracker()
         self._policy_raw_delta = np.zeros(REAL_ACTION_DIM, dtype=np.float32)
         self._feedback_consistent = True
         self._stall_reference_error = np.zeros(REAL_ACTION_DIM, dtype=np.float32)
@@ -995,7 +997,9 @@ class GoHomeController:
         obs: Mapping[str, Any],
         policy_qpos: np.ndarray,
     ) -> tuple[np.ndarray, bool, np.ndarray | None]:
-        raw_imu_qpos = _obs_raw_imu_qpos(obs)
+        raw_imu_qpos = _obs_raw_imu_qpos(
+            obs, bucket_tracker=self._bucket_raw_imu_tracker
+        )
         if raw_imu_qpos is None:
             return np.zeros(REAL_ACTION_DIM, dtype=np.float32), True, None
         delta = real_qpos_error_rad(policy_qpos, raw_imu_qpos)
@@ -1243,7 +1247,9 @@ def _obs_qvel(obs: Mapping[str, Any]) -> np.ndarray:
     return as_real_vector4(obs["qvel"], name="qvel")
 
 
-def _bucket_quaternion_qpos_rad(devices: Sequence[Any]) -> float | None:
+def _bucket_quaternion_charts_rad(
+    devices: Sequence[Any],
+) -> tuple[float, float, float, float] | None:
     def quaternion(device_index: int) -> np.ndarray | None:
         device = devices[device_index]
         if not isinstance(device, Mapping):
@@ -1271,15 +1277,81 @@ def _bucket_quaternion_qpos_rad(devices: Sequence[Any]) -> float | None:
     w2, x2, y2, z2 = imu2
     w1, x1, y1, z1 = imu1
     rel_w = w2 * w1 + x2 * x1 + y2 * y1 + z2 * z1
+    rel_x = w2 * x1 - x2 * w1 - y2 * z1 + z2 * y1
     rel_y = w2 * y1 + x2 * z1 - y2 * w1 - z2 * x1
-    twist = float(np.remainder(2.0 * np.arctan2(rel_y, rel_w) + np.pi, 2.0 * np.pi) - np.pi)
-    bucket = twist + _BUCKET_QUATERNION_POLICY_OFFSET_RAD
-    if not np.isfinite(bucket):
+    rel_z = w2 * z1 - x2 * y1 + y2 * x1 - z2 * w1
+    norm = float(np.sqrt(rel_w * rel_w + rel_x * rel_x + rel_y * rel_y + rel_z * rel_z))
+    if not np.isfinite(norm) or norm <= 1e-9:
         return None
-    return float(bucket)
+    rel_w /= norm
+    rel_x /= norm
+    rel_y /= norm
+    rel_z /= norm
+    primary = float(
+        np.remainder(2.0 * np.arctan2(rel_y, rel_w) + np.pi, 2.0 * np.pi)
+        - np.pi
+        + _BUCKET_QUATERNION_POLICY_OFFSET_RAD
+    )
+    secondary = float(
+        np.remainder(-2.0 * np.arctan2(rel_x, rel_z) + np.pi, 2.0 * np.pi)
+        - np.pi
+    )
+    primary_strength = float(np.hypot(rel_w, rel_y))
+    secondary_strength = float(np.hypot(rel_x, rel_z))
+    if not all(
+        np.isfinite(v)
+        for v in (primary, secondary, primary_strength, secondary_strength)
+    ):
+        return None
+    return primary, secondary, primary_strength, secondary_strength
 
 
-def _obs_raw_imu_qpos(obs: Mapping[str, Any]) -> np.ndarray | None:
+def _bucket_quaternion_qpos_rad(devices: Sequence[Any]) -> float | None:
+    charts = _bucket_quaternion_charts_rad(devices)
+    return None if charts is None else charts[0]
+
+
+class _BucketQuaternionPhaseTracker:
+    def __init__(self) -> None:
+        self._ready = False
+        self._primary_phase_rad = 0.0
+        self._secondary_phase_rad = 0.0
+        self._bucket_rad = 0.0
+
+    def update(self, devices: Sequence[Any]) -> float | None:
+        charts = _bucket_quaternion_charts_rad(devices)
+        if charts is None:
+            return None
+        primary, secondary, primary_strength, secondary_strength = charts
+        if not self._ready:
+            self._primary_phase_rad = primary
+            self._secondary_phase_rad = secondary
+            self._bucket_rad = primary
+            self._ready = True
+            return self._bucket_rad
+        use_secondary = (
+            primary_strength < _BUCKET_PRIMARY_CHART_MIN_STRENGTH
+            and secondary_strength > primary_strength
+        )
+        primary_delta = float(
+            np.remainder(primary - self._primary_phase_rad + np.pi, 2.0 * np.pi)
+            - np.pi
+        )
+        secondary_delta = float(
+            np.remainder(secondary - self._secondary_phase_rad + np.pi, 2.0 * np.pi)
+            - np.pi
+        )
+        self._bucket_rad += secondary_delta if use_secondary else primary_delta
+        self._primary_phase_rad = primary
+        self._secondary_phase_rad = secondary
+        return self._bucket_rad
+
+
+def _obs_raw_imu_qpos(
+    obs: Mapping[str, Any],
+    *,
+    bucket_tracker: _BucketQuaternionPhaseTracker | None = None,
+) -> np.ndarray | None:
     if "qpos_raw_imu" in obs:
         return as_real_vector4(obs["qpos_raw_imu"], name="qpos_raw_imu")
     if "qpos_raw_imu_deg" in obs:
@@ -1319,7 +1391,11 @@ def _obs_raw_imu_qpos(obs: Mapping[str, Any]) -> np.ndarray | None:
     imu2_y = raw_deg(1, 1)
     imu3_y = raw_deg(2, 1)
     imu4_z = raw_deg(3, 2)
-    bucket_rad = _bucket_quaternion_qpos_rad(devices)
+    bucket_rad = (
+        bucket_tracker.update(devices)
+        if bucket_tracker is not None
+        else _bucket_quaternion_qpos_rad(devices)
+    )
     if None in (imu1_y, imu2_y, imu3_y, imu4_z, bucket_rad):
         return None
     return np.asarray(
