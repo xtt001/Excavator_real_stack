@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
@@ -20,6 +21,166 @@ from testbed.backends.real.contracts import (
 _BUCKET_AXIS = 3
 _BUCKET_QUATERNION_POLICY_OFFSET_RAD = -0.4060066694119653
 _BUCKET_PRIMARY_CHART_MIN_STRENGTH = 0.35
+_BUCKET_GRAVITY_HINGE_REFERENCE_RAD = 2.0839045979023254
+_BUCKET_GRAVITY_HINGE_POLICY_OFFSET_RAD = -2.025561263010988
+_BUCKET_GRAVITY_HINGE_MEDIAN_WINDOW = 21
+_DAOYUAN_CHAIN_STICK_POLICY_OFFSET_RAD = 0.19801020488135143
+_DAOYUAN_CHAIN_BUCKET_POLICY_OFFSET_RAD = -2.006833804661174
+
+
+def _finite_float(value: Any) -> float | None:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if np.isfinite(out) else None
+
+
+def _normalize_joint_rpy_profile(raw: Any) -> str:
+    raw_text = str(raw or "legacy_diff").strip().lower()
+    if raw_text in {"daoyuan_chain", "daoyuan", "chain_rpy"}:
+        return "daoyuan_chain"
+    return "legacy_diff"
+
+
+def _joint_rpy_profile(imu_debug: Mapping[str, Any] | None = None) -> str:
+    if isinstance(imu_debug, Mapping):
+        raw_profile = imu_debug.get("joint_rpy_profile")
+        if raw_profile:
+            return _normalize_joint_rpy_profile(raw_profile)
+        mapping = imu_debug.get("joint_velocity_mapping")
+        if isinstance(mapping, Mapping):
+            stick = mapping.get("stick")
+            bucket = mapping.get("bucket")
+            if isinstance(stick, Mapping) and "+" in str(stick.get("gyro_axis", "")):
+                return "daoyuan_chain"
+            if isinstance(bucket, Mapping) and "+" in str(bucket.get("position_axis", "")):
+                return "daoyuan_chain"
+    return _normalize_joint_rpy_profile(os.environ.get("EXCAVATOR_JOINT_RPY_PROFILE"))
+
+
+def _daoyuan_chain_stick_policy_offset_rad(
+    imu_debug: Mapping[str, Any] | None = None,
+) -> float:
+    if isinstance(imu_debug, Mapping):
+        value = _finite_float(imu_debug.get("daoyuan_stick_policy_offset_rad"))
+        if value is not None:
+            return value
+    value = _finite_float(
+        os.environ.get(
+            "EXCAVATOR_DAOYUAN_STICK_POLICY_OFFSET_RAD",
+            str(_DAOYUAN_CHAIN_STICK_POLICY_OFFSET_RAD),
+        )
+    )
+    return _DAOYUAN_CHAIN_STICK_POLICY_OFFSET_RAD if value is None else value
+
+
+def _daoyuan_chain_bucket_policy_offset_rad(
+    imu_debug: Mapping[str, Any] | None = None,
+) -> float:
+    if isinstance(imu_debug, Mapping):
+        value = _finite_float(imu_debug.get("daoyuan_bucket_policy_offset_rad"))
+        if value is not None:
+            return value
+    value = _finite_float(
+        os.environ.get(
+            "EXCAVATOR_DAOYUAN_BUCKET_POLICY_OFFSET_RAD",
+            str(_DAOYUAN_CHAIN_BUCKET_POLICY_OFFSET_RAD),
+        )
+    )
+    return _DAOYUAN_CHAIN_BUCKET_POLICY_OFFSET_RAD if value is None else value
+
+
+def _bucket_imu0_profile() -> str:
+    raw = os.environ.get("EXCAVATOR_BUCKET_IMU0_PROFILE", "legacy_y").strip().lower()
+    if raw in {"roll_ccw90", "rotated_ccw90", "imu0_roll", "roll"}:
+        return "roll_ccw90"
+    return "legacy_y"
+
+
+def _bucket_imu0_roll_profile_enabled() -> bool:
+    return _bucket_imu0_profile() == "roll_ccw90"
+
+
+def _bucket_qpos_source() -> str:
+    raw = os.environ.get("EXCAVATOR_BUCKET_QPOS_SOURCE", "").strip().lower()
+    if raw in {"gravity_hinge", "gravity", "accel_hinge"}:
+        return "gravity_hinge"
+    if raw in {"rpy", "native_rpy", "roll_ccw90"}:
+        return "rpy"
+    if raw in {"legacy_quaternion", "legacy", "quaternion"}:
+        return "legacy_quaternion"
+    return "rpy" if _bucket_imu0_roll_profile_enabled() else "legacy_quaternion"
+
+
+def _bucket_imu0_reference_rad() -> float:
+    if not _bucket_imu0_roll_profile_enabled():
+        return 0.0
+    try:
+        value = float(os.environ.get("EXCAVATOR_BUCKET_IMU0_REFERENCE_RAD", "0"))
+    except ValueError:
+        return 0.0
+    return value if np.isfinite(value) else 0.0
+
+
+def _bucket_imu0_axis_sign() -> float:
+    if not _bucket_imu0_roll_profile_enabled():
+        return 1.0
+    try:
+        value = float(
+            os.environ.get(
+                "EXCAVATOR_BUCKET_IMU0_SIGN",
+                os.environ.get("EXCAVATOR_BUCKET_IMU0_GYRO_SIGN", "1"),
+            )
+        )
+    except ValueError:
+        return 1.0
+    return -1.0 if np.isfinite(value) and value < 0.0 else 1.0
+
+
+def _bucket_gravity_hinge_reference_rad() -> float:
+    try:
+        value = float(
+            os.environ.get(
+                "EXCAVATOR_BUCKET_GRAVITY_HINGE_REFERENCE_RAD",
+                str(_BUCKET_GRAVITY_HINGE_REFERENCE_RAD),
+            )
+        )
+    except ValueError:
+        return _BUCKET_GRAVITY_HINGE_REFERENCE_RAD
+    return value if np.isfinite(value) else _BUCKET_GRAVITY_HINGE_REFERENCE_RAD
+
+
+def _bucket_gravity_hinge_policy_offset_rad() -> float:
+    try:
+        value = float(
+            os.environ.get(
+                "EXCAVATOR_BUCKET_GRAVITY_HINGE_POLICY_OFFSET_RAD",
+                str(_BUCKET_GRAVITY_HINGE_POLICY_OFFSET_RAD),
+            )
+        )
+    except ValueError:
+        return _BUCKET_GRAVITY_HINGE_POLICY_OFFSET_RAD
+    return value if np.isfinite(value) else _BUCKET_GRAVITY_HINGE_POLICY_OFFSET_RAD
+
+
+def _bucket_gravity_hinge_median_window() -> int:
+    try:
+        value = float(
+            os.environ.get(
+                "EXCAVATOR_BUCKET_GRAVITY_HINGE_MEDIAN_WINDOW",
+                str(_BUCKET_GRAVITY_HINGE_MEDIAN_WINDOW),
+            )
+        )
+    except ValueError:
+        return _BUCKET_GRAVITY_HINGE_MEDIAN_WINDOW
+    if not np.isfinite(value):
+        return _BUCKET_GRAVITY_HINGE_MEDIAN_WINDOW
+    return max(1, int(round(value)))
+
+
+def _bucket_initial_position_rad(primary_phase_rad: float) -> float:
+    return primary_phase_rad
 
 
 def _vector4(value: Any, *, name: str, default: Sequence[float] | None = None) -> np.ndarray:
@@ -1002,6 +1163,7 @@ class GoHomeController:
         )
         if raw_imu_qpos is None:
             return np.zeros(REAL_ACTION_DIM, dtype=np.float32), True, None
+        raw_imu_qpos = _align_raw_imu_qpos_to_policy_branch(raw_imu_qpos, policy_qpos)
         delta = real_qpos_error_rad(policy_qpos, raw_imu_qpos)
         gated_delta = np.abs(delta)
         if not _obs_has_explicit_raw_imu_qpos(obs):
@@ -1247,9 +1409,32 @@ def _obs_qvel(obs: Mapping[str, Any]) -> np.ndarray:
     return as_real_vector4(obs["qvel"], name="qvel")
 
 
-def _bucket_quaternion_charts_rad(
-    devices: Sequence[Any],
-) -> tuple[float, float, float, float] | None:
+def _quat_multiply_np(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    aw, ax, ay, az = a
+    bw, bx, by, bz = b
+    return np.asarray(
+        [
+            aw * bw - ax * bx - ay * by - az * bz,
+            aw * bx + ax * bw + ay * bz - az * by,
+            aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw,
+        ],
+        dtype=np.float64,
+    )
+
+
+def _quat_conjugate_np(q: np.ndarray) -> np.ndarray:
+    return np.asarray([q[0], -q[1], -q[2], -q[3]], dtype=np.float64)
+
+
+def _normalize_quaternion_np(q: np.ndarray) -> np.ndarray | None:
+    norm = float(np.linalg.norm(q))
+    if not np.isfinite(norm) or norm <= 1e-9:
+        return None
+    return q / norm
+
+
+def _bucket_relative_quaternion_wxyz(devices: Sequence[Any]) -> np.ndarray | None:
     def quaternion(device_index: int) -> np.ndarray | None:
         device = devices[device_index]
         if not isinstance(device, Mapping):
@@ -1265,39 +1450,48 @@ def _bucket_quaternion_charts_rad(
             return None
         if q.shape != (4,) or not np.all(np.isfinite(q)):
             return None
-        norm = float(np.linalg.norm(q))
-        if not np.isfinite(norm) or norm <= 1e-9:
-            return None
-        return q / norm
+        return _normalize_quaternion_np(q)
 
     imu1 = quaternion(0)
     imu2 = quaternion(1)
     if imu1 is None or imu2 is None:
         return None
-    w2, x2, y2, z2 = imu2
-    w1, x1, y1, z1 = imu1
-    rel_w = w2 * w1 + x2 * x1 + y2 * y1 + z2 * z1
-    rel_x = w2 * x1 - x2 * w1 - y2 * z1 + z2 * y1
-    rel_y = w2 * y1 + x2 * z1 - y2 * w1 - z2 * x1
-    rel_z = w2 * z1 - x2 * y1 + y2 * x1 - z2 * w1
-    norm = float(np.sqrt(rel_w * rel_w + rel_x * rel_x + rel_y * rel_y + rel_z * rel_z))
-    if not np.isfinite(norm) or norm <= 1e-9:
+    return _normalize_quaternion_np(_quat_multiply_np(_quat_conjugate_np(imu2), imu1))
+
+
+def _bucket_quaternion_charts_from_relative_rad(
+    relative: np.ndarray,
+) -> tuple[float, float, float, float] | None:
+    rel = _normalize_quaternion_np(relative)
+    if rel is None:
         return None
-    rel_w /= norm
-    rel_x /= norm
-    rel_y /= norm
-    rel_z /= norm
-    primary = float(
-        np.remainder(2.0 * np.arctan2(rel_y, rel_w) + np.pi, 2.0 * np.pi)
-        - np.pi
-        + _BUCKET_QUATERNION_POLICY_OFFSET_RAD
-    )
-    secondary = float(
-        np.remainder(-2.0 * np.arctan2(rel_x, rel_z) + np.pi, 2.0 * np.pi)
-        - np.pi
-    )
-    primary_strength = float(np.hypot(rel_w, rel_y))
-    secondary_strength = float(np.hypot(rel_x, rel_z))
+    rel_w, rel_x, rel_y, rel_z = rel
+    if _bucket_imu0_roll_profile_enabled():
+        sign = _bucket_imu0_axis_sign()
+        primary = float(
+            sign
+            * (np.remainder(2.0 * np.arctan2(rel_x, rel_w) + np.pi, 2.0 * np.pi)
+               - np.pi)
+        )
+        secondary = float(
+            sign
+            * (np.remainder(2.0 * np.arctan2(rel_y, rel_z) + np.pi, 2.0 * np.pi)
+               - np.pi)
+        )
+        primary_strength = float(np.hypot(rel_w, rel_x))
+        secondary_strength = float(np.hypot(rel_y, rel_z))
+    else:
+        primary = float(
+            np.remainder(2.0 * np.arctan2(rel_y, rel_w) + np.pi, 2.0 * np.pi)
+            - np.pi
+            + _BUCKET_QUATERNION_POLICY_OFFSET_RAD
+        )
+        secondary = float(
+            np.remainder(-2.0 * np.arctan2(rel_x, rel_z) + np.pi, 2.0 * np.pi)
+            - np.pi
+        )
+        primary_strength = float(np.hypot(rel_w, rel_y))
+        secondary_strength = float(np.hypot(rel_x, rel_z))
     if not all(
         np.isfinite(v)
         for v in (primary, secondary, primary_strength, secondary_strength)
@@ -1306,9 +1500,24 @@ def _bucket_quaternion_charts_rad(
     return primary, secondary, primary_strength, secondary_strength
 
 
+def _bucket_quaternion_charts_rad(
+    devices: Sequence[Any],
+    *,
+    relative_reference: np.ndarray | None = None,
+) -> tuple[float, float, float, float] | None:
+    rel = _bucket_relative_quaternion_wxyz(devices)
+    if rel is None:
+        return None
+    if _bucket_imu0_roll_profile_enabled() and relative_reference is not None:
+        rel = _normalize_quaternion_np(_quat_multiply_np(_quat_conjugate_np(relative_reference), rel))
+        if rel is None:
+            return None
+    return _bucket_quaternion_charts_from_relative_rad(rel)
+
+
 def _bucket_quaternion_qpos_rad(devices: Sequence[Any]) -> float | None:
     charts = _bucket_quaternion_charts_rad(devices)
-    return None if charts is None else charts[0]
+    return None if charts is None else _bucket_initial_position_rad(charts[0])
 
 
 class _BucketQuaternionPhaseTracker:
@@ -1317,16 +1526,180 @@ class _BucketQuaternionPhaseTracker:
         self._primary_phase_rad = 0.0
         self._secondary_phase_rad = 0.0
         self._bucket_rad = 0.0
+        self._profile = "legacy_y"
+        self._sign = 1.0
+        self._reference_rad = 0.0
+        self._relative_reference: np.ndarray | None = None
+        self._qpos_source = ""
+        self._gravity_imu0_phase_rad = 0.0
+        self._gravity_imu1_phase_rad = 0.0
+        self._gravity_ready = False
+        self._gravity_outer_zero_window: list[float] = []
+
+    @staticmethod
+    def _raw_roll_minus_pitch_rad(devices: Sequence[Any]) -> float | None:
+        def raw_deg(device_index: int, axis_index: int) -> float | None:
+            device = devices[device_index]
+            if not isinstance(device, Mapping):
+                return None
+            try:
+                rpy = np.asarray(device.get("rpy_raw_deg"), dtype=np.float64).reshape(-1)
+            except (TypeError, ValueError):
+                return None
+            if rpy.shape != (3,) or not np.all(np.isfinite(rpy)):
+                return None
+            return float(rpy[axis_index])
+
+        roll0 = raw_deg(0, 0)
+        pitch1 = raw_deg(1, 1)
+        if roll0 is None or pitch1 is None:
+            return None
+        return float(np.deg2rad(roll0 - pitch1))
+
+    @staticmethod
+    def _raw_daoyuan_chain_bucket_rad(devices: Sequence[Any]) -> float | None:
+        def raw_deg(device_index: int, axis_index: int) -> float | None:
+            device = devices[device_index]
+            if not isinstance(device, Mapping):
+                return None
+            try:
+                rpy = np.asarray(device.get("rpy_raw_deg"), dtype=np.float64).reshape(-1)
+            except (TypeError, ValueError):
+                return None
+            if rpy.shape != (3,) or not np.all(np.isfinite(rpy)):
+                return None
+            return float(rpy[axis_index])
+
+        roll0 = raw_deg(0, 0)
+        pitch1 = raw_deg(1, 1)
+        if roll0 is None or pitch1 is None:
+            return None
+        return -float(np.deg2rad(roll0 + pitch1))
+
+    @staticmethod
+    def _gravity_hinge_raw_rad(devices: Sequence[Any]) -> tuple[float, float, float] | None:
+        def accel(device_index: int) -> np.ndarray | None:
+            device = devices[device_index]
+            if not isinstance(device, Mapping):
+                return None
+            try:
+                if (
+                    int(device.get("online", 1)) == 0
+                    or int(device.get("valid_accel", 1)) == 0
+                ):
+                    return None
+            except (TypeError, ValueError):
+                return None
+            try:
+                values = np.asarray(device.get("accel_mps2"), dtype=np.float64).reshape(-1)
+            except (TypeError, ValueError):
+                return None
+            if values.shape != (3,) or not np.all(np.isfinite(values)):
+                return None
+            if float(np.linalg.norm(values)) <= 1e-9:
+                return None
+            return values
+
+        imu0 = accel(0)
+        imu1 = accel(1)
+        if imu0 is None or imu1 is None:
+            return None
+        imu0_phase = float(np.arctan2(float(imu0[2]), float(imu0[1])))
+        imu1_phase = float(np.arctan2(-float(imu1[2]), float(imu1[0])))
+        bucket = imu0_phase - imu1_phase
+        if not all(np.isfinite(v) for v in (bucket, imu0_phase, imu1_phase)):
+            return None
+        return bucket, imu0_phase, imu1_phase
 
     def update(self, devices: Sequence[Any]) -> float | None:
-        charts = _bucket_quaternion_charts_rad(devices)
+        qpos_source = _bucket_qpos_source()
+        profile = _bucket_imu0_profile()
+        sign = _bucket_imu0_axis_sign()
+        reference_rad = _bucket_imu0_reference_rad()
+        if (
+            self._ready
+            and (
+                qpos_source != self._qpos_source
+                or profile != self._profile
+                or sign != self._sign
+                or abs(reference_rad - self._reference_rad) > 1e-12
+            )
+        ):
+            self._ready = False
+            self._gravity_ready = False
+            self._gravity_outer_zero_window.clear()
+            self._relative_reference = None
+        self._qpos_source = qpos_source
+        self._profile = profile
+        self._sign = sign
+        self._reference_rad = reference_rad
+        if qpos_source == "gravity_hinge":
+            raw = self._gravity_hinge_raw_rad(devices)
+            if raw is None:
+                return None
+            _, imu0_phase, imu1_phase = raw
+            if not self._gravity_ready:
+                self._gravity_imu0_phase_rad = imu0_phase
+                self._gravity_imu1_phase_rad = imu1_phase
+                self._gravity_ready = True
+            else:
+                self._gravity_imu0_phase_rad = float(
+                    self._gravity_imu0_phase_rad
+                    + np.remainder(
+                        imu0_phase - self._gravity_imu0_phase_rad + np.pi,
+                        2.0 * np.pi,
+                    )
+                    - np.pi
+                )
+                self._gravity_imu1_phase_rad = float(
+                    self._gravity_imu1_phase_rad
+                    + np.remainder(
+                        imu1_phase - self._gravity_imu1_phase_rad + np.pi,
+                        2.0 * np.pi,
+                    )
+                    - np.pi
+                )
+            bucket_raw = self._gravity_imu0_phase_rad - self._gravity_imu1_phase_rad
+            outer_zero = bucket_raw - _bucket_gravity_hinge_reference_rad()
+            self._gravity_outer_zero_window.append(float(outer_zero))
+            median_window = _bucket_gravity_hinge_median_window()
+            if len(self._gravity_outer_zero_window) > median_window:
+                del self._gravity_outer_zero_window[
+                    : len(self._gravity_outer_zero_window) - median_window
+                ]
+            median_outer_zero = float(np.median(self._gravity_outer_zero_window))
+            return (
+                median_outer_zero
+                + _bucket_gravity_hinge_reference_rad()
+                + _bucket_gravity_hinge_policy_offset_rad()
+            )
+        if qpos_source == "rpy":
+            phase = self._raw_roll_minus_pitch_rad(devices)
+            if phase is None:
+                return None
+            phase = sign * (phase - reference_rad)
+            if not self._ready:
+                self._primary_phase_rad = phase
+                self._secondary_phase_rad = phase
+                self._bucket_rad = phase
+                self._ready = True
+                return self._bucket_rad
+            phase = float(self._primary_phase_rad + np.remainder(phase - self._primary_phase_rad + np.pi, 2.0 * np.pi) - np.pi)
+            self._bucket_rad += float(np.remainder(phase - self._primary_phase_rad + np.pi, 2.0 * np.pi) - np.pi)
+            self._primary_phase_rad = phase
+            self._secondary_phase_rad = phase
+            return self._bucket_rad
+        charts = _bucket_quaternion_charts_rad(
+            devices,
+            relative_reference=self._relative_reference,
+        )
         if charts is None:
             return None
         primary, secondary, primary_strength, secondary_strength = charts
         if not self._ready:
             self._primary_phase_rad = primary
             self._secondary_phase_rad = secondary
-            self._bucket_rad = primary
+            self._bucket_rad = _bucket_initial_position_rad(primary)
             self._ready = True
             return self._bucket_rad
         use_secondary = (
@@ -1344,6 +1717,55 @@ class _BucketQuaternionPhaseTracker:
         self._bucket_rad += secondary_delta if use_secondary else primary_delta
         self._primary_phase_rad = primary
         self._secondary_phase_rad = secondary
+        return self._bucket_rad
+
+    def update_daoyuan_chain(
+        self,
+        devices: Sequence[Any],
+        *,
+        reference_rad: float,
+    ) -> float | None:
+        qpos_source = "daoyuan_chain"
+        profile = "daoyuan_chain"
+        sign = 1.0
+        if (
+            self._ready
+            and (
+                qpos_source != self._qpos_source
+                or profile != self._profile
+                or sign != self._sign
+                or abs(reference_rad - self._reference_rad) > 1e-12
+            )
+        ):
+            self._ready = False
+            self._gravity_ready = False
+            self._gravity_outer_zero_window.clear()
+            self._relative_reference = None
+        self._qpos_source = qpos_source
+        self._profile = profile
+        self._sign = sign
+        self._reference_rad = reference_rad
+        phase = self._raw_daoyuan_chain_bucket_rad(devices)
+        if phase is None:
+            return None
+        phase += reference_rad
+        if not self._ready:
+            self._primary_phase_rad = phase
+            self._secondary_phase_rad = phase
+            self._bucket_rad = phase
+            self._ready = True
+            return self._bucket_rad
+        phase = float(
+            self._primary_phase_rad
+            + np.remainder(phase - self._primary_phase_rad + np.pi, 2.0 * np.pi)
+            - np.pi
+        )
+        self._bucket_rad += float(
+            np.remainder(phase - self._primary_phase_rad + np.pi, 2.0 * np.pi)
+            - np.pi
+        )
+        self._primary_phase_rad = phase
+        self._secondary_phase_rad = phase
         return self._bucket_rad
 
 
@@ -1387,16 +1809,46 @@ def _obs_raw_imu_qpos(
             return None
         return float(rpy[axis_index])
 
-    imu1_y = raw_deg(0, 1)
+    imu0_roll = raw_deg(0, 0)
     imu2_y = raw_deg(1, 1)
     imu3_y = raw_deg(2, 1)
     imu4_z = raw_deg(3, 2)
-    bucket_rad = (
-        bucket_tracker.update(devices)
-        if bucket_tracker is not None
-        else _bucket_quaternion_qpos_rad(devices)
-    )
-    if None in (imu1_y, imu2_y, imu3_y, imu4_z, bucket_rad):
+    joint_profile = _joint_rpy_profile(imu_debug)
+    if joint_profile == "daoyuan_chain":
+        bucket_offset = _daoyuan_chain_bucket_policy_offset_rad(imu_debug)
+        if bucket_tracker is not None:
+            bucket_rad = bucket_tracker.update_daoyuan_chain(
+                devices,
+                reference_rad=bucket_offset,
+            )
+        elif imu0_roll is not None and imu2_y is not None:
+            bucket_rad = -float(np.deg2rad(float(imu0_roll) + float(imu2_y))) + bucket_offset
+        else:
+            bucket_rad = None
+        if None in (imu2_y, imu3_y, imu4_z, bucket_rad):
+            return None
+        return np.asarray(
+            [
+                np.deg2rad(float(imu4_z)),
+                np.deg2rad(float(imu3_y)),
+                np.deg2rad(float(imu2_y) + float(imu3_y))
+                + _daoyuan_chain_stick_policy_offset_rad(imu_debug),
+                float(bucket_rad),
+            ],
+            dtype=np.float32,
+        )
+    if bucket_tracker is not None:
+        bucket_rad = bucket_tracker.update(devices)
+    elif _bucket_imu0_roll_profile_enabled():
+        bucket_rad = (
+            None
+            if imu0_roll is None or imu2_y is None
+            else _bucket_imu0_axis_sign()
+            * (float(np.deg2rad(float(imu0_roll) - float(imu2_y))) - _bucket_imu0_reference_rad())
+        )
+    else:
+        bucket_rad = _bucket_quaternion_qpos_rad(devices)
+    if None in (imu2_y, imu3_y, imu4_z, bucket_rad):
         return None
     return np.asarray(
         [
@@ -1411,6 +1863,21 @@ def _obs_raw_imu_qpos(
 
 def _obs_has_explicit_raw_imu_qpos(obs: Mapping[str, Any]) -> bool:
     return "qpos_raw_imu" in obs or "qpos_raw_imu_deg" in obs
+
+
+def _align_raw_imu_qpos_to_policy_branch(
+    raw_imu_qpos: np.ndarray,
+    policy_qpos: np.ndarray,
+) -> np.ndarray:
+    aligned = align_real_qpos_to_reference_branch(raw_imu_qpos, policy_qpos)
+    policy = as_real_vector4(policy_qpos, name="policy_qpos")
+    for axis in range(REAL_ACTION_DIM):
+        if axis == 0:
+            continue
+        aligned[axis] += round(
+            (float(policy[axis]) - float(aligned[axis])) / (2.0 * np.pi)
+        ) * (2.0 * np.pi)
+    return aligned.astype(np.float32, copy=False)
 
 
 def _format_vector(value: Any) -> str:

@@ -6,7 +6,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SSH_HOST="${EXCAVATOR_SLAVE_HOST:-${EXCAVATOR_SLAVE_SSH_HOST:-slave-jetson}}"
 SSH_USER="${EXCAVATOR_SLAVE_USER:-${EXCAVATOR_SLAVE_SSH_USER:-mundane}}"
 REMOTE_ROOT="${EXCAVATOR_REMOTE_ROOT:-/media/mundane/D/Excavator_real_stack}"
-CONFIG_REL="testbed/testbed/configs/teleop_real_v1.yaml"
+CONFIG_REL="testbed/testbed/configs/policy_real_gmsl_four_camera_v1.yaml"
 BRIDGE_PORT="${EXCAVATOR_CONTROL_PORT:-8766}"
 SAMPLES=20
 INTERVAL_S=0.15
@@ -26,14 +26,14 @@ Usage:
   scripts/calibrate_home_pose_from_current.sh [options]
 
 Read the current 4-axis qpos from the slave bridge and write it as the home
-pose in teleop_real_v1.yaml locally and on the slave.
+pose in the configured real runtime YAML locally and on the slave.
 
 Options:
   --ssh-host HOST        Slave host. Default: slave-jetson
   --ssh-user USER        Slave SSH user. Default: mundane
   --remote-root PATH     Slave repo root. Default: /media/mundane/D/Excavator_real_stack
   --config RELPATH       Config path relative to this repo.
-                         Default: testbed/testbed/configs/teleop_real_v1.yaml
+                         Default: testbed/testbed/configs/policy_real_gmsl_four_camera_v1.yaml
   --bridge-port PORT     Slave bridge control port. Default: 8766
   --samples N            Number of qpos samples. Default: 20
   --interval-s SEC       Delay between samples. Default: 0.15
@@ -321,6 +321,7 @@ found = {
     "go_home_pose": False,
     "phase_pose": False,
 }
+has_phase_labeling = False
 updated: list[str] = []
 
 for line in lines:
@@ -343,9 +344,14 @@ for line in lines:
             found["phase_pose"] = True
 
         if key_part.endswith(":") and ":" not in key_part[:-1]:
+            if path == [] and key_part[:-1] == "phase_labeling":
+                has_phase_labeling = True
             stack.append((key_part[:-1], indent))
 
     updated.append(line)
+
+if not has_phase_labeling:
+    found["phase_pose"] = True
 
 missing = [name for name, ok in found.items() if not ok]
 if missing:

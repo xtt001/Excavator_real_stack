@@ -1,12 +1,19 @@
 #include <can/internal/imu_canlib.hpp>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
+#include <cctype>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <sstream>
 
 #if defined(__linux__)
+#include <dlfcn.h>
 #include <fcntl.h>
 #include <linux/can.h>
 #include <linux/can/raw.h>
@@ -26,6 +33,83 @@ static_assert(kCanPayloadSize == kImuCanPayloadBytes, "imu payload");
 inline constexpr std::uint64_t kImuShmMagic = 0x494D555F43414E31ULL;
 inline constexpr auto kLoopPeriod = std::chrono::milliseconds(20);  // 50Hz
 inline constexpr auto kOfflineTimeout = std::chrono::milliseconds(100);
+
+#if defined(__linux__)
+inline constexpr std::uint32_t kUsbCanDeviceTypeUsbcCanIi = 4U;
+inline constexpr std::uint32_t kUsbCanDefaultDeviceIndex = 0U;
+inline constexpr std::uint32_t kUsbCanDefaultChannelIndex = 0U;
+inline constexpr std::uint32_t kUsbCanDefaultBitrate = 250000U;
+inline constexpr std::size_t kUsbCanReceiveBatch = 256U;
+
+struct UsbCanInitConfig {
+    std::uint32_t AccCode{0};
+    std::uint32_t AccMask{0xFFFFFFFFU};
+    std::uint32_t Reserved{0};
+    std::uint8_t Filter{1};
+    std::uint8_t Timing0{0};
+    std::uint8_t Timing1{0};
+    std::uint8_t Mode{0};
+};
+
+struct UsbCanObj {
+    std::uint32_t ID{0};
+    std::uint32_t TimeStamp{0};
+    std::uint8_t TimeFlag{0};
+    std::uint8_t SendType{0};
+    std::uint8_t RemoteFlag{0};
+    std::uint8_t ExternFlag{0};
+    std::uint8_t DataLen{0};
+    std::uint8_t Data[8]{};
+    std::uint8_t Reserved[3]{};
+};
+
+static_assert(sizeof(UsbCanInitConfig) == 16U, "USB-CAN init config ABI size");
+static_assert(sizeof(UsbCanObj) == 24U, "USB-CAN object ABI size");
+
+struct UsbCanInterfaceConfig {
+    bool enabled{false};
+    std::uint32_t device_index{kUsbCanDefaultDeviceIndex};
+    std::uint32_t channel_index{kUsbCanDefaultChannelIndex};
+    std::uint32_t bitrate{kUsbCanDefaultBitrate};
+    std::string error{};
+};
+
+struct UsbCanApi {
+    using OpenDeviceFn = std::uint32_t (*)(std::uint32_t, std::uint32_t, std::uint32_t);
+    using CloseDeviceFn = std::uint32_t (*)(std::uint32_t, std::uint32_t);
+    using InitCanFn = std::uint32_t (*)(std::uint32_t, std::uint32_t, std::uint32_t, UsbCanInitConfig*);
+    using StartCanFn = std::uint32_t (*)(std::uint32_t, std::uint32_t, std::uint32_t);
+    using ResetCanFn = std::uint32_t (*)(std::uint32_t, std::uint32_t, std::uint32_t);
+    using ClearBufferFn = std::uint32_t (*)(std::uint32_t, std::uint32_t, std::uint32_t);
+    using GetReceiveNumFn = std::uint32_t (*)(std::uint32_t, std::uint32_t, std::uint32_t);
+    using ReceiveFn = std::uint32_t (*)(std::uint32_t, std::uint32_t, std::uint32_t, UsbCanObj*, std::uint32_t, int);
+
+    void* handle{nullptr};
+    OpenDeviceFn open_device{nullptr};
+    CloseDeviceFn close_device{nullptr};
+    InitCanFn init_can{nullptr};
+    StartCanFn start_can{nullptr};
+    ResetCanFn reset_can{nullptr};
+    ClearBufferFn clear_buffer{nullptr};
+    GetReceiveNumFn get_receive_num{nullptr};
+    ReceiveFn receive{nullptr};
+
+    void unload() {
+        if (handle) {
+            dlclose(handle);
+            handle = nullptr;
+        }
+        open_device = nullptr;
+        close_device = nullptr;
+        init_can = nullptr;
+        start_can = nullptr;
+        reset_can = nullptr;
+        clear_buffer = nullptr;
+        get_receive_num = nullptr;
+        receive = nullptr;
+    }
+};
+#endif
 
 std::string normalize_shm_name(const std::string& name) {
     if (name.empty()) return "/imu_canlib_shm";
@@ -53,9 +137,198 @@ std::uint32_t get_u32_le(const std::array<std::uint8_t, kCanPayloadSize>& in, st
            (static_cast<std::uint32_t>(in[idx + 2]) << 16) | (static_cast<std::uint32_t>(in[idx + 3]) << 24);
 }
 
+float get_f32_packet_le(const std::array<std::uint8_t, kDaoyuanImuPacketBytes>& in, std::size_t idx) {
+    float out = 0.0F;
+    std::memcpy(&out, &in[idx], sizeof(float));
+    return out;
+}
+
+std::uint32_t get_u32_packet_le(const std::array<std::uint8_t, kDaoyuanImuPacketBytes>& in, std::size_t idx) {
+    return static_cast<std::uint32_t>(in[idx]) | (static_cast<std::uint32_t>(in[idx + 1]) << 8) |
+           (static_cast<std::uint32_t>(in[idx + 2]) << 16) | (static_cast<std::uint32_t>(in[idx + 3]) << 24);
+}
+
 std::uint64_t now_ns() {
     const auto t = std::chrono::steady_clock::now().time_since_epoch();
     return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(t).count());
+}
+
+#if defined(__linux__)
+std::string lowercase_ascii(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return s;
+}
+
+bool parse_u32_component(const std::string& raw, std::uint32_t& out, std::uint32_t max_value) {
+    if (raw.empty()) return false;
+    char* end = nullptr;
+    errno = 0;
+    const unsigned long value = std::strtoul(raw.c_str(), &end, 10);
+    if (errno != 0 || end == raw.c_str() || *end != '\0' || value > max_value) {
+        return false;
+    }
+    out = static_cast<std::uint32_t>(value);
+    return true;
+}
+
+bool usbcan_baud_from_bitrate(std::uint32_t bitrate, std::uint32_t& baud) {
+    switch (bitrate) {
+        case 1000000U:
+            baud = 0x1400U;
+            return true;
+        case 500000U:
+            baud = 0x1C00U;
+            return true;
+        case 250000U:
+            baud = 0x1C01U;
+            return true;
+        case 125000U:
+            baud = 0x1C03U;
+            return true;
+        default:
+            return false;
+    }
+}
+
+UsbCanInterfaceConfig parse_usbcan_interface(const std::string& can_if_name) {
+    UsbCanInterfaceConfig cfg{};
+    const std::string lower = lowercase_ascii(can_if_name);
+    constexpr const char* kPrefix = "usbcan";
+    constexpr std::size_t kPrefixLen = 6U;
+    if (lower.rfind(kPrefix, 0) != 0) {
+        return cfg;
+    }
+
+    cfg.enabled = true;
+    std::string spec = lower.substr(kPrefixLen);
+    const std::size_t at_pos = spec.find('@');
+    if (at_pos != std::string::npos) {
+        const std::string bitrate_raw = spec.substr(at_pos + 1U);
+        spec = spec.substr(0, at_pos);
+        if (!parse_u32_component(bitrate_raw, cfg.bitrate, 1000000U)) {
+            cfg.error = "invalid usbcan bitrate: " + bitrate_raw;
+            return cfg;
+        }
+    }
+
+    if (spec.empty()) {
+        return cfg;
+    }
+
+    auto parse_channel = [&](const std::string& raw) -> bool {
+        std::uint32_t channel = 0;
+        if (!parse_u32_component(raw, channel, 1U)) {
+            cfg.error = "invalid usbcan channel index: " + raw;
+            return false;
+        }
+        cfg.channel_index = channel;
+        return true;
+    };
+
+    auto parse_device = [&](const std::string& raw) -> bool {
+        std::uint32_t device = 0;
+        if (!parse_u32_component(raw, device, 255U)) {
+            cfg.error = "invalid usbcan device index: " + raw;
+            return false;
+        }
+        cfg.device_index = device;
+        return true;
+    };
+
+    if (spec.front() == ':') {
+        const std::string body = spec.substr(1U);
+        const std::size_t colon = body.find(':');
+        if (colon == std::string::npos) {
+            parse_device(body);
+            return cfg;
+        }
+        if (!parse_device(body.substr(0, colon))) return cfg;
+        if (!parse_channel(body.substr(colon + 1U))) return cfg;
+        return cfg;
+    }
+
+    const std::size_t colon = spec.find(':');
+    if (colon == std::string::npos) {
+        parse_device(spec);
+        return cfg;
+    }
+    if (!parse_device(spec.substr(0, colon))) return cfg;
+    parse_channel(spec.substr(colon + 1U));
+    return cfg;
+}
+
+template <typename T>
+bool load_usbcan_symbol(void* handle, const char* name, T& out, std::string& error) {
+    dlerror();
+    void* sym = dlsym(handle, name);
+    const char* dl_error = dlerror();
+    if (dl_error != nullptr || sym == nullptr) {
+        error = std::string("dlsym(") + name + ") 失败: " + (dl_error ? dl_error : "symbol not found");
+        return false;
+    }
+    out = reinterpret_cast<T>(sym);
+    return true;
+}
+
+bool load_usbcan_api(UsbCanApi& api, std::string& error) {
+    api.unload();
+    const char* candidates[] = {
+        "libusbcan.so",
+        "/usr/local/lib/libusbcan.so",
+        "/opt/usbcan_ii_libusb_aarch64/libusbcan.so",
+    };
+    for (const char* candidate : candidates) {
+        api.handle = dlopen(candidate, RTLD_NOW | RTLD_LOCAL);
+        if (api.handle) break;
+    }
+    if (!api.handle) {
+        const char* dl_error = dlerror();
+        error = std::string("dlopen(libusbcan.so) 失败: ") + (dl_error ? dl_error : "unknown error");
+        return false;
+    }
+
+    return load_usbcan_symbol(api.handle, "VCI_OpenDevice", api.open_device, error) &&
+           load_usbcan_symbol(api.handle, "VCI_CloseDevice", api.close_device, error) &&
+           load_usbcan_symbol(api.handle, "VCI_InitCAN", api.init_can, error) &&
+           load_usbcan_symbol(api.handle, "VCI_StartCAN", api.start_can, error) &&
+           load_usbcan_symbol(api.handle, "VCI_ResetCAN", api.reset_can, error) &&
+           load_usbcan_symbol(api.handle, "VCI_ClearBuffer", api.clear_buffer, error) &&
+           load_usbcan_symbol(api.handle, "VCI_GetReceiveNum", api.get_receive_num, error) &&
+           load_usbcan_symbol(api.handle, "VCI_Receive", api.receive, error);
+}
+#endif
+
+bool daoyuan_slot_for_can_id(std::uint16_t can_id, std::size_t& slot) noexcept {
+    // New Daoyuan IMU labels on the machine:
+    //   swing=0x123, boom=0x121, stick=0x124, bucket=0x122.
+    // The rest of the stack expects devices[0..3] = bucket, stick, boom, swing.
+    switch (can_id) {
+        case 0x122U:
+            slot = 0U;
+            return true;
+        case 0x124U:
+            slot = 1U;
+            return true;
+        case 0x121U:
+            slot = 2U;
+            return true;
+        case 0x123U:
+            slot = 3U;
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool daoyuan_packet_header(const std::array<std::uint8_t, kCanPayloadSize>& payload) noexcept {
+    return payload[0] == 0xABU && payload[1] == 0x54U && payload[2] == 0x65U &&
+           payload[3] == 0x00U && payload[4] == 0x35U && payload[5] == 0x00U;
+}
+
+bool all_finite(std::initializer_list<float> values) noexcept {
+    return std::all_of(values.begin(), values.end(), [](float v) { return std::isfinite(v); });
 }
 
 // 协议欧拉角刻度为 0.01°；折到 [-180,180] 后转弧度
@@ -139,11 +412,87 @@ void builtin_imu_apply_can_payload_to_partials(std::uint16_t can_id,
     }
 }
 
+void daoyuan_apply_packet_to_partials(
+    std::uint16_t can_id,
+    const DaoyuanImuPacketAccumulator& packet,
+    std::array<ImuRxAccumulator, kImuDeviceCount>& partials) {
+    std::size_t slot = 0U;
+    if (!daoyuan_slot_for_can_id(can_id, slot)) {
+        return;
+    }
+    if (packet.size < kDaoyuanImuPacketBytes) {
+        return;
+    }
+
+    const float roll_deg = get_f32_packet_le(packet.bytes, 11U);
+    const float pitch_deg = get_f32_packet_le(packet.bytes, 15U);
+    const float yaw_deg = get_f32_packet_le(packet.bytes, 19U);
+    const float gyro_x = get_f32_packet_le(packet.bytes, 23U);
+    const float gyro_y = get_f32_packet_le(packet.bytes, 27U);
+    const float gyro_z = get_f32_packet_le(packet.bytes, 31U);
+    const float accel_x = get_f32_packet_le(packet.bytes, 35U);
+    const float accel_y = get_f32_packet_le(packet.bytes, 39U);
+    const float accel_z = get_f32_packet_le(packet.bytes, 43U);
+    if (!all_finite({roll_deg, pitch_deg, yaw_deg, gyro_x, gyro_y, gyro_z, accel_x, accel_y, accel_z})) {
+        return;
+    }
+
+    auto& pf = partials[slot];
+    const std::uint64_t rx_ns = now_ns();
+    pf.last_rx_ns = rx_ns;
+    pf.roll_raw_deg = roll_deg;
+    pf.pitch_raw_deg = pitch_deg;
+    pf.yaw_raw_deg = yaw_deg;
+    pf.roll_rad = euler_deg_to_rad_pm_pi(pf.roll_raw_deg);
+    pf.pitch_rad = euler_deg_to_rad_pm_pi(pf.pitch_raw_deg);
+    pf.yaw_rad = euler_deg_to_rad_pm_pi(pf.yaw_raw_deg);
+    pf.has_euler = true;
+    pf.gyro_x_dps = gyro_x;
+    pf.gyro_y_dps = gyro_y;
+    pf.gyro_z_dps = gyro_z;
+    pf.has_gyro = true;
+    pf.accel_x_mps2 = accel_x;
+    pf.accel_y_mps2 = accel_y;
+    pf.accel_z_mps2 = accel_z;
+    pf.has_accel = true;
+    pf.timestamp_ms = get_u32_packet_le(packet.bytes, 56U);
+    pf.valid_flags = 0x07U;
+    pf.has_status = true;
+    pf.has_quat_1 = false;
+    pf.has_quat_2 = false;
+    pf.quat_1_rx_ns = 0U;
+    pf.quat_2_rx_ns = 0U;
+    pf.q0 = 1.0F;
+    pf.q1 = 0.0F;
+    pf.q2 = 0.0F;
+    pf.q3 = 0.0F;
+}
+
 }  // namespace
 
 void ImuDefaultCanFrameParser::parseFrame(std::uint16_t can_id,
                                           const std::array<std::uint8_t, kImuCanPayloadBytes>& payload,
                                           std::array<ImuRxAccumulator, kImuDeviceCount>& partials) {
+    std::size_t daoyuan_slot = 0U;
+    if (daoyuan_slot_for_can_id(can_id, daoyuan_slot)) {
+        auto& packet = daoyuan_packets_[daoyuan_slot];
+        if (daoyuan_packet_header(payload)) {
+            packet.size = 0U;
+        } else if (packet.size == 0U) {
+            return;
+        }
+        if (packet.size + payload.size() > packet.bytes.size()) {
+            packet.size = 0U;
+            return;
+        }
+        std::copy(payload.begin(), payload.end(), packet.bytes.begin() + static_cast<std::ptrdiff_t>(packet.size));
+        packet.size += payload.size();
+        if (packet.size >= packet.bytes.size()) {
+            daoyuan_apply_packet_to_partials(can_id, packet, partials);
+            packet.size = 0U;
+        }
+        return;
+    }
     builtin_imu_apply_can_payload_to_partials(can_id, payload, partials);
 }
 
@@ -168,6 +517,10 @@ struct ImuCanLib::Impl {
     int can_fd{-1};
     int shm_fd{-1};
     ImuSharedMemoryLayout* shm_view{nullptr};
+    UsbCanInterfaceConfig usbcan_config{};
+    UsbCanApi usbcan_api{};
+    bool usbcan_device_opened{false};
+    bool usbcan_channel_started{false};
 #endif
 
     std::array<ImuRxAccumulator, kImuDeviceCount> partials{};
@@ -254,16 +607,29 @@ struct ImuCanLib::Impl {
     }
 
     bool open_can() {
+        usbcan_config = parse_usbcan_interface(can_if_name);
+        if (!usbcan_config.error.empty()) {
+            last_error = "imu USB-CAN 接口配置错误: " + usbcan_config.error;
+            return false;
+        }
+        if (usbcan_config.enabled) {
+            return open_usbcan();
+        }
+        return open_socketcan();
+    }
+
+    bool open_socketcan() {
         can_fd = socket(PF_CAN, SOCK_RAW, CAN_RAW);
         if (can_fd < 0) {
             last_error = "imu socket(PF_CAN) 失败: " + std::string(std::strerror(errno));
             return false;
         }
 
-        can_filter filter{};
-        filter.can_id = kImuBaseIdHighSpeedCh1;
-        filter.can_mask = 0x780U;
-        if (setsockopt(can_fd, SOL_CAN_RAW, CAN_RAW_FILTER, &filter, sizeof(filter)) != 0) {
+        const std::array<can_filter, 2> filters{{
+            can_filter{kImuBaseIdHighSpeedCh1, 0x780U},
+            can_filter{0x120U, 0x7F8U},
+        }};
+        if (setsockopt(can_fd, SOL_CAN_RAW, CAN_RAW_FILTER, filters.data(), sizeof(filters)) != 0) {
             last_error = "imu setsockopt(CAN_RAW_FILTER) 失败: " + std::string(std::strerror(errno));
             close_can();
             return false;
@@ -295,6 +661,62 @@ struct ImuCanLib::Impl {
         return true;
     }
 
+    bool open_usbcan() {
+        std::uint32_t baud = 0;
+        if (!usbcan_baud_from_bitrate(usbcan_config.bitrate, baud)) {
+            std::ostringstream oss;
+            oss << "imu USB-CAN 不支持 bitrate=" << usbcan_config.bitrate
+                << "，当前支持 1000000/500000/250000/125000";
+            last_error = oss.str();
+            return false;
+        }
+        std::string api_error;
+        if (!load_usbcan_api(usbcan_api, api_error)) {
+            last_error = "imu USB-CAN 加载 libusbcan.so 失败: " + api_error;
+            usbcan_api.unload();
+            return false;
+        }
+        const std::uint32_t dev_type = kUsbCanDeviceTypeUsbcCanIi;
+        const std::uint32_t dev_idx = usbcan_config.device_index;
+        const std::uint32_t channel = usbcan_config.channel_index;
+        if (usbcan_api.open_device(dev_type, dev_idx, 0U) != 1U) {
+            std::ostringstream oss;
+            oss << "imu USB-CAN VCI_OpenDevice 失败: dev=" << dev_idx;
+            last_error = oss.str();
+            usbcan_api.unload();
+            return false;
+        }
+        usbcan_device_opened = true;
+
+        UsbCanInitConfig init{};
+        init.AccCode = 0U;
+        init.AccMask = 0xFFFFFFFFU;
+        init.Reserved = 0U;
+        init.Filter = 1U;
+        init.Timing0 = static_cast<std::uint8_t>(baud & 0xFFU);
+        init.Timing1 = static_cast<std::uint8_t>((baud >> 8U) & 0xFFU);
+        init.Mode = 0U;
+        if (usbcan_api.init_can(dev_type, dev_idx, channel, &init) != 1U) {
+            std::ostringstream oss;
+            oss << "imu USB-CAN VCI_InitCAN 失败: dev=" << dev_idx
+                << " channel=" << channel << " bitrate=" << usbcan_config.bitrate;
+            last_error = oss.str();
+            close_usbcan();
+            return false;
+        }
+        (void)usbcan_api.clear_buffer(dev_type, dev_idx, channel);
+        if (usbcan_api.start_can(dev_type, dev_idx, channel) != 1U) {
+            std::ostringstream oss;
+            oss << "imu USB-CAN VCI_StartCAN 失败: dev=" << dev_idx
+                << " channel=" << channel;
+            last_error = oss.str();
+            close_usbcan();
+            return false;
+        }
+        usbcan_channel_started = true;
+        return true;
+    }
+
     void close_shm() {
         if (shm_view) {
             munmap(shm_view, sizeof(ImuSharedMemoryLayout));
@@ -306,11 +728,33 @@ struct ImuCanLib::Impl {
         }
     }
 
-    void close_can() {
+    void close_socketcan() {
         if (can_fd >= 0) {
             ::close(can_fd);
             can_fd = -1;
         }
+    }
+
+    void close_usbcan() {
+        const std::uint32_t dev_type = kUsbCanDeviceTypeUsbcCanIi;
+        const std::uint32_t dev_idx = usbcan_config.device_index;
+        const std::uint32_t channel = usbcan_config.channel_index;
+        if (usbcan_api.handle) {
+            if (usbcan_channel_started && usbcan_api.reset_can) {
+                (void)usbcan_api.reset_can(dev_type, dev_idx, channel);
+            }
+            if (usbcan_device_opened && usbcan_api.close_device) {
+                (void)usbcan_api.close_device(dev_type, dev_idx);
+            }
+        }
+        usbcan_channel_started = false;
+        usbcan_device_opened = false;
+        usbcan_api.unload();
+    }
+
+    void close_can() {
+        close_socketcan();
+        close_usbcan();
     }
 
     void publish_simulation_defaults() {
@@ -341,6 +785,14 @@ struct ImuCanLib::Impl {
     }
 
     void drain_can() {
+        if (usbcan_config.enabled) {
+            drain_usbcan();
+        } else {
+            drain_socketcan();
+        }
+    }
+
+    void drain_socketcan() {
         if (can_fd < 0) return;
         while (true) {
             can_frame frame{};
@@ -350,10 +802,41 @@ struct ImuCanLib::Impl {
             if ((frame.can_id & CAN_EFF_FLAG) != 0) continue;  // 只处理标准帧
             const std::uint16_t can_id = static_cast<std::uint16_t>(frame.can_id & CAN_SFF_MASK);
             const std::uint16_t func = static_cast<std::uint16_t>((can_id >> 6U) & 0x1FU);
-            if (func != 0x08U) continue;
+            std::size_t daoyuan_slot = 0U;
+            if (func != 0x08U && !daoyuan_slot_for_can_id(can_id, daoyuan_slot)) continue;
             std::array<std::uint8_t, kCanPayloadSize> payload{};
             std::memcpy(payload.data(), frame.data, kCanPayloadSize);
             effective_frame_parser()->parseFrame(can_id, payload, partials);
+        }
+    }
+
+    void drain_usbcan() {
+        if (!usbcan_device_opened || !usbcan_api.get_receive_num || !usbcan_api.receive) return;
+        const std::uint32_t dev_type = kUsbCanDeviceTypeUsbcCanIi;
+        const std::uint32_t dev_idx = usbcan_config.device_index;
+        const std::uint32_t channel = usbcan_config.channel_index;
+        std::array<UsbCanObj, kUsbCanReceiveBatch> frames{};
+        for (int round = 0; round < 16; ++round) {
+            const std::uint32_t available = usbcan_api.get_receive_num(dev_type, dev_idx, channel);
+            if (available == 0U) break;
+            const std::uint32_t want = std::min<std::uint32_t>(
+                available, static_cast<std::uint32_t>(frames.size()));
+            const std::uint32_t got = usbcan_api.receive(dev_type, dev_idx, channel, frames.data(), want, 0);
+            if (got == 0U) break;
+            for (std::uint32_t i = 0; i < got && i < frames.size(); ++i) {
+                const UsbCanObj& frame = frames[i];
+                if (frame.RemoteFlag != 0U || frame.ExternFlag != 0U || frame.DataLen < kCanPayloadSize) {
+                    continue;
+                }
+                const std::uint16_t can_id = static_cast<std::uint16_t>(frame.ID & 0x7FFU);
+                const std::uint16_t func = static_cast<std::uint16_t>((can_id >> 6U) & 0x1FU);
+                std::size_t daoyuan_slot = 0U;
+                if (func != 0x08U && !daoyuan_slot_for_can_id(can_id, daoyuan_slot)) continue;
+                std::array<std::uint8_t, kCanPayloadSize> payload{};
+                std::memcpy(payload.data(), frame.Data, kCanPayloadSize);
+                effective_frame_parser()->parseFrame(can_id, payload, partials);
+            }
+            if (got < want) break;
         }
     }
 

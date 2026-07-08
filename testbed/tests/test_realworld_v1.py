@@ -1636,6 +1636,57 @@ class RealworldV1Tests(unittest.TestCase):
             places=3,
         )
 
+    def test_go_home_controller_uses_daoyuan_chain_raw_feedback(self) -> None:
+        stick_offset = 0.2
+        bucket_offset = -2.0
+        devices = [
+            {"online": 1, "valid_attitude": 1, "rpy_raw_deg": [-90.0, 0.0, 0.0]},
+            {"online": 1, "valid_attitude": 1, "rpy_raw_deg": [0.0, -30.0, 0.0]},
+            {"online": 1, "valid_attitude": 1, "rpy_raw_deg": [0.0, 10.0, 0.0]},
+            {"online": 1, "valid_attitude": 1, "rpy_raw_deg": [0.0, 0.0, 15.0]},
+        ]
+        qpos = np.array(
+            [
+                np.deg2rad(15.0),
+                np.deg2rad(10.0),
+                np.deg2rad(-30.0 + 10.0) + stick_offset,
+                -np.deg2rad(-90.0 + -30.0) + bucket_offset,
+            ],
+            dtype=np.float32,
+        )
+        qpos[3] += np.float32(2.0 * np.pi)
+        obs = {
+            "qpos": qpos,
+            "qvel": np.zeros(4, dtype=np.float32),
+            "imu_debug": {
+                "joint_rpy_profile": "daoyuan_chain",
+                "daoyuan_stick_policy_offset_rad": stick_offset,
+                "daoyuan_bucket_policy_offset_rad": bucket_offset,
+                "devices": devices,
+            },
+        }
+        cfg = GoHomeConfig.from_mapping(
+            {
+                "enabled": True,
+                "home_pose_rad": qpos.tolist(),
+                "near_tolerance_rad": [999.0, 999.0, 999.0, 999.0],
+                "success_tolerance_rad": [0.05, 0.05, 0.05, 0.05],
+                "max_policy_raw_qpos_delta_rad": [0.08, 0.08, 0.08, 0.08],
+            }
+        )
+        assert cfg is not None
+        controller = GoHomeController(cfg)
+
+        controller.start(obs)
+        result = controller.update(obs)
+
+        self.assertEqual(result.diagnostics["go_home_feedback_consistent"], 1)
+        np.testing.assert_allclose(
+            result.diagnostics["go_home_raw_imu_qpos"],
+            qpos,
+            atol=1e-6,
+        )
+
     def test_go_home_controller_ignores_legacy_bucket_quaternion_policy_offset_env(
         self,
     ) -> None:
@@ -1805,6 +1856,75 @@ class RealworldV1Tests(unittest.TestCase):
         assert qpos_raw_imu_deg is not None
         self.assertAlmostEqual(qpos_raw_imu_deg[3], 36.1900328319635, places=5)
         self.assertNotAlmostEqual(qpos_raw_imu_deg[3], 60.649996757507324, places=3)
+
+    def test_log_imu_qvel_quality_roll_ccw90_profile_uses_native_rpy_reference(
+        self,
+    ) -> None:
+        script_path = (
+            Path(__file__).resolve().parents[2] / "scripts" / "log_imu_qvel_quality.py"
+        )
+        spec = importlib.util.spec_from_file_location("log_imu_qvel_quality", script_path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        def imu_debug(roll_deg: float) -> dict[str, object]:
+            return {
+                "devices": [
+                    {
+                        "online": 1,
+                        "valid_attitude": 1,
+                        "valid_quaternion": 0,
+                        "rpy_raw_deg": [roll_deg, 0.0, 0.0],
+                        "gyro_dps": [20.0, 200.0, 0.0],
+                        "quaternion_wxyz": [0.0, 0.0, 0.0, 0.0],
+                    },
+                    {
+                        "online": 1,
+                        "valid_attitude": 1,
+                        "valid_quaternion": 0,
+                        "rpy_raw_deg": [0.0, 3.0, 0.0],
+                        "gyro_dps": [0.0, 5.0, 0.0],
+                        "quaternion_wxyz": [0.0, 0.0, 0.0, 0.0],
+                    },
+                    {
+                        "online": 1,
+                        "valid_attitude": 1,
+                        "rpy_raw_deg": [0.0, 0.0, 0.0],
+                        "gyro_dps": [0.0, 0.0, 0.0],
+                    },
+                    {
+                        "online": 1,
+                        "valid_attitude": 1,
+                        "rpy_raw_deg": [0.0, 0.0, 0.0],
+                        "gyro_dps": [0.0, 0.0, 0.0],
+                    },
+                ],
+            }
+
+        with patch.dict(
+            os.environ,
+            {
+                "EXCAVATOR_BUCKET_IMU0_PROFILE": "roll_ccw90",
+                "EXCAVATOR_BUCKET_IMU0_REFERENCE_RAD": str(float(np.deg2rad(7.0))),
+                "EXCAVATOR_BUCKET_IMU0_SIGN": "1",
+            },
+        ):
+            tracker = module.BucketQuaternionPhaseTracker()
+            first = module.imu_joint_qpos_raw_deg(
+                imu_debug(10.0), bucket_tracker=tracker
+            )
+            second = module.imu_joint_qpos_raw_deg(
+                imu_debug(15.0), bucket_tracker=tracker
+            )
+            qvel = module.gyro_joint_qvel_rad_s(imu_debug(15.0))
+
+        assert first is not None
+        assert second is not None
+        assert qvel is not None
+        self.assertAlmostEqual(first[3], 0.0, places=5)
+        self.assertAlmostEqual(second[3], 5.0, places=5)
+        self.assertAlmostEqual(qvel[3], float(np.deg2rad(-15.0)), places=6)
 
     def test_go_home_controller_allows_imu_debug_bucket_raw_branch_for_done(
         self,

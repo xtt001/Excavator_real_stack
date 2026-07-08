@@ -15,10 +15,21 @@ GATEWAY_HOST="${EXCAVATOR_GATEWAY_HOST:-127.0.0.1}"
 GATEWAY_PORT="${EXCAVATOR_GATEWAY_PORT:-8765}"
 RECEIVER_PORT="${EXCAVATOR_REMOTE_ACTION_PORT:-8770}"
 CAN_IF="${EXCAVATOR_CAN_IF:-can2}"
-IMU_IF="${EXCAVATOR_IMU_IF:-can3}"
+IMU_IF="${EXCAVATOR_IMU_IF:-can5}"
 CAN_BITRATE="${EXCAVATOR_CAN_BITRATE:-250000}"
+IMU_CAN_BITRATE="${EXCAVATOR_IMU_CAN_BITRATE:-1000000}"
 IMU_RAW_CAN_LOG="${EXCAVATOR_IMU_RAW_CAN_LOG:-1}"
 IMU_RAW_CAN_LOG_IF="${EXCAVATOR_IMU_RAW_CAN_LOG_IF:-${IMU_IF}}"
+JOINT_RPY_PROFILE="${EXCAVATOR_JOINT_RPY_PROFILE:-daoyuan_chain}"
+BUCKET_IMU0_PROFILE="${EXCAVATOR_BUCKET_IMU0_PROFILE:-roll_ccw90}"
+BUCKET_QPOS_SOURCE="${EXCAVATOR_BUCKET_QPOS_SOURCE:-daoyuan_chain}"
+BUCKET_IMU0_REFERENCE_RAD="${EXCAVATOR_BUCKET_IMU0_REFERENCE_RAD:-0}"
+BUCKET_IMU0_SIGN="${EXCAVATOR_BUCKET_IMU0_SIGN:-${EXCAVATOR_BUCKET_IMU0_GYRO_SIGN:-1}}"
+DAOYUAN_STICK_POLICY_OFFSET_RAD="${EXCAVATOR_DAOYUAN_STICK_POLICY_OFFSET_RAD:-0.19801020488135143}"
+DAOYUAN_BUCKET_POLICY_OFFSET_RAD="${EXCAVATOR_DAOYUAN_BUCKET_POLICY_OFFSET_RAD:--2.006833804661174}"
+BUCKET_GRAVITY_HINGE_REFERENCE_RAD="${EXCAVATOR_BUCKET_GRAVITY_HINGE_REFERENCE_RAD:-2.0839045979023254}"
+BUCKET_GRAVITY_HINGE_POLICY_OFFSET_RAD="${EXCAVATOR_BUCKET_GRAVITY_HINGE_POLICY_OFFSET_RAD:--2.025561263010988}"
+BUCKET_GRAVITY_HINGE_MEDIAN_WINDOW="${EXCAVATOR_BUCKET_GRAVITY_HINGE_MEDIAN_WINDOW:-21}"
 USB_LABEL="${EXCAVATOR_USB_LABEL:-EXTERNAL_USB}"
 USB_MOUNT="${EXCAVATOR_USB_MOUNT:-/media/${USER}/EXTERNAL_USB}"
 DATASET_DIR="${EXCAVATOR_DATASET_DIR:-${USB_MOUNT}/real_teleop_v1}"
@@ -86,9 +97,20 @@ Common environment overrides:
   EXCAVATOR_DATASET_DIR=/media/mundane/EXTERNAL_USB/real_teleop_v1
   EXCAVATOR_ORBBEC_WS=/home/mundane/orbbec_ws
   EXCAVATOR_ROS_WS=/home/mundane/orbbec_ws
-  EXCAVATOR_CAN_IF=can2 EXCAVATOR_IMU_IF=can3
+  EXCAVATOR_CAN_IF=can2 EXCAVATOR_CAN_BITRATE=250000
+  EXCAVATOR_IMU_IF=can5 EXCAVATOR_IMU_CAN_BITRATE=1000000  # set EXCAVATOR_IMU_IF=usbcan0 for ZLG USBCAN IMU input
   EXCAVATOR_IMU_RAW_CAN_LOG=1                 # set 0 to disable background candump
-  EXCAVATOR_IMU_RAW_CAN_LOG_IF=can3           # defaults to EXCAVATOR_IMU_IF
+  EXCAVATOR_IMU_RAW_CAN_LOG_IF=can5           # defaults to EXCAVATOR_IMU_IF; SocketCAN only
+  EXCAVATOR_JOINT_RPY_PROFILE=daoyuan_chain   # daoyuan_chain | legacy_diff
+  EXCAVATOR_BUCKET_QPOS_SOURCE=daoyuan_chain  # daoyuan_chain | gravity_hinge | rpy | legacy_quaternion
+  EXCAVATOR_BUCKET_IMU0_PROFILE=roll_ccw90    # legacy_y | roll_ccw90; current bucket IMU0 is rotated
+  EXCAVATOR_BUCKET_IMU0_REFERENCE_RAD=0       # roll_ccw90 outer-pose native RPY reference
+  EXCAVATOR_BUCKET_IMU0_SIGN=1                # set -1 if bucket qpos/qvel sign is reversed
+  EXCAVATOR_DAOYUAN_STICK_POLICY_OFFSET_RAD=0.19801020488135143
+  EXCAVATOR_DAOYUAN_BUCKET_POLICY_OFFSET_RAD=-2.006833804661174
+  EXCAVATOR_BUCKET_GRAVITY_HINGE_REFERENCE_RAD=2.0839045979023254
+  EXCAVATOR_BUCKET_GRAVITY_HINGE_POLICY_OFFSET_RAD=-2.025561263010988
+  EXCAVATOR_BUCKET_GRAVITY_HINGE_MEDIAN_WINDOW=21
   EXCAVATOR_PID_YAML=/media/mundane/D/Excavator_real_stack/control/config/joint_pid.yaml
   EXCAVATOR_CONTROL_MODE=open_loop_motor_speed
   EXCAVATOR_CAMERA_STACK=gmsl                 # gmsl | orbbec
@@ -117,6 +139,10 @@ log() {
 die() {
   printf '[slave-stack] error: %s\n' "$*" >&2
   exit 1
+}
+
+is_socketcan_if() {
+  [[ "$1" =~ ^can[0-9]+$ ]]
 }
 
 apply_policy_remote_profile() {
@@ -369,9 +395,13 @@ mount_usb() {
 }
 
 setup_can() {
-  log "setting up CAN ${CAN_IF}/${IMU_IF} bitrate=${CAN_BITRATE}"
+  log "setting up CAN ${CAN_IF} bitrate=${CAN_BITRATE}; IMU ${IMU_IF} bitrate=${IMU_CAN_BITRATE}"
   "${ROOT_DIR}/control/setup/setup_can.sh" "${CAN_IF}" "${CAN_BITRATE}"
-  "${ROOT_DIR}/control/setup/setup_can.sh" "${IMU_IF}" "${CAN_BITRATE}"
+  if is_socketcan_if "${IMU_IF}"; then
+    "${ROOT_DIR}/control/setup/setup_can.sh" "${IMU_IF}" "${IMU_CAN_BITRATE}"
+  else
+    log "skipping SocketCAN setup for IMU_IF=${IMU_IF}; bridge will open it directly"
+  fi
 }
 
 prepare_start() {
@@ -416,6 +446,17 @@ start_stack() {
   fi
   export ROOT_DIR CONTROL_HOST CONTROL_PORT GATEWAY_HOST GATEWAY_PORT RECEIVER_PORT
   export CAN_IF IMU_IF IMU_RAW_CAN_LOG_IF DATASET_DIR CONFIG_PATH RECEIVER_INPUT RECEIVER_RECORD_MODE
+  export EXCAVATOR_JOINT_RPY_PROFILE="${JOINT_RPY_PROFILE}"
+  export EXCAVATOR_BUCKET_IMU0_PROFILE="${BUCKET_IMU0_PROFILE}"
+  export EXCAVATOR_BUCKET_QPOS_SOURCE="${BUCKET_QPOS_SOURCE}"
+  export EXCAVATOR_BUCKET_IMU0_REFERENCE_RAD="${BUCKET_IMU0_REFERENCE_RAD}"
+  export EXCAVATOR_BUCKET_IMU0_SIGN="${BUCKET_IMU0_SIGN}"
+  export EXCAVATOR_BUCKET_IMU0_GYRO_SIGN="${BUCKET_IMU0_SIGN}"
+  export EXCAVATOR_DAOYUAN_STICK_POLICY_OFFSET_RAD="${DAOYUAN_STICK_POLICY_OFFSET_RAD}"
+  export EXCAVATOR_DAOYUAN_BUCKET_POLICY_OFFSET_RAD="${DAOYUAN_BUCKET_POLICY_OFFSET_RAD}"
+  export EXCAVATOR_BUCKET_GRAVITY_HINGE_REFERENCE_RAD="${BUCKET_GRAVITY_HINGE_REFERENCE_RAD}"
+  export EXCAVATOR_BUCKET_GRAVITY_HINGE_POLICY_OFFSET_RAD="${BUCKET_GRAVITY_HINGE_POLICY_OFFSET_RAD}"
+  export EXCAVATOR_BUCKET_GRAVITY_HINGE_MEDIAN_WINDOW="${BUCKET_GRAVITY_HINGE_MEDIAN_WINDOW}"
   export POLICY_OUTPUT_MODE POLICY_ACTION_SCALE TEST_LOG_DIR
   export PID_YAML_PATH SESSION_ID NUM_EPISODES MAX_STEPS BRIDGE_TIMEOUT CONTROL_MODE
   export EXCAVATOR_SKIP_PIP_INSTALL
@@ -433,13 +474,18 @@ start_stack() {
   if [[ "${skip_can}" != "1" ]]; then
     setup_can
   fi
+  log "joint rpy profile=${JOINT_RPY_PROFILE} bucket qpos source=${BUCKET_QPOS_SOURCE} imu0_profile=${BUCKET_IMU0_PROFILE} reference_rad=${BUCKET_IMU0_REFERENCE_RAD} sign=${BUCKET_IMU0_SIGN} daoyuan_stick_offset=${DAOYUAN_STICK_POLICY_OFFSET_RAD} daoyuan_bucket_offset=${DAOYUAN_BUCKET_POLICY_OFFSET_RAD} gravity_ref=${BUCKET_GRAVITY_HINGE_REFERENCE_RAD} gravity_offset=${BUCKET_GRAVITY_HINGE_POLICY_OFFSET_RAD} median=${BUCKET_GRAVITY_HINGE_MEDIAN_WINDOW}"
 
   if [[ "${IMU_RAW_CAN_LOG}" == "1" ]]; then
-    command -v candump >/dev/null 2>&1 || die "candump not found; install can-utils or set EXCAVATOR_IMU_RAW_CAN_LOG=0"
-    start_service canraw bash -lc '
-      printf "[slave-stack] recording raw IMU CAN: candump -ta %s\n" "${IMU_RAW_CAN_LOG_IF}" >&2
-      exec candump -ta "${IMU_RAW_CAN_LOG_IF}"
-    '
+    if ! is_socketcan_if "${IMU_RAW_CAN_LOG_IF}"; then
+      log "skipping raw IMU candump for non-SocketCAN interface: ${IMU_RAW_CAN_LOG_IF}"
+    else
+      command -v candump >/dev/null 2>&1 || die "candump not found; install can-utils or set EXCAVATOR_IMU_RAW_CAN_LOG=0"
+      start_service canraw bash -lc '
+        printf "[slave-stack] recording raw IMU CAN: candump -ta %s\n" "${IMU_RAW_CAN_LOG_IF}" >&2
+        exec candump -ta "${IMU_RAW_CAN_LOG_IF}"
+      '
+    fi
   fi
 
   start_service bridge bash -lc '

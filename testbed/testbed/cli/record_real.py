@@ -62,6 +62,20 @@ from testbed.data.schema import (
 log = logging.getLogger(__name__)
 
 _REAL_AXIS_NAMES = ("swing", "boom", "stick", "bucket")
+_IMU_VECTOR3_FIELDS = ("rpy_rad", "rpy_raw_deg", "gyro_dps", "accel_mps2")
+_IMU_VECTOR4_FIELDS = ("quaternion_wxyz",)
+_IMU_SCALAR_FIELDS = (
+    "device_addr",
+    "online",
+    "valid_attitude",
+    "valid_quaternion",
+    "valid_gyro",
+    "valid_accel",
+    "packet_loss_count",
+    "imu_timestamp_ms",
+    "host_rx_time_ns",
+    "host_rx_age_ms",
+)
 
 
 def _go_home_start_context(receiver_mode: str, has_record_session: bool) -> str | None:
@@ -2033,6 +2047,14 @@ class ReceiverTestLogger:
                 extras.get("policy_remote_activation_step", -1) or -1
             ),
         }
+        imu_vendor = _imu_vendor_payload_from_obs(obs)
+        if imu_vendor is not None:
+            payload["imu_vendor"] = imu_vendor
+            payload["imu_debug"] = obs.get("imu_debug")
+        if "qpos_raw_imu" in obs:
+            payload["qpos_raw_imu"] = obs.get("qpos_raw_imu")
+        if "qpos_raw_imu_deg" in obs:
+            payload["qpos_raw_imu_deg"] = obs.get("qpos_raw_imu_deg")
         if go_home_update is not None:
             payload["go_home_done"] = int(bool(getattr(go_home_update, "done", False)))
             payload["go_home_failed"] = int(
@@ -3167,6 +3189,7 @@ def _build_step_diagnostics(
         diagnostics.update(receiver_health.diagnostics)
     if online_qc is not None:
         diagnostics.update(dict(getattr(online_qc, "diagnostics", {}) or {}))
+    _add_imu_step_diagnostics(diagnostics, obs)
     for camera_name, timestamp_ns in image_timestamps.items():
         diagnostics[f"image_timestamp_ns_{_sanitize_key(camera_name)}"] = _int_timestamp(
             timestamp_ns
@@ -3201,6 +3224,86 @@ def _build_step_diagnostics(
     _add_policy_action_diagnostics(diagnostics, extras)
     _add_policy_remote_diagnostics(diagnostics, extras)
     return diagnostics
+
+
+def _imu_vendor_payload_from_obs(obs: dict[str, Any]) -> dict[str, Any] | None:
+    imu_debug = obs.get("imu_debug")
+    if not isinstance(imu_debug, dict):
+        return None
+    devices = imu_debug.get("devices")
+    if not isinstance(devices, list):
+        return None
+    out_devices: list[dict[str, Any]] = []
+    for index, raw_device in enumerate(devices[:4]):
+        if not isinstance(raw_device, dict):
+            continue
+        device: dict[str, Any] = {"index": int(raw_device.get("index", index) or index)}
+        for field in _IMU_SCALAR_FIELDS:
+            if field in raw_device:
+                device[field] = raw_device[field]
+        for field in (*_IMU_VECTOR3_FIELDS, *_IMU_VECTOR4_FIELDS):
+            if field in raw_device:
+                device[field] = raw_device[field]
+        out_devices.append(device)
+    if not out_devices:
+        return None
+    return {
+        "schema_version": 1,
+        "rpy_order": ["roll", "pitch", "yaw"],
+        "gyro_order": ["x", "y", "z"],
+        "accel_order": ["x", "y", "z"],
+        "quaternion_order": ["w", "x", "y", "z"],
+        "devices": out_devices,
+        "joint_velocity_mapping": imu_debug.get("joint_velocity_mapping", {}),
+    }
+
+
+def _add_imu_step_diagnostics(diagnostics: dict[str, Any], obs: dict[str, Any]) -> None:
+    imu_debug = obs.get("imu_debug")
+    devices = imu_debug.get("devices") if isinstance(imu_debug, dict) else None
+    imu_debug_available = isinstance(devices, list)
+    if not imu_debug_available:
+        devices = []
+
+    diagnostics["imu_debug_available"] = int(imu_debug_available)
+    scalar_values: dict[str, list[float]] = {field: [] for field in _IMU_SCALAR_FIELDS}
+    vector3_values: dict[str, list[np.ndarray]] = {field: [] for field in _IMU_VECTOR3_FIELDS}
+    vector4_values: dict[str, list[np.ndarray]] = {field: [] for field in _IMU_VECTOR4_FIELDS}
+
+    for index in range(4):
+        raw_device = devices[index] if index < len(devices) else {}
+        device = raw_device if isinstance(raw_device, dict) else {}
+        for field in _IMU_SCALAR_FIELDS:
+            default = -1.0 if field == "host_rx_age_ms" else 0.0
+            scalar_values[field].append(_float_or_default(device.get(field), default))
+        for field in _IMU_VECTOR3_FIELDS:
+            vector3_values[field].append(_vector_or_nan(device.get(field), size=3))
+        for field in _IMU_VECTOR4_FIELDS:
+            vector4_values[field].append(_vector_or_nan(device.get(field), size=4))
+
+    for field, values in scalar_values.items():
+        dtype = np.float32 if field == "host_rx_age_ms" else np.int64
+        diagnostics[f"imu_{field}"] = np.asarray(values, dtype=dtype)
+    for field, values in vector3_values.items():
+        diagnostics[f"imu_{field}"] = np.stack(values).astype(np.float32)
+    for field, values in vector4_values.items():
+        diagnostics[f"imu_{field}"] = np.stack(values).astype(np.float32)
+    if "qpos_raw_imu" in obs:
+        diagnostics["qpos_raw_imu"] = np.asarray(obs["qpos_raw_imu"], dtype=np.float32)
+    if "qpos_raw_imu_deg" in obs:
+        diagnostics["qpos_raw_imu_deg"] = np.asarray(obs["qpos_raw_imu_deg"], dtype=np.float32)
+
+
+def _vector_or_nan(value: Any, *, size: int) -> np.ndarray:
+    try:
+        arr = np.asarray(value, dtype=np.float32).reshape(-1)
+    except (TypeError, ValueError):
+        return np.full(size, np.nan, dtype=np.float32)
+    if arr.shape[0] < size:
+        out = np.full(size, np.nan, dtype=np.float32)
+        out[: arr.shape[0]] = arr
+        return out
+    return arr[:size].astype(np.float32, copy=True)
 
 
 def _ensure_go_home_step_diagnostics(diagnostics: dict[str, Any]) -> None:

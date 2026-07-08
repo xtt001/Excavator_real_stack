@@ -1,6 +1,11 @@
 #include <excavator/internal/excavator_converter.hpp>
 
+#include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <cstdlib>
+#include <string>
+#include <vector>
 
 namespace excavator {
 namespace {
@@ -8,6 +13,28 @@ namespace {
 constexpr float kUninitializedAttitudeEps = 1e-6F;
 constexpr double kBucketQuaternionPolicyOffsetRad = -0.4060066694119653;
 constexpr double kBucketPrimaryChartMinStrength = 0.35;
+constexpr double kBucketGravityHingeReferenceRad = 2.0839045979023254;
+constexpr double kBucketGravityHingePolicyOffsetRad = -2.025561263010988;
+constexpr int kBucketGravityHingeMedianWindow = 21;
+constexpr double kDaoyuanChainStickPolicyOffsetRad = 0.19801020488135143;
+constexpr double kDaoyuanChainBucketPolicyOffsetRad = -2.006833804661174;
+
+enum class BucketImu0Profile {
+    LegacyY,
+    RollCcw90,
+};
+
+enum class BucketQposSource {
+    LegacyQuaternion,
+    NativeRpy,
+    GravityHinge,
+    DaoyuanChainRpy,
+};
+
+enum class JointRpyProfile {
+    LegacyDiff,
+    DaoyuanChain,
+};
 
 struct BucketQuaternionCharts {
     double primary_phase_rad{0.0};
@@ -19,6 +46,107 @@ struct BucketQuaternionCharts {
 double dps_to_radps(double dps) noexcept { return dps * kPi / 180.0; }
 
 double deg_to_rad(double deg) noexcept { return deg * kPi / 180.0; }
+
+std::string env_string(const char* name) {
+    const char* raw = std::getenv(name);
+    return raw == nullptr ? std::string{} : std::string(raw);
+}
+
+double env_double(const char* name, double default_value) noexcept {
+    const char* raw = std::getenv(name);
+    if (raw == nullptr || raw[0] == '\0') {
+        return default_value;
+    }
+    char* end = nullptr;
+    const double value = std::strtod(raw, &end);
+    if (end == raw || !std::isfinite(value)) {
+        return default_value;
+    }
+    return value;
+}
+
+BucketImu0Profile bucket_imu0_profile() {
+    const std::string raw = env_string("EXCAVATOR_BUCKET_IMU0_PROFILE");
+    if (raw == "roll_ccw90" || raw == "rotated_ccw90" || raw == "imu0_roll" ||
+        raw == "roll") {
+        return BucketImu0Profile::RollCcw90;
+    }
+    return BucketImu0Profile::LegacyY;
+}
+
+BucketQposSource bucket_qpos_source(BucketImu0Profile profile) {
+    std::string raw = env_string("EXCAVATOR_BUCKET_QPOS_SOURCE");
+    if (raw.empty()) {
+        return profile == BucketImu0Profile::RollCcw90 ? BucketQposSource::NativeRpy
+                                                       : BucketQposSource::LegacyQuaternion;
+    }
+    std::transform(raw.begin(), raw.end(), raw.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    if (raw == "gravity_hinge" || raw == "gravity" || raw == "accel_hinge") {
+        return BucketQposSource::GravityHinge;
+    }
+    if (raw == "daoyuan_chain" || raw == "daoyuan_rpy" || raw == "chain_rpy") {
+        return BucketQposSource::DaoyuanChainRpy;
+    }
+    if (raw == "rpy" || raw == "native_rpy" || raw == "roll_ccw90") {
+        return BucketQposSource::NativeRpy;
+    }
+    return BucketQposSource::LegacyQuaternion;
+}
+
+JointRpyProfile joint_rpy_profile() {
+    std::string raw = env_string("EXCAVATOR_JOINT_RPY_PROFILE");
+    std::transform(raw.begin(), raw.end(), raw.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    if (raw == "daoyuan_chain" || raw == "daoyuan" || raw == "chain_rpy") {
+        return JointRpyProfile::DaoyuanChain;
+    }
+    return JointRpyProfile::LegacyDiff;
+}
+
+double bucket_reference_rad(BucketImu0Profile profile) noexcept {
+    if (profile == BucketImu0Profile::RollCcw90) {
+        return env_double("EXCAVATOR_BUCKET_IMU0_REFERENCE_RAD", 0.0);
+    }
+    return 0.0;
+}
+
+double bucket_gravity_hinge_reference_rad() noexcept {
+    return env_double("EXCAVATOR_BUCKET_GRAVITY_HINGE_REFERENCE_RAD",
+                      kBucketGravityHingeReferenceRad);
+}
+
+double bucket_gravity_hinge_policy_offset_rad() noexcept {
+    return env_double("EXCAVATOR_BUCKET_GRAVITY_HINGE_POLICY_OFFSET_RAD",
+                      kBucketGravityHingePolicyOffsetRad);
+}
+
+int bucket_gravity_hinge_median_window() noexcept {
+    const double raw = env_double("EXCAVATOR_BUCKET_GRAVITY_HINGE_MEDIAN_WINDOW",
+                                  static_cast<double>(kBucketGravityHingeMedianWindow));
+    if (!std::isfinite(raw) || raw < 1.0) {
+        return kBucketGravityHingeMedianWindow;
+    }
+    return static_cast<int>(std::max(1.0, std::round(raw)));
+}
+
+double daoyuan_chain_stick_policy_offset_rad() noexcept {
+    return env_double("EXCAVATOR_DAOYUAN_STICK_POLICY_OFFSET_RAD",
+                      kDaoyuanChainStickPolicyOffsetRad);
+}
+
+double daoyuan_chain_bucket_policy_offset_rad() noexcept {
+    return env_double("EXCAVATOR_DAOYUAN_BUCKET_POLICY_OFFSET_RAD",
+                      kDaoyuanChainBucketPolicyOffsetRad);
+}
+
+double bucket_imu0_axis_sign(BucketImu0Profile profile) noexcept {
+    if (profile == BucketImu0Profile::RollCcw90) {
+        const double default_sign = env_double("EXCAVATOR_BUCKET_IMU0_GYRO_SIGN", 1.0);
+        return env_double("EXCAVATOR_BUCKET_IMU0_SIGN", default_sign) < 0.0 ? -1.0 : 1.0;
+    }
+    return 1.0;
+}
 
 double unwrap_angle_nearest(double previous, double current) noexcept {
     return previous + std::remainder(current - previous, 2.0 * kPi);
@@ -101,6 +229,28 @@ bool bucket_quaternion_charts(const ExcavatorHardwareState& hw,
     out.secondary_strength = std::hypot(relative.x(), relative.z());
     return std::isfinite(out.primary_phase_rad) && std::isfinite(out.secondary_phase_rad) &&
            std::isfinite(out.primary_strength) && std::isfinite(out.secondary_strength);
+}
+
+bool bucket_rpy_charts(const std::array<Eigen::Vector3d, kImuDeviceCount>& rpy_rad,
+                       BucketImu0Profile profile,
+                       BucketQuaternionCharts& out) noexcept {
+    const double relative_rad = rpy_rad[0](0) - rpy_rad[1](1);
+    const double sign = bucket_imu0_axis_sign(profile);
+    out.primary_phase_rad = sign * (relative_rad - bucket_reference_rad(profile));
+    out.secondary_phase_rad = out.primary_phase_rad;
+    out.primary_strength = 1.0;
+    out.secondary_strength = 0.0;
+    return std::isfinite(out.primary_phase_rad);
+}
+
+bool bucket_daoyuan_chain_charts(const std::array<Eigen::Vector3d, kImuDeviceCount>& rpy_rad,
+                                 BucketQuaternionCharts& out) noexcept {
+    out.primary_phase_rad =
+        -(rpy_rad[0](0) + rpy_rad[1](1)) + daoyuan_chain_bucket_policy_offset_rad();
+    out.secondary_phase_rad = out.primary_phase_rad;
+    out.primary_strength = 1.0;
+    out.secondary_strength = 0.0;
+    return std::isfinite(out.primary_phase_rad);
 }
 
 bool looks_like_uninitialized_attitude(const ExcavatorImuHardwareState::ImuSample& src) noexcept {
@@ -239,11 +389,12 @@ void ExcavatorConverter::applyPositionContinuity(ExcavatorState& st,
 double ExcavatorConverter::bucketContinuousPositionRad(double primary_phase_rad,
                                                        double secondary_phase_rad,
                                                        double primary_strength,
-                                                       double secondary_strength) {
+                                                       double secondary_strength,
+                                                       double initial_output_rad) {
     if (!bucket_phase_continuous_ready_) {
         bucket_primary_phase_rad_ = primary_phase_rad;
         bucket_secondary_phase_rad_ = secondary_phase_rad;
-        bucket_position_continuous_rad_ = primary_phase_rad;
+        bucket_position_continuous_rad_ = initial_output_rad;
         bucket_phase_continuous_ready_ = true;
         return bucket_position_continuous_rad_;
     }
@@ -261,6 +412,68 @@ double ExcavatorConverter::bucketContinuousPositionRad(double primary_phase_rad,
     return bucket_position_continuous_rad_;
 }
 
+bool ExcavatorConverter::bucketGravityHingeCharts(const ExcavatorHardwareState& hw,
+                                                  double policy_offset_rad,
+                                                  int median_window,
+                                                  double& primary_phase_rad,
+                                                  double& secondary_phase_rad) {
+    const auto& imu0 = hw.imu.devices[0];
+    const auto& imu1 = hw.imu.devices[1];
+    if (imu0.online == 0U || imu1.online == 0U || imu0.valid_accel == 0U ||
+        imu1.valid_accel == 0U || imu0.host_rx_time_ns == 0U || imu1.host_rx_time_ns == 0U) {
+        return false;
+    }
+    const Eigen::Vector3d acc0 = imu0.accel_mps2.cast<double>();
+    const Eigen::Vector3d acc1 = imu1.accel_mps2.cast<double>();
+    if (!std::isfinite(acc0.x()) || !std::isfinite(acc0.y()) || !std::isfinite(acc0.z()) ||
+        !std::isfinite(acc1.x()) || !std::isfinite(acc1.y()) || !std::isfinite(acc1.z())) {
+        return false;
+    }
+    if (acc0.norm() <= 1e-9 || acc1.norm() <= 1e-9) {
+        return false;
+    }
+
+    // Offline-selected mechanical axes:
+    // IMU0 hinge axis +X -> use Y/Z gravity phase.
+    // IMU1 hinge axis +Y -> use X/-Z gravity phase.
+    const double imu0_phase = std::atan2(acc0.z(), acc0.y());
+    const double imu1_phase = std::atan2(-acc1.z(), acc1.x());
+    if (!std::isfinite(imu0_phase) || !std::isfinite(imu1_phase)) {
+        return false;
+    }
+
+    if (!bucket_gravity_hinge_phase_ready_) {
+        bucket_gravity_hinge_imu0_phase_rad_ = imu0_phase;
+        bucket_gravity_hinge_imu1_phase_rad_ = imu1_phase;
+        bucket_gravity_hinge_phase_ready_ = true;
+    } else {
+        bucket_gravity_hinge_imu0_phase_rad_ =
+            unwrap_angle_nearest(bucket_gravity_hinge_imu0_phase_rad_, imu0_phase);
+        bucket_gravity_hinge_imu1_phase_rad_ =
+            unwrap_angle_nearest(bucket_gravity_hinge_imu1_phase_rad_, imu1_phase);
+    }
+
+    const double bucket_raw_rad =
+        bucket_gravity_hinge_imu0_phase_rad_ - bucket_gravity_hinge_imu1_phase_rad_;
+    const double outer_zero_rad = bucket_raw_rad - bucket_gravity_hinge_reference_rad();
+    bucket_gravity_hinge_outer_zero_window_.push_back(outer_zero_rad);
+    const std::size_t window =
+        static_cast<std::size_t>(std::max(1, median_window));
+    while (bucket_gravity_hinge_outer_zero_window_.size() > window) {
+        bucket_gravity_hinge_outer_zero_window_.pop_front();
+    }
+    std::vector<double> samples(bucket_gravity_hinge_outer_zero_window_.begin(),
+                                bucket_gravity_hinge_outer_zero_window_.end());
+    std::sort(samples.begin(), samples.end());
+    const std::size_t mid = samples.size() / 2U;
+    const double median_outer_zero_rad =
+        (samples.size() % 2U == 0U) ? 0.5 * (samples[mid - 1U] + samples[mid]) : samples[mid];
+    primary_phase_rad = median_outer_zero_rad + bucket_gravity_hinge_reference_rad() +
+                        policy_offset_rad;
+    secondary_phase_rad = primary_phase_rad;
+    return std::isfinite(primary_phase_rad);
+}
+
 bool ExcavatorConverter::hardwareStateToRobotState(const HardwareState& raw_in, RobotState& state_out) {
     const auto* hw = asHardwareState(raw_in);
     auto* st = asState(state_out);
@@ -269,9 +482,29 @@ bool ExcavatorConverter::hardwareStateToRobotState(const HardwareState& raw_in, 
     }
     st->status = hw->motor.status;
     st->motor_rpm = swap_joint_2_3_on_first4(hw->motor.motor_rpm);
+    const BucketImu0Profile bucket_profile = bucket_imu0_profile();
+    const JointRpyProfile joint_profile = joint_rpy_profile();
+    const BucketQposSource bucket_source = bucket_qpos_source(bucket_profile);
     const auto rpy_rad = continuousImuRpy(*hw);
     BucketQuaternionCharts bucket_charts;
-    const bool bucket_observed = bucket_quaternion_charts(*hw, bucket_charts);
+    bool bucket_observed = false;
+    if (joint_profile == JointRpyProfile::DaoyuanChain ||
+        bucket_source == BucketQposSource::DaoyuanChainRpy) {
+        bucket_observed = bucket_daoyuan_chain_charts(rpy_rad, bucket_charts);
+    } else if (bucket_source == BucketQposSource::GravityHinge) {
+        bucket_observed = bucketGravityHingeCharts(
+            *hw,
+            bucket_gravity_hinge_policy_offset_rad(),
+            bucket_gravity_hinge_median_window(),
+            bucket_charts.primary_phase_rad,
+            bucket_charts.secondary_phase_rad);
+        bucket_charts.primary_strength = 1.0;
+        bucket_charts.secondary_strength = 0.0;
+    } else if (bucket_source == BucketQposSource::NativeRpy) {
+        bucket_observed = bucket_rpy_charts(rpy_rad, bucket_profile, bucket_charts);
+    } else {
+        bucket_observed = bucket_quaternion_charts(*hw, bucket_charts);
+    }
     bool position_observed = all_imu_attitudes_observed(*hw) && bucket_observed;
     if (position_observed) {
         for (const bool ready : imu_rpy_continuous_ready_) {
@@ -285,19 +518,48 @@ bool ExcavatorConverter::hardwareStateToRobotState(const HardwareState& raw_in, 
     // Keep state_out populated for diagnostics, but do not report a publishable
     // robot state until qpos has a valid branch or a previous value to hold.
     fill_kinematic_from_imu_hw(*hw, rpy_rad, *st);
-    // boom/stick 使用 IMU raw deg canonical branch；bucket 使用固定 policy-frame quaternion 标定。
-    st->position(1) = deg_to_rad(static_cast<double>(hw->imu.devices[2].rpy_raw_deg(1)));
-    st->position(2) = deg_to_rad(static_cast<double>(hw->imu.devices[1].rpy_raw_deg(1)) -
-                                 static_cast<double>(hw->imu.devices[2].rpy_raw_deg(1)));
+    // EXCAVATOR_JOINT_RPY_PROFILE=daoyuan_chain is the can5 Daoyuan layout:
+    // device[0]=bucket, device[1]=stick, device[2]=boom, device[3]=swing.
+    // It keeps upper-joint motion from being subtracted into downstream axes.
+    if (joint_profile == JointRpyProfile::DaoyuanChain) {
+        st->position(1) = deg_to_rad(static_cast<double>(hw->imu.devices[2].rpy_raw_deg(1)));
+        st->position(2) = rpy_rad[1](1) + rpy_rad[2](1) +
+                          daoyuan_chain_stick_policy_offset_rad();
+    } else {
+        st->position(1) = deg_to_rad(static_cast<double>(hw->imu.devices[2].rpy_raw_deg(1)));
+        st->position(2) = deg_to_rad(static_cast<double>(hw->imu.devices[1].rpy_raw_deg(1)) -
+                                     static_cast<double>(hw->imu.devices[2].rpy_raw_deg(1)));
+    }
     if (bucket_observed) {
         st->position(3) = bucket_charts.primary_phase_rad;
     }
 
     const double omega2_raw = st->velocity(1);
     const double omega3_raw = st->velocity(2);
-    const double omega4_raw = st->velocity(3);
-    st->velocity(2) = omega3_raw - omega2_raw;
-    st->velocity(3) = omega4_raw - omega3_raw;
+    st->velocity(2) = (joint_profile == JointRpyProfile::DaoyuanChain)
+                          ? (omega3_raw + omega2_raw)
+                          : (omega3_raw - omega2_raw);
+    if (joint_profile == JointRpyProfile::DaoyuanChain) {
+        const double imu0_roll_gyro = dps_to_radps(static_cast<double>(hw->imu.devices[0].gyro_dps(0)));
+        const double imu1_pitch_gyro = dps_to_radps(static_cast<double>(hw->imu.devices[1].gyro_dps(1)));
+        st->velocity(3) = -(imu0_roll_gyro + imu1_pitch_gyro);
+        st->acceleration(2) = static_cast<double>(hw->imu.devices[1].accel_mps2(1)) +
+                              static_cast<double>(hw->imu.devices[2].accel_mps2(1));
+        st->acceleration(3) = -(static_cast<double>(hw->imu.devices[0].accel_mps2(0)) +
+                                static_cast<double>(hw->imu.devices[1].accel_mps2(1)));
+    } else if (bucket_source == BucketQposSource::GravityHinge ||
+        bucket_profile == BucketImu0Profile::RollCcw90) {
+        const double imu0_roll_gyro = dps_to_radps(static_cast<double>(hw->imu.devices[0].gyro_dps(0)));
+        const double imu1_pitch_gyro = dps_to_radps(static_cast<double>(hw->imu.devices[1].gyro_dps(1)));
+        st->velocity(3) = bucket_imu0_axis_sign(bucket_profile) *
+                          (imu1_pitch_gyro - imu0_roll_gyro);
+        st->acceleration(3) = bucket_imu0_axis_sign(bucket_profile) *
+                              (static_cast<double>(hw->imu.devices[1].accel_mps2(1)) -
+                               static_cast<double>(hw->imu.devices[0].accel_mps2(0)));
+    } else {
+        const double omega4_raw = st->velocity(3);
+        st->velocity(3) = omega4_raw - omega3_raw;
+    }
     if (!can_publish_position) {
         return false;
     }
@@ -305,7 +567,8 @@ bool ExcavatorConverter::hardwareStateToRobotState(const HardwareState& raw_in, 
         st->position(3) = bucketContinuousPositionRad(bucket_charts.primary_phase_rad,
                                                      bucket_charts.secondary_phase_rad,
                                                      bucket_charts.primary_strength,
-                                                     bucket_charts.secondary_strength);
+                                                     bucket_charts.secondary_strength,
+                                                     bucket_charts.primary_phase_rad);
     }
     const Vector8d branch_reference = st->position;
     applyPositionContinuity(*st, position_observed, branch_reference);

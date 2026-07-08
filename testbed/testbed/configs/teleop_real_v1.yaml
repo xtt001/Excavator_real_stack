@@ -111,7 +111,7 @@ teleop:
     go_home:
       enabled: true
       # 必须现场标定后填写，顺序为 [swing, boom, stick, bucket]，单位 rad。
-      home_pose_rad: [4.275603, 0.126388, -0.743711, -0.571487]
+      home_pose_rad: [-0.007831, -0.137463, -0.508548, 0.238583]
       # TEMP for go-home function testing: disables the near-home start gate.
       # Restore to a calibrated finite region after area testing.
       near_tolerance_rad: [999.0, 999.0, 999.0, 999.0]
@@ -127,9 +127,9 @@ teleop:
       resume_tolerance_rad: [0.040, 0.045, 0.055, 0.045]
       # PD control; D term damps motion that is already moving toward home.
       # Go-home qpos error to low-level action sign.
-      # 20260528T081331 failed HDF5 showed stick/action[2] moving away from home
-      # after the temporary inverted sign, so current go-home signs are all same-sign.
-      control_signs: [1.0, 1.0, 1.0, 1.0]
+      # 20260708 Daoyuan-chain HDF5 showed boom/action[1] negative moves boom
+      # qpos away from home, so boom uses the inverted sign here.
+      control_signs: [1.0, -1.0, 1.0, 1.0]
       p_gain: [0.60, 0.60, 0.60, 0.55]
       d_gain: [0.12, 0.10, 0.10, 0.10]
       # From artifacts/manual_response/20260528_150222.jsonl plus
@@ -200,8 +200,11 @@ teleop:
       # other axes continue. This protects against physical limits and wrong
       # effective direction under load; currently enabled only for bucket.
       wrong_direction_detection_s: 0.4
-      wrong_direction_error_increase_rad: [999.0, 999.0, 999.0, 0.08]
-      wrong_direction_cooldown_s: [0.0, 0.0, 0.0, 2.0]
+      # Stop and cool down an axis if its error keeps growing after command onset.
+      # This catches stale or inverted action/qpos signs before stall boost can
+      # push harder in the wrong direction.
+      wrong_direction_error_increase_rad: [0.020, 0.010, 0.020, 0.030]
+      wrong_direction_cooldown_s: [1.0, 1.5, 1.0, 2.0]
       # Current qvel has non-zero bias at zero command, so these are intentionally wider.
       qvel_stable_rad_s: [0.10, 0.30, 0.50, 0.35]
       dwell_s: 0.4
@@ -212,7 +215,7 @@ teleop:
 
 phase_labeling:
   # 离线 phase labeler 使用；真实数值必须现场标定后填写。
-  home_pose_rad: [4.275603, 0.126388, -0.743711, -0.571487]
+  home_pose_rad: [-0.007831, -0.137463, -0.508548, 0.238583]
   near_home_tolerance_rad: [0.25, 0.25, 0.45, 0.25]
   dig_swing_range: null
   dump_swing_range: null

@@ -65,7 +65,7 @@ add_library(robot_control_canlib STATIC
     src/can/excavator_canlib.cpp
     src/can/imu_canlib.cpp)
 target_link_libraries(robot_control_canlib PUBLIC robot_control)
-target_link_libraries(robot_control_canlib PRIVATE Threads::Threads)
+target_link_libraries(robot_control_canlib PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
 target_include_directories(robot_control_canlib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 add_library(robot_control_api STATIC

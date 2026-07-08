@@ -12,6 +12,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <fstream>
@@ -77,6 +78,19 @@ std::string lowerCopy(std::string s) {
     return s;
 }
 
+std::string envString(const char* name, const std::string& fallback = "") {
+    const char* raw = std::getenv(name);
+    if (raw == nullptr || raw[0] == '\0') {
+        return fallback;
+    }
+    return std::string(raw);
+}
+
+bool bucketImu0RollProfileEnabled() {
+    const std::string raw = lowerCopy(envString("EXCAVATOR_BUCKET_IMU0_PROFILE", "legacy_y"));
+    return raw == "roll_ccw90" || raw == "rotated_ccw90" || raw == "imu0_roll" || raw == "roll";
+}
+
 bool parseBool(const std::string& raw) {
     const std::string v = lowerCopy(raw);
     if (v == "1" || v == "true" || v == "yes" || v == "on") return true;
@@ -106,7 +120,8 @@ void printHelp(const char* prog) {
         << "  --host <ip>                         listen host (default 127.0.0.1)\n"
         << "  --port <1-65535>                    listen port (default 8765)\n"
         << "  --can-if <canX>                     excavator CAN interface (default can0)\n"
-        << "  --imu-if <canX>                     IMU CAN interface (default can1)\n"
+        << "  --imu-if <canX|usbcan[dev][:ch][@bitrate]>\n"
+        << "                                      IMU CAN interface (default can1; e.g. usbcan0@250000)\n"
         << "  --can-shm <name>                    excavator shared memory name\n"
         << "  --imu-shm <name>                    IMU shared memory name\n"
         << "  --create-mapping <bool>             create SHM mapping (default true)\n"
@@ -373,6 +388,36 @@ json imuHealthJson(const excavator_api::ImuHealth& h, std::uint64_t steady_now_n
 }
 
 json imuDebugJson(const excavator_api::ImuDebug& d, std::uint64_t steady_now_ns) {
+    const bool bucket_roll_profile = bucketImu0RollProfileEnabled();
+    const std::string joint_rpy_profile =
+        lowerCopy(envString("EXCAVATOR_JOINT_RPY_PROFILE", "legacy_diff"));
+    const std::string bucket_profile =
+        bucket_roll_profile ? envString("EXCAVATOR_BUCKET_IMU0_PROFILE", "roll_ccw90")
+                            : "legacy_y";
+    const std::string bucket_qpos_source = lowerCopy(envString(
+        "EXCAVATOR_BUCKET_QPOS_SOURCE",
+        bucket_roll_profile ? "rpy" : "legacy_quaternion"));
+    const bool daoyuan_chain =
+        joint_rpy_profile == "daoyuan_chain" || bucket_qpos_source == "daoyuan_chain" ||
+        bucket_qpos_source == "daoyuan_rpy" || bucket_qpos_source == "chain_rpy";
+    const std::string bucket_gyro_axis =
+        daoyuan_chain ? "-(imu0-x+imu1-y)"
+                      : (bucket_roll_profile ? "imu1-y-minus-imu0-x" : "imu0-y-minus-imu1-y");
+    std::string bucket_position_axis =
+        daoyuan_chain ? "-(imu0-roll+imu1-pitch)+daoyuan_bucket_offset"
+                      : (bucket_roll_profile ? "imu0-roll-minus-imu1-pitch-minus-reference"
+                                             : "imu0-imu1-quaternion-y-twist");
+    if (!daoyuan_chain &&
+        (bucket_qpos_source == "gravity_hinge" || bucket_qpos_source == "gravity" ||
+         bucket_qpos_source == "accel_hinge")) {
+        bucket_position_axis =
+            "gravity-hinge-median21:imu0+X-phase-minus-imu1+Y-phase";
+    }
+    const std::string stick_gyro_axis =
+        daoyuan_chain ? "imu1-y+imu2-y" : "imu1-y-minus-imu2-y";
+    const std::string stick_position_axis =
+        daoyuan_chain ? "imu1-pitch+imu2-pitch+daoyuan_stick_offset"
+                      : "imu1-pitch-minus-imu2-pitch";
     json devices = json::array();
     for (std::size_t i = 0; i < excavator_api::kImuDeviceCount; ++i) {
         const auto& src = d.devices[i];
@@ -401,13 +446,39 @@ json imuDebugJson(const excavator_api::ImuDebug& d, std::uint64_t steady_now_ns)
         });
     }
     return json{
+        {"joint_rpy_profile", joint_rpy_profile},
+        {"bucket_imu0_profile", bucket_profile},
+        {"bucket_imu0_reference_rad",
+         bucket_roll_profile ? envString("EXCAVATOR_BUCKET_IMU0_REFERENCE_RAD", "0") : ""},
+        {"bucket_imu0_sign",
+         bucket_roll_profile ? envString("EXCAVATOR_BUCKET_IMU0_SIGN",
+                                          envString("EXCAVATOR_BUCKET_IMU0_GYRO_SIGN", "1"))
+                             : ""},
+        {"daoyuan_stick_policy_offset_rad",
+         envString("EXCAVATOR_DAOYUAN_STICK_POLICY_OFFSET_RAD", "0.19801020488135143")},
+        {"daoyuan_bucket_policy_offset_rad",
+         envString("EXCAVATOR_DAOYUAN_BUCKET_POLICY_OFFSET_RAD", "-2.006833804661174")},
+        {"bucket_qpos_source", bucket_qpos_source},
+        {"bucket_gravity_hinge_reference_rad",
+         envString("EXCAVATOR_BUCKET_GRAVITY_HINGE_REFERENCE_RAD", "2.0839045979023254")},
+        {"bucket_gravity_hinge_policy_offset_rad",
+         envString("EXCAVATOR_BUCKET_GRAVITY_HINGE_POLICY_OFFSET_RAD", "-2.025561263010988")},
+        {"bucket_gravity_hinge_median_window",
+         envString("EXCAVATOR_BUCKET_GRAVITY_HINGE_MEDIAN_WINDOW", "21")},
         {"devices", devices},
         {"joint_velocity_mapping",
          json{
              {"swing", json{{"device_index", 3}, {"gyro_axis", "-z"}}},
              {"boom", json{{"device_index", 2}, {"gyro_axis", "y"}}},
-             {"stick", json{{"device_index", 1}, {"gyro_axis", "y-minus-imu3-y"}}},
-             {"bucket", json{{"device_index", 0}, {"gyro_axis", "y-minus-imu2-y"}}},
+             {"stick",
+              json{{"device_index", 1},
+                   {"gyro_axis", stick_gyro_axis},
+                   {"position_axis", stick_position_axis}}},
+             {"bucket",
+             json{{"device_index", 0},
+                   {"gyro_axis", bucket_gyro_axis},
+                   {"position_profile", bucket_profile},
+                   {"position_axis", bucket_position_axis}}},
          }},
     };
 }

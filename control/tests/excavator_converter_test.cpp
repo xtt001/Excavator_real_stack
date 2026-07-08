@@ -1,6 +1,7 @@
 #include <excavator/internal/excavator_converter.hpp>
 
 #include <cmath>
+#include <cstdlib>
 #include <iostream>
 #include <string>
 
@@ -9,6 +10,7 @@ namespace {
 double deg_to_rad(double deg) { return deg * excavator::kPi / 180.0; }
 
 constexpr double kBucketQuaternionPolicyOffsetDeg = -23.262468611471;
+constexpr double kBucketGravityHingeOuterBucketDeg = 3.3428268519920032;
 
 Eigen::Quaternionf pitch_quaternion(double pitch_deg) {
     return Eigen::Quaternionf(Eigen::AngleAxisf(
@@ -19,6 +21,14 @@ Eigen::Quaternionf yaw_quaternion(double yaw_deg) {
     return Eigen::Quaternionf(Eigen::AngleAxisf(
         static_cast<float>(deg_to_rad(yaw_deg)), Eigen::Vector3f::UnitZ()));
 }
+
+#if defined(_WIN32)
+void set_env_var(const char* name, const char* value) { _putenv_s(name, value); }
+void unset_env_var(const char* name) { _putenv_s(name, ""); }
+#else
+void set_env_var(const char* name, const char* value) { setenv(name, value, 1); }
+void unset_env_var(const char* name) { unsetenv(name); }
+#endif
 
 void expect_near(double got, double want, const std::string& message) {
     if (std::abs(got - want) > 1e-6) {
@@ -73,6 +83,11 @@ void set_bucket_quaternions(excavator::ExcavatorHardwareState& hw,
                             const Eigen::Quaternionf& imu2) {
     hw.imu.devices[0].quaternion = imu1.normalized();
     hw.imu.devices[1].quaternion = imu2.normalized();
+}
+
+void set_bucket_outer_gravity_accel(excavator::ExcavatorHardwareState& hw) {
+    hw.imu.devices[0].accel_mps2 = Eigen::Vector3f(-0.11456954F, 2.79999995F, 9.5F);
+    hw.imu.devices[1].accel_mps2 = Eigen::Vector3f(6.90000010F, 0.0F, 7.10066216F);
 }
 
 Eigen::Quaternionf q_wxyz(double w, double x, double y, double z) {
@@ -401,6 +416,133 @@ void test_offline_imu_holds_previous_raw_deg_qpos() {
     expect_near(out.position(3), previous_bucket, "offline imu raw pitch must not update bucket qpos");
 }
 
+void test_bucket_roll_ccw90_profile_uses_native_rpy_reference_and_matching_qvel() {
+    set_env_var("EXCAVATOR_BUCKET_QPOS_SOURCE", "rpy");
+    set_env_var("EXCAVATOR_BUCKET_IMU0_PROFILE", "roll_ccw90");
+    set_env_var("EXCAVATOR_BUCKET_IMU0_REFERENCE_RAD", "0.12217304763960307");
+    set_env_var("EXCAVATOR_BUCKET_IMU0_SIGN", "1");
+
+    excavator::ExcavatorConverter converter;
+    excavator::ExcavatorHardwareState hw;
+    excavator::ExcavatorState out;
+
+    make_valid_imu(hw, 0.0, 3.0, 0.0, 222.50);
+    hw.imu.devices[0].rpy_raw_deg(0) = 10.0F;
+    hw.imu.devices[0].rpy_rad(0) = static_cast<float>(deg_to_rad(10.0));
+    hw.imu.devices[0].valid_quaternion = 0U;
+    hw.imu.devices[1].valid_quaternion = 0U;
+    hw.imu.devices[0].gyro_dps(0) = 20.0F;
+    hw.imu.devices[0].gyro_dps(1) = 200.0F;
+    hw.imu.devices[1].gyro_dps(1) = 5.0F;
+    if (!converter.hardwareStateToRobotState(hw, out)) {
+        std::cerr << "bucket roll_ccw90 baseline conversion failed\n";
+        std::exit(1);
+    }
+    expect_near(out.position(3), 0.0,
+                "roll_ccw90 bucket should use imu0.roll - imu1.pitch - reference");
+    expect_near(out.velocity(3), deg_to_rad(-15.0),
+                "roll_ccw90 bucket velocity should match derivative sign of native RPY qpos");
+
+    hw.imu.devices[0].rpy_raw_deg(0) = 15.0F;
+    hw.imu.devices[0].rpy_rad(0) = static_cast<float>(deg_to_rad(15.0));
+    if (!converter.hardwareStateToRobotState(hw, out)) {
+        std::cerr << "bucket roll_ccw90 delta conversion failed\n";
+        std::exit(1);
+    }
+    expect_near(out.position(3), deg_to_rad(5.0),
+                "roll_ccw90 bucket should follow native RPY relative angle, not startup history");
+
+    unset_env_var("EXCAVATOR_BUCKET_QPOS_SOURCE");
+    unset_env_var("EXCAVATOR_BUCKET_IMU0_PROFILE");
+    unset_env_var("EXCAVATOR_BUCKET_IMU0_REFERENCE_RAD");
+    unset_env_var("EXCAVATOR_BUCKET_IMU0_SIGN");
+}
+
+void test_bucket_gravity_hinge_source_ignores_upper_joint_rpy_coupling() {
+    set_env_var("EXCAVATOR_BUCKET_QPOS_SOURCE", "gravity_hinge");
+    set_env_var("EXCAVATOR_BUCKET_IMU0_PROFILE", "roll_ccw90");
+
+    excavator::ExcavatorConverter converter;
+    excavator::ExcavatorHardwareState hw;
+    excavator::ExcavatorState out;
+
+    make_valid_imu(hw, -54.0, -5.0, 2.0, 245.0);
+    hw.imu.devices[0].rpy_raw_deg(0) = 35.0F;
+    hw.imu.devices[0].rpy_rad(0) = static_cast<float>(deg_to_rad(35.0));
+    set_bucket_outer_gravity_accel(hw);
+    if (!converter.hardwareStateToRobotState(hw, out)) {
+        std::cerr << "bucket gravity hinge baseline conversion failed\n";
+        std::exit(1);
+    }
+    expect_near(out.position(3), deg_to_rad(kBucketGravityHingeOuterBucketDeg),
+                "gravity hinge bucket should use outer calibration policy coordinate");
+
+    make_valid_imu(hw, -12.0, 24.0, 31.0, 350.0);
+    hw.imu.devices[0].rpy_raw_deg(0) = -80.0F;
+    hw.imu.devices[0].rpy_rad(0) = static_cast<float>(deg_to_rad(-80.0));
+    set_bucket_outer_gravity_accel(hw);
+    if (!converter.hardwareStateToRobotState(hw, out)) {
+        std::cerr << "bucket gravity hinge upper-motion conversion failed\n";
+        std::exit(1);
+    }
+    expect_near(out.position(3), deg_to_rad(kBucketGravityHingeOuterBucketDeg),
+                "gravity hinge bucket should not follow unrelated upper joint RPY changes");
+
+    unset_env_var("EXCAVATOR_BUCKET_QPOS_SOURCE");
+    unset_env_var("EXCAVATOR_BUCKET_IMU0_PROFILE");
+}
+
+void test_daoyuan_chain_profile_decouples_upper_joints() {
+    set_env_var("EXCAVATOR_JOINT_RPY_PROFILE", "daoyuan_chain");
+    set_env_var("EXCAVATOR_BUCKET_QPOS_SOURCE", "daoyuan_chain");
+    set_env_var("EXCAVATOR_DAOYUAN_STICK_POLICY_OFFSET_RAD", "0");
+    set_env_var("EXCAVATOR_DAOYUAN_BUCKET_POLICY_OFFSET_RAD", "0");
+
+    excavator::ExcavatorConverter converter;
+    excavator::ExcavatorHardwareState hw;
+    excavator::ExcavatorState out;
+
+    make_valid_imu(hw, 0.0, -80.0, -5.0, 10.0);
+    hw.imu.devices[0].rpy_raw_deg(0) = -130.0F;
+    hw.imu.devices[0].rpy_rad(0) = static_cast<float>(deg_to_rad(-130.0));
+    hw.imu.devices[0].gyro_dps(0) = 11.0F;
+    hw.imu.devices[1].gyro_dps(1) = 7.0F;
+    hw.imu.devices[2].gyro_dps(1) = 3.0F;
+    hw.imu.devices[3].gyro_dps(2) = -5.0F;
+    if (!converter.hardwareStateToRobotState(hw, out)) {
+        std::cerr << "daoyuan chain baseline conversion failed\n";
+        std::exit(1);
+    }
+    expect_near(out.position(0), deg_to_rad(10.0), "daoyuan swing qpos wrong");
+    expect_near(out.position(1), deg_to_rad(-5.0), "daoyuan boom qpos wrong");
+    expect_near(out.position(2), deg_to_rad(-85.0), "daoyuan stick qpos should be stick+boom");
+    expect_near(out.position(3), deg_to_rad(210.0),
+                "daoyuan bucket qpos should be -(bucket.roll+stick.pitch)");
+    expect_near(out.velocity(0), deg_to_rad(5.0), "daoyuan swing qvel wrong");
+    expect_near(out.velocity(1), deg_to_rad(3.0), "daoyuan boom qvel wrong");
+    expect_near(out.velocity(2), deg_to_rad(10.0), "daoyuan stick qvel should be stick+boom");
+    expect_near(out.velocity(3), deg_to_rad(-18.0),
+                "daoyuan bucket qvel should be -(bucket.roll+stick.pitch)");
+
+    make_valid_imu(hw, 0.0, -70.0, -15.0, 10.0);
+    hw.imu.devices[0].rpy_raw_deg(0) = -140.0F;
+    hw.imu.devices[0].rpy_rad(0) = static_cast<float>(deg_to_rad(-140.0));
+    if (!converter.hardwareStateToRobotState(hw, out)) {
+        std::cerr << "daoyuan chain coupled-motion conversion failed\n";
+        std::exit(1);
+    }
+    expect_near(out.position(1), deg_to_rad(-15.0), "daoyuan boom should follow boom IMU");
+    expect_near(out.position(2), deg_to_rad(-85.0),
+                "daoyuan stick should reject equal-and-opposite boom/stick pitch changes");
+    expect_near(out.position(3), deg_to_rad(210.0),
+                "daoyuan bucket should reject equal-and-opposite bucket/stick changes");
+
+    unset_env_var("EXCAVATOR_JOINT_RPY_PROFILE");
+    unset_env_var("EXCAVATOR_BUCKET_QPOS_SOURCE");
+    unset_env_var("EXCAVATOR_DAOYUAN_STICK_POLICY_OFFSET_RAD");
+    unset_env_var("EXCAVATOR_DAOYUAN_BUCKET_POLICY_OFFSET_RAD");
+}
+
 }  // namespace
 
 int main() {
@@ -417,6 +559,9 @@ int main() {
     test_boom_raw_deg_ignores_restart_history();
     test_stick_raw_deg_ignores_restart_history();
     test_offline_imu_holds_previous_raw_deg_qpos();
+    test_bucket_roll_ccw90_profile_uses_native_rpy_reference_and_matching_qvel();
+    test_bucket_gravity_hinge_source_ignores_upper_joint_rpy_coupling();
+    test_daoyuan_chain_profile_decouples_upper_joints();
     std::cout << "excavator_converter_test OK\n";
     return 0;
 }

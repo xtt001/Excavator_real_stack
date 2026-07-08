@@ -14,6 +14,7 @@ namespace canlib {
 inline constexpr std::uint8_t kImuDeviceCount = 4U;
 inline constexpr std::uint16_t kImuBaseIdHighSpeedCh1 = 0x200U;
 inline constexpr std::size_t kImuCanPayloadBytes = 8U;
+inline constexpr std::size_t kDaoyuanImuPacketBytes = 64U;
 inline constexpr std::uint64_t kImuQuaternionHalfSyncWindowNs = 5'000'000ULL;
 
 // 单设备分包累加状态（高速 ch1 解析用）
@@ -50,6 +51,11 @@ struct ImuRxAccumulator {
     std::uint64_t last_rx_ns{0};
 };
 
+struct DaoyuanImuPacketAccumulator {
+    std::array<std::uint8_t, kDaoyuanImuPacketBytes> bytes{};
+    std::size_t size{0};
+};
+
 inline bool imu_quaternion_halves_synchronized(const ImuRxAccumulator& acc) noexcept {
     if (!acc.has_quat_1 || !acc.has_quat_2 || acc.quat_1_rx_ns == 0U || acc.quat_2_rx_ns == 0U) {
         return false;
@@ -72,6 +78,9 @@ class ImuDefaultCanFrameParser final : public ImuCanFrameParser {
 public:
     void parseFrame(std::uint16_t can_id, const std::array<std::uint8_t, kImuCanPayloadBytes>& payload,
                     std::array<ImuRxAccumulator, kImuDeviceCount>& partials) final;
+
+private:
+    std::array<DaoyuanImuPacketAccumulator, kImuDeviceCount> daoyuan_packets_{};
 };
 
 struct ImuSample {

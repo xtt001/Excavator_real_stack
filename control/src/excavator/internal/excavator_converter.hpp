@@ -3,6 +3,8 @@
 #include <excavator/internal/excavator_data_type.hpp>
 #include <hal/converter_interface.hpp>
 
+#include <deque>
+
 namespace excavator {
 
 class ExcavatorConverter final : public ConverterInterface {
@@ -34,7 +36,13 @@ private:
     double bucketContinuousPositionRad(double primary_phase_rad,
                                        double secondary_phase_rad,
                                        double primary_strength,
-                                       double secondary_strength);
+                                       double secondary_strength,
+                                       double initial_output_rad);
+    bool bucketGravityHingeCharts(const ExcavatorHardwareState& hw,
+                                  double policy_offset_rad,
+                                  int median_window,
+                                  double& primary_phase_rad,
+                                  double& secondary_phase_rad);
 
     Vector8d resp_velocity_bias_sum_ = Vector8d::Zero();
     Vector8d resp_velocity_bias_ = Vector8d::Zero();
@@ -48,6 +56,10 @@ private:
     double bucket_secondary_phase_rad_{0.0};
     double bucket_position_continuous_rad_{0.0};
     bool bucket_phase_continuous_ready_{false};
+    double bucket_gravity_hinge_imu0_phase_rad_{0.0};
+    double bucket_gravity_hinge_imu1_phase_rad_{0.0};
+    bool bucket_gravity_hinge_phase_ready_{false};
+    std::deque<double> bucket_gravity_hinge_outer_zero_window_{};
 };
 
 }  // namespace excavator
