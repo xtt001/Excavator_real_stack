@@ -390,15 +390,15 @@ Stop and update this plan before broadening the implementation when:
 
 ## 14. Current bounded slice
 
-Phases A-C and the Phase D target-contract/baseline diagnostic are complete.
-The next accepted slice is the **Phase D candidate-effect resolvability audit**:
-apply only held-out-fitted transition models to raw ACT and E51 action features
-at identical expert state anchors, measure expert-feature support/coverage, and
-compare the predicted candidate-effect difference with held-out transition
-residuals and episode-bootstrap uncertainty. Break results down by horizon,
-axis, direction, phase, action magnitude, and multi-axis concurrency. A small
-predicted difference relative to model error is `inconclusive`, not evidence of
-equivalence. Do not begin recursive-rollout code.
+Phases A-C and the first two Phase D diagnostics are complete. Level 2 is
+currently `inconclusive`, and Level 3 remains blocked. The next accepted slice
+is a **bounded local-estimator comparison**: compare a leave-one-episode-out
+kNN or locally weighted transition estimator with the existing linear model,
+using the same folds, targets, controls, feature-support reporting, and no
+final-fold tuning. It must report neighbor distance and effective sample
+coverage. Continue only if held-out error falls enough to make the raw-versus-
+E51 predicted effect difference resolvable; otherwise record the Level 2 stop
+condition. Do not begin recursive-rollout code.
 
 ## 15. Research log
 
@@ -670,3 +670,76 @@ Interpretation and gate status:
   effect difference is larger than estimator error;
 - therefore Phase D is not complete and Level 3 remains blocked pending the
   candidate-effect resolvability and uncertainty audit.
+
+### 2026-07-10: Phase D candidate-effect resolvability audit
+
+Implementation commit:
+
+```text
+b2bbc23f11f57286f593202b0e931c198cf84695
+```
+
+Implemented:
+
+```text
+scripts/trajectory_candidate_effect_audit.py
+testbed/tests/test_trajectory_candidate_effect_audit.py
+```
+
+The audit preserves identical expert state anchors while replacing only the
+bounded-horizon action impulse with raw ACT or E51 temporal-gated action. Each
+fold fits its linear transition model, action-magnitude bins, phase-probability
+bins, and 99th-percentile Mahalanobis support radius from the other 23
+episodes. Phase bins remain probability quantiles; no unsupported semantic
+phase names are assigned. Results are also split by expert direction and
+active-axis concurrency.
+
+Formal artifact:
+
+```text
+/data/pingfan/Excavator_real_stack_data/usb_hdf5_qc_20260708_72_104/
+runs/offline_eval/e63_candidate_effect_resolvability_all_train_ready
+```
+
+Coverage and provenance:
+
+- evaluator git commit: `b2bbc23f11f57286f593202b0e931c198cf84695`;
+- 24 leave-one-episode-out folds at `dt=0.05 s`;
+- horizons: 5, 10, 20, and 40 steps, stride 5;
+- 99th-percentile training-fold feature support;
+- 2,000 episode-level bootstrap samples with seed `20260710`;
+- claim boundary: `held_out_candidate_effect_resolvability_audit_only`;
+- no pass threshold was imposed on the effect-to-model-error ratio.
+
+Aggregate predicted E51-versus-raw results:
+
+| Horizon | Axis | E51 minus raw target MAE | 95% episode-bootstrap CI | Effect/model-error ratio | E51 feature coverage |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 0.25 s | swing | -0.00018 rad | [-0.00029, -0.00010] | 0.050 | 98.9% |
+| 0.25 s | boom | -0.000008 rad | [-0.000015, -0.000002] | 0.005 | 99.1% |
+| 0.25 s | bucket | -0.00011 rad | [-0.00026, +0.00005] | 0.037 | 92.5% |
+| 1.00 s | swing | -0.00182 rad | [-0.00306, -0.00095] | 0.139 | 99.1% |
+| 1.00 s | boom | -0.00002 rad | [-0.00005, +0.000002] | 0.008 | 98.9% |
+| 1.00 s | bucket | -0.00237 rad | [-0.00422, -0.00057] | 0.068 | 92.6% |
+| 2.00 s | swing | -0.00471 rad | [-0.00764, -0.00241] | 0.190 | 98.4% |
+| 2.00 s | boom | -0.00004 rad | [-0.00012, +0.00002] | 0.012 | 98.2% |
+| 2.00 s | bucket | -0.00257 rad | [-0.00732, +0.00186] | 0.079 | 92.4% |
+
+Interpretation and gate status:
+
+- the model predicts a modest E51 improvement over raw ACT, most consistently
+  on swing, but the raw-versus-E51 predicted effect magnitude remains only
+  `0.5%-19.0%` of held-out expert-transition MAE across axes and horizons;
+- therefore the estimator cannot reliably resolve the candidate difference;
+  bootstrap exclusion of zero for some target-MAE deltas does not override the
+  much larger transition-model residual;
+- swing and boom candidate features retain approximately `98%-99%` support
+  coverage, so their primary blocker is resolution rather than gross feature
+  extrapolation;
+- bucket aggregate candidate coverage is only `92%-93%`. In expert-negative
+  bucket windows, expert coverage is 100% but raw/E51 coverage is only about
+  `45%-65%` across horizons, so those candidate predictions are extrapolations;
+- Level 2 is `inconclusive`; these results do not establish physical state
+  improvement, trajectory retention, or raw/E51 equivalence;
+- Level 3 remains blocked. One bounded local-estimator comparison is permitted
+  before declaring the Level 2 stop condition final for this dataset.
