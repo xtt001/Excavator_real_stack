@@ -380,9 +380,9 @@ sudo visudo -f /etc/sudoers.d/excavator-qc-time-sync
 mundane ALL=(root) NOPASSWD: /usr/bin/timedatectl, /usr/bin/date, /usr/sbin/hwclock
 ```
 
-## 附录：policy shadow 检查命令（不属于现场流程）
+## 附录：E52 分阶段实验入口（独立于普通现场最简流程）
 
-E52 分阶段真机实验的任务顺序、通过条件、全局中止条件和当前部署能力缺口见：
+E52 分阶段真机实验的执行端、文件路径、逐项命令、产物位置和通过条件见：
 
 ```text
 docs/e52_real_machine_experiment_plan_20260710.md
@@ -392,11 +392,13 @@ docs/e52_real_machine_experiment_tasks_20260710.csv
 E52 检入配置保持 `shadow_zero`。需要人工看护的策略动作 trace 时，使用
 `scripts/run_e52_policy_control_trace.sh` 做 bundle preflight、request-local
 control override、终止零命令记录和事后 trace 汇总；不要修改 YAML 默认值或直接
-调用通用 `--policy-output-mode control`。
+调用通用 `--policy-output-mode control`。现场按 plan 中的 `C00-C65` 命令编号执行，
+CSV 只负责记录 task 状态，不替代命令说明。
 
-本节只用于在进入现场最简流程前检查模型 bundle 和 shadow 输出。shadow 阶段
-policy action 只写入 `steps.jsonl`，下发给底层的动作保持零。正式录制和
-policy control 都使用上面的唯一 `policy_remote` receiver 流程。
+E52 shadow 阶段的 policy action 只写入 `steps.jsonl`，下发给底层的动作保持零。
+E52 supervised control trace 也不使用普通 `policy_remote` receiver，而是由 E52
+专用脚本启动唯一策略进程并保存完整 trace。普通录制、手柄和既有 policy_remote
+流程仍使用上文的一体化 receiver。
 
 从端启动底层链路用于 shadow：
 
@@ -407,8 +409,14 @@ cd /media/mundane/D/Excavator_real_stack
 
 这里的 `--no-receiver` 只是不启动脚本默认的 receiver，避免占用
 `8770` 或启动错误模式；底层 real CAN bridge、相机、FPV、gateway 仍会启动。
-这个命令用于 shadow 检查时的底层链路；在该终端按一次 `Ctrl+C` 会停止底层链路。
-正式 policy/录制流程不要用本命令，直接用后面的唯一 receiver 一体化命令。
+这个命令用于 E52 shadow 和 E52 supervised control trace 的底层链路；对应的
+`run_e52_policy_shadow_check.sh` 或 `run_e52_policy_control_trace.sh` 在第二个 Jetson
+终端启动唯一的 E52 policy 进程。不要同时启动 `--policy-remote`、第二个 receiver
+或通用 control 命令。在底层链路终端按一次 `Ctrl+C` 会停止整个底层链路。
+
+这套 `--no-receiver` + E52 专用脚本的组合只适用于 E52 分阶段实验。普通正式录制、
+手柄和既有 policy_remote 流程仍使用前文的一体化
+`./scripts/slave_real_stack.sh run --force --policy-remote`。
 
 检查 bundle 并跑 shadow：
 
@@ -417,26 +425,17 @@ cd /media/mundane/D/Excavator_real_stack
 export PYTHON="$PWD/.venv/bin/python"
 export PYTHONPATH="$PWD/testbed"
 export LD_LIBRARY_PATH="$PWD/.venv/lib/python3.10/site-packages/nvidia/cu12/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export TEST_LOG_DIR="/media/mundane/EXTERNAL_USB/policy_control_tests/e52_runtime_shadow_$(date -u +%Y%m%dT%H%M%SZ)"
+export MAX_STEPS=500
 
-./scripts/run_policy_shadow_check.sh
+./scripts/run_e52_policy_shadow_check.sh
 ```
 
-脚本会先确认 `policy_bundles/real_gmsl_four_camera_v1/` 下的 `policy_best.ckpt`、
-`dataset_stats.pkl`、`resolved_config.yaml` 是否存在，并检查 bundle 的
-`camera_names` 是 `video4,video5,video6,video7`，然后跑 `shadow_zero`，
-最后打印方便现场判断的关键数据：
-
-- `Bundle verdict`
-- `Verdict`
-- `steps / stop_reason / effective_hz`
-- `policy latency mean/p50/p95/max`
-- `policy_action mean/max_abs`
-- `returned/raw/safe/commanded max_abs`
-- `deadzone assist enabled_steps/active_steps/active_pct/axes`
-- `policy_errors / health_bad / ack_bad / fault_codes`
-
-看到 `Bundle verdict: OK` 且 `Verdict: OK` 后，再继续下一步。如果是 `NOT OK`，
-不要进入 policy control。
+脚本会校验 `policy_bundles/real_gmsl_eye2_e52_v1/` 的 ACT、phase、temporal
+direction 和 gohome gate 产物及 SHA-256，然后运行 `shadow_zero`，最后在 receiver
+run 目录生成 `e53_no_motion_report.json`。只有该报告 `ok: true`，且人工检查完整
+动作链和预期方向后，才能继续。不同 anchor 的变量、产物定位和检查命令以 E52 plan
+中的 `C20`、`C26` 为准。
 
 ## 运行分工
 
@@ -454,9 +453,10 @@ export LD_LIBRARY_PATH="$PWD/.venv/lib/python3.10/site-packages/nvidia/cu12/lib$
 
 ## 补充说明
 
-正式现场只使用上面的“现场最简流程”。不要再分开启动底层链路和 receiver；
+普通正式现场只使用上面的“现场最简流程”。不要再分开启动底层链路和 receiver；
 `./scripts/slave_real_stack.sh run --force --policy-remote` 会同时托管底层链路和唯一
-`policy_remote` receiver，并用当前终端的 `Ctrl+C` 统一停止。
+`policy_remote` receiver，并用当前终端的 `Ctrl+C` 统一停止。E52 分阶段实验是明确
+例外，按本附录和 E52 plan 使用 `--no-receiver` 加 E52 专用脚本。
 
 如果上次没有关干净导致端口占用，重新执行现场最简流程里的
 `./scripts/slave_real_stack.sh run --force --policy-remote` 即可；`--force` 会先清理旧服务再启动。
