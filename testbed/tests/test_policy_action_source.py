@@ -615,6 +615,7 @@ class PolicyActionSourceTests(unittest.TestCase):
                     "fault_code": "",
                     "controller_timestamp_ns": 13,
                     "commanded_action": np.zeros(4, dtype=np.float32),
+                    "raw_low_level_command": np.arange(8, dtype=np.float32),
                 },
                 receiver_health=ReceiverHealthSnapshot(
                     ok=True,
@@ -626,17 +627,35 @@ class PolicyActionSourceTests(unittest.TestCase):
                 record_start_requested=False,
                 go_home_requested=False,
             )
+            logger.record_termination(
+                stop_reason="aborted",
+                zero_result={
+                    "ack": True,
+                    "fault_code": "",
+                    "controller_timestamp_ns": 14,
+                    "commanded_action": np.zeros(4, dtype=np.float32),
+                    "raw_low_level_command": np.zeros(4, dtype=np.float32),
+                },
+            )
             logger.close()
 
             run_dir = Path(tmp) / "unit"
             step_lines = (run_dir / "steps.jsonl").read_text(encoding="utf-8").splitlines()
             summary = yaml.safe_load((run_dir / "summary.json").read_text(encoding="utf-8"))
+            termination = yaml.safe_load(
+                (run_dir / "termination.json").read_text(encoding="utf-8")
+            )
 
         self.assertEqual(len(step_lines), 1)
         self.assertIn('"policy_output_mode": "shadow_zero"', step_lines[0])
         self.assertIn('"policy_deadzone_assist_active": 1', step_lines[0])
         self.assertIn('"policy_deadzone_assist_axes": "boom+"', step_lines[0])
+        self.assertIn('"raw_low_level_command": [0.0, 1.0, 2.0', step_lines[0])
         self.assertEqual(summary["steps"], 1)
+        self.assertTrue(summary["zero_command_confirmed"])
+        self.assertEqual(termination["stop_reason"], "aborted")
+        self.assertTrue(termination["zero_command_confirmed"])
+        self.assertEqual(termination["last_step"]["local_step"], 3)
 
     def test_receiver_test_logger_passes_gate_stack_policy_diagnostics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

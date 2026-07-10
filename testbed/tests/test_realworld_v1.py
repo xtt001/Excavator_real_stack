@@ -1459,12 +1459,29 @@ class RealworldV1Tests(unittest.TestCase):
         try:
             time.sleep(0.09)
         finally:
-            pump.stop(close_controller=False)
+            stop_result = pump.stop(close_controller=False)
 
         with controller.lock:
             actions = list(controller.actions)
         self.assertGreaterEqual(len(actions), 2)
         np.testing.assert_allclose(actions[-1], target)
+        np.testing.assert_allclose(stop_result.commanded_action, target)
+
+    def test_action_pump_stop_returns_zero_command_result(self) -> None:
+        controller = MockLowLevelController()
+        pump = RealActionPump(
+            controller,
+            hz=20,
+            send_immediately_on_update=True,
+            zero_on_stop=True,
+        )
+        pump.update_action(np.array([0.2, -0.1, 0.0, 0.3], dtype=np.float32))
+
+        result = pump.stop(close_controller=False)
+
+        self.assertTrue(result.ack)
+        np.testing.assert_allclose(result.commanded_action, np.zeros(4))
+        np.testing.assert_allclose(controller.last_action, np.zeros(4))
 
     def test_go_home_controller_converges_and_rejects_far_start(self) -> None:
         cfg = GoHomeConfig.from_mapping(

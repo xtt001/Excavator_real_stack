@@ -26,9 +26,8 @@ The experiment must answer these questions in order:
    live GMSL observations without commanding motion?
 2. Do verified short commands produce the expected qpos/qvel direction and a
    measurable bounded response on the active task axes?
-3. After a dedicated bounded-motion guard exists, does an E52 action window
-   produce the expected physical progress without wrong-axis motion, support
-   exit, early gohome, or tail motion?
+3. During a supervised E52 control trace, what action intent was produced, how
+   did each gate modify it, and what physical qpos/qvel response followed?
 4. Only after the previous gates pass, can a longer task segment be attempted.
 
 This plan does not treat shadow output as physical success. It also does not
@@ -48,14 +47,15 @@ Task-specific invariant:
 | D02 | Live E52 inference with zero command | Supported | `run_e52_policy_shadow_check.sh` | Ready |
 | D03 | Verify commanded action stayed zero and gate diagnostics exist | Supported | `e53_verify_no_motion_policy_log.py` | Ready |
 | D04 | Bounded scripted single-axis response with explicit confirmation and qpos abort | Supported | `calibrate_axis_response.py` | Ready after operator approval |
-| D05 | E52 policy `control` output in generic receiver | Mechanically present | `record_real --policy-output-mode control` | Not an accepted field entrypoint |
-| D06 | E52-specific bounded policy motion with arm delay, explicit qpos/qvel envelope, gohome suppression, and automatic verdict | Not implemented | none | Blocked |
-| D07 | Full autonomous segment/cycle | Generic control can run, but required E52 safeguards are incomplete | none | Blocked |
+| D05 | Supervised E52 policy control with trace capture | Supported | `run_e52_policy_control_trace.sh` | Ready after P0-P2 |
+| D06 | Terminal zero receipt, provenance, summary, timeline, and context | Supported | `termination.json`, `summarize_e52_control_trace.py` | Ready |
+| D07 | Supervised segment/cycle | Mechanically supported after shorter reviewed runs | same control-trace entrypoint | Evidence-gated |
 | D08 | Near-home stationary timeout gohome fallback | Documented design only | none | Blocked |
 
-The E52 deployment config and preflight intentionally require
-`output_mode: shadow_zero`. Do not bypass this by editing the YAML or directly
-passing `--policy-output-mode control` during the first field session.
+The checked-in E52 deployment config remains `output_mode: shadow_zero`. Do not
+edit that default. Supervised motion uses the dedicated trace entrypoint, which
+verifies the shadow configuration and applies a request-local control override
+after explicit `CONFIRM_HARDWARE_MOTION=YES`.
 
 ## 3. Experiment task table
 
@@ -68,7 +68,7 @@ The machine-readable checklist is
 | P1 platform preflight | T10-T14 | No | Sensors, cameras, bridge, zero command, and operator abort path pass |
 | P2 E52 shadow | T20-T26 | No policy motion | E53 verdict passes at home and manually selected task states |
 | P3 action response | T30-T36 | Scripted, one axis at a time | Active-axis response direction and boundedness are measured |
-| P4 bounded E52 motion | T40-T47 | Short policy window | Blocked until D06 is implemented and reviewed |
+| P4 supervised E52 trace | T40-T47 | Human-observed policy motion | Complete trace and operator review |
 | P5 task segment | T50-T55 | One supervised segment | Requires P4 repeated pass |
 | P6 full cycle | T60-T65 | Full supervised cycle | Requires P5 pass and gohome decision |
 
@@ -169,42 +169,46 @@ P3 passes per axis/direction only when repeated trials have the expected qpos
 direction, bounded displacement, valid acknowledgments, and no cross-axis or
 post-command motion requiring intervention.
 
-## 8. P4: required bounded E52 motion capability
+## 8. P4: supervised E52 control trace
 
-P4 is not executable with the accepted E52 entrypoints at the audited commit.
-Before P4, implement and test a dedicated owner with all of these properties:
+P4 intentionally uses human supervision instead of a second automatic motion
+state machine:
 
-- explicit `--confirm-hardware-motion` equivalent;
-- mandatory finite maximum control steps with no unlimited default;
-- shadow warm-up before arming and a separate operator arm event;
-- qpos delta envelope per axis, shortest-angle swing handling, and automatic
-  zero/stop when crossed;
-- qvel and sensor-validity stop conditions based on measured P3 evidence;
-- gohome requests disabled for the first bounded policy windows;
-- zero command on normal completion, guard trip, health failure, Ctrl+C, and
-  process exception;
-- complete raw ACT, every E52 stage, safe action, commanded action, qpos/qvel,
-  guard reason, and stop-reason logging;
-- a post-run verifier that refuses PASS if provenance or terminal zero evidence
-  is missing.
+```bash
+cd /media/mundane/D/Excavator_real_stack
+export CONFIRM_HARDWARE_MOTION=YES
+export MAX_STEPS=4000
+export IMAGE_INTERVAL_STEPS=5
+./scripts/run_e52_policy_control_trace.sh
+```
 
-Thresholds must be explicit experiment inputs sourced from P3; they must not be
-new checked-in defaults inferred from offline imitation metrics.
+The operator watches motion continuously and stops with Ctrl+C, bridge
+shutdown, physical emergency stop, or power removal when necessary. The
+existing receiver/control pump sends zero on normal completion and Ctrl+C. The
+trace extension records that terminal zero command and controller receipt.
+
+The entrypoint does not add online qpos/qvel envelopes or silently alter gate
+semantics. It only owns explicit motion confirmation, bundle preflight, a fresh
+USB trace root, request-local control override, a finite maximum step limit,
+configurable FPV capture frequency, and post-run trace analysis.
+
+Trace completeness is not a physical-success verdict. The operator and offline
+reviewer decide whether direction, duration, and resulting state were correct.
 
 ## 9. P4-P6 evaluation sequence
 
-Once D06 exists, use this order:
+Use this order:
 
-1. one short E52 window from a reviewed S1/S2/S3 anchor;
+1. one supervised E52 run from a reviewed S1/S2/S3 anchor;
 2. repeat the same anchor and direction enough times to distinguish repeatable
    response from one-off hydraulic/load variation;
-3. compare observed qpos/qvel effect with the P3 response envelope and the
+3. compare observed qpos/qvel effect with the P3 response evidence and the
    operator's expected axis/direction;
-4. extend duration only after every previous run terminates at zero without a
-   guard, health, or operator abort;
+4. extend duration only after every previous run has a complete trace and the
+   stop/zero event is understood;
 5. attempt one action segment before any full cycle;
-6. keep gohome disabled until action-side segment behavior passes and the
-   gohome acceptance path has its own reviewed test.
+6. treat any gohome request or transition as a separately reviewed event; do
+   not count a run containing unexpected gohome motion as a P4 action pass.
 
 Do not physically A/B raw ACT and E51 until matched-state reset and separate
 bounded-run provenance are available. Logging raw ACT while executing E51 is a
@@ -216,9 +220,9 @@ Immediately command zero and stop the current phase on:
 
 - wrong axis or wrong direction;
 - effective stick action;
-- qpos/qvel envelope crossing;
+- qpos/qvel leaving the operator-reviewed range for the current trial;
 - unexpected continued motion after zero command;
-- early gohome request or any automatic gohome motion during P0-P4;
+- unexpected gohome request or transition during a P4 action trial;
 - camera, IMU, bridge, receiver-health, timestamp, or artifact-provenance
   failure;
 - disagreement between logged `safe_action` and actual `commanded_action`;
@@ -233,7 +237,7 @@ loosening a threshold in the same run.
 Use a fresh run directory under:
 
 ```text
-/media/mundane/EXTERNAL_USB/policy_control_tests/e52_field_trial_<timestamp>/
+/media/mundane/EXTERNAL_USB/policy_control_tests/e52_control_trace_<timestamp>/
 ```
 
 Required contents per task:
@@ -249,7 +253,15 @@ artifact_hashes.txt
 ```
 
 P3 additionally requires the native `calibrate_axis_response.py` report. P4+
-must add the bounded-motion verifier report once D06 is implemented.
+also requires:
+
+```text
+termination.json
+e52_trace_analysis/run_manifest.json
+e52_trace_analysis/trace_summary.json
+e52_trace_analysis/trace_context.json
+e52_trace_analysis/trace_timeline.png
+```
 
 ## 12. Current readiness verdict
 
@@ -257,7 +269,9 @@ must add the bounded-motion verifier report once D06 is implemented.
   bundle preflight are confirmed.
 - P3: supported by the existing scripted action-response tool, subject to
   physical stop verification and operator approval.
-- P4-P6: blocked. The generic policy control switch is not sufficient for this
-  plan because the accepted E52-specific bounded-motion guard does not exist.
+- P4: supported by the E52 control-trace entrypoint after Jetson sync and P0-P2
+  review. Human observation is the primary stop decision.
+- P5-P6: not blocked by missing control code, but remain evidence-gated on
+  shorter-run trace review and the separate gohome decision.
 - No code or documentation result should be interpreted as authorization to
   move the machine without the on-site operator's explicit confirmation.

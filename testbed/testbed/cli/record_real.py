@@ -417,6 +417,12 @@ def main(prog: str = "tb-record-real") -> None:
             "from HDF5 dataset output and is useful with --no-record."
         ),
     )
+    parser.add_argument(
+        "--test-log-image-interval-steps",
+        type=int,
+        default=None,
+        help="Override test-log FPV capture interval without changing the deployment config.",
+    )
     args = parser.parse_args()
     if args.live_action_line or args.qc_dashboard:
         logging.getLogger().setLevel(logging.ERROR)
@@ -482,6 +488,13 @@ def main(prog: str = "tb-record-real") -> None:
         test_log_cfg = teleop_cfg.setdefault("test_log", {})
         test_log_cfg["enabled"] = True
         test_log_cfg["output_dir"] = str(args.test_log_dir)
+    if args.test_log_image_interval_steps is not None:
+        if int(args.test_log_image_interval_steps) <= 0:
+            raise ValueError("--test-log-image-interval-steps must be positive")
+        test_log_cfg = teleop_cfg.setdefault("test_log", {})
+        test_log_cfg["image_interval_steps"] = int(
+            args.test_log_image_interval_steps
+        )
     if args.operator_id is not None:
         teleop_meta_cfg["operator_id"] = args.operator_id
     if args.session_id is not None:
@@ -605,6 +618,8 @@ def main(prog: str = "tb-record-real") -> None:
         video_cfg=video_cfg,
         data_side=resolved_data_side or real_cfg.get("data_side"),
     )
+    base_meta["runtime_argv"] = list(sys.argv)
+    base_meta["runtime_pid"] = int(os.getpid())
 
     log.info(
         "Real v1 config: data_side=%s backend=%s state_reader=%s input=%s "
@@ -651,22 +666,44 @@ def main(prog: str = "tb-record-real") -> None:
     saved = 0
     control_output_stopped = False
 
-    def _stop_control_output() -> None:
+    def _runtime_stop_reason() -> str:
+        if abort:
+            return "aborted"
+        active_exception = sys.exc_info()[1]
+        if active_exception is not None:
+            return f"error:{type(active_exception).__name__}"
+        return "complete"
+
+    def _stop_control_output(*, stop_reason: str) -> None:
         nonlocal control_output_stopped
         if control_output_stopped:
             return
         control_output_stopped = True
+        zero_result = None
+        zero_error = ""
         if control_pump is not None:
             try:
                 log.info("Stopping control pump and sending zero command before save.")
-                control_pump.stop()
-            except Exception:
+                zero_result = control_pump.stop()
+            except Exception as exc:
+                zero_error = f"{type(exc).__name__}: {exc}"
                 log.exception("Failed to stop control pump cleanly.")
-            return
-        try:
-            backend.step(np.zeros(4, dtype=np.float32))
-        except Exception:
-            log.exception("Failed to send zero command during shutdown.")
+        else:
+            try:
+                zero_step = backend.step(np.zeros(4, dtype=np.float32))
+                zero_result = dict(zero_step.info.get("control_result", {}))
+            except Exception as exc:
+                zero_error = f"{type(exc).__name__}: {exc}"
+                log.exception("Failed to send zero command during shutdown.")
+        if test_logger is not None:
+            try:
+                test_logger.record_termination(
+                    stop_reason=stop_reason,
+                    zero_result=zero_result,
+                    zero_error=zero_error,
+                )
+            except Exception:
+                log.exception("Failed to write receiver termination trace.")
 
     def _force_zero_control(obs: dict[str, Any] | None = None) -> None:
         zero = np.zeros(4, dtype=np.float32)
@@ -706,7 +743,7 @@ def main(prog: str = "tb-record-real") -> None:
             action_source.close()
         except Exception:
             pass
-        _stop_control_output()
+        _stop_control_output(stop_reason=_runtime_stop_reason())
         if bridge_client is not None and hasattr(bridge_client, "force_close"):
             bridge_client.force_close()
             return
@@ -1504,7 +1541,7 @@ def main(prog: str = "tb-record-real") -> None:
                     remote_control_loop.stop()
 
             if abort or saved >= num_episodes:
-                _stop_control_output()
+                _stop_control_output(stop_reason=_runtime_stop_reason())
             interrupt_path = _save_interrupt_partial(
                 record_session,
                 discard=discard,
@@ -1520,7 +1557,7 @@ def main(prog: str = "tb-record-real") -> None:
     finally:
         _shutdown()
         if test_logger is not None:
-            test_logger.close(stop_reason="aborted" if abort else "complete")
+            test_logger.close(stop_reason=_runtime_stop_reason())
         live_line.finish()
         qc_dashboard.finish()
         if qc_event_logger is not None:
@@ -1894,6 +1931,7 @@ class ReceiverTestLogger:
         self.steps_path = self.run_dir / "steps.jsonl"
         self.summary_path = self.run_dir / "summary.json"
         self.metadata_path = self.run_dir / "metadata.json"
+        self.termination_path = self.run_dir / "termination.json"
         self.flush_every_steps = max(1, int(flush_every_steps))
         self.capture_images = bool(capture_images)
         self.image_camera = str(image_camera)
@@ -1906,6 +1944,8 @@ class ReceiverTestLogger:
         self._started_ns = time.time_ns()
         self._steps = 0
         self._closed = False
+        self._last_step_payload: dict[str, Any] | None = None
+        self._termination_payload: dict[str, Any] | None = None
         self._fh = self.steps_path.open("w", encoding="utf-8")
         if self.capture_images:
             self.image_dir.mkdir(parents=True, exist_ok=True)
@@ -1991,6 +2031,7 @@ class ReceiverTestLogger:
                 control_result.get("commanded_action", safe_action),
                 dtype=np.float32,
             ),
+            "raw_low_level_command": control_result.get("raw_low_level_command"),
             "action_source_type": str(getattr(action_info, "source_type", "")),
             "action_source_id": str(getattr(action_info, "source_id", "")),
             "action_source_latency_ms": float(
@@ -2141,7 +2182,9 @@ class ReceiverTestLogger:
         )
         if image_info:
             payload.update(image_info)
-        self._fh.write(json.dumps(_jsonable(payload), ensure_ascii=False) + "\n")
+        json_payload = _jsonable(payload)
+        self._last_step_payload = dict(json_payload)
+        self._fh.write(json.dumps(json_payload, ensure_ascii=False) + "\n")
         self._steps += 1
         if self._steps % self.flush_every_steps == 0:
             self._fh.flush()
@@ -2195,6 +2238,56 @@ class ReceiverTestLogger:
             "fpv_image_capture_index": self._captured_images - 1,
         }
 
+    def record_termination(
+        self,
+        *,
+        stop_reason: str,
+        zero_result: Any | None,
+        zero_error: str = "",
+    ) -> None:
+        if self._termination_payload is not None:
+            return
+        result = _control_result_trace_payload(zero_result)
+        commanded = np.asarray(result.get("commanded_action", []), dtype=np.float64)
+        zero_confirmed = bool(
+            result.get("ack", False)
+            and commanded.shape == (4,)
+            and np.all(np.isfinite(commanded))
+            and np.allclose(commanded, 0.0, rtol=0.0, atol=1.0e-7)
+        )
+        last = self._last_step_payload or {}
+        last_keys = (
+            "wall_time_ns",
+            "local_step",
+            "qpos",
+            "qvel",
+            "policy_action",
+            "policy_temporal_direction_action",
+            "policy_returned_action",
+            "safe_action",
+            "commanded_action",
+            "raw_low_level_command",
+            "controller_ack",
+            "controller_fault_code",
+            "receiver_health_ok",
+            "receiver_health_error_code",
+        )
+        payload = {
+            "schema_version": 1,
+            "recorded_at_ns": time.time_ns(),
+            "stop_reason": str(stop_reason),
+            "zero_command_requested": True,
+            "zero_command_confirmed": zero_confirmed,
+            "zero_command_error": str(zero_error),
+            "zero_control_result": result,
+            "last_step": {key: last.get(key) for key in last_keys},
+        }
+        self._termination_payload = _jsonable(payload)
+        self.termination_path.write_text(
+            json.dumps(self._termination_payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
     def _write_rgb_jpeg(self, path: Path, image: np.ndarray) -> None:
         try:
             from PIL import Image
@@ -2243,6 +2336,14 @@ class ReceiverTestLogger:
                 "steps_path": str(self.steps_path),
                 "flush_every_steps": self.flush_every_steps,
                 "captured_images": self._captured_images,
+                "termination_path": (
+                    str(self.termination_path) if self._termination_payload else ""
+                ),
+                "zero_command_confirmed": bool(
+                    (self._termination_payload or {}).get(
+                        "zero_command_confirmed", False
+                    )
+                ),
                 "image_dir": (
                     str(self.image_dir.relative_to(self.run_dir))
                     if self.capture_images
@@ -2253,6 +2354,34 @@ class ReceiverTestLogger:
                 json.dumps(_jsonable(summary), ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
+
+
+def _control_result_trace_payload(result: Any | None) -> dict[str, Any]:
+    if result is None:
+        return {}
+    if isinstance(result, dict):
+        source = result
+    else:
+        source = {
+            "ack": getattr(result, "ack", False),
+            "fault_code": getattr(result, "fault_code", ""),
+            "controller_timestamp_ns": getattr(
+                result, "controller_timestamp_ns", 0
+            ),
+            "commanded_action": getattr(result, "commanded_action", []),
+            "raw_low_level_command": getattr(result, "raw_low_level_command", None),
+        }
+    return {
+        "ack": bool(source.get("ack", False)),
+        "fault_code": str(source.get("fault_code", "")),
+        "controller_timestamp_ns": _int_timestamp(
+            source.get("controller_timestamp_ns")
+        ),
+        "commanded_action": _jsonable(source.get("commanded_action", [])),
+        "raw_low_level_command": _jsonable(
+            source.get("raw_low_level_command")
+        ),
+    }
 
 
 @dataclass(frozen=True)

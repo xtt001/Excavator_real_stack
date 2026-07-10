@@ -22,23 +22,23 @@ T33,P3,Boom negative scripted response,yes,calibrate_axis_response.py,native res
 T34,P3,Bucket positive scripted response,yes,calibrate_axis_response.py,native response report,Expected bounded response with no faults,supported_with_operator,pending
 T35,P3,Bucket negative scripted response,yes,calibrate_axis_response.py,native response report,Expected bounded response with no faults,supported_with_operator,pending
 T36,P3,Fit bounded active-axis response envelopes,no,offline analysis,P3 aggregate and provenance,Direction latency and limits supported by repeats,supported_after_data,pending
-T40,P4,Implement E52 bounded-motion owner,no,new focused owner,tests and safety review,Explicit arm finite window envelopes zero-on-stop and verifier,not_implemented,blocked
-T41,P4,Home or idle bounded E52 control window,yes,bounded E52 runner,bounded verifier report,No effective motion and terminal zero,blocked_by_T40,blocked
-T42,P4,Pre-swing bounded E52 control window,yes,bounded E52 runner,bounded verifier report,Expected swing progress within P3 envelope,blocked_by_T40,blocked
-T43,P4,Pre-boom bounded E52 control window,yes,bounded E52 runner,bounded verifier report,Expected boom progress within P3 envelope,blocked_by_T40,blocked
-T44,P4,Pre-bucket bounded E52 control window,yes,bounded E52 runner,bounded verifier report,Expected bucket progress within P3 envelope,blocked_by_T40,blocked
-T45,P4,Shifted-visual bounded E52 control window,yes,bounded E52 runner,bounded verifier report,Expected progress and no support or safety exit,blocked_by_T40,blocked
-T46,P4,Repeatability at matched anchors,yes,bounded E52 runner,paired bounded reports,Direction and response repeat across resets,blocked_by_T40,blocked
-T47,P4,Review terminal zero and stop reasons,no,bounded verifier,all P4 reports,Every run ends in verified zero,blocked_by_T40,blocked
-T50,P5,Single supervised task-action segment,yes,bounded E52 runner,segment report and video,Correct progress no wrong axis no guard trip,blocked_by_P4,blocked
-T51,P5,Repeat task segment under second soil condition,yes,bounded E52 runner,segment report and video,No unsafe visual-domain regression,blocked_by_P4,blocked
+T40,P4,Verify E52 control trace tooling,no,run_e52_policy_control_trace.sh,tool tests and bundle preflight,Trace entrypoint and analyzer pass,supported,pending
+T41,P4,Home or idle supervised E52 control trace,yes,run_e52_policy_control_trace.sh,trace package and operator note,Observed behavior understood and terminal zero traced,supported_after_P2,pending
+T42,P4,Pre-swing supervised E52 control trace,yes,run_e52_policy_control_trace.sh,trace package and operator note,Expected swing progress and complete trace,supported_after_P2,pending
+T43,P4,Pre-boom supervised E52 control trace,yes,run_e52_policy_control_trace.sh,trace package and operator note,Expected boom progress and complete trace,supported_after_P2,pending
+T44,P4,Pre-bucket supervised E52 control trace,yes,run_e52_policy_control_trace.sh,trace package and operator note,Expected bucket progress and complete trace,supported_after_P2,pending
+T45,P4,Shifted-visual supervised E52 control trace,yes,run_e52_policy_control_trace.sh,trace package video and operator note,Observed intent and response are reviewable,supported_after_P2,pending
+T46,P4,Repeatability at matched anchors,yes,run_e52_policy_control_trace.sh,paired trace packages,Direction and response repeat across resets,supported_after_P2,pending
+T47,P4,Review trace and terminal zero,no,summarize_e52_control_trace.py,all P4 trace analyses,Trace complete and stop event understood,supported,pending
+T50,P5,Single supervised task-action segment,yes,run_e52_policy_control_trace.sh,segment trace report video and operator note,Correct progress no wrong axis no guard trip,evidence_gated_by_P4,blocked
+T51,P5,Repeat task segment under second soil condition,yes,run_e52_policy_control_trace.sh,segment trace report video and operator note,No unsafe visual-domain regression,evidence_gated_by_P4,blocked
 T52,P5,Review support and progress,no,offline report,qpos qvel intent and video evidence,Progress without support exit,blocked_by_P4,blocked
 T53,P5,Review tail stop,no,offline report,tail action and state traces,No effective post-segment motion,blocked_by_P4,blocked
 T54,P5,Review gohome request in log-only mode,no,offline report,gohome probability request and eligibility,No pre-tail request,blocked_by_P4,blocked
 T55,P5,Approve or reject full-cycle promotion,no,human review,signed decision,All P5 gates pass,blocked_by_P4,blocked
-T60,P6,One supervised full cycle with gohome disabled,yes,approved bounded runtime,full run package,Task completes and terminal zero is verified,blocked_by_P5,blocked
+T60,P6,One supervised action-side cycle before gohome acceptance,yes,run_e52_policy_control_trace.sh,full trace package video and operator note,Task action completes and terminal zero is verified,evidence_gated_by_P5,blocked
 T61,P6,Review full-cycle trajectory support,no,offline report,support progress and stop summary,No unsupported interval or hidden fallback,blocked_by_P5,blocked
 T62,P6,Separate gohome acceptance test,yes,reviewed gohome procedure,gohome report,No early request and bounded return,blocked_by_P5,blocked
-T63,P6,Repeat full cycle under second condition,yes,approved bounded runtime,full run package,Repeatable safe completion,blocked_by_P5,blocked
+T63,P6,Repeat full cycle under second condition,yes,run_e52_policy_control_trace.sh,full trace package video and operator note,Repeatable safe completion,evidence_gated_by_P5,blocked
 T64,P6,Compare E52 evidence with raw ACT counterfactual,no,offline paired report,matched logs and provenance,No physical raw-ACT claim without separate trial,blocked_by_P5,blocked
 T65,P6,Final field verdict,no,human review,signed report,Promote remain shadow or reject explicitly,blocked_by_P5,blocked

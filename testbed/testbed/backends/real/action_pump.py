@@ -110,20 +110,22 @@ class RealActionPump:
         with self._state_lock:
             return self._latest_error
 
-    def stop(self, *, close_controller: bool = True) -> None:
+    def stop(self, *, close_controller: bool = True) -> ControlResult:
         self._stop.set()
         self._schedule_changed.set()
         thread = self._thread
         if thread is not None and thread.is_alive():
             thread.join(timeout=max(1.0, self.period_s * 4.0))
         self._thread = None
+        result = self.latest_result
         if self.zero_on_stop:
             with self._state_lock:
                 self._action = np.zeros(ACTION_DIM, dtype=np.float32)
                 self._state = None
-            self._send_once()
+            result = self._send_once()
         if close_controller:
             self._controller.close()
+        return result
 
     def _run(self) -> None:
         while not self._stop.is_set():

@@ -389,9 +389,10 @@ docs/e52_real_machine_experiment_plan_20260710.md
 docs/e52_real_machine_experiment_tasks_20260710.csv
 ```
 
-当前 E52 专用入口只接受 `shadow_zero`。在上述计划的 P4 bounded-motion owner
-实现并验证前，不要通过修改 YAML 或直接传
-`--policy-output-mode control` 绕过该限制。
+E52 检入配置保持 `shadow_zero`。需要人工看护的策略动作 trace 时，使用
+`scripts/run_e52_policy_control_trace.sh` 做 bundle preflight、request-local
+control override、终止零命令记录和事后 trace 汇总；不要修改 YAML 默认值或直接
+调用通用 `--policy-output-mode control`。
 
 本节只用于在进入现场最简流程前检查模型 bundle 和 shadow 输出。shadow 阶段
 policy action 只写入 `steps.jsonl`，下发给底层的动作保持零。正式录制和
