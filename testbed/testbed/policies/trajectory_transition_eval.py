@@ -19,6 +19,83 @@ class TransitionSamples:
     action_impulse: np.ndarray
 
 
+@dataclass(frozen=True)
+class LinearTransitionModel:
+    coefficients: np.ndarray
+
+    def predict(
+        self,
+        qvel_displacement: np.ndarray,
+        action_impulse: np.ndarray,
+    ) -> np.ndarray:
+        qvel = np.asarray(qvel_displacement, dtype=np.float64)
+        action = np.asarray(action_impulse, dtype=np.float64)
+        if qvel.shape != action.shape:
+            raise ValueError(
+                f"qvel and action features must share shape, got {qvel.shape} and {action.shape}"
+            )
+        if not np.all(np.isfinite(qvel)) or not np.all(np.isfinite(action)):
+            raise ValueError("qvel and action features must be finite")
+        return self.coefficients[0] + self.coefficients[1] * qvel + self.coefficients[2] * action
+
+
+@dataclass(frozen=True)
+class FeatureSupportModel:
+    mean: np.ndarray
+    inverse_covariance: np.ndarray
+    distance_threshold: float
+
+    def distances(self, features: np.ndarray) -> np.ndarray:
+        values = np.asarray(features, dtype=np.float64)
+        if values.ndim != 2 or values.shape[1] != self.mean.size:
+            raise ValueError(f"features must have shape (N, {self.mean.size}), got {values.shape}")
+        centered = values - self.mean
+        squared = np.einsum("ni,ij,nj->n", centered, self.inverse_covariance, centered)
+        return np.sqrt(np.maximum(squared, 0.0))
+
+
+def fit_linear_transition_model(
+    qvel_displacement: np.ndarray,
+    action_impulse: np.ndarray,
+    target_qpos_delta: np.ndarray,
+) -> LinearTransitionModel:
+    qvel = np.asarray(qvel_displacement, dtype=np.float64)
+    action = np.asarray(action_impulse, dtype=np.float64)
+    target = np.asarray(target_qpos_delta, dtype=np.float64)
+    if qvel.ndim != 1 or qvel.shape != action.shape or qvel.shape != target.shape or qvel.size < 3:
+        raise ValueError("transition fit requires at least three aligned one-dimensional samples")
+    if not np.all(np.isfinite(qvel)) or not np.all(np.isfinite(action)) or not np.all(np.isfinite(target)):
+        raise ValueError("transition fit samples must be finite")
+    design = np.column_stack([np.ones(qvel.size), qvel, action])
+    return LinearTransitionModel(coefficients=np.linalg.lstsq(design, target, rcond=None)[0])
+
+
+def fit_feature_support_model(
+    features: np.ndarray,
+    *,
+    quantile: float = 0.99,
+    regularization: float = 1.0e-6,
+) -> FeatureSupportModel:
+    values = np.asarray(features, dtype=np.float64)
+    if values.ndim != 2 or values.shape[0] < 3 or values.shape[1] == 0:
+        raise ValueError("support fit requires at least three rows of non-empty features")
+    if not np.all(np.isfinite(values)):
+        raise ValueError("support fit features must be finite")
+    if not 0.0 < quantile < 1.0:
+        raise ValueError("quantile must be between zero and one")
+    if not np.isfinite(regularization) or regularization <= 0.0:
+        raise ValueError("regularization must be finite and positive")
+    scale = np.maximum(np.var(values, axis=0), 1.0e-12)
+    covariance = np.cov(values, rowvar=False) + np.diag(scale * float(regularization))
+    model = FeatureSupportModel(
+        mean=values.mean(axis=0),
+        inverse_covariance=np.linalg.pinv(covariance),
+        distance_threshold=0.0,
+    )
+    threshold = float(np.quantile(model.distances(values), quantile))
+    return FeatureSupportModel(model.mean, model.inverse_covariance, threshold)
+
+
 def build_transition_samples(
     *,
     qpos: np.ndarray,

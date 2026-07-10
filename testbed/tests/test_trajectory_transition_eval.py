@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import numpy as np
 
-from testbed.policies.trajectory_transition_eval import build_transition_samples
+from testbed.policies.trajectory_transition_eval import (
+    build_transition_samples,
+    fit_feature_support_model,
+    fit_linear_transition_model,
+)
 
 
 def _thresholds(value: float = 0.2) -> dict[str, dict[str, float]]:
@@ -59,3 +63,20 @@ def test_build_transition_samples_wraps_swing_delta() -> None:
     )
 
     assert np.all(np.abs(samples.target_qpos_delta[:, 0]) < 0.05)
+
+
+def test_linear_transition_and_support_models_are_training_only() -> None:
+    qvel = np.linspace(-1.0, 1.0, 21)
+    action = np.linspace(0.5, -0.5, 21)
+    target = 0.1 + 2.0 * qvel - 3.0 * action
+    model = fit_linear_transition_model(qvel, action, target)
+
+    np.testing.assert_allclose(model.predict(qvel, action), target, atol=1.0e-12)
+    support = fit_feature_support_model(np.column_stack([qvel, action]), quantile=0.9)
+    train_coverage = np.mean(
+        support.distances(np.column_stack([qvel, action])) <= support.distance_threshold
+    )
+    outside_distance = support.distances(np.array([[10.0, 10.0]]))[0]
+
+    assert train_coverage >= 0.85
+    assert outside_distance > support.distance_threshold
