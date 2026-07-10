@@ -382,6 +382,17 @@ mundane ALL=(root) NOPASSWD: /usr/bin/timedatectl, /usr/bin/date, /usr/sbin/hwcl
 
 ## 附录：policy shadow 检查命令（不属于现场流程）
 
+E52 分阶段真机实验的任务顺序、通过条件、全局中止条件和当前部署能力缺口见：
+
+```text
+docs/e52_real_machine_experiment_plan_20260710.md
+docs/e52_real_machine_experiment_tasks_20260710.csv
+```
+
+当前 E52 专用入口只接受 `shadow_zero`。在上述计划的 P4 bounded-motion owner
+实现并验证前，不要通过修改 YAML 或直接传
+`--policy-output-mode control` 绕过该限制。
+
 本节只用于在进入现场最简流程前检查模型 bundle 和 shadow 输出。shadow 阶段
 policy action 只写入 `steps.jsonl`，下发给底层的动作保持零。正式录制和
 policy control 都使用上面的唯一 `policy_remote` receiver 流程。

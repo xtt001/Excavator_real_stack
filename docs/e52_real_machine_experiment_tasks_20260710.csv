@@ -1,0 +1,44 @@
+task_id,phase,test_item,motion,entrypoint,required_evidence,pass_condition,current_support,status
+T00,P0,Record host repository provenance,no,git,branch HEAD status upstream relation,Exact reviewed commit and unrelated changes isolated,supported,pending
+T01,P0,Record Jetson repository provenance,no,git over SSH,branch HEAD status,Jetson code identity recorded,blocked_by_connectivity,pending
+T02,P0,Verify E52 portable bundle,no,verify_e52_runtime_bundle.py,JSON verifier output,All hashes and contracts pass,supported,pending
+T03,P0,Record config bundle and deadzone hashes,no,sha256sum,artifact_hashes.txt,Every runtime input has a recorded hash,supported,pending
+T10,P1,Verify physical estop deadman and manual override,no,on-machine procedure,operator signoff,All three physical paths work,requires_operator,pending
+T11,P1,Probe four IMUs,no,imu_can_probe.py,probe output,Four required IMUs online and valid,supported,pending
+T12,P1,Verify required GMSL cameras and gateway,no,slave_real_stack.sh,health and camera status,No stale or missing required source,supported,pending
+T13,P1,Verify idle commanded action is zero,no,bridge and receiver diagnostics,steps or bridge log,No non-zero idle command,supported,pending
+T14,P1,Confirm USB log root and free space,no,shell check,path and free-space record,Fresh writable run root exists,supported,pending
+T20,P2,Home-state E52 shadow,no,run_e52_policy_shadow_check.sh,steps JSONL camera frames E53 report,E53 OK and commanded action zero,supported,pending
+T21,P2,Pre-swing anchor shadow,no,run_e52_policy_shadow_check.sh,operator expected direction plus E53 report,No persistent wrong-axis or wrong-direction intent,supported,pending
+T22,P2,Pre-boom anchor shadow,no,run_e52_policy_shadow_check.sh,operator expected direction plus E53 report,Boom sign and gate diagnostics agree,supported,pending
+T23,P2,Pre-bucket anchor shadow,no,run_e52_policy_shadow_check.sh,operator expected direction plus E53 report,Bucket intent is plausible and stick remains inactive,supported,pending
+T24,P2,Tail-state shadow,no,run_e52_policy_shadow_check.sh,E53 and gohome diagnostics,No effective tail action or early gohome,supported,pending
+T25,P2,Shifted soil or lighting shadow,no,run_e52_policy_shadow_check.sh,video annotation and diagnostics,No persistent unsafe intent; otherwise fail,supported,pending
+T26,P2,Review all intermediate E52 action stages,no,e53 verifier and steps JSONL,raw phase snap temporal safe commanded fields,All required stages present and terminal command zero,supported,pending
+T30,P3,Swing positive scripted response,yes,calibrate_axis_response.py,native response report,Expected bounded response with no faults,supported_with_operator,pending
+T31,P3,Swing negative scripted response,yes,calibrate_axis_response.py,native response report,Expected bounded response with no faults,supported_with_operator,pending
+T32,P3,Boom positive scripted response,yes,calibrate_axis_response.py,native response report,Expected bounded response with no faults,supported_with_operator,pending
+T33,P3,Boom negative scripted response,yes,calibrate_axis_response.py,native response report,Expected bounded response with no faults,supported_with_operator,pending
+T34,P3,Bucket positive scripted response,yes,calibrate_axis_response.py,native response report,Expected bounded response with no faults,supported_with_operator,pending
+T35,P3,Bucket negative scripted response,yes,calibrate_axis_response.py,native response report,Expected bounded response with no faults,supported_with_operator,pending
+T36,P3,Fit bounded active-axis response envelopes,no,offline analysis,P3 aggregate and provenance,Direction latency and limits supported by repeats,supported_after_data,pending
+T40,P4,Implement E52 bounded-motion owner,no,new focused owner,tests and safety review,Explicit arm finite window envelopes zero-on-stop and verifier,not_implemented,blocked
+T41,P4,Home or idle bounded E52 control window,yes,bounded E52 runner,bounded verifier report,No effective motion and terminal zero,blocked_by_T40,blocked
+T42,P4,Pre-swing bounded E52 control window,yes,bounded E52 runner,bounded verifier report,Expected swing progress within P3 envelope,blocked_by_T40,blocked
+T43,P4,Pre-boom bounded E52 control window,yes,bounded E52 runner,bounded verifier report,Expected boom progress within P3 envelope,blocked_by_T40,blocked
+T44,P4,Pre-bucket bounded E52 control window,yes,bounded E52 runner,bounded verifier report,Expected bucket progress within P3 envelope,blocked_by_T40,blocked
+T45,P4,Shifted-visual bounded E52 control window,yes,bounded E52 runner,bounded verifier report,Expected progress and no support or safety exit,blocked_by_T40,blocked
+T46,P4,Repeatability at matched anchors,yes,bounded E52 runner,paired bounded reports,Direction and response repeat across resets,blocked_by_T40,blocked
+T47,P4,Review terminal zero and stop reasons,no,bounded verifier,all P4 reports,Every run ends in verified zero,blocked_by_T40,blocked
+T50,P5,Single supervised task-action segment,yes,bounded E52 runner,segment report and video,Correct progress no wrong axis no guard trip,blocked_by_P4,blocked
+T51,P5,Repeat task segment under second soil condition,yes,bounded E52 runner,segment report and video,No unsafe visual-domain regression,blocked_by_P4,blocked
+T52,P5,Review support and progress,no,offline report,qpos qvel intent and video evidence,Progress without support exit,blocked_by_P4,blocked
+T53,P5,Review tail stop,no,offline report,tail action and state traces,No effective post-segment motion,blocked_by_P4,blocked
+T54,P5,Review gohome request in log-only mode,no,offline report,gohome probability request and eligibility,No pre-tail request,blocked_by_P4,blocked
+T55,P5,Approve or reject full-cycle promotion,no,human review,signed decision,All P5 gates pass,blocked_by_P4,blocked
+T60,P6,One supervised full cycle with gohome disabled,yes,approved bounded runtime,full run package,Task completes and terminal zero is verified,blocked_by_P5,blocked
+T61,P6,Review full-cycle trajectory support,no,offline report,support progress and stop summary,No unsupported interval or hidden fallback,blocked_by_P5,blocked
+T62,P6,Separate gohome acceptance test,yes,reviewed gohome procedure,gohome report,No early request and bounded return,blocked_by_P5,blocked
+T63,P6,Repeat full cycle under second condition,yes,approved bounded runtime,full run package,Repeatable safe completion,blocked_by_P5,blocked
+T64,P6,Compare E52 evidence with raw ACT counterfactual,no,offline paired report,matched logs and provenance,No physical raw-ACT claim without separate trial,blocked_by_P5,blocked
+T65,P6,Final field verdict,no,human review,signed report,Promote remain shadow or reject explicitly,blocked_by_P5,blocked
