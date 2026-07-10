@@ -390,10 +390,15 @@ Stop and update this plan before broadening the implementation when:
 
 ## 14. Current bounded slice
 
-Phases A-C are complete. The next accepted slice is the **Phase D target-contract
-diagnostic**: resolve the boom qvel/qpos sign relationship, define task-active
-state-effect targets, and compare simple held-out transition baselines before
-selecting any estimator. Do not begin recursive-rollout code.
+Phases A-C and the Phase D target-contract/baseline diagnostic are complete.
+The next accepted slice is the **Phase D candidate-effect resolvability audit**:
+apply only held-out-fitted transition models to raw ACT and E51 action features
+at identical expert state anchors, measure expert-feature support/coverage, and
+compare the predicted candidate-effect difference with held-out transition
+residuals and episode-bootstrap uncertainty. Break results down by horizon,
+axis, direction, phase, action magnitude, and multi-axis concurrency. A small
+predicted difference relative to model error is `inconclusive`, not evidence of
+equivalence. Do not begin recursive-rollout code.
 
 ## 15. Research log
 
@@ -589,3 +594,79 @@ Interpretation:
   zero-stick invariant;
 - mandatory negative controls are separated in the expected direction, but
   this remains teacher-forced evidence and does not prove support retention.
+
+### 2026-07-10: Phase D target contract and held-out baseline diagnostic
+
+Implementation commit:
+
+```text
+eabebb4a584c56abf240797df545a284ab14d55b
+```
+
+Implemented:
+
+```text
+testbed/testbed/policies/trajectory_transition_eval.py
+scripts/trajectory_transition_baseline_probe.py
+testbed/tests/test_trajectory_transition_eval.py
+testbed/tests/test_trajectory_transition_baseline_probe.py
+```
+
+The mathematical owner constructs bounded-horizon future-qpos targets,
+shortest-angle swing deltas, explicitly signed initial-qvel displacement, and
+directional post-deadzone action impulse. The report fits each linear model on
+23 episodes and scores it on the omitted episode. Stick is never fitted with an
+action model; it retains the user-confirmed constant-state invariant.
+
+Resolved state contract:
+
+- qpos order is `swing, boom, stick, bucket`;
+- qvel is gyro-derived and is not assumed to be a qpos finite difference;
+- qvel-to-qpos and action-to-qpos signs are `[+1, -1, +1, +1]`;
+- the boom `-1` sign is explicit and agrees with all 24 episodes;
+- mapped qvel versus measured qpos-rate global correlations are `0.902` for
+  swing, `0.765` for boom, `-0.104` for stick, and `0.875` for bucket;
+- swing, boom, and bucket correlations are positive in 24/24 episodes, while
+  stick is positive in only 1/24, consistent with the inactive-axis contract.
+
+Formal artifact:
+
+```text
+/data/pingfan/Excavator_real_stack_data/usb_hdf5_qc_20260708_72_104/
+runs/offline_eval/e62_trajectory_transition_baseline_all_train_ready
+```
+
+Coverage and provenance:
+
+- evaluator git commit: `eabebb4a584c56abf240797df545a284ab14d55b`;
+- 24 leave-one-episode-out folds at `dt=0.05 s`;
+- horizons: 5, 10, 20, and 40 steps;
+- stride: 5 steps;
+- 2,000 episode-level bootstrap samples with seed `20260710`;
+- claim boundary: `held_out_expert_transition_probe_only`.
+
+Held-out `qvel_action_linear` MAE relative to constant state:
+
+| Horizon | Swing | Boom | Bucket | Episodes better |
+| --- | ---: | ---: | ---: | ---: |
+| 0.25 s | -83.90% | -48.15% | -55.20% | 24/24 on every active axis |
+| 0.50 s | -85.36% | -55.32% | -49.39% | 24/24 on every active axis |
+| 1.00 s | -85.15% | -63.07% | -42.01% | 24/24 on every active axis |
+| 2.00 s | -85.85% | -70.53% | -37.86% | 24/24 on every active axis |
+
+At 1.0 s, held-out MAE is `0.01497 rad` for swing, `0.00664 rad` for boom,
+and `0.11829 rad` for bucket. At 2.0 s it is `0.02895`, `0.01077`, and
+`0.26109 rad`, respectively. Stick constant-state MAE remains only
+`0.00030-0.00158 rad` across the evaluated horizons, while initial-qvel
+extrapolation is substantially worse.
+
+Interpretation and gate status:
+
+- a small causal linear estimator materially beats constant-state on all
+  task-active axes and every held-out episode, so the target/sign contract is
+  usable for the next Level 2 diagnostic;
+- the result validates expert-transition prediction only; it has not yet shown
+  that raw ACT and E51 action features are in support or that their predicted
+  effect difference is larger than estimator error;
+- therefore Phase D is not complete and Level 3 remains blocked pending the
+  candidate-effect resolvability and uncertainty audit.
