@@ -88,6 +88,15 @@ Non-goals until explicitly promoted:
 
 The new evaluation is an additional gate above existing open-loop checks.
 
+Task-specific invariant confirmed by the user on 2026-07-10:
+
+- `stick` command is expected to remain zero in the current task design;
+- Level 1 must treat policy stick impulse as unwanted action leakage, not as
+  missing task progress;
+- Level 2 must not fit or require a stick action-to-state response model;
+- stick qpos/qvel may remain in support-state diagnostics, but commanded stick
+  motion is not a required trajectory milestone.
+
 ## 5. Core quantities
 
 For axis `j`, let `d_pos[j]` and `d_neg[j]` be the verified directional
@@ -443,7 +452,7 @@ deadzone artifact:
 | swing neg | 2,263 | strong same-sign qvel/qpos response through 0-4 step lag |
 | boom pos | 2,035 | qvel follows action sign, but qpos delta has the opposite sign |
 | boom neg | 1,109 | qvel follows action sign, but qpos delta has the opposite sign |
-| stick pos/neg | 0 | current `0.5` thresholds are insufficient-data defaults |
+| stick pos/neg | 0 | expected task behavior: commanded stick action remains zero |
 | bucket pos | 1,113 | strong same-sign qvel/qpos response |
 | bucket neg | 1,665 | strong same-sign qvel/qpos response, weaker magnitude correlation |
 
@@ -451,10 +460,11 @@ Feasibility verdict:
 
 - **Level 1: feasible now.** Required actions, deadzone provenance, alignment,
   and sample period are present.
-- **Level 2: partially feasible, blocked for a general four-axis claim.** Swing
-  and bucket have substantial response samples. Stick has no above-threshold
-  samples under the current artifact. Boom requires explicit resolution of the
-  qvel/qpos sign contract before target construction.
+- **Level 2: partially feasible for the task-active axes.** Swing and bucket
+  have substantial response samples. Stick is intentionally excluded from the
+  action-effect estimator and retained as a zero-action leakage invariant. Boom
+  still requires explicit resolution of the qvel/qpos sign contract before
+  target construction.
 - **Level 3: blocked.** It remains conditional on a held-out Level 2 estimator
   passing simple baselines and on a defensible next-observation retrieval
   contract.
