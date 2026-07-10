@@ -390,11 +390,10 @@ Stop and update this plan before broadening the implementation when:
 
 ## 14. Current bounded slice
 
-Phase A and the pure Level 1 mathematical owner from Phase B are complete. The
-next accepted slice is the **Level 1 artifact/report orchestrator plus full
-candidate/control comparison**. Do not begin transition-model or
-recursive-rollout code until that report contract is stable and the Level 2
-sign/coverage blockers below are resolved.
+Phases A-C are complete. The next accepted slice is the **Phase D target-contract
+diagnostic**: resolve the boom qvel/qpos sign relationship, define task-active
+state-effect targets, and compare simple held-out transition baselines before
+selecting any estimator. Do not begin recursive-rollout code.
 
 ## 15. Research log
 
@@ -517,3 +516,76 @@ Initial interpretation, limited to teacher-forced Level 1:
   suppression-versus-recall tradeoff rather than an unconditional improvement;
 - this result does not yet show qpos/qvel effect consistency or recursive
   support retention.
+
+### 2026-07-10: Level 1 report and full paired comparison
+
+Implementation commit:
+
+```text
+f260d84857c54ef25dd8270c76b50804c31ed01a
+```
+
+Implemented:
+
+```text
+scripts/trajectory_support_eval.py
+testbed/tests/test_trajectory_support_eval_report.py
+```
+
+The report owner validates identical expert/time contracts across candidates,
+generates all mandatory controls, aggregates rolling windows to episode rows,
+computes episode-level bootstrap confidence intervals, computes paired
+candidate-versus-baseline bootstrap deltas, and writes CSV, JSON, and plots.
+The output directory must be empty to prevent accidental artifact overwrite.
+
+Focused verification result: `13 passed` across report, mathematical-owner, and
+existing deadzone tests.
+
+Formal artifact:
+
+```text
+/data/pingfan/Excavator_real_stack_data/usb_hdf5_qc_20260708_72_104/
+runs/offline_eval/e61_trajectory_support_level1_e51_all_train_ready
+```
+
+Coverage and provenance:
+
+- evaluator git commit: `f260d84857c54ef25dd8270c76b50804c31ed01a`;
+- 24 episodes and 16,529 steps;
+- horizons: 5, 10, 20, and 40 steps;
+- stride: 5 steps;
+- 2,000 episode-level bootstrap samples with seed `20260710`;
+- baseline: raw ACT;
+- stages: phase-gated, snapped, and E51 causal temporal action;
+- controls: expert, zero, delayed expert, sign-flipped expert, axis-shuffled
+  expert, and expert scales 0.5/1.5;
+- claim boundary: `teacher_forced_level1_only`.
+
+Paired E51-versus-raw results:
+
+| Horizon | Channel L1 change | Episode improvement | Extra impulse change | Missing impulse change | Cosine change |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 0.25 s | -5.39% | 24/24 | -7.47% | +0.92% | +0.00357 |
+| 0.50 s | -5.38% | 24/24 | -7.48% | +1.26% | +0.00295 |
+| 1.00 s | -5.27% | 24/24 | -7.47% | +2.32% | +0.00528 |
+| 2.00 s | -5.33% | 23/24 | -7.54% | +3.67% | +0.00460 |
+
+At 1.0 s, the paired channel-L1 delta is `-0.00593` with 95% bootstrap CI
+`[-0.00810, -0.00427]`; the cumulative-path error change is `-5.35%`. At 2.0 s,
+the paired channel-L1 delta remains below zero with 95% CI
+`[-0.01527, -0.00790]`.
+
+Interpretation:
+
+- Level 1 now gives stable episode-paired evidence that E51 reduces accumulated
+  extra intent and cumulative action-path error relative to raw ACT;
+- the benefit is not free: missing expert impulse increases monotonically with
+  horizon, so later state-effect evaluation must test whether this suppression
+  stalls progress;
+- phase gating provides most of the reduction, snap changes aggregate Level 1
+  metrics only slightly, and the temporal gate adds a smaller consistent gain;
+- all real candidate stages retain zero effective stick impulse; the
+  axis-shuffled negative control produces non-zero stick leakage, validating the
+  zero-stick invariant;
+- mandatory negative controls are separated in the expected direction, but
+  this remains teacher-forced evidence and does not prove support retention.
