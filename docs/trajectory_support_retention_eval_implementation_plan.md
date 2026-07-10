@@ -390,14 +390,14 @@ Stop and update this plan before broadening the implementation when:
 
 ## 14. Current bounded slice
 
-Phases A-C and the permitted Phase D diagnostics are complete. Level 2 is
-`inconclusive`, its stop condition has been reached, and Level 3 is blocked.
-Do not add recursive-rollout code on the current evidence. The next slice must
-first add independent information: a dedicated action-response identification
-dataset, bounded supervised physical action windows, or another user-approved
-source that can reduce transition uncertainty and cover candidate bucket
-features. Re-running larger offline models on the same expert trajectories is
-not an accepted next step without a new, predeclared validation argument.
+Phases A-C, the permitted Phase D diagnostics, and the excluded-episode Level 1
+stress evaluation are complete. Level 2 is `inconclusive`, its stop condition
+has been reached, and Level 3 is blocked. Do not add recursive-rollout code on
+the current evidence. The excluded episodes strengthen action-intent
+generalization evidence but do not add action-response observations. The next
+slice must add a dedicated action-response identification dataset, bounded
+supervised physical action windows, or another user-approved source that can
+reduce transition uncertainty and cover candidate bucket features.
 
 ## 15. Research log
 
@@ -773,3 +773,94 @@ Final gate status for the current dataset:
 - the hypothesis that sustained correct intent preserves trajectory support is
   still plausible, but this dataset cannot validate it offline without adding
   independent action-response information.
+
+### 2026-07-10: excluded-episode inference stress evaluation
+
+The action-model split contains only the 24 train-ready episodes. The following
+six HDF5 episodes are absent from both train and validation and were retained as
+an independent stress set:
+
+| Episode | QC exclusion | Reference-use boundary |
+| --- | --- | --- |
+| 72 | episode length outlier | action reference usable with length caveat |
+| 77 | bucket semantic outlier | failed-demonstration stress only |
+| 81 | qpos jump; bucket reference warning | bucket state/reference unreliable |
+| 95 | qpos jump; bucket reference warning | bucket state/reference unreliable |
+| 101 | episode length outlier | action reference usable with length caveat |
+| 103 | episode length outlier | action reference usable with length caveat |
+
+All six retain aligned 20 Hz action, qpos, qvel, env-state, and four encoded
+camera streams. Their controller, receiver, IMU-valid, decode, and black-frame
+QC fields are healthy. They were excluded from training quality selection, not
+because the files are unreadable.
+
+Pre-existing full-ACT E54 artifact:
+
+```text
+/data/pingfan/Excavator_real_stack_data/usb_hdf5_qc_20260708_72_104/
+runs/offline_eval/e54_e52_excluded6_full_act_temporal_stress
+```
+
+Observed full-ACT facts:
+
+- raw ACT MAE is `0.06178`; E51 temporal-gated MAE is `0.05478`, a relative
+  reduction of `11.3%`;
+- E51 improves framewise MAE on all six episodes, with per-episode reductions
+  from `2.7%` to `14.7%`;
+- the excluded-set E51 MAE remains about 34% above the train-ready result
+  (`0.04083`), so generalization degrades rather than remaining in-domain;
+- longest expert-active segment policy activity is `89.1%`, same-axis/
+  same-direction recall is `88.9%`, and extra/wrong activity is `0.59%`;
+- the comparable train-ready same-direction result is about `95.2%`;
+- all six have zero effective stick action, zero effective start40 action, and
+  zero effective tail action;
+- gohome is detected in 5/6 with zero pre-tail false positives. Episode 77 has
+  no eligible gohome interval in the derived handoff data and is the miss.
+
+New E64 Level 1 artifact:
+
+```text
+/data/pingfan/Excavator_real_stack_data/usb_hdf5_qc_20260708_72_104/
+runs/offline_eval/e64_trajectory_support_level1_e52_excluded6_stress
+```
+
+E64 provenance and results:
+
+- evaluator commit: `3de0dccd72d8380f1d7b66cd138b7507f8eb1bf4`;
+- 6 episodes, 4,435 aligned steps, horizons `0.25/0.5/1.0/2.0 s`;
+- 2,000 episode-bootstrap samples, seed `20260710`;
+- E51 reduces cumulative channel-L1 intent error by `6.6%-6.9%` at every
+  horizon and improves all 6/6 episodes;
+- E51 reduces extra policy impulse by `11.2%-11.5%` but increases missing
+  expert impulse by `0.7%-2.8%`;
+- at 1.0 s, channel-L1 delta is `-0.00824` with 95% episode-bootstrap CI
+  `[-0.01471, -0.00261]`;
+- stick effective impulse remains exactly zero for raw ACT and E51.
+
+Visual-domain boundary:
+
+- the existing k=6 visual-domain clustering artifact covers only the 24
+  train-ready episodes, so it cannot assign a validated OOD cluster to the six
+  excluded episodes;
+- low-level texture metrics place episode 72 outside the 24-episode range on
+  Laplacian variance, edge density, and downsample difference, approximately
+  `4.6-5.5` standard deviations from the reference mean;
+- episodes 77, 81, 95, 101, and 103 are mostly inside the reference texture
+  ranges, with only marginal single-metric excursions;
+- episode 72 still reaches `88%` same-direction recall in its longest active
+  segment, but full-episode extra/wrong activity is `20.3%`. This supports core
+  action-sequence inference under one strong low-level visual shift, not robust
+  full-episode control under arbitrary unseen sand texture.
+
+Stress-evaluation verdict:
+
+- the model does infer broadly appropriate task actions on previously unseen
+  episode states, including failed/QC-excluded demonstrations;
+- E51 is consistently cleaner than raw ACT on this stress set;
+- robustness is weaker than on train-ready data, especially episode 72 full-
+  episode false activity and episode 77 late behavior;
+- failed demonstrations and qpos-jump episodes cannot serve as clean physical-
+  correctness labels;
+- this is still teacher-forced action-intent evidence. It does not unblock
+  Level 2 or prove that executing the inferred actions would retain trajectory
+  support.
