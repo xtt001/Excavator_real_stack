@@ -390,15 +390,14 @@ Stop and update this plan before broadening the implementation when:
 
 ## 14. Current bounded slice
 
-Phases A-C and the first two Phase D diagnostics are complete. Level 2 is
-currently `inconclusive`, and Level 3 remains blocked. The next accepted slice
-is a **bounded local-estimator comparison**: compare a leave-one-episode-out
-kNN or locally weighted transition estimator with the existing linear model,
-using the same folds, targets, controls, feature-support reporting, and no
-final-fold tuning. It must report neighbor distance and effective sample
-coverage. Continue only if held-out error falls enough to make the raw-versus-
-E51 predicted effect difference resolvable; otherwise record the Level 2 stop
-condition. Do not begin recursive-rollout code.
+Phases A-C and the permitted Phase D diagnostics are complete. Level 2 is
+`inconclusive`, its stop condition has been reached, and Level 3 is blocked.
+Do not add recursive-rollout code on the current evidence. The next slice must
+first add independent information: a dedicated action-response identification
+dataset, bounded supervised physical action windows, or another user-approved
+source that can reduce transition uncertainty and cover candidate bucket
+features. Re-running larger offline models on the same expert trajectories is
+not an accepted next step without a new, predeclared validation argument.
 
 ## 15. Research log
 
@@ -743,3 +742,34 @@ Interpretation and gate status:
   improvement, trajectory retention, or raw/E51 equivalence;
 - Level 3 remains blocked. One bounded local-estimator comparison is permitted
   before declaring the Level 2 stop condition final for this dataset.
+
+### 2026-07-10: bounded local-estimator stop check
+
+A read-only, predeclared leave-one-episode-out probe used standardized
+`[initial_qvel_displacement, expert_action_impulse]` features with fixed
+`k=32` inverse-distance weighting. It introduced no dependency and produced no
+formal candidate-effect artifact. Held-out expert-transition MAE was:
+
+| Horizon | Swing | Boom | Bucket |
+| --- | ---: | ---: | ---: |
+| 0.25 s | 0.00371 rad | 0.00139 rad | 0.01479 rad |
+| 0.50 s | 0.00581 rad | 0.00218 rad | 0.03337 rad |
+| 1.00 s | 0.00982 rad | 0.00395 rad | 0.08355 rad |
+| 2.00 s | 0.01960 rad | 0.00648 rad | 0.19579 rad |
+
+The local estimator improves on the linear probe, but the E63 raw-versus-E51
+predicted effect remains smaller than these errors. Even at the most favorable
+reported horizon, the effect/error ratio is only about `0.28` for swing,
+`0.11` for bucket, and `0.02` for boom. Bucket candidate actions also retain
+the previously observed negative-direction support gap.
+
+Final gate status for the current dataset:
+
+- Level 1 passes as stable teacher-forced intent evidence;
+- Level 2 remains `inconclusive` because candidate effects are below held-out
+  transition resolution and part of bucket behavior is outside expert-feature
+  support;
+- Level 3 is blocked by the explicit Phase D exit gate;
+- the hypothesis that sustained correct intent preserves trajectory support is
+  still plausible, but this dataset cannot validate it offline without adding
+  independent action-response information.
