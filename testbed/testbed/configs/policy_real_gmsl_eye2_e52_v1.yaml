@@ -1,0 +1,202 @@
+# Runtime config for the E52 eye-only GMSL policy gate stack.
+# policy.bundle_dir must contain the ACT base files, E52 manifest and gate
+# artifacts, and deadzone_policy_raw_for_runtime_scale.json.
+# This deployment entry is intentionally shadow_zero only.
+
+real:
+  backend: mock
+  state_reader: mock
+  data_side: host
+  control_hz: 50
+  image_width: 384
+  image_height: 216
+  mock_velocity_scale_rad_s: 0.5
+  control_pump:
+    enabled: true
+    hz: 50
+    send_immediately_on_update: false
+    zero_on_stop: true
+    bridge:
+      host: "127.0.0.1"
+      port: 8766
+      timeout_s: 0.2
+  bridge:
+    host: "127.0.0.1"
+    port: 0
+    timeout_s: 1.0
+  data_side_defaults:
+    host:
+      dataset_dir: data/policy_shadow_real_gmsl_eye2_e52_v1
+      bridge:
+        host: "192.168.100.1"
+        port: 8765
+    slave:
+      dataset_dir: /data/policy_shadow_real_gmsl_eye2_e52_v1
+      bridge:
+        host: "127.0.0.1"
+        port: 8765
+
+teleop:
+  input: policy
+  learning_target: e52_policy_shadow_from_real_gmsl_observation
+  num_episodes: 1
+  metadata:
+    operator_id: ""
+    session_id: ""
+    notes: "E52 eye-only GMSL gated policy shadow runtime"
+
+  policy:
+    bundle_dir: policy_bundles/real_gmsl_eye2_e52_v1
+    source_id: policy:act:real_gmsl_eye2_e52_v1
+    camera: video4
+    camera_names: ["video4", "video5"]
+    temporal_agg: true
+    output_mode: shadow_zero
+    qvel_mode: raw
+    qvel_diff_tau_s: 0.15
+    qvel_diff_clip_rad_s: [1.5, 1.5, 1.5, 1.5]
+    action_scale: [1.0, 1.0, 1.0, 0.75]
+    deadzone_assist:
+      enabled: false
+      trigger_fraction: 0.5
+      min_consecutive_steps: 2
+      margin: [0.02, 0.02, 0.02, 0.02]
+      deadzone_positive: [0.661, 0.259, 0.500, 0.408]
+      deadzone_negative: [0.721, 0.357, 0.500, 0.508]
+    runtime_gates:
+      enabled: true
+      bundle_dir: policy_bundles/real_gmsl_eye2_e52_v1
+      manifest_path: policy_bundles/real_gmsl_eye2_e52_v1/candidate_package_manifest.json
+      deadzone_json: deadzone_policy_raw_for_runtime_scale.json
+      snap_epsilon: 0.001
+    clip: 1.0
+    fail_safe_zero: true
+    record_start_on_reset: false
+
+  remote:
+    bind_host: "0.0.0.0"
+    port: 8770
+    timeout_ms: 200
+    rate_hz: 50
+    source_id: "host_joystick"
+
+  policy_remote:
+    source_id: "policy_remote"
+    start_in_policy: false
+
+  recording:
+    enabled: false
+    wait_for_start: true
+    go_home:
+      enabled: true
+      home_pose_rad: [-0.007831, -0.137463, -0.508548, 0.238583]
+      near_tolerance_rad: [999.0, 999.0, 999.0, 999.0]
+      success_tolerance_rad: [0.05, 0.05, 0.08, 0.04]
+      max_policy_raw_qpos_delta_rad: [0.08, 0.08, 0.08, 0.08]
+      center_tolerance_rad: [0.025, 0.030, 0.035, 0.025]
+      resume_tolerance_rad: [0.040, 0.045, 0.055, 0.045]
+      control_signs: [1.0, -1.0, 1.0, 1.0]
+      p_gain: [0.60, 0.60, 0.60, 0.55]
+      d_gain: [0.12, 0.10, 0.10, 0.10]
+      min_action: [0.65, 0.35, 0.46, 0.60]
+      min_action_positive: [0.65, 0.30, 0.46, 0.60]
+      min_action_negative: [0.65, 0.24, 0.46, 0.60]
+      max_action: [0.80, 0.45, 0.60, 0.68]
+      near_max_action: [0.70, 0.38, 0.52, 0.60]
+      coast_stop_time_s: [0.25, 1.20, 0.30, 0.45]
+      coast_reactivation_delay_s: [0.20, 1.20, 0.25, 0.35]
+      action_slew_rate: [0.0, 0.0, 0.0, 0.0]
+      action_ramp_rate: [0.30, 0.15, 0.20, 0.25]
+      axis_order: [boom, stick, bucket, swing]
+      max_active_axes: 1
+      center_approach_action: [0.0, 0.18, 0.0, 0.0]
+      control_decision_period_s: 0.10
+      sign_reversal_delay_s: [0.0, 1.50, 0.0, 0.0]
+      sign_reversal_min_error_rad: [0.0, 0.120, 0.0, 0.0]
+      qpos_filter_tau_s: [0.10, 0.10, 0.10, 0.12]
+      qvel_filter_tau_s: [0.18, 0.18, 0.18, 0.20]
+      axis_center_hold_s: [0.10, 0.10, 0.10, 0.15]
+      stall_detection_s: 1.0
+      stall_boost_interval_s: 0.8
+      stall_action_step: [0.03, 0.02, 0.03, 0.03]
+      stall_error_progress_rad: [0.004, 0.004, 0.004, 0.003]
+      stall_qvel_threshold_rad_s: [0.012, 0.080, 0.012, 0.010]
+      wrong_direction_detection_s: 0.4
+      wrong_direction_error_increase_rad: [0.020, 0.010, 0.020, 0.030]
+      wrong_direction_cooldown_s: [1.0, 1.5, 1.0, 2.0]
+      qvel_stable_rad_s: [0.10, 0.30, 0.50, 0.35]
+      dwell_s: 0.4
+      timeout_s: 100.0
+      runaway_error_factor: 1.5
+
+  test_log:
+    enabled: true
+    output_dir: runs/policy_control_tests/e52_runtime_shadow
+    flush_every_steps: 20
+    capture_images: true
+    image_camera: video4
+    image_interval_steps: 20
+    image_policy_only: true
+    image_dir: camera_frames
+    image_jpeg_quality: 95
+
+task:
+  task_name: real_gmsl_eye2_e52_policy_shadow_test
+  dataset_dir: data/policy_shadow_real_gmsl_eye2_e52_v1
+  camera_names: ["video4", "video5"]
+  max_steps: 4000
+  control_hz: 50
+  record_hz: 50
+  dt: 0.02
+  seed: -1
+  param_version: real_gmsl_eye2_e52_v1
+
+sync:
+  time_source: sensor_or_ros_header_stamp
+  max_observation_skew_ms: 40.0
+  required_cameras: ["video4", "video5"]
+  record_action_sample_time: true
+  record_action_send_time: true
+
+video:
+  target_latency_ms: 120.0
+  transport_hint: low_latency
+  prefer_compressed_transport: true
+  record_format: jpeg
+  jpeg_quality: 95
+
+receiver:
+  health:
+    mode: strict
+    bridge_snapshot_timeout_ms: 200
+    fpv_max_stale_ms: 1000
+    primary_camera: video4
+    camera_max_stale_ms: 1000
+    imu_require_online: true
+    imu_require_valid_attitude: true
+    quarantine_failed_records: true
+  online_qc:
+    enabled: true
+    primary_camera: video4
+    reference_path: ""
+    mask_backfill_window_steps: 5
+    qpos_warn_consecutive_steps: 5
+    qpos_fail_consecutive_steps: 25
+    qpos_distribution_hard_fail: false
+    qpos_jump_fail_rad: 0.20
+    max_policy_raw_qpos_delta_rad: [0.08, 0.08, 0.08, 0.08]
+    imu_qpos_delta_warn_consecutive_steps: 5
+    imu_qpos_delta_fail_consecutive_steps: 25
+    fpv_sample_interval_steps: 5
+    fpv_drift_warn_consecutive_samples: 5
+    fpv_drift_fail_consecutive_samples: 25
+    fpv_drift_hard_fail: false
+    fpv_black_mean_threshold: 5.0
+
+safety:
+  deadman_enabled: true
+  estop_enabled: true
+  manual_override_enabled: true
+  sensor_timeout_s: 1.0
+  action_clip: 1.0
+  max_delta_per_step: 1.0

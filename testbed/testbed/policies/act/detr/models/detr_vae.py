@@ -41,6 +41,7 @@ class DETRVAE(nn.Module):
         camera_names,
         vision_feature_scale=1.0,
         proprio_feature_scale=1.0,
+        intent_dim=0,
     ):
         """ Initializes the model.
         Parameters:
@@ -61,6 +62,7 @@ class DETRVAE(nn.Module):
         self.encoder = encoder
         hidden_dim = transformer.d_model
         self.action_head = nn.Linear(hidden_dim, action_dim)
+        self.intent_head = nn.Linear(hidden_dim, int(intent_dim)) if int(intent_dim) > 0 else None
         self.is_pad_head = nn.Linear(hidden_dim, 1)
         self.query_embed = nn.Embedding(num_queries, hidden_dim)
         if backbones is not None:
@@ -146,8 +148,9 @@ class DETRVAE(nn.Module):
             transformer_input = torch.cat([qpos, env_state], axis=1) # seq length = 2
             hs = self.transformer(transformer_input, None, self.query_embed.weight, self.pos.weight)[0]
         a_hat = self.action_head(hs)
+        intent_logits = self.intent_head(hs) if self.intent_head is not None else None
         is_pad_hat = self.is_pad_head(hs)
-        return a_hat, is_pad_hat, [mu, logvar]
+        return a_hat, is_pad_hat, [mu, logvar], intent_logits
 
 
 
@@ -270,6 +273,7 @@ def build(args):
         camera_names=args.camera_names,
         vision_feature_scale=getattr(args, "vision_feature_scale", 1.0),
         proprio_feature_scale=getattr(args, "proprio_feature_scale", 1.0),
+        intent_dim=getattr(args, "intent_dim", 0),
     )
 
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)

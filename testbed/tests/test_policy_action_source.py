@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import h5py
 import numpy as np
 import yaml
 
@@ -21,6 +22,8 @@ from testbed.cli.record_real import (
     ReceiverTestLogger,
     _add_policy_action_diagnostics,
 )
+from testbed.data.recorder import EpisodeRecorder
+from testbed.policies.runtime_gate_stack import RuntimeGateResult
 
 
 class DummyPolicy:
@@ -63,6 +66,38 @@ class DummyActionSource:
         self.published.append(dict(payload))
 
 
+class DummyIntentPolicy(DummyPolicy):
+    def predict_action_and_intent(self, obs: dict) -> tuple[np.ndarray, np.ndarray]:
+        self.seen_obs.append(obs)
+        return self.action.copy(), np.full(8, 0.75, dtype=np.float32)
+
+
+class DummyRuntimeGateStack:
+    stack_id = "E52-test"
+
+    def __init__(self) -> None:
+        self.reset_count = 0
+        self.calls = 0
+
+    def reset(self) -> None:
+        self.reset_count += 1
+
+    def step(self, **kwargs) -> RuntimeGateResult:
+        self.calls += 1
+        return RuntimeGateResult(
+            action=np.array([0.4, -0.3, 0.2, -0.1], dtype=np.float32),
+            gohome_requested=True,
+            diagnostics={
+                "policy_gate_stack_id": self.stack_id,
+                "policy_phase_gated_action": np.array([0.45, -0.3, 0.2, -0.1]),
+                "policy_snap_action": np.array([0.5, -0.3, 0.2, -0.1]),
+                "policy_temporal_direction_action": np.array([0.4, -0.3, 0.2, -0.1]),
+                "gohome_raw_active": 1,
+                "gohome_request_active": 1,
+            },
+        )
+
+
 def _obs() -> dict:
     return {
         "qpos": np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float32),
@@ -70,6 +105,40 @@ def _obs() -> dict:
         "images": {
             "fpv": np.zeros((8, 10, 3), dtype=np.uint8),
         },
+    }
+
+
+def _runtime_gate_extras() -> dict:
+    return {
+        "policy_gate_stack_id": "E52",
+        "policy_intent_probabilities": np.arange(8, dtype=np.float32) / 10.0,
+        "phase_gate_prob": 0.91,
+        "phase_gate_threshold": 0.15,
+        "phase_gate_inactive_scale": 0.5,
+        "phase_gate_active": 1,
+        "policy_phase_gated_action": np.array([0.0, 0.2, 0.0, 0.4]),
+        "policy_snap_active_mask": np.array([0, 1, 0, 0]),
+        "policy_snap_action": np.array([0.0, 0.25, 0.0, 0.4]),
+        "policy_snap_margin": 0.02,
+        "policy_snap_intent_threshold": 0.7,
+        "temporal_direction_gate_probabilities": np.linspace(0.1, 0.8, 8),
+        "temporal_direction_gate_threshold": 0.5,
+        "temporal_direction_gate_inactive_scale": 0.75,
+        "temporal_direction_gate_active_mask": np.array([0, 0, 0, 1, 0, 0, 0, 1]),
+        "policy_temporal_direction_action": np.array([0.0, 0.18, 0.0, 0.3]),
+        "gohome_candidate_probability": 0.99,
+        "gohome_candidate_threshold": 0.97,
+        "gohome_candidate_required_steps": 10,
+        "gohome_candidate_consecutive_steps": 10,
+        "gohome_eligibility_probability": 0.82,
+        "gohome_eligibility_threshold": 0.8,
+        "gohome_eligibility_required_steps": 3,
+        "gohome_eligibility_consecutive_steps": 3,
+        "gohome_request_probability": 0.82,
+        "gohome_raw_active": 1,
+        "gohome_request_active": 1,
+        "gohome_request_suppressed": 1,
+        "gohome_request_suppression_reason": "policy_output_mode_shadow_zero",
     }
 
 
@@ -197,6 +266,51 @@ class PolicyActionSourceTests(unittest.TestCase):
             info.extras["policy_returned_action"],
             [0.3, -0.25, 0.25, -0.3],
         )
+
+    def test_runtime_gates_keep_shadow_zero_and_expose_raw_gohome_decision(self) -> None:
+        policy = DummyIntentPolicy([0.5, -0.25, 0.1, -0.9])
+        gate_stack = DummyRuntimeGateStack()
+        source = PolicyActionSource(
+            policy=policy,
+            source_id="unit",
+            action_scale=0.5,
+            output_mode="shadow_zero",
+            runtime_gate_stack=gate_stack,
+        )
+
+        source.reset()
+        action, info = source.next_action(_obs())
+
+        np.testing.assert_allclose(action, np.zeros(4))
+        np.testing.assert_allclose(info.extras["policy_action"], [0.5, -0.25, 0.1, -0.9])
+        np.testing.assert_allclose(info.extras["policy_scaled_action"], [0.2, -0.15, 0.1, -0.05])
+        np.testing.assert_allclose(info.extras["policy_returned_action"], np.zeros(4))
+        self.assertEqual(info.extras["policy_gate_stack_id"], "E52-test")
+        self.assertEqual(info.extras["gohome_raw_active"], 1)
+        self.assertEqual(info.extras["gohome_request_active"], 1)
+        self.assertEqual(info.extras["gohome_request_suppressed"], 1)
+        self.assertEqual(
+            info.extras["gohome_request_suppression_reason"],
+            "policy_output_mode_shadow_zero",
+        )
+        self.assertFalse(info.extras["go_home_requested"])
+        self.assertEqual(gate_stack.reset_count, 1)
+        self.assertEqual(gate_stack.calls, 1)
+
+    def test_runtime_gates_emit_gohome_request_in_control_mode(self) -> None:
+        source = PolicyActionSource(
+            policy=DummyIntentPolicy([0.5, -0.25, 0.1, -0.9]),
+            source_id="unit",
+            output_mode="control",
+            runtime_gate_stack=DummyRuntimeGateStack(),
+        )
+
+        action, info = source.next_action(_obs())
+
+        np.testing.assert_allclose(action, [0.4, -0.3, 0.2, -0.1])
+        self.assertTrue(info.extras["go_home_requested"])
+        self.assertEqual(info.extras["gohome_request_suppressed"], 0)
+        self.assertEqual(info.extras["gohome_request_suppression_reason"], "")
 
     def test_deadzone_assist_lifts_stable_intent_above_directional_deadzone(self) -> None:
         policy = DummyPolicy([0.33, -0.26, 0.1, -0.2])
@@ -408,6 +522,61 @@ class PolicyActionSourceTests(unittest.TestCase):
             "policy_bundles/real_one_dig_v1",
         )
 
+    def test_runtime_gate_diagnostics_are_added_to_hdf5_step(self) -> None:
+        diagnostics: dict = {}
+        _add_policy_action_diagnostics(
+            diagnostics,
+            {
+                "policy_action": np.array([0.1, 0.2, 0.3, 0.4]),
+                **_runtime_gate_extras(),
+            },
+        )
+
+        for key in _runtime_gate_extras():
+            self.assertIn(key, diagnostics)
+        np.testing.assert_allclose(
+            diagnostics["policy_intent_probabilities"],
+            np.arange(8) / 10.0,
+        )
+        np.testing.assert_array_equal(
+            diagnostics["temporal_direction_gate_active_mask"],
+            [0, 0, 0, 1, 0, 0, 0, 1],
+        )
+        self.assertEqual(diagnostics["gohome_candidate_required_steps"], 10)
+        self.assertEqual(diagnostics["gohome_eligibility_consecutive_steps"], 3)
+        self.assertEqual(diagnostics["gohome_request_suppressed"], 1)
+        self.assertEqual(
+            diagnostics["gohome_request_suppression_reason"],
+            "policy_output_mode_shadow_zero",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            recorder = EpisodeRecorder(tmp, 0, camera_names=[])
+            recorder.record(
+                {"qpos": np.zeros(4), "qvel": np.zeros(4)},
+                np.zeros(4),
+                diagnostics=diagnostics,
+            )
+            path = recorder.save()
+            with h5py.File(path, "r") as handle:
+                np.testing.assert_allclose(
+                    handle["diagnostics/policy_intent_probabilities"][0],
+                    np.arange(8) / 10.0,
+                )
+                np.testing.assert_array_equal(
+                    handle["diagnostics/temporal_direction_gate_active_mask"][0],
+                    [0, 0, 0, 1, 0, 0, 0, 1],
+                )
+                self.assertEqual(
+                    handle["diagnostics/gohome_candidate_required_steps"][0],
+                    10,
+                )
+                self.assertEqual(
+                    handle[
+                        "diagnostics/gohome_request_suppression_reason"
+                    ].asstr()[0],
+                    "policy_output_mode_shadow_zero",
+                )
+
     def test_receiver_test_logger_writes_lightweight_jsonl(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             logger = ReceiverTestLogger.from_config(
@@ -468,6 +637,73 @@ class PolicyActionSourceTests(unittest.TestCase):
         self.assertIn('"policy_deadzone_assist_active": 1', step_lines[0])
         self.assertIn('"policy_deadzone_assist_axes": "boom+"', step_lines[0])
         self.assertEqual(summary["steps"], 1)
+
+    def test_receiver_test_logger_passes_gate_stack_policy_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            logger = ReceiverTestLogger.from_config(
+                {"output_dir": tmp, "run_name": "unit"},
+                metadata={"task_name": "policy_test"},
+                record_config_yaml="teleop:\n  input: policy\n",
+            )
+            logger.record_step(
+                local_step=4,
+                receiver_mode="armed",
+                obs=_obs() | {"step_id": 4, "timestamp_ns": 10, "joint_timestamp_ns": 9},
+                raw_action=np.array([0.1, 0.2, 0.3, 0.4], dtype=np.float32),
+                safe_action=np.zeros(4, dtype=np.float32),
+                action_info=ActionInfo(
+                    source_type="policy",
+                    source_id="unit",
+                    latency_ms=2.0,
+                    extras={
+                        "policy_action": np.array([0.1, 0.2, 0.3, 0.4]),
+                        "policy_output_mode": "shadow_zero",
+                        **_runtime_gate_extras(),
+                    },
+                ),
+                action_sample_timestamp_ns=11,
+                action_send_timestamp_ns=12,
+                guard=SimpleNamespace(triggered=False, reasons=()),
+                control_result={
+                    "ack": True,
+                    "fault_code": "",
+                    "controller_timestamp_ns": 13,
+                    "commanded_action": np.zeros(4, dtype=np.float32),
+                },
+                receiver_health=ReceiverHealthSnapshot(
+                    ok=True,
+                    error_code="",
+                    errors=(),
+                    imu_summary="1111",
+                    diagnostics={},
+                ),
+                record_start_requested=False,
+                go_home_requested=False,
+            )
+            logger.close()
+
+            step = yaml.safe_load(
+                ((Path(tmp) / "unit" / "steps.jsonl").read_text(encoding="utf-8").splitlines())[0]
+            )
+
+        self.assertEqual(step["policy_gate_stack_id"], "E52")
+        self.assertEqual(step["go_home_requested"], 0)
+        self.assertEqual(step["gohome_request_active"], 1)
+        self.assertEqual(step["gohome_request_suppressed"], 1)
+        self.assertEqual(
+            step["gohome_request_suppression_reason"],
+            "policy_output_mode_shadow_zero",
+        )
+        self.assertEqual(len(step["policy_intent_probabilities"]), 8)
+        self.assertEqual(len(step["temporal_direction_gate_probabilities"]), 8)
+        self.assertAlmostEqual(step["phase_gate_threshold"], 0.15)
+        self.assertEqual(step["gohome_candidate_required_steps"], 10)
+        self.assertEqual(step["gohome_eligibility_consecutive_steps"], 3)
+        np.testing.assert_allclose(
+            step["policy_temporal_direction_action"],
+            [0.0, 0.18, 0.0, 0.3],
+        )
+        self.assertAlmostEqual(step["gohome_request_probability"], 0.82)
 
     def test_load_act_policy_from_bundle_resolves_repo_a_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

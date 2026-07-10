@@ -7,6 +7,7 @@ PyTorch data loading utilities for real-excavator HDF5 episodes.
 from __future__ import annotations
 
 import datetime
+import json
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,7 @@ import yaml
 from torch.utils.data import DataLoader, Dataset
 
 from testbed.data.hdf5_io import list_episodes
+from testbed.data.deadzone_intent_labels import compute_deadzone_intent_labels
 from testbed.data.image_transforms import build_image_transform
 from testbed.data.schema import ATTR_IS_REAL, GRP_ENCODED_IMAGES
 
@@ -69,6 +71,7 @@ def get_norm_stats(
     num_episodes: int,
     episode_ids: list[int] | None = None,
     low_dim_keys: list[str] | tuple[str, ...] | None = None,
+    deadzone_intent: dict[str, Any] | None = None,
 ) -> dict[str, np.ndarray]:
     """
     Compute mean/std normalization statistics from a set of episodes.
@@ -97,6 +100,7 @@ def get_norm_stats(
 
     dataset_dir = Path(dataset_dir)
     selected_low_dim_keys = _normalize_low_dim_keys(low_dim_keys)
+    deadzone_intent_cfg = _resolve_deadzone_intent_config(deadzone_intent)
     all_proprio_data: list[torch.Tensor] = []
     all_qpos_data:    list[torch.Tensor] = []
     all_action_data:  list[torch.Tensor] = []
@@ -112,6 +116,19 @@ def get_norm_stats(
             qpos   = f["/observations/qpos"][()]
             qvel   = f["/observations/qvel"][()]
             action = f["/action"][()]
+            if deadzone_intent_cfg["use_action_loss_mask_for_stats"]:
+                mask = _read_optional_handoff_mask(
+                    f,
+                    "handoff/action_loss_mask",
+                    int(action.shape[0]),
+                    enabled=True,
+                )
+                if mask is None:
+                    raise ValueError(
+                        "deadzone_intent.use_action_loss_mask_for_stats requires "
+                        "handoff/action_loss_mask"
+                    )
+                action = np.asarray(action, dtype=np.float32)[mask]
         proprio = _assemble_low_dim_observation(
             qpos=qpos,
             qvel=qvel,
@@ -195,6 +212,7 @@ class EpisodicDataset(Dataset):
         low_dim_keys: list[str] | tuple[str, ...] | None = None,
         action_chunk_size: int | None = None,
         image_transform: str = "none",
+        deadzone_intent: dict[str, Any] | None = None,
     ):
         super().__init__()
         self.episode_ids  = episode_ids
@@ -206,6 +224,7 @@ class EpisodicDataset(Dataset):
         self.action_chunk_size = int(action_chunk_size) if action_chunk_size is not None else None
         self.image_transform_name = str(image_transform or "none")
         self.image_transform = build_image_transform(self.image_transform_name)
+        self.deadzone_intent = _resolve_deadzone_intent_config(deadzone_intent)
         self.is_real: bool | None = None
         # Warm-up to populate self.is_real
         self.__getitem__(0)
@@ -228,10 +247,20 @@ class EpisodicDataset(Dataset):
 
             # ── sample start timestep ─────────────────────────────────────
             train_exclude_mask = _read_train_exclude_mask(f, T)
+            action_loss_start_mask = _read_optional_handoff_mask(
+                f,
+                "handoff/action_loss_mask",
+                T,
+                enabled=bool(self.deadzone_intent["require_action_loss_in_chunk"]),
+            )
             valid_starts = _valid_start_indices(
                 total_steps=T,
                 train_exclude_mask=train_exclude_mask,
                 action_chunk_size=self.action_chunk_size,
+                action_loss_mask=action_loss_start_mask,
+                require_action_loss_in_chunk=bool(
+                    self.deadzone_intent["require_action_loss_in_chunk"]
+                ),
             )
             if valid_starts.size == 0:
                 raise ValueError(
@@ -258,6 +287,34 @@ class EpisodicDataset(Dataset):
             start = t0 if (not is_real or action_prealigned) else max(0, t0 - 1)
             action     = f["/action"][start:]
             action_len = T - start
+            deadzone_labels = None
+            if self.deadzone_intent["enabled"]:
+                full_action = np.asarray(f["/action"][()], dtype=np.float32)
+                action_loss_mask = _read_optional_handoff_mask(
+                    f,
+                    "handoff/action_loss_mask",
+                    T,
+                    enabled=bool(self.deadzone_intent["use_handoff_masks"]),
+                )
+                tail_idle_mask = _read_optional_handoff_mask(
+                    f,
+                    "handoff/tail_idle_mask",
+                    T,
+                    enabled=bool(self.deadzone_intent["use_handoff_masks"]),
+                )
+                owner_automation = _read_optional_handoff_mask(
+                    f,
+                    "handoff/owner_automation",
+                    T,
+                    enabled=bool(self.deadzone_intent["use_handoff_masks"]),
+                )
+                deadzone_labels = compute_deadzone_intent_labels(
+                    actions=full_action,
+                    thresholds=self.deadzone_intent["thresholds"],
+                    action_loss_mask=action_loss_mask,
+                    tail_idle_mask=tail_idle_mask,
+                    owner_automation=owner_automation,
+                )
 
         self.is_real = is_real
 
@@ -273,6 +330,19 @@ class EpisodicDataset(Dataset):
         padded_action[:action_len] = action
         is_pad = np.ones(target_len, dtype=bool)
         is_pad[:action_len] = False
+        padded_move_mask = None
+        padded_stop_mask = None
+        padded_wrong_mask = None
+        padded_action_loss_mask = None
+        if deadzone_labels is not None:
+            padded_move_mask = np.zeros((target_len, original_action_shape[1], 2), dtype=bool)
+            padded_stop_mask = np.zeros(target_len, dtype=bool)
+            padded_wrong_mask = np.zeros((target_len, original_action_shape[1], 2), dtype=bool)
+            padded_action_loss_mask = np.zeros(target_len, dtype=bool)
+            padded_move_mask[:action_len] = deadzone_labels.move_mask[start:]
+            padded_stop_mask[:action_len] = deadzone_labels.stop_mask[start:]
+            padded_wrong_mask[:action_len] = deadzone_labels.wrong_mask[start:]
+            padded_action_loss_mask[:action_len] = deadzone_labels.action_loss_mask[start:]
 
         # ── assemble camera tensor ─────────────────────────────────────────
         all_cam_images = np.stack(
@@ -298,7 +368,19 @@ class EpisodicDataset(Dataset):
             - torch.from_numpy(self.norm_stats["proprio_mean"])
         ) / torch.from_numpy(self.norm_stats["proprio_std"])
 
-        return image_data, proprio_data, action_data, is_pad_t
+        if deadzone_labels is None:
+            return image_data, proprio_data, action_data, is_pad_t
+
+        return {
+            "image": image_data,
+            "proprio": proprio_data,
+            "action": action_data,
+            "is_pad": is_pad_t,
+            "deadzone_move_mask": torch.from_numpy(padded_move_mask),
+            "deadzone_stop_mask": torch.from_numpy(padded_stop_mask),
+            "deadzone_wrong_mask": torch.from_numpy(padded_wrong_mask),
+            "action_loss_mask": torch.from_numpy(padded_action_loss_mask),
+        }
 
 
 def _read_camera_image(h5_file: Any, camera_name: str, timestep: int) -> np.ndarray:
@@ -321,6 +403,59 @@ def _bool_attr(value: Any) -> bool:
         return str(value).strip().lower() in {"true", "yes", "1"}
 
 
+def _resolve_deadzone_intent_config(raw: dict[str, Any] | None) -> dict[str, Any]:
+    cfg = dict(raw or {})
+    enabled = bool(cfg.get("enabled", False))
+    if not enabled:
+        return {
+            "enabled": False,
+            "thresholds": {},
+            "use_handoff_masks": False,
+            "use_action_loss_mask_for_stats": False,
+            "require_action_loss_in_chunk": False,
+        }
+    thresholds = cfg.get("thresholds")
+    if thresholds is None:
+        threshold_json = cfg.get("threshold_json")
+        if not threshold_json:
+            raise ValueError("deadzone_intent.enabled requires thresholds or threshold_json")
+        path = Path(str(threshold_json))
+        if not path.exists():
+            raise FileNotFoundError(f"deadzone_intent threshold_json does not exist: {path}")
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        thresholds = payload.get("deadzone_action", payload) if isinstance(payload, dict) else payload
+    if not isinstance(thresholds, dict):
+        raise ValueError("deadzone_intent thresholds must be a mapping")
+    return {
+        "enabled": True,
+        "thresholds": thresholds,
+        "use_handoff_masks": bool(cfg.get("use_handoff_masks", False)),
+        "use_action_loss_mask_for_stats": bool(
+            cfg.get("use_action_loss_mask_for_stats", False)
+        ),
+        "require_action_loss_in_chunk": bool(
+            cfg.get("require_action_loss_in_chunk", False)
+        ),
+    }
+
+
+def _read_optional_handoff_mask(
+    h5_file: Any,
+    path: str,
+    total_steps: int,
+    *,
+    enabled: bool,
+) -> np.ndarray | None:
+    if not enabled:
+        return None
+    if path not in h5_file:
+        return None
+    arr = np.asarray(h5_file[path][()], dtype=bool).reshape(-1)
+    if arr.size != int(total_steps):
+        raise ValueError(f"{path} length must be {total_steps}, got {arr.size}")
+    return arr
+
+
 def _read_train_exclude_mask(h5_file: Any, total_steps: int) -> np.ndarray | None:
     path = "diagnostics/train_exclude_mask"
     if path not in h5_file:
@@ -336,23 +471,42 @@ def _valid_start_indices(
     total_steps: int,
     train_exclude_mask: np.ndarray | None,
     action_chunk_size: int | None,
+    action_loss_mask: np.ndarray | None = None,
+    require_action_loss_in_chunk: bool = False,
 ) -> np.ndarray:
     """Return t0 values whose sampled action window does not cross masked samples."""
 
     T = int(total_steps)
     if T <= 0:
         return np.zeros(0, dtype=np.int64)
-    if train_exclude_mask is None:
-        return np.arange(T, dtype=np.int64)
-    mask = np.asarray(train_exclude_mask, dtype=bool).reshape(-1)
-    if mask.size != T or not np.any(mask):
-        return np.arange(T, dtype=np.int64)
-    horizon = max(1, int(action_chunk_size) if action_chunk_size is not None else 1)
     starts = np.arange(T, dtype=np.int64)
+    horizon = max(1, int(action_chunk_size) if action_chunk_size is not None else 1)
     ends = np.minimum(starts + horizon, T)
-    prefix = np.concatenate(([0], np.cumsum(mask.astype(np.int64))))
-    window_has_mask = (prefix[ends] - prefix[starts]) > 0
-    return starts[~window_has_mask]
+    valid = np.ones(T, dtype=bool)
+
+    if train_exclude_mask is not None:
+        mask = np.asarray(train_exclude_mask, dtype=bool).reshape(-1)
+        if mask.size == T and np.any(mask):
+            prefix = np.concatenate(([0], np.cumsum(mask.astype(np.int64))))
+            window_has_mask = (prefix[ends] - prefix[starts]) > 0
+            valid &= ~window_has_mask
+
+    if require_action_loss_in_chunk:
+        if action_loss_mask is None:
+            raise ValueError(
+                "deadzone_intent.require_action_loss_in_chunk requires "
+                "handoff/action_loss_mask"
+            )
+        action_mask = np.asarray(action_loss_mask, dtype=bool).reshape(-1)
+        if action_mask.size != T:
+            raise ValueError(
+                f"handoff/action_loss_mask length must be {T}, got {action_mask.size}"
+            )
+        prefix = np.concatenate(([0], np.cumsum(action_mask.astype(np.int64))))
+        window_has_action_loss = (prefix[ends] - prefix[starts]) > 0
+        valid &= window_has_action_loss
+
+    return starts[valid]
 
 
 def _decode_jpeg_image(encoded: np.ndarray) -> np.ndarray:
@@ -388,6 +542,7 @@ def load_data(
     episode_ids: list[int] | None = None,
     action_chunk_size: int | None = None,
     image_transform: str = "none",
+    deadzone_intent: dict[str, Any] | None = None,
 ) -> tuple[DataLoader, DataLoader, dict, bool, dict[str, Any]]:
     """
     Build train/val DataLoaders from an HDF5 dataset directory.
@@ -398,6 +553,7 @@ def load_data(
     """
     dataset_dir = Path(dataset_dir)
     print(f"\nData from: {dataset_dir}\n")
+    deadzone_intent_cfg = _resolve_deadzone_intent_config(deadzone_intent)
 
     # discover available episode files
     discovered = [
@@ -442,11 +598,21 @@ def load_data(
                 f["/observations/qpos"].shape[1],
             )
             length_info[ep_id] = int(f["/action"].shape[0])
+            action_loss_start_mask = _read_optional_handoff_mask(
+                f,
+                "handoff/action_loss_mask",
+                length_info[ep_id],
+                enabled=bool(deadzone_intent_cfg["require_action_loss_in_chunk"]),
+            )
             valid_start_count[ep_id] = int(
                 _valid_start_indices(
                     total_steps=length_info[ep_id],
                     train_exclude_mask=_read_train_exclude_mask(f, length_info[ep_id]),
                     action_chunk_size=action_chunk_size,
+                    action_loss_mask=action_loss_start_mask,
+                    require_action_loss_in_chunk=bool(
+                        deadzone_intent_cfg["require_action_loss_in_chunk"]
+                    ),
                 ).size
             )
     filtered = [i for i in available if dim_info[i][0] == dim_info[i][1]]
@@ -504,6 +670,7 @@ def load_data(
         num_episodes,
         episode_ids=available,
         low_dim_keys=selected_low_dim_keys,
+        deadzone_intent=deadzone_intent,
     )
 
     train_ds = EpisodicDataset(
@@ -515,6 +682,7 @@ def load_data(
         low_dim_keys=selected_low_dim_keys,
         action_chunk_size=action_chunk_size,
         image_transform=image_transform,
+        deadzone_intent=deadzone_intent,
     )
     val_ds = EpisodicDataset(
         val_ids,
@@ -525,6 +693,7 @@ def load_data(
         low_dim_keys=selected_low_dim_keys,
         action_chunk_size=action_chunk_size,
         image_transform=image_transform,
+        deadzone_intent=deadzone_intent,
     )
 
     split_info["dataset_max_episode_len"] = int(max_episode_len)
@@ -533,6 +702,9 @@ def load_data(
     split_info["low_dim_dim"] = int(norm_stats["proprio_dim"])
     split_info["action_chunk_size"] = None if action_chunk_size is None else int(action_chunk_size)
     split_info["image_transform"] = str(image_transform or "none")
+    split_info["deadzone_intent_enabled"] = bool(
+        deadzone_intent_cfg["enabled"]
+    )
     split_info["gap_mask_valid_start_count"] = {
         int(ep_id): int(valid_start_count.get(ep_id, 0)) for ep_id in available
     }

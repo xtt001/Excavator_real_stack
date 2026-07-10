@@ -4422,7 +4422,8 @@ class RealworldV1Tests(unittest.TestCase):
                     "go_home_running": np.r_[np.zeros(71, dtype=np.int8), np.ones(29, dtype=np.int8)],
                 }
             )
-            actions = np.repeat(np.arange(n, dtype=np.float32).reshape(n, 1), 4, axis=1)
+            actions = np.zeros((n, 4), dtype=np.float32)
+            actions[60, 0] = 0.10
             write_episode(
                 src,
                 qpos=np.zeros((n, 4), dtype=np.float32),
@@ -4451,6 +4452,81 @@ class RealworldV1Tests(unittest.TestCase):
                 self.assertGreater(float(np.max(source_gap_ms)), 250.0)
                 self.assertTrue(np.any(train_exclude_mask))
                 self.assertTrue(bool(f["metadata"].attrs["action_prealigned"]))
+
+    @unittest.skipUnless(HAS_H5PY, "h5py is required for handoff dataset builder tests")
+    def test_handoff_20hz_builder_labels_gohome_request_and_automation_owner(self) -> None:
+        from testbed.data.hdf5_io import write_episode
+        from testbed.data.resample_20hz import build_handoff_20hz_episode
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            src = Path(tmpdir) / "episode_1.hdf5"
+            dst = Path(tmpdir) / "handoff" / "episode_1.hdf5"
+            n = 120
+            step_ns = np.arange(n, dtype=np.int64) * 20_000_000
+            image_ts = np.arange(n, dtype=np.int64) * 20_000_000 + 1_000_000_000
+            diagnostics = _real_diagnostics(n)
+            diagnostics.update(
+                {
+                    "image_timestamp_ns_fpv": image_ts,
+                    "image_timestamp_ns": image_ts,
+                    "joint_timestamp_ns": image_ts,
+                    "action_sample_timestamp_ns": image_ts,
+                    "go_home_requested": np.r_[np.zeros(70, dtype=np.int8), np.ones(1, dtype=np.int8), np.zeros(49, dtype=np.int8)],
+                    "go_home_start_accepted": np.r_[np.zeros(70, dtype=np.int8), np.ones(1, dtype=np.int8), np.zeros(49, dtype=np.int8)],
+                    "go_home_running": np.r_[np.zeros(71, dtype=np.int8), np.ones(49, dtype=np.int8)],
+                }
+            )
+            actions = np.zeros((n, 4), dtype=np.float32)
+            actions[60, 0] = 0.10
+            write_episode(
+                src,
+                qpos=np.zeros((n, 4), dtype=np.float32),
+                qvel=np.zeros((n, 4), dtype=np.float32),
+                actions=actions,
+                images={"fpv": np.zeros((n, 4, 4, 3), dtype=np.uint8)},
+                metadata={"is_real": True, "success": 1},
+                step_ns=step_ns,
+                diagnostics=diagnostics,
+            )
+
+            row = build_handoff_20hz_episode(
+                input_path=src,
+                output_path=dst,
+                target_hz=50.0,
+                positive_window_steps=4,
+                eligible_idle_action_threshold=0.05,
+                eligible_dwell_min_steps=4,
+            )
+            self.assertGreater(row["output_steps"], 70)
+            self.assertEqual(row["positive_request_count"], 5)
+            self.assertGreater(row["automation_owner_count"], 0)
+
+            import h5py
+
+            with h5py.File(dst, "r") as f:
+                source_idx = f["diagnostics/source_observation_index"][()]
+                request = f["handoff/gohome_request_label"][()].astype(bool)
+                eligible = f["handoff/gohome_eligible_label"][()].astype(bool)
+                gohome_loss_mask = f["handoff/gohome_loss_mask"][()].astype(bool)
+                tail_idle = f["handoff/tail_idle_mask"][()].astype(bool)
+                owner = f["handoff/owner_automation"][()].astype(bool)
+                action_mask = f["handoff/action_loss_mask"][()].astype(bool)
+                request_source = source_idx[request]
+                eligible_source = source_idx[eligible]
+                tail_source = source_idx[tail_idle]
+                self.assertEqual(int(request_source[0]), 66)
+                self.assertEqual(int(request_source[-1]), 70)
+                self.assertEqual(int(eligible_source[0]), 65)
+                self.assertEqual(int(eligible_source[-1]), 70)
+                self.assertEqual(int(tail_source[0]), 61)
+                self.assertEqual(int(tail_source[-1]), 70)
+                self.assertFalse(np.any(gohome_loss_mask[source_idx > 70]))
+                self.assertTrue(np.all(owner[source_idx >= 71]))
+                self.assertFalse(np.any(action_mask[request]))
+                self.assertFalse(np.any(action_mask[owner]))
+                self.assertFalse(np.any(action_mask[tail_idle]))
+                self.assertEqual(f["metadata"].attrs["handoff_positive_window_steps"], 4)
+                self.assertEqual(f["metadata"].attrs["handoff_eligible_dwell_min_steps"], 4)
 
     @unittest.skipUnless(HAS_H5PY, "h5py is required for training QC tests")
     def test_training_qc_flags_bucket_jump_and_fpv_gap(self) -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import time
 from dataclasses import dataclass
@@ -54,6 +55,7 @@ class PolicyActionSource(ActionSource):
         fail_safe_zero: bool = True,
         record_start_on_reset: bool = False,
         deadzone_assist: dict[str, Any] | None = None,
+        runtime_gate_stack: Any | None = None,
         bundle_dir: str | Path | None = None,
     ) -> None:
         if output_mode not in POLICY_OUTPUT_MODES:
@@ -79,6 +81,7 @@ class PolicyActionSource(ActionSource):
         self._fail_safe_zero = bool(fail_safe_zero)
         self._record_start_on_reset = bool(record_start_on_reset)
         self._deadzone_assist = _deadzone_assist_config(deadzone_assist)
+        self._runtime_gate_stack = runtime_gate_stack
         self._bundle_dir = None if bundle_dir is None else str(bundle_dir)
         self._step = 0
         self._record_start_pending = self._record_start_on_reset
@@ -115,6 +118,18 @@ class PolicyActionSource(ActionSource):
                 f"config={parsed_camera_names!r} bundle={policy_camera_names!r}"
             )
         camera_name = str(cfg.get("camera", parsed_camera_names[0]))
+        runtime_gate_stack = None
+        runtime_gates_cfg = cfg.get("runtime_gates")
+        if runtime_gates_cfg is not None:
+            if not isinstance(runtime_gates_cfg, dict):
+                raise ValueError("teleop.policy.runtime_gates must be a mapping")
+            if bool(runtime_gates_cfg.get("enabled", False)):
+                from testbed.policies.runtime_gate_stack import RuntimeGateStack
+
+                runtime_gate_stack = RuntimeGateStack.from_config(
+                    runtime_gates_cfg,
+                    default_bundle_dir=bundle_dir,
+                )
         return cls(
             policy=policy,
             source_id=str(cfg.get("source_id", f"policy:act:{bundle_dir.name}")),
@@ -129,6 +144,7 @@ class PolicyActionSource(ActionSource):
             fail_safe_zero=bool(cfg.get("fail_safe_zero", True)),
             record_start_on_reset=bool(cfg.get("record_start_on_reset", False)),
             deadzone_assist=cfg.get("deadzone_assist"),
+            runtime_gate_stack=runtime_gate_stack,
             bundle_dir=bundle_dir,
         )
 
@@ -140,6 +156,8 @@ class PolicyActionSource(ActionSource):
         self._filtered_qvel.fill(0.0)
         self._assist_last_sign.fill(0)
         self._assist_consecutive_steps.fill(0)
+        if self._runtime_gate_stack is not None:
+            self._runtime_gate_stack.reset()
         if hasattr(self._policy, "reset"):
             self._policy.reset()
 
@@ -149,10 +167,35 @@ class PolicyActionSource(ActionSource):
         record_start_requested = self._consume_record_start_request()
         try:
             policy_obs, qvel_input = self._policy_obs(obs)
-            policy_action = as_real_action(self._policy.predict(policy_obs), clip=False)
+            gate_extras: dict[str, Any] = {}
+            raw_gohome_requested = False
+            if self._runtime_gate_stack is None:
+                predicted_action = self._policy.predict(policy_obs)
+            else:
+                inference = getattr(self._policy, "predict_action_and_intent", None)
+                if not callable(inference):
+                    raise TypeError(
+                        "runtime_gates requires policy.predict_action_and_intent(obs)"
+                    )
+                predicted_action, intent_probabilities = inference(policy_obs)
+            policy_action = as_real_action(predicted_action, clip=False)
             policy_action = np.clip(policy_action, -self._clip, self._clip).astype(np.float32)
+            gated_action = policy_action
+            if self._runtime_gate_stack is not None:
+                gate_result = self._runtime_gate_stack.step(
+                    action=policy_action,
+                    intent_probabilities=intent_probabilities,
+                    qpos=policy_obs["qpos"],
+                    qvel=qvel_input,
+                )
+                gated_action = as_real_action(gate_result.action, clip=False)
+                gated_action = np.clip(gated_action, -self._clip, self._clip).astype(
+                    np.float32
+                )
+                raw_gohome_requested = bool(gate_result.gohome_requested)
+                gate_extras = dict(gate_result.diagnostics)
             scaled_action = np.clip(
-                policy_action * self._action_scale,
+                gated_action * self._action_scale,
                 -self._clip,
                 self._clip,
             ).astype(np.float32)
@@ -178,7 +221,19 @@ class PolicyActionSource(ActionSource):
                 "policy_step": int(self._step),
                 "policy_error": "",
                 **assist_extras,
+                **gate_extras,
             }
+            if self._runtime_gate_stack is not None:
+                gohome_suppressed = (
+                    raw_gohome_requested and self._output_mode == "shadow_zero"
+                )
+                extras["gohome_request_suppressed"] = int(gohome_suppressed)
+                extras["gohome_request_suppression_reason"] = (
+                    "policy_output_mode_shadow_zero" if gohome_suppressed else ""
+                )
+                extras["go_home_requested"] = bool(
+                    raw_gohome_requested and self._output_mode == "control"
+                )
             if self._bundle_dir is not None:
                 extras["policy_bundle_dir"] = self._bundle_dir
             self._step += 1
@@ -395,6 +450,9 @@ def _act_policy_config_from_resolved(resolved: dict[str, Any]) -> dict[str, Any]
         "low_dim_keys": low_dim_keys,
         "state_dim": state_dim,
         "train_with_zero_latent": bool(act_params.get("train_with_zero_latent", False)),
+        "intent_loss": copy.deepcopy(
+            train_cfg.get("intent_loss", policy_cfg.get("intent_loss", {})) or {}
+        ),
     }
 
 

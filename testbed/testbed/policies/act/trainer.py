@@ -226,13 +226,28 @@ class ACTTrainer(Trainer):
         amp_enabled: bool = False,
         amp_dtype: torch.dtype | None = None,
     ) -> dict:
-        image_data, proprio_data, action_data, is_pad = data
+        extra: dict = {}
+        if isinstance(data, dict):
+            image_data = data["image"]
+            proprio_data = data["proprio"]
+            action_data = data["action"]
+            is_pad = data["is_pad"]
+            for key in (
+                "deadzone_move_mask",
+                "deadzone_stop_mask",
+                "deadzone_wrong_mask",
+                "action_loss_mask",
+            ):
+                if key in data:
+                    extra[key] = data[key].to(adapter.device)
+        else:
+            image_data, proprio_data, action_data, is_pad = data
         image_data  = image_data.to(adapter.device)
         proprio_data = proprio_data.to(adapter.device)
         action_data = action_data.to(adapter.device)
         is_pad      = is_pad.to(adapter.device)
         with ACTTrainer._autocast_context(adapter.device, amp_enabled, amp_dtype):
-            return adapter.forward_loss(proprio_data, image_data, action_data, is_pad)
+            return adapter.forward_loss(proprio_data, image_data, action_data, is_pad, **extra)
 
     @staticmethod
     def _save_ckpt(path, adapter, optimizer, epoch, val_loss, config, sd_override=None):

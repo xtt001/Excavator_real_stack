@@ -2020,6 +2020,42 @@ class ReceiverTestLogger:
             "policy_scaled_action": extras.get("policy_scaled_action"),
             "policy_assisted_action": extras.get("policy_assisted_action"),
             "policy_returned_action": extras.get("policy_returned_action"),
+            "policy_intent_probabilities": extras.get(
+                "policy_intent_probabilities"
+            ),
+            "phase_gate_prob": float(extras.get("phase_gate_prob", 0.0) or 0.0),
+            "phase_gate_threshold": float(
+                extras.get("phase_gate_threshold", 0.0) or 0.0
+            ),
+            "phase_gate_inactive_scale": float(
+                extras.get("phase_gate_inactive_scale", 0.0) or 0.0
+            ),
+            "phase_gate_active": int(extras.get("phase_gate_active", 0) or 0),
+            "policy_phase_gated_action": extras.get("policy_phase_gated_action"),
+            "policy_snap_active_mask": extras.get("policy_snap_active_mask"),
+            "policy_snap_action": extras.get("policy_snap_action"),
+            "policy_snap_margin": float(
+                extras.get("policy_snap_margin", 0.0) or 0.0
+            ),
+            "policy_snap_intent_threshold": float(
+                extras.get("policy_snap_intent_threshold", 0.0) or 0.0
+            ),
+            "temporal_direction_gate_probabilities": extras.get(
+                "temporal_direction_gate_probabilities"
+            ),
+            "temporal_direction_gate_threshold": float(
+                extras.get("temporal_direction_gate_threshold", 0.0) or 0.0
+            ),
+            "temporal_direction_gate_inactive_scale": float(
+                extras.get("temporal_direction_gate_inactive_scale", 0.0) or 0.0
+            ),
+            "temporal_direction_gate_active_mask": extras.get(
+                "temporal_direction_gate_active_mask"
+            ),
+            "policy_temporal_direction_action": extras.get(
+                "policy_temporal_direction_action"
+            ),
+            "policy_gate_stack_id": str(extras.get("policy_gate_stack_id", "")),
             "policy_output_mode": str(extras.get("policy_output_mode", "")),
             "policy_deadzone_assist_enabled": int(
                 extras.get("policy_deadzone_assist_enabled", 0) or 0
@@ -2038,6 +2074,43 @@ class ReceiverTestLogger:
             "policy_error": str(extras.get("policy_error", "")),
             "policy_inference_latency_ms": float(
                 extras.get("policy_inference_latency_ms", 0.0) or 0.0
+            ),
+            "gohome_candidate_probability": float(
+                extras.get("gohome_candidate_probability", 0.0) or 0.0
+            ),
+            "gohome_candidate_threshold": float(
+                extras.get("gohome_candidate_threshold", 0.0) or 0.0
+            ),
+            "gohome_candidate_required_steps": int(
+                extras.get("gohome_candidate_required_steps", 0) or 0
+            ),
+            "gohome_candidate_consecutive_steps": int(
+                extras.get("gohome_candidate_consecutive_steps", 0) or 0
+            ),
+            "gohome_eligibility_probability": float(
+                extras.get("gohome_eligibility_probability", 0.0) or 0.0
+            ),
+            "gohome_eligibility_threshold": float(
+                extras.get("gohome_eligibility_threshold", 0.0) or 0.0
+            ),
+            "gohome_eligibility_required_steps": int(
+                extras.get("gohome_eligibility_required_steps", 0) or 0
+            ),
+            "gohome_eligibility_consecutive_steps": int(
+                extras.get("gohome_eligibility_consecutive_steps", 0) or 0
+            ),
+            "gohome_request_probability": float(
+                extras.get("gohome_request_probability", 0.0) or 0.0
+            ),
+            "gohome_raw_active": int(extras.get("gohome_raw_active", 0) or 0),
+            "gohome_request_active": int(
+                extras.get("gohome_request_active", 0) or 0
+            ),
+            "gohome_request_suppressed": int(
+                extras.get("gohome_request_suppressed", 0) or 0
+            ),
+            "gohome_request_suppression_reason": str(
+                extras.get("gohome_request_suppression_reason", "")
             ),
             "policy_remote_mode": str(extras.get("policy_remote_mode", "")),
             "policy_remote_activated": int(
@@ -3283,11 +3356,17 @@ def _add_imu_step_diagnostics(diagnostics: dict[str, Any], obs: dict[str, Any]) 
 
     for field, values in scalar_values.items():
         dtype = np.float32 if field == "host_rx_age_ms" else np.int64
-        diagnostics[f"imu_{field}"] = np.asarray(values, dtype=dtype)
+        key = f"imu_{field}"
+        if imu_debug_available or key not in diagnostics:
+            diagnostics[key] = np.asarray(values, dtype=dtype)
     for field, values in vector3_values.items():
-        diagnostics[f"imu_{field}"] = np.stack(values).astype(np.float32)
+        key = f"imu_{field}"
+        if imu_debug_available or key not in diagnostics:
+            diagnostics[key] = np.stack(values).astype(np.float32)
     for field, values in vector4_values.items():
-        diagnostics[f"imu_{field}"] = np.stack(values).astype(np.float32)
+        key = f"imu_{field}"
+        if imu_debug_available or key not in diagnostics:
+            diagnostics[key] = np.stack(values).astype(np.float32)
     if "qpos_raw_imu" in obs:
         diagnostics["qpos_raw_imu"] = np.asarray(obs["qpos_raw_imu"], dtype=np.float32)
     if "qpos_raw_imu_deg" in obs:
@@ -3384,6 +3463,59 @@ def _add_policy_action_diagnostics(
         extras.get("policy_returned_action", np.zeros(4)),
         dtype=np.float32,
     )
+    diagnostics["policy_intent_probabilities"] = np.asarray(
+        extras.get("policy_intent_probabilities", np.zeros(8)),
+        dtype=np.float32,
+    )
+    diagnostics["phase_gate_prob"] = float(
+        extras.get("phase_gate_prob", 0.0) or 0.0
+    )
+    diagnostics["phase_gate_threshold"] = float(
+        extras.get("phase_gate_threshold", 0.0) or 0.0
+    )
+    diagnostics["phase_gate_inactive_scale"] = float(
+        extras.get("phase_gate_inactive_scale", 0.0) or 0.0
+    )
+    diagnostics["phase_gate_active"] = int(
+        extras.get("phase_gate_active", 0) or 0
+    )
+    diagnostics["policy_phase_gated_action"] = np.asarray(
+        extras.get("policy_phase_gated_action", np.zeros(4)),
+        dtype=np.float32,
+    )
+    diagnostics["policy_snap_active_mask"] = np.asarray(
+        extras.get("policy_snap_active_mask", np.zeros(4)),
+        dtype=np.int32,
+    )
+    diagnostics["policy_snap_action"] = np.asarray(
+        extras.get("policy_snap_action", np.zeros(4)),
+        dtype=np.float32,
+    )
+    diagnostics["policy_snap_margin"] = float(
+        extras.get("policy_snap_margin", 0.0) or 0.0
+    )
+    diagnostics["policy_snap_intent_threshold"] = float(
+        extras.get("policy_snap_intent_threshold", 0.0) or 0.0
+    )
+    diagnostics["temporal_direction_gate_probabilities"] = np.asarray(
+        extras.get("temporal_direction_gate_probabilities", np.zeros(8)),
+        dtype=np.float32,
+    )
+    diagnostics["temporal_direction_gate_threshold"] = float(
+        extras.get("temporal_direction_gate_threshold", 0.0) or 0.0
+    )
+    diagnostics["temporal_direction_gate_inactive_scale"] = float(
+        extras.get("temporal_direction_gate_inactive_scale", 0.0) or 0.0
+    )
+    diagnostics["temporal_direction_gate_active_mask"] = np.asarray(
+        extras.get("temporal_direction_gate_active_mask", np.zeros(8)),
+        dtype=np.int32,
+    )
+    diagnostics["policy_temporal_direction_action"] = np.asarray(
+        extras.get("policy_temporal_direction_action", np.zeros(4)),
+        dtype=np.float32,
+    )
+    diagnostics["policy_gate_stack_id"] = str(extras.get("policy_gate_stack_id", ""))
     diagnostics["policy_action_scale"] = np.asarray(
         extras.get("policy_action_scale", np.ones(4)),
         dtype=np.float32,
@@ -3425,6 +3557,45 @@ def _add_policy_action_diagnostics(
     diagnostics["policy_step"] = _int_timestamp(extras.get("policy_step"))
     diagnostics["policy_inference_latency_ms"] = float(
         extras.get("policy_inference_latency_ms", 0.0) or 0.0
+    )
+    diagnostics["gohome_candidate_probability"] = float(
+        extras.get("gohome_candidate_probability", 0.0) or 0.0
+    )
+    diagnostics["gohome_candidate_threshold"] = float(
+        extras.get("gohome_candidate_threshold", 0.0) or 0.0
+    )
+    diagnostics["gohome_candidate_required_steps"] = int(
+        extras.get("gohome_candidate_required_steps", 0) or 0
+    )
+    diagnostics["gohome_candidate_consecutive_steps"] = int(
+        extras.get("gohome_candidate_consecutive_steps", 0) or 0
+    )
+    diagnostics["gohome_eligibility_probability"] = float(
+        extras.get("gohome_eligibility_probability", 0.0) or 0.0
+    )
+    diagnostics["gohome_eligibility_threshold"] = float(
+        extras.get("gohome_eligibility_threshold", 0.0) or 0.0
+    )
+    diagnostics["gohome_eligibility_required_steps"] = int(
+        extras.get("gohome_eligibility_required_steps", 0) or 0
+    )
+    diagnostics["gohome_eligibility_consecutive_steps"] = int(
+        extras.get("gohome_eligibility_consecutive_steps", 0) or 0
+    )
+    diagnostics["gohome_request_probability"] = float(
+        extras.get("gohome_request_probability", 0.0) or 0.0
+    )
+    diagnostics["gohome_raw_active"] = int(
+        extras.get("gohome_raw_active", 0) or 0
+    )
+    diagnostics["gohome_request_active"] = int(
+        extras.get("gohome_request_active", 0) or 0
+    )
+    diagnostics["gohome_request_suppressed"] = int(
+        extras.get("gohome_request_suppressed", 0) or 0
+    )
+    diagnostics["gohome_request_suppression_reason"] = str(
+        extras.get("gohome_request_suppression_reason", "")
     )
     if "policy_bundle_dir" in extras:
         diagnostics["policy_bundle_dir"] = str(extras.get("policy_bundle_dir", ""))

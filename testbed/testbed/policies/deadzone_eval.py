@@ -334,6 +334,68 @@ def load_rows_for_eval(
     return rows
 
 
+def compute_intent_census_row(
+    *,
+    episode_id: str,
+    action: np.ndarray,
+    thresholds: dict[str, dict[str, float]],
+) -> dict[str, Any]:
+    actions = _validate_action_array(action, name="action")
+    effective = effective_direction_mask(actions, thresholds)
+    per_step_events = effective.sum(axis=(1, 2))
+    should_move = per_step_events > 0
+    steps = int(actions.shape[0])
+    should_move_frames = int(should_move.sum())
+    row: dict[str, Any] = {
+        "episode_id": episode_id,
+        "steps": steps,
+        "should_move_frames": should_move_frames,
+        "should_move_pct": _pct(should_move_frames, steps),
+        "should_stop_frames": int(steps - should_move_frames),
+        "should_stop_pct": _pct(steps - should_move_frames, steps),
+        "effective_axis_dir_events": int(effective.sum()),
+        "multi_dir_move_frames": int((per_step_events > 1).sum()),
+        "multi_dir_move_pct_of_move": _pct(int((per_step_events > 1).sum()), should_move_frames),
+        "mean_effective_dirs_per_move_frame": (
+            float(per_step_events[should_move].mean()) if should_move_frames else 0.0
+        ),
+    }
+    for axis_idx, axis in enumerate(AXIS_NAMES):
+        row[f"{axis}_pos_frames"] = int(effective[:, axis_idx, 0].sum())
+        row[f"{axis}_pos_pct"] = _pct(row[f"{axis}_pos_frames"], steps)
+        row[f"{axis}_neg_frames"] = int(effective[:, axis_idx, 1].sum())
+        row[f"{axis}_neg_pct"] = _pct(row[f"{axis}_neg_frames"], steps)
+    return row
+
+
+def aggregate_intent_census_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    total_steps = sum(int(row["steps"]) for row in rows)
+    should_move_frames = sum(int(row["should_move_frames"]) for row in rows)
+    multi_dir_move_frames = sum(int(row["multi_dir_move_frames"]) for row in rows)
+    effective_events = sum(int(row["effective_axis_dir_events"]) for row in rows)
+    aggregate: dict[str, Any] = {
+        "episodes": len(rows),
+        "total_steps": total_steps,
+        "should_move_frames": should_move_frames,
+        "should_move_pct": _pct(should_move_frames, total_steps),
+        "should_stop_frames": total_steps - should_move_frames,
+        "should_stop_pct": _pct(total_steps - should_move_frames, total_steps),
+        "effective_axis_dir_events": effective_events,
+        "multi_dir_move_frames": multi_dir_move_frames,
+        "multi_dir_move_pct_of_move": _pct(multi_dir_move_frames, should_move_frames),
+        "mean_effective_dirs_per_move_frame": (
+            float(effective_events) / float(should_move_frames) if should_move_frames else 0.0
+        ),
+    }
+    for axis in AXIS_NAMES:
+        for direction in ("pos", "neg"):
+            key = f"{axis}_{direction}_frames"
+            value = sum(int(row[key]) for row in rows)
+            aggregate[key] = value
+            aggregate[f"{axis}_{direction}_pct"] = _pct(value, total_steps)
+    return [aggregate]
+
+
 def _threshold_value(value: Any, *, axis: str, direction: str) -> float:
     if isinstance(value, dict):
         value = value.get("threshold_action_abs")

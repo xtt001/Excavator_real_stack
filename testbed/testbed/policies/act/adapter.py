@@ -18,6 +18,7 @@ limit.
 
 from __future__ import annotations
 
+import json
 import pickle
 from pathlib import Path
 from typing import Any
@@ -40,6 +41,269 @@ def _kl_divergence(mu, logvar):
     dimension_wise  = klds.mean(0)
     mean_kld        = klds.mean(1).mean(0, True)
     return total_kld, dimension_wise, mean_kld
+
+
+_AXIS_NAMES = ("swing", "boom", "stick", "bucket")
+
+
+def _resolve_deadzone_loss_config(raw: Any) -> dict[str, Any]:
+    cfg = dict(raw or {})
+    enabled = bool(cfg.get("enabled", False))
+    if not enabled:
+        return {
+            "enabled": False,
+            "same_dir_promote_weight": 0.0,
+            "idle_suppression_weight": 0.0,
+            "wrong_effective_weight": 0.0,
+            "margin": torch.zeros(4, dtype=torch.float32),
+            "pos": torch.zeros(4, dtype=torch.float32),
+            "neg": torch.zeros(4, dtype=torch.float32),
+            "penalize_wrong_effective": False,
+            "idle_denominator": "crossing_axes",
+            "wrong_denominator": "crossing_axes",
+        }
+
+    thresholds = _load_deadzone_thresholds(cfg)
+    margin = _broadcast_axis_values(cfg.get("margin", 0.0), name="deadzone_loss.margin")
+    apply_when = str(cfg.get("apply_when", "expert_effective_only"))
+    if apply_when != "expert_effective_only":
+        raise ValueError(
+            "deadzone_loss.apply_when currently supports only 'expert_effective_only'."
+        )
+    legacy_weight = float(cfg.get("weight", 0.1))
+    legacy_wrong_weight = float(cfg.get("wrong_weight", legacy_weight))
+    return {
+        "enabled": True,
+        "same_dir_promote_weight": float(cfg.get("same_dir_promote_weight", legacy_weight)),
+        "idle_suppression_weight": float(cfg.get("idle_suppression_weight", legacy_wrong_weight)),
+        "wrong_effective_weight": float(cfg.get("wrong_effective_weight", legacy_wrong_weight)),
+        "margin": torch.as_tensor(margin, dtype=torch.float32),
+        "pos": torch.as_tensor([thresholds[axis]["pos"] for axis in _AXIS_NAMES], dtype=torch.float32),
+        "neg": torch.as_tensor([thresholds[axis]["neg"] for axis in _AXIS_NAMES], dtype=torch.float32),
+        "penalize_wrong_effective": bool(cfg.get("penalize_wrong_effective", True)),
+        "same_dir_window": _resolve_same_dir_window(cfg.get("same_dir_window", "all")),
+        "same_dir_window_steps": int(cfg.get("same_dir_window_steps", 1)),
+        "idle_denominator": _resolve_denominator(
+            cfg.get("idle_denominator", "crossing_axes"),
+            name="deadzone_loss.idle_denominator",
+            allowed={"crossing_axes", "all_idle_axes"},
+        ),
+        "wrong_denominator": _resolve_denominator(
+            cfg.get("wrong_denominator", "crossing_axes"),
+            name="deadzone_loss.wrong_denominator",
+            allowed={"crossing_axes", "all_wrong_candidate_axes"},
+        ),
+    }
+
+
+def _resolve_intent_loss_config(raw: Any) -> dict[str, Any]:
+    cfg = dict(raw or {})
+    enabled = bool(cfg.get("enabled", False))
+    if not enabled:
+        return {
+            "enabled": False,
+            "weight": 0.0,
+            "positive_weight": torch.ones(8, dtype=torch.float32),
+            "intent_dim": 0,
+            "pos": torch.zeros(4, dtype=torch.float32),
+            "neg": torch.zeros(4, dtype=torch.float32),
+        }
+
+    thresholds = _load_deadzone_thresholds(cfg)
+    positive_weight = _broadcast_intent_values(
+        cfg.get("positive_weight", 1.0),
+        name="intent_loss.positive_weight",
+    )
+    return {
+        "enabled": True,
+        "weight": float(cfg.get("weight", 0.05)),
+        "positive_weight": torch.as_tensor(positive_weight, dtype=torch.float32),
+        "intent_dim": 8,
+        "pos": torch.as_tensor([thresholds[axis]["pos"] for axis in _AXIS_NAMES], dtype=torch.float32),
+        "neg": torch.as_tensor([thresholds[axis]["neg"] for axis in _AXIS_NAMES], dtype=torch.float32),
+    }
+
+
+def _resolve_window_deadzone_loss_config(raw: Any) -> dict[str, Any]:
+    cfg = dict(raw or {})
+    enabled = bool(cfg.get("enabled", False))
+    if not enabled:
+        return {
+            "enabled": False,
+            "same_dir_promote_weight": 0.0,
+            "stop_suppression_weight": 0.0,
+            "wrong_effective_weight": 0.0,
+            "margin": torch.zeros(4, dtype=torch.float32),
+            "pos": torch.zeros(4, dtype=torch.float32),
+            "neg": torch.zeros(4, dtype=torch.float32),
+        }
+    thresholds = _load_deadzone_thresholds(cfg)
+    margin = _broadcast_axis_values(cfg.get("margin", 0.0), name="window_deadzone_loss.margin")
+    return {
+        "enabled": True,
+        "same_dir_promote_weight": float(cfg.get("same_dir_promote_weight", 0.1)),
+        "stop_suppression_weight": float(cfg.get("stop_suppression_weight", 0.05)),
+        "wrong_effective_weight": float(cfg.get("wrong_effective_weight", 0.05)),
+        "margin": torch.as_tensor(margin, dtype=torch.float32),
+        "pos": torch.as_tensor([thresholds[axis]["pos"] for axis in _AXIS_NAMES], dtype=torch.float32),
+        "neg": torch.as_tensor([thresholds[axis]["neg"] for axis in _AXIS_NAMES], dtype=torch.float32),
+    }
+
+
+def _resolve_temporal_release_loss_config(raw: Any) -> dict[str, Any]:
+    cfg = dict(raw or {})
+    enabled = bool(cfg.get("enabled", False))
+    if not enabled:
+        return {
+            "enabled": False,
+            "weight": 0.0,
+            "release_window_steps": 0,
+            "pos": torch.zeros(4, dtype=torch.float32),
+            "neg": torch.zeros(4, dtype=torch.float32),
+        }
+    thresholds = _load_deadzone_thresholds(cfg)
+    return {
+        "enabled": True,
+        "weight": float(cfg.get("weight", 0.05)),
+        "release_window_steps": int(cfg.get("release_window_steps", 3)),
+        "pos": torch.as_tensor([thresholds[axis]["pos"] for axis in _AXIS_NAMES], dtype=torch.float32),
+        "neg": torch.as_tensor([thresholds[axis]["neg"] for axis in _AXIS_NAMES], dtype=torch.float32),
+    }
+
+
+def _resolve_same_dir_window(value: Any) -> str:
+    result = str(value or "all")
+    if result not in {"all", "expert_transition_window"}:
+        raise ValueError(
+            "deadzone_loss.same_dir_window must be 'all' or 'expert_transition_window'."
+        )
+    return result
+
+
+def _resolve_denominator(value: Any, *, name: str, allowed: set[str]) -> str:
+    result = str(value or "crossing_axes")
+    if result not in allowed:
+        formatted = ", ".join(repr(item) for item in sorted(allowed))
+        raise ValueError(f"{name} must be one of {formatted}.")
+    return result
+
+
+def _load_deadzone_thresholds(cfg: dict[str, Any]) -> dict[str, dict[str, float]]:
+    if "thresholds" in cfg:
+        payload = cfg["thresholds"]
+    else:
+        path_raw = cfg.get("threshold_json")
+        if not path_raw:
+            raise ValueError("deadzone_loss.enabled requires threshold_json or thresholds.")
+        path = Path(str(path_raw))
+        if not path.exists():
+            raise FileNotFoundError(f"deadzone_loss threshold_json does not exist: {path}")
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    raw = payload.get("deadzone_action", payload) if isinstance(payload, dict) else payload
+    thresholds: dict[str, dict[str, float]] = {}
+    for axis in _AXIS_NAMES:
+        axis_raw = raw.get(axis) if isinstance(raw, dict) else None
+        if not isinstance(axis_raw, dict):
+            raise ValueError(f"deadzone_loss thresholds missing axis {axis!r}.")
+        thresholds[axis] = {
+            "pos": _threshold_value(axis_raw.get("pos"), axis=axis, direction="pos"),
+            "neg": _threshold_value(axis_raw.get("neg"), axis=axis, direction="neg"),
+        }
+    return thresholds
+
+
+def _threshold_value(value: Any, *, axis: str, direction: str) -> float:
+    if isinstance(value, dict):
+        if "threshold_action_abs" in value:
+            value = value["threshold_action_abs"]
+        elif "value" in value:
+            value = value["value"]
+        else:
+            raise ValueError(f"deadzone_loss threshold for {axis}.{direction} is missing value.")
+    result = float(value)
+    if result < 0.0:
+        raise ValueError(f"deadzone_loss threshold for {axis}.{direction} must be >= 0.")
+    return result
+
+
+def _broadcast_axis_values(value: Any, *, name: str) -> list[float]:
+    if isinstance(value, (int, float)):
+        return [float(value)] * len(_AXIS_NAMES)
+    values = [float(item) for item in value]
+    if len(values) != len(_AXIS_NAMES):
+        raise ValueError(f"{name} must be a scalar or {len(_AXIS_NAMES)} values.")
+    return values
+
+
+def _broadcast_intent_values(value: Any, *, name: str) -> list[float]:
+    if isinstance(value, (int, float)):
+        return [float(value)] * (len(_AXIS_NAMES) * 2)
+    values = [float(item) for item in value]
+    if len(values) == len(_AXIS_NAMES):
+        expanded: list[float] = []
+        for item in values:
+            expanded.extend([item, item])
+        return expanded
+    if len(values) != len(_AXIS_NAMES) * 2:
+        raise ValueError(f"{name} must be a scalar, {len(_AXIS_NAMES)} values, or {len(_AXIS_NAMES) * 2} values.")
+    return values
+
+
+def _expert_transition_window_mask(
+    *,
+    expert_step_effective: torch.Tensor,
+    valid_step: torch.Tensor,
+    window_steps: int,
+) -> torch.Tensor:
+    steps = max(1, int(window_steps))
+    effective = expert_step_effective.to(dtype=torch.bool) & valid_step.to(dtype=torch.bool)
+    previous = torch.zeros_like(effective)
+    previous[:, 1:] = effective[:, :-1]
+    transition = effective & ~previous
+    mask = transition.clone()
+    for offset in range(1, steps):
+        shifted = torch.zeros_like(transition)
+        shifted[:, offset:] = transition[:, :-offset]
+        mask = mask | shifted
+    return mask & effective
+
+
+def _direction_release_window_mask(
+    *,
+    expert_effective: torch.Tensor,
+    valid: torch.Tensor,
+    window_steps: int,
+) -> torch.Tensor:
+    steps = max(1, int(window_steps))
+    effective = expert_effective.to(dtype=torch.bool) & valid.to(dtype=torch.bool)
+    previous = torch.zeros_like(effective)
+    previous[:, 1:] = effective[:, :-1]
+    release_start = previous & ~effective & valid.to(dtype=torch.bool)
+    mask = release_start.clone()
+    for offset in range(1, steps):
+        shifted = torch.zeros_like(release_start)
+        shifted[:, offset:] = release_start[:, :-offset]
+        mask = mask | shifted
+    return mask & valid.to(dtype=torch.bool)
+
+
+def _masked_action_l1(
+    *,
+    expert: torch.Tensor,
+    policy: torch.Tensor,
+    valid_mask: torch.Tensor,
+    action_loss_mask: torch.Tensor | None = None,
+) -> torch.Tensor:
+    import torch.nn.functional as F
+
+    all_l1 = F.l1_loss(expert, policy, reduction="none")
+    valid = valid_mask.to(dtype=torch.bool).expand_as(all_l1)
+    if action_loss_mask is None:
+        return (all_l1 * valid.to(all_l1.dtype)).mean()
+    action_valid = action_loss_mask.to(device=expert.device, dtype=torch.bool).unsqueeze(-1)
+    mask = valid & action_valid
+    count = mask.to(all_l1.dtype).sum().clamp_min(1.0)
+    return (all_l1 * mask.to(all_l1.dtype)).sum() / count
 
 
 @register_policy("act")
@@ -70,6 +334,16 @@ class ACTAdapter(Policy):
         self.kl_weight    = policy_config.get("kl_weight", 10)
         self._camera_names = list(policy_config.get("camera_names", []))
         self._low_dim_keys = list(policy_config.get("low_dim_keys", ["qpos"]))
+        self._deadzone_loss = _resolve_deadzone_loss_config(policy_config.get("deadzone_loss"))
+        self._intent_loss = _resolve_intent_loss_config(policy_config.get("intent_loss"))
+        self._window_deadzone_loss = _resolve_window_deadzone_loss_config(
+            policy_config.get("window_deadzone_loss")
+        )
+        self._temporal_release_loss = _resolve_temporal_release_loss_config(
+            policy_config.get("temporal_release_loss")
+        )
+        policy_config = dict(policy_config)
+        policy_config["intent_dim"] = int(self._intent_loss["intent_dim"])
 
         model, optimizer = build_ACT_model_and_optimizer(policy_config)
         self._model     = model.to(self.device)
@@ -118,6 +392,23 @@ class ACTAdapter(Policy):
         -------
         action : (Na,) float32  in *unnormalised* action space.
         """
+        action, _ = self._predict_action_and_optional_intent(obs)
+        return action
+
+    def predict_action_and_intent(self, obs: dict) -> tuple[np.ndarray, np.ndarray]:
+        """Return the executed action and query-0 axis-direction intent probabilities.
+
+        This advances temporal aggregation exactly once, matching :meth:`predict`.
+        Intent probabilities are ordered axis-major positive/negative.
+        """
+        action, intent_probabilities = self._predict_action_and_optional_intent(obs)
+        if intent_probabilities is None:
+            raise ValueError("loaded ACT policy has no intent logits")
+        return action, intent_probabilities
+
+    def _predict_action_and_optional_intent(
+        self, obs: dict
+    ) -> tuple[np.ndarray, np.ndarray | None]:
         proprio = self._build_proprio(obs)
 
         # normalise low-dimensional robot state
@@ -165,7 +456,18 @@ class ACTAdapter(Policy):
         if self._model.training:
             self._model.eval()
         with torch.inference_mode():
-            a_hat, _, _ = self._model(proprio, image, None)   # (1, C, Na)
+            a_hat, _, _, intent_logits = self._unpack_model_output(
+                self._model(proprio, image, None)
+            )   # (1, C, Na)
+        if intent_logits is not None and (
+            intent_logits.ndim != 3
+            or intent_logits.shape[0] != 1
+            or intent_logits.shape[2] != 8
+        ):
+            raise ValueError(
+                "ACT intent logits must have shape (1, num_queries, 8), "
+                f"got {tuple(intent_logits.shape)}"
+            )
 
         if self.temporal_agg:
             action = self._aggregate(a_hat)
@@ -184,7 +486,17 @@ class ACTAdapter(Policy):
             * self.norm_stats["action_std"]
             + self.norm_stats["action_mean"]
         )
-        return action.astype(np.float32)
+        intent_prob = (
+            None
+            if intent_logits is None
+            else torch.sigmoid(intent_logits[0, 0]).detach().cpu().numpy()
+        )
+        return (
+            action.astype(np.float32),
+            None
+            if intent_prob is None
+            else np.asarray(intent_prob, dtype=np.float32),
+        )
 
     def _build_proprio(self, obs: dict) -> torch.Tensor:
         parts: list[np.ndarray] = []
@@ -279,6 +591,11 @@ class ACTAdapter(Policy):
         image: torch.Tensor,
         actions: torch.Tensor,
         is_pad: torch.Tensor,
+        *,
+        deadzone_move_mask: torch.Tensor | None = None,
+        deadzone_stop_mask: torch.Tensor | None = None,
+        deadzone_wrong_mask: torch.Tensor | None = None,
+        action_loss_mask: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         """
         Training-time forward pass.
@@ -297,18 +614,378 @@ class ACTAdapter(Policy):
         image   = self._normalize(image)
         actions = actions[:, : self._model.num_queries]
         is_pad  = is_pad[:,  : self._model.num_queries]
+        if action_loss_mask is not None:
+            action_loss_mask = action_loss_mask[:, : self._model.num_queries]
+        if deadzone_move_mask is not None:
+            deadzone_move_mask = deadzone_move_mask[:, : self._model.num_queries]
+        if deadzone_stop_mask is not None:
+            deadzone_stop_mask = deadzone_stop_mask[:, : self._model.num_queries]
+        if deadzone_wrong_mask is not None:
+            deadzone_wrong_mask = deadzone_wrong_mask[:, : self._model.num_queries]
 
-        a_hat, _, (mu, logvar) = self._model(proprio, image, None, actions, is_pad)
+        a_hat, _, (mu, logvar), intent_logits = self._unpack_model_output(
+            self._model(proprio, image, None, actions, is_pad)
+        )
         total_kld, _, _        = _kl_divergence(mu, logvar)
 
-        import torch.nn.functional as F
-        all_l1 = F.l1_loss(actions, a_hat, reduction="none")
-        l1     = (all_l1 * ~is_pad.unsqueeze(-1)).mean()
+        valid_mask = ~is_pad.unsqueeze(-1)
+        l1 = _masked_action_l1(
+            expert=actions,
+            policy=a_hat,
+            valid_mask=valid_mask,
+            action_loss_mask=action_loss_mask,
+        )
+        deadzone_loss_d = self._deadzone_loss_terms(
+            expert_normalized=actions,
+            policy_normalized=a_hat,
+            valid_mask=valid_mask,
+        )
+        window_deadzone_loss_d = self._window_deadzone_loss_terms(
+            expert_normalized=actions,
+            policy_normalized=a_hat,
+            valid_mask=valid_mask,
+            move_mask=deadzone_move_mask,
+            stop_mask=deadzone_stop_mask,
+            wrong_mask=deadzone_wrong_mask,
+        )
+        intent_loss_d = self._intent_loss_terms(
+            expert_normalized=actions,
+            intent_logits=intent_logits,
+            valid_mask=valid_mask,
+        )
+        temporal_release_loss_d = self._temporal_release_loss_terms(
+            expert_normalized=actions,
+            policy_normalized=a_hat,
+            valid_mask=valid_mask,
+        )
 
         return {
             "l1":   l1,
             "kl":   total_kld[0],
-            "loss": l1 + total_kld[0] * self.kl_weight,
+            **deadzone_loss_d,
+            **window_deadzone_loss_d,
+            **intent_loss_d,
+            **temporal_release_loss_d,
+            "loss": (
+                l1
+                + total_kld[0] * self.kl_weight
+                + deadzone_loss_d["deadzone_loss"]
+                + window_deadzone_loss_d["window_deadzone_loss"]
+                + intent_loss_d["intent_loss"]
+                + temporal_release_loss_d["temporal_release_loss"]
+            ),
+        }
+
+    @staticmethod
+    def _unpack_model_output(output):
+        a_hat, is_pad_hat, latent = output[:3]
+        intent_logits = output[3] if len(output) > 3 else None
+        return a_hat, is_pad_hat, latent, intent_logits
+
+    def _deadzone_loss_terms(
+        self,
+        *,
+        expert_normalized: torch.Tensor,
+        policy_normalized: torch.Tensor,
+        valid_mask: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        cfg = self._deadzone_loss
+        zero = policy_normalized.new_zeros(())
+        if not cfg["enabled"]:
+            return {
+                "deadzone_same_dir_loss": zero,
+                "deadzone_idle_loss": zero,
+                "deadzone_wrong_loss": zero,
+                "deadzone_loss": zero,
+            }
+
+        action_mean = torch.as_tensor(
+            self.norm_stats["action_mean"],
+            dtype=policy_normalized.dtype,
+            device=policy_normalized.device,
+        )
+        action_std = torch.as_tensor(
+            self.norm_stats["action_std"],
+            dtype=policy_normalized.dtype,
+            device=policy_normalized.device,
+        )
+        expert = expert_normalized * action_std + action_mean
+        policy = policy_normalized * action_std + action_mean
+
+        pos = cfg["pos"].to(device=policy.device, dtype=policy.dtype)
+        neg = cfg["neg"].to(device=policy.device, dtype=policy.dtype)
+        margin = cfg["margin"].to(device=policy.device, dtype=policy.dtype)
+        valid = valid_mask.to(dtype=torch.bool).expand_as(policy)
+
+        expert_pos = (expert >= pos) & valid
+        expert_neg = (expert <= -neg) & valid
+        expert_axis_effective = expert_pos | expert_neg
+        expert_step_effective = expert_axis_effective.any(dim=-1, keepdim=True)
+        if cfg["same_dir_window"] == "expert_transition_window":
+            same_dir_step_mask = _expert_transition_window_mask(
+                expert_step_effective=expert_step_effective,
+                valid_step=valid.any(dim=-1, keepdim=True),
+                window_steps=int(cfg["same_dir_window_steps"]),
+            )
+            expert_pos = expert_pos & same_dir_step_mask
+            expert_neg = expert_neg & same_dir_step_mask
+        same_pos_shortfall = torch.relu(pos + margin - policy) * expert_pos.to(policy.dtype)
+        same_neg_shortfall = torch.relu(policy + neg + margin) * expert_neg.to(policy.dtype)
+        same_dir_count = (expert_pos | expert_neg).to(policy.dtype).sum().clamp_min(1.0)
+        same_dir_loss = (same_pos_shortfall + same_neg_shortfall).sum() / same_dir_count
+
+        policy_pos_effective = policy >= pos
+        policy_neg_effective = policy <= -neg
+
+        idle_axes = valid & ~expert_step_effective
+        idle_pos_excess = torch.relu(policy - pos) * (idle_axes & policy_pos_effective).to(policy.dtype)
+        idle_neg_excess = torch.relu(-neg - policy) * (idle_axes & policy_neg_effective).to(policy.dtype)
+        if cfg["idle_denominator"] == "all_idle_axes":
+            idle_count = idle_axes.to(policy.dtype).sum().clamp_min(1.0)
+        else:
+            idle_count = (
+                (idle_axes & (policy_pos_effective | policy_neg_effective))
+                .to(policy.dtype)
+                .sum()
+                .clamp_min(1.0)
+            )
+        idle_loss = (idle_pos_excess + idle_neg_excess).sum() / idle_count
+
+        wrong_loss = zero
+        if cfg["penalize_wrong_effective"]:
+            not_expert_pos = (~expert_pos) & valid & expert_step_effective
+            not_expert_neg = (~expert_neg) & valid & expert_step_effective
+            wrong_pos_mask = not_expert_pos & policy_pos_effective
+            wrong_neg_mask = not_expert_neg & policy_neg_effective
+            wrong_pos_excess = torch.relu(policy - pos) * wrong_pos_mask.to(policy.dtype)
+            wrong_neg_excess = torch.relu(-neg - policy) * wrong_neg_mask.to(policy.dtype)
+            if cfg["wrong_denominator"] == "all_wrong_candidate_axes":
+                wrong_count = (
+                    not_expert_pos.to(policy.dtype).sum()
+                    + not_expert_neg.to(policy.dtype).sum()
+                ).clamp_min(1.0)
+            else:
+                wrong_count = (
+                    (wrong_pos_mask | wrong_neg_mask)
+                    .to(policy.dtype)
+                    .sum()
+                    .clamp_min(1.0)
+                )
+            wrong_loss = (wrong_pos_excess + wrong_neg_excess).sum() / wrong_count
+
+        total = (
+            float(cfg["same_dir_promote_weight"]) * same_dir_loss
+            + float(cfg["idle_suppression_weight"]) * idle_loss
+            + float(cfg["wrong_effective_weight"]) * wrong_loss
+        )
+        return {
+            "deadzone_same_dir_loss": same_dir_loss,
+            "deadzone_idle_loss": idle_loss,
+            "deadzone_wrong_loss": wrong_loss,
+            "deadzone_loss": total,
+        }
+
+    def _window_deadzone_loss_terms(
+        self,
+        *,
+        expert_normalized: torch.Tensor,
+        policy_normalized: torch.Tensor,
+        valid_mask: torch.Tensor,
+        move_mask: torch.Tensor | None,
+        stop_mask: torch.Tensor | None,
+        wrong_mask: torch.Tensor | None,
+    ) -> dict[str, torch.Tensor]:
+        cfg = getattr(self, "_window_deadzone_loss", {"enabled": False})
+        zero = policy_normalized.new_zeros(())
+        if not cfg.get("enabled", False):
+            return {
+                "window_deadzone_same_dir_loss": zero,
+                "window_deadzone_stop_loss": zero,
+                "window_deadzone_wrong_loss": zero,
+                "window_deadzone_loss": zero,
+            }
+        if move_mask is None or stop_mask is None or wrong_mask is None:
+            raise ValueError("window deadzone loss requires move, stop, and wrong masks")
+
+        action_mean = torch.as_tensor(
+            self.norm_stats["action_mean"],
+            dtype=policy_normalized.dtype,
+            device=policy_normalized.device,
+        )
+        action_std = torch.as_tensor(
+            self.norm_stats["action_std"],
+            dtype=policy_normalized.dtype,
+            device=policy_normalized.device,
+        )
+        policy = policy_normalized * action_std + action_mean
+
+        pos = cfg["pos"].to(device=policy.device, dtype=policy.dtype)
+        neg = cfg["neg"].to(device=policy.device, dtype=policy.dtype)
+        margin = cfg["margin"].to(device=policy.device, dtype=policy.dtype)
+        valid = valid_mask.to(dtype=torch.bool).expand_as(policy)
+        valid_dir = torch.stack([valid, valid], dim=-1)
+
+        move = move_mask.to(device=policy.device, dtype=torch.bool) & valid_dir
+        move_pos = move[..., 0]
+        move_neg = move[..., 1]
+        same_pos_shortfall = torch.relu(pos + margin - policy) * move_pos.to(policy.dtype)
+        same_neg_shortfall = torch.relu(policy + neg + margin) * move_neg.to(policy.dtype)
+        same_count = (move_pos | move_neg).to(policy.dtype).sum().clamp_min(1.0)
+        same_dir_loss = (same_pos_shortfall + same_neg_shortfall).sum() / same_count
+
+        policy_pos_effective = policy >= pos
+        policy_neg_effective = policy <= -neg
+        stop_axes = stop_mask.to(device=policy.device, dtype=torch.bool).unsqueeze(-1) & valid
+        stop_pos_mask = stop_axes & policy_pos_effective
+        stop_neg_mask = stop_axes & policy_neg_effective
+        stop_pos_excess = torch.relu(policy - pos) * stop_pos_mask.to(policy.dtype)
+        stop_neg_excess = torch.relu(-neg - policy) * stop_neg_mask.to(policy.dtype)
+        stop_count = (stop_pos_mask | stop_neg_mask).to(policy.dtype).sum().clamp_min(1.0)
+        stop_loss = (stop_pos_excess + stop_neg_excess).sum() / stop_count
+
+        wrong = wrong_mask.to(device=policy.device, dtype=torch.bool) & valid_dir
+        wrong_pos_mask = wrong[..., 0] & policy_pos_effective
+        wrong_neg_mask = wrong[..., 1] & policy_neg_effective
+        wrong_pos_excess = torch.relu(policy - pos) * wrong_pos_mask.to(policy.dtype)
+        wrong_neg_excess = torch.relu(-neg - policy) * wrong_neg_mask.to(policy.dtype)
+        wrong_count = (wrong_pos_mask | wrong_neg_mask).to(policy.dtype).sum().clamp_min(1.0)
+        wrong_loss = (wrong_pos_excess + wrong_neg_excess).sum() / wrong_count
+
+        total = (
+            float(cfg["same_dir_promote_weight"]) * same_dir_loss
+            + float(cfg["stop_suppression_weight"]) * stop_loss
+            + float(cfg["wrong_effective_weight"]) * wrong_loss
+        )
+        return {
+            "window_deadzone_same_dir_loss": same_dir_loss,
+            "window_deadzone_stop_loss": stop_loss,
+            "window_deadzone_wrong_loss": wrong_loss,
+            "window_deadzone_loss": total,
+        }
+
+    def _temporal_release_loss_terms(
+        self,
+        *,
+        expert_normalized: torch.Tensor,
+        policy_normalized: torch.Tensor,
+        valid_mask: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        cfg = getattr(self, "_temporal_release_loss", {"enabled": False})
+        zero = policy_normalized.new_zeros(())
+        if not cfg.get("enabled", False):
+            return {
+                "temporal_release_pos_loss": zero,
+                "temporal_release_neg_loss": zero,
+                "temporal_release_loss": zero,
+            }
+
+        action_mean = torch.as_tensor(
+            self.norm_stats["action_mean"],
+            dtype=policy_normalized.dtype,
+            device=policy_normalized.device,
+        )
+        action_std = torch.as_tensor(
+            self.norm_stats["action_std"],
+            dtype=policy_normalized.dtype,
+            device=policy_normalized.device,
+        )
+        expert = expert_normalized * action_std + action_mean
+        policy = policy_normalized * action_std + action_mean
+        pos = cfg["pos"].to(device=policy.device, dtype=policy.dtype)
+        neg = cfg["neg"].to(device=policy.device, dtype=policy.dtype)
+        valid = valid_mask.to(dtype=torch.bool).expand_as(policy)
+
+        expert_pos = (expert >= pos) & valid
+        expert_neg = (expert <= -neg) & valid
+        release_pos = _direction_release_window_mask(
+            expert_effective=expert_pos,
+            valid=valid,
+            window_steps=int(cfg["release_window_steps"]),
+        )
+        release_neg = _direction_release_window_mask(
+            expert_effective=expert_neg,
+            valid=valid,
+            window_steps=int(cfg["release_window_steps"]),
+        )
+        policy_pos_effective = policy >= pos
+        policy_neg_effective = policy <= -neg
+        pos_excess = torch.relu(policy - pos) * (release_pos & policy_pos_effective).to(policy.dtype)
+        neg_excess = torch.relu(-neg - policy) * (release_neg & policy_neg_effective).to(policy.dtype)
+        pos_count = (release_pos & policy_pos_effective).to(policy.dtype).sum().clamp_min(1.0)
+        neg_count = (release_neg & policy_neg_effective).to(policy.dtype).sum().clamp_min(1.0)
+        pos_loss = pos_excess.sum() / pos_count
+        neg_loss = neg_excess.sum() / neg_count
+        total = float(cfg["weight"]) * (pos_loss + neg_loss)
+        return {
+            "temporal_release_pos_loss": pos_loss,
+            "temporal_release_neg_loss": neg_loss,
+            "temporal_release_loss": total,
+        }
+
+    def _intent_loss_terms(
+        self,
+        *,
+        expert_normalized: torch.Tensor,
+        intent_logits: torch.Tensor | None,
+        valid_mask: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        cfg = self._intent_loss
+        zero = expert_normalized.new_zeros(())
+        if not cfg["enabled"]:
+            return {
+                "intent_axis_dir_loss": zero,
+                "intent_loss": zero,
+            }
+        if intent_logits is None:
+            raise ValueError("intent_loss.enabled requires model intent logits.")
+
+        action_mean = torch.as_tensor(
+            self.norm_stats["action_mean"],
+            dtype=expert_normalized.dtype,
+            device=expert_normalized.device,
+        )
+        action_std = torch.as_tensor(
+            self.norm_stats["action_std"],
+            dtype=expert_normalized.dtype,
+            device=expert_normalized.device,
+        )
+        expert = expert_normalized * action_std + action_mean
+        pos = cfg["pos"].to(device=expert.device, dtype=expert.dtype)
+        neg = cfg["neg"].to(device=expert.device, dtype=expert.dtype)
+        valid = valid_mask.to(dtype=torch.bool).expand_as(expert)
+        target = torch.stack(
+            [
+                ((expert >= pos) & valid).to(intent_logits.dtype),
+                ((expert <= -neg) & valid).to(intent_logits.dtype),
+            ],
+            dim=-1,
+        ).reshape(*expert.shape[:-1], 8)
+        label_valid = torch.stack([valid, valid], dim=-1).reshape(*expert.shape[:-1], 8).to(
+            intent_logits.dtype
+        )
+        if intent_logits.shape != target.shape:
+            raise ValueError(
+                f"intent logits must have shape {target.shape}, got {intent_logits.shape}"
+            )
+
+        import torch.nn.functional as F
+
+        positive_weight = cfg["positive_weight"].to(
+            device=intent_logits.device,
+            dtype=intent_logits.dtype,
+        )
+        bce = F.binary_cross_entropy_with_logits(
+            intent_logits,
+            target,
+            reduction="none",
+            pos_weight=positive_weight,
+        )
+        count = label_valid.sum().clamp_min(1.0)
+        axis_dir_loss = (bce * label_valid).sum() / count
+        total = float(cfg["weight"]) * axis_dir_loss
+        return {
+            "intent_axis_dir_loss": axis_dir_loss,
+            "intent_loss": total,
         }
 
     def configure_optimizers(self):

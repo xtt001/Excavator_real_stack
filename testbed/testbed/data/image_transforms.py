@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Callable
 
 import numpy as np
+import re
 
 
 IMAGE_TRANSFORM_CHOICES = (
@@ -15,6 +16,7 @@ IMAGE_TRANSFORM_CHOICES = (
     "center_zoom_075_blur",
     "downsample_080",
     "downsample_060",
+    "random_downsample_060_100_seedN",
 )
 
 
@@ -36,6 +38,16 @@ def build_image_transform(name: str) -> Callable[[np.ndarray], np.ndarray] | Non
         return lambda image: _downsample_upsample_image(image, scale=0.80)
     if normalized == "downsample_060":
         return lambda image: _downsample_upsample_image(image, scale=0.60)
+    match = re.fullmatch(r"random_downsample_(\d{3})_(\d{3})_seed(\d+)", normalized)
+    if match:
+        min_scale = int(match.group(1)) / 100.0
+        max_scale = int(match.group(2)) / 100.0
+        seed = int(match.group(3))
+        return _random_downsample_transform(
+            min_scale=min_scale,
+            max_scale=max_scale,
+            seed=seed,
+        )
     raise ValueError(
         f"Unsupported image transform {name!r}. "
         f"Supported transforms: {', '.join(IMAGE_TRANSFORM_CHOICES)}."
@@ -70,6 +82,25 @@ def _downsample_upsample_image(image: np.ndarray, *, scale: float) -> np.ndarray
     small_h = max(1, int(round(height * ratio)))
     small = cv2.resize(arr, (small_w, small_h), interpolation=cv2.INTER_AREA)
     return cv2.resize(small, (width, height), interpolation=cv2.INTER_LINEAR)
+
+
+def _random_downsample_transform(
+    *,
+    min_scale: float,
+    max_scale: float,
+    seed: int,
+) -> Callable[[np.ndarray], np.ndarray]:
+    if not 0.0 < min_scale <= max_scale <= 1.0:
+        raise ValueError(
+            f"random downsample scales must satisfy 0 < min <= max <= 1, got {min_scale}, {max_scale}"
+        )
+    rng = np.random.default_rng(int(seed))
+
+    def transform(image: np.ndarray) -> np.ndarray:
+        scale = float(rng.uniform(float(min_scale), float(max_scale)))
+        return _downsample_upsample_image(image, scale=scale)
+
+    return transform
 
 
 def _blur_image(image: np.ndarray) -> np.ndarray:

@@ -5,6 +5,7 @@ This branch keeps only real-excavator configs.
 | Goal | Config | Entry |
 |---|---|---|
 | Safe teleop receiver/record | `testbed/configs/teleop_real_v1.yaml` | `tb-receiver-real` |
+| E52 eye-only gated policy no-motion shadow | `testbed/configs/policy_real_gmsl_eye2_e52_v1.yaml` | `scripts/run_e52_policy_shadow_check.sh` |
 | GMSL four-camera policy shadow/control | `testbed/configs/policy_real_gmsl_four_camera_v1.yaml` | `tb-receiver-real --input policy` |
 | Legacy one-dig FPV policy shadow/control | `testbed/configs/policy_real_one_dig_v1.yaml` | `tb-receiver-real --input policy` |
 | Offline ACT training | `testbed/configs/act_real_v1.yaml` | `tb-train` |

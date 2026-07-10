@@ -11,6 +11,10 @@ import h5py
 import numpy as np
 
 from testbed.data.bucket_repair import parse_episode_spec
+from testbed.data.handoff_labels import (
+    GohomeEligibilityLabels,
+    compute_gohome_eligibility_labels,
+)
 
 
 DEFAULT_INPUT_DIR = Path("/media/mundane/EXTERNAL_USB/real_teleop_v1_repaired_bucket_v1")
@@ -126,6 +130,116 @@ def build_20hz_episode(
     }
 
 
+def build_handoff_20hz_episode(
+    *,
+    input_path: str | Path,
+    output_path: str | Path,
+    target_hz: float = 20.0,
+    action_label_offset_s: float = -0.02,
+    gap_mask_threshold_ms: float = DEFAULT_GAP_MASK_THRESHOLD_MS,
+    gap_mask_padding_s: float = DEFAULT_GAP_MASK_PADDING_S,
+    positive_window_steps: int = 30,
+    eligible_idle_action_threshold: float = 0.05,
+    eligible_dwell_min_steps: int = 10,
+) -> dict[str, Any]:
+    src = Path(input_path)
+    dst = Path(output_path)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    with h5py.File(src, "r") as in_f:
+        source_total_steps = int(in_f["action"].shape[0])
+        obs_idx, action_idx = _select_20hz_indices_until(
+            in_f,
+            end_index=source_total_steps,
+            target_hz=target_hz,
+            action_label_offset_s=action_label_offset_s,
+        )
+        if obs_idx.size == 0:
+            raise ValueError(f"No handoff 20Hz samples selected for {src}")
+        request_index = _first_positive_index(
+            in_f,
+            ("diagnostics/go_home_requested", "diagnostics/go_home_start_accepted"),
+        )
+        automation_index = _first_positive_index(in_f, ("diagnostics/go_home_running",))
+        eligibility = compute_gohome_eligibility_labels(
+            actions=np.asarray(in_f["action"][()], dtype=np.float32),
+            go_home_requested=_dataset_or_none(in_f, "diagnostics/go_home_requested"),
+            go_home_start_accepted=_dataset_or_none(in_f, "diagnostics/go_home_start_accepted"),
+            go_home_running=_dataset_or_none(in_f, "diagnostics/go_home_running"),
+            idle_action_threshold=eligible_idle_action_threshold,
+            dwell_min_steps=eligible_dwell_min_steps,
+        )
+        if dst.exists():
+            dst.unlink()
+        with h5py.File(dst, "w") as out_f:
+            _copy_attrs(in_f, out_f)
+            _copy_selected_episode(
+                in_f,
+                out_f,
+                obs_idx=obs_idx,
+                action_idx=action_idx,
+                target_hz=target_hz,
+                action_label_offset_s=action_label_offset_s,
+                gap_mask_threshold_ms=gap_mask_threshold_ms,
+                gap_mask_padding_s=gap_mask_padding_s,
+                manual_end=source_total_steps,
+                source_path=src,
+            )
+            _add_handoff_labels(
+                out_f,
+                obs_idx=obs_idx,
+                request_index=request_index,
+                automation_index=automation_index,
+                positive_window_steps=positive_window_steps,
+                eligibility=eligibility,
+                eligible_idle_action_threshold=eligible_idle_action_threshold,
+                eligible_dwell_min_steps=eligible_dwell_min_steps,
+            )
+            source_time_gap_ms = np.asarray(out_f["diagnostics/source_time_gap_ms"][()], dtype=np.float32)
+            train_exclude_mask = np.asarray(out_f["diagnostics/train_exclude_mask"][()], dtype=bool)
+            request_label = np.asarray(out_f["handoff/gohome_request_label"][()], dtype=bool)
+            eligible_label = np.asarray(out_f["handoff/gohome_eligible_label"][()], dtype=bool)
+            tail_idle_mask = np.asarray(out_f["handoff/tail_idle_mask"][()], dtype=bool)
+            gohome_loss_mask = np.asarray(out_f["handoff/gohome_loss_mask"][()], dtype=bool)
+            owner = np.asarray(out_f["handoff/owner_automation"][()], dtype=bool)
+            action_loss_mask = np.asarray(out_f["handoff/action_loss_mask"][()], dtype=bool)
+            gap_events = np.asarray(out_f["diagnostics/source_time_gap_exceeds_threshold"][()], dtype=bool)
+    duration_s = (obs_idx.size - 1) / float(target_hz) if obs_idx.size > 1 else 0.0
+    return {
+        "episode_id": _episode_id_num(src),
+        "input_path": str(src),
+        "output_path": str(dst),
+        "source_steps": int(source_total_steps),
+        "source_total_steps": int(source_total_steps),
+        "output_steps": int(obs_idx.size),
+        "target_hz": float(target_hz),
+        "duration_s": float(duration_s),
+        "action_label_offset_s": float(action_label_offset_s),
+        "positive_window_steps": int(positive_window_steps),
+        "eligible_idle_action_threshold": float(eligible_idle_action_threshold),
+        "eligible_dwell_min_steps": int(eligible_dwell_min_steps),
+        "source_go_home_request_index": int(request_index) if request_index is not None else None,
+        "source_go_home_automation_index": int(automation_index) if automation_index is not None else None,
+        "source_go_home_t_stop_index": int(eligibility.t_stop) if eligibility.t_stop is not None else None,
+        "source_go_home_eligible_start_index": (
+            int(eligibility.eligible_start) if eligibility.eligible_start is not None else None
+        ),
+        "positive_request_count": int(np.count_nonzero(request_label)),
+        "eligible_request_count": int(np.count_nonzero(eligible_label)),
+        "tail_idle_count": int(np.count_nonzero(tail_idle_mask)),
+        "gohome_loss_mask_count": int(np.count_nonzero(gohome_loss_mask)),
+        "automation_owner_count": int(np.count_nonzero(owner)),
+        "action_loss_mask_count": int(np.count_nonzero(action_loss_mask)),
+        "first_source_index": int(obs_idx[0]),
+        "last_source_index": int(obs_idx[-1]),
+        "source_time_gap_max_ms": float(np.max(source_time_gap_ms)) if source_time_gap_ms.size else 0.0,
+        "source_time_gap_event_count": int(np.count_nonzero(gap_events)),
+        "train_exclude_count": int(np.count_nonzero(train_exclude_mask)),
+        "train_exclude_fraction": (
+            float(np.mean(train_exclude_mask)) if train_exclude_mask.size else 0.0
+        ),
+    }
+
+
 def select_20hz_indices(
     f: h5py.File,
     *,
@@ -134,8 +248,25 @@ def select_20hz_indices(
 ) -> tuple[np.ndarray, np.ndarray, int]:
     n_steps = int(f["action"].shape[0])
     manual_end = _manual_end_index(f, n_steps=n_steps)
+    obs_idx, action_idx = _select_20hz_indices_until(
+        f,
+        end_index=manual_end,
+        target_hz=target_hz,
+        action_label_offset_s=action_label_offset_s,
+    )
+    return obs_idx, action_idx, manual_end
+
+
+def _select_20hz_indices_until(
+    f: h5py.File,
+    *,
+    end_index: int,
+    target_hz: float,
+    action_label_offset_s: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    manual_end = int(end_index)
     if manual_end <= 0:
-        return np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.int64), manual_end
+        return np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.int64)
     obs_ts = _observation_timestamps(f)[:manual_end]
     action_ts = _action_timestamps(f)[:manual_end]
     valid = obs_ts > 0
@@ -157,7 +288,8 @@ def select_20hz_indices(
         unique_ts.append(its)
         unique_indices.append(idx)
     if len(unique_ts) < 2:
-        return np.asarray(unique_indices, dtype=np.int64), np.asarray(unique_indices, dtype=np.int64), manual_end
+        unique_idx = np.asarray(unique_indices, dtype=np.int64)
+        return unique_idx, unique_idx.copy()
 
     unique_ts_arr = np.asarray(unique_ts, dtype=np.int64)
     unique_idx_arr = np.asarray(unique_indices, dtype=np.int64)
@@ -174,7 +306,7 @@ def select_20hz_indices(
         cursor += 1
     obs_idx = np.asarray(sorted(set(selected)), dtype=np.int64)
     if obs_idx.size == 0:
-        return obs_idx, obs_idx.copy(), manual_end
+        return obs_idx, obs_idx.copy()
 
     action_offset_ns = int(round(float(action_label_offset_s) * 1_000_000_000.0))
     action_idx = np.empty_like(obs_idx)
@@ -183,7 +315,7 @@ def select_20hz_indices(
         target = int(obs_ts[src_i]) + action_offset_ns
         idx = int(np.searchsorted(action_ts_valid, target, side="right") - 1)
         action_idx[out_i] = min(max(idx, 0), manual_end - 1)
-    return obs_idx, action_idx, manual_end
+    return obs_idx, action_idx
 
 
 def _copy_selected_episode(
@@ -276,6 +408,81 @@ def _copy_selected_episode(
     diag.attrs["train_exclude_count"] = int(np.count_nonzero(train_exclude_mask))
 
 
+def _add_handoff_labels(
+    out_f: h5py.File,
+    *,
+    obs_idx: np.ndarray,
+    request_index: int | None,
+    automation_index: int | None,
+    positive_window_steps: int,
+    eligibility: GohomeEligibilityLabels | None = None,
+    eligible_idle_action_threshold: float = 0.05,
+    eligible_dwell_min_steps: int = 10,
+) -> None:
+    positive_window_steps = max(0, int(positive_window_steps))
+    source_idx = np.asarray(obs_idx, dtype=np.int64).reshape(-1)
+    request_label = np.zeros(source_idx.size, dtype=bool)
+    request_event = np.zeros(source_idx.size, dtype=bool)
+    if request_index is not None:
+        start = max(0, int(request_index) - positive_window_steps)
+        stop = int(request_index)
+        request_label = (source_idx >= start) & (source_idx <= stop)
+        request_event = source_idx == stop
+    owner_automation = np.zeros(source_idx.size, dtype=bool)
+    if automation_index is not None:
+        owner_automation = source_idx >= int(automation_index)
+    action_loss_mask = ~(request_label | owner_automation)
+    if eligibility is not None:
+        gohome_eligible = eligibility.gohome_eligible_label[source_idx]
+        gohome_loss_mask = eligibility.gohome_loss_mask[source_idx]
+        tail_idle_mask = eligibility.tail_idle_mask[source_idx]
+        owner_automation = eligibility.owner_automation[source_idx]
+        action_loss_mask = eligibility.action_loss_mask[source_idx]
+    else:
+        gohome_eligible = request_label.copy()
+        gohome_loss_mask = ~owner_automation
+        tail_idle_mask = request_label.copy()
+
+    handoff = out_f.require_group("handoff")
+    _replace_dataset(handoff, "gohome_request_label", request_label.astype(np.uint8))
+    _replace_dataset(handoff, "gohome_requested_event", request_event.astype(np.uint8))
+    _replace_dataset(handoff, "gohome_eligible_label", gohome_eligible.astype(np.uint8))
+    _replace_dataset(handoff, "gohome_loss_mask", gohome_loss_mask.astype(np.uint8))
+    _replace_dataset(handoff, "tail_idle_mask", tail_idle_mask.astype(np.uint8))
+    _replace_dataset(handoff, "owner_automation", owner_automation.astype(np.uint8))
+    _replace_dataset(handoff, "action_loss_mask", action_loss_mask.astype(np.uint8))
+
+    meta = out_f.require_group("metadata")
+    meta.attrs["handoff_dataset"] = True
+    meta.attrs["handoff_positive_window_steps"] = int(positive_window_steps)
+    meta.attrs["handoff_eligible_idle_action_threshold"] = float(eligible_idle_action_threshold)
+    meta.attrs["handoff_eligible_dwell_min_steps"] = int(eligible_dwell_min_steps)
+    meta.attrs["handoff_gohome_request_label"] = "handoff/gohome_request_label"
+    meta.attrs["handoff_gohome_eligible_label"] = "handoff/gohome_eligible_label"
+    meta.attrs["handoff_gohome_loss_mask"] = "handoff/gohome_loss_mask"
+    meta.attrs["handoff_tail_idle_mask"] = "handoff/tail_idle_mask"
+    meta.attrs["handoff_owner_automation"] = "handoff/owner_automation"
+    meta.attrs["handoff_action_loss_mask"] = "handoff/action_loss_mask"
+    meta.attrs["excluded_go_home"] = False
+    if request_index is not None:
+        meta.attrs["source_go_home_request_index"] = int(request_index)
+    if automation_index is not None:
+        meta.attrs["source_go_home_automation_index"] = int(automation_index)
+    if eligibility is not None:
+        if eligibility.t_go is not None:
+            meta.attrs["source_go_home_t_go_index"] = int(eligibility.t_go)
+        if eligibility.t_stop is not None:
+            meta.attrs["source_go_home_t_stop_index"] = int(eligibility.t_stop)
+        if eligibility.eligible_start is not None:
+            meta.attrs["source_go_home_eligible_start_index"] = int(eligibility.eligible_start)
+    handoff.attrs["positive_request_count"] = int(np.count_nonzero(request_label))
+    handoff.attrs["eligible_request_count"] = int(np.count_nonzero(gohome_eligible))
+    handoff.attrs["gohome_loss_mask_count"] = int(np.count_nonzero(gohome_loss_mask))
+    handoff.attrs["tail_idle_count"] = int(np.count_nonzero(tail_idle_mask))
+    handoff.attrs["automation_owner_count"] = int(np.count_nonzero(owner_automation))
+    handoff.attrs["action_loss_mask_count"] = int(np.count_nonzero(action_loss_mask))
+
+
 def _copy_images(in_f: h5py.File, out_f: h5py.File, obs_idx: np.ndarray) -> None:
     for group_path in ("observations/images", "observations/encoded_images"):
         if group_path not in in_f:
@@ -352,6 +559,22 @@ def _manual_end_index(f: h5py.File, *, n_steps: int) -> int:
             if idx.size:
                 candidates.append(int(idx[0]))
     return min(candidates) if candidates else int(n_steps)
+
+
+def _first_positive_index(f: h5py.File, paths: tuple[str, ...]) -> int | None:
+    candidates: list[int] = []
+    for path in paths:
+        if path in f:
+            idx = np.flatnonzero(np.asarray(f[path][()]).reshape(-1) > 0)
+            if idx.size:
+                candidates.append(int(idx[0]))
+    return min(candidates) if candidates else None
+
+
+def _dataset_or_none(f: h5py.File, path: str) -> np.ndarray | None:
+    if path not in f:
+        return None
+    return np.asarray(f[path][()])
 
 
 def _observation_timestamps(f: h5py.File) -> np.ndarray:

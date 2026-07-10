@@ -33,6 +33,9 @@ def train_policy(config: dict[str, Any]) -> None:
     split_path = Path(train_cfg.get("split_path", ckpt_dir / "train_val_split.yaml"))
     episode_ids = _resolve_training_episode_ids(task_cfg=task_cfg, train_cfg=train_cfg)
     image_transform = str(train_cfg.get("image_transform", task_cfg.get("image_transform", "none")))
+    deadzone_intent = copy.deepcopy(
+        train_cfg.get("deadzone_intent", policy_cfg.get("deadzone_intent", {})) or {}
+    )
 
     if policy_class != "ACT":
         raise NotImplementedError(f"Trainer for policy class {policy_class!r} not yet implemented.")
@@ -65,6 +68,26 @@ def train_policy(config: dict[str, Any]) -> None:
         "low_dim_keys":  low_dim_keys,
         "state_dim":     _resolve_low_dim_state_dim(low_dim_keys, equipment_model),
         "device":        device,
+        "deadzone_loss": copy.deepcopy(
+            train_cfg.get("deadzone_loss", policy_cfg.get("deadzone_loss", {})) or {}
+        ),
+        "intent_loss": copy.deepcopy(
+            train_cfg.get("intent_loss", policy_cfg.get("intent_loss", {})) or {}
+        ),
+        "window_deadzone_loss": copy.deepcopy(
+            train_cfg.get(
+                "window_deadzone_loss",
+                policy_cfg.get("window_deadzone_loss", {}),
+            )
+            or {}
+        ),
+        "temporal_release_loss": copy.deepcopy(
+            train_cfg.get(
+                "temporal_release_loss",
+                policy_cfg.get("temporal_release_loss", {}),
+            )
+            or {}
+        ),
     }
 
     full_config = {
@@ -114,6 +137,7 @@ def train_policy(config: dict[str, Any]) -> None:
         episode_ids        = episode_ids,
         action_chunk_size  = action_chunk_size,
         image_transform    = image_transform,
+        deadzone_intent    = deadzone_intent,
     )
 
     # save normalisation stats so trainer can load them
