@@ -1,0 +1,23 @@
+# [Execution target G39/H2: qpos transition candidate offline evaluation]
+# Evaluation-only teleop policy contract. This file is not a deployment
+# default: offline_state_hold_demo_target.py replaces bundle paths, disables
+# runtime gates, and forces identity action_scale for raw candidate replay.
+
+teleop:
+  input: policy
+  policy:
+    camera_names: [video4, video5]
+    temporal_agg: true
+    low_dim_keys: [qpos]
+    qvel_mode: raw
+    output_mode: control
+    action_scale: [1.0, 1.0, 1.0, 1.0]
+    deadzone_assist:
+      enabled: false
+      trigger_fraction: 0.5
+      min_consecutive_steps: 2
+      margin: [0.02, 0.02, 0.02, 0.02]
+      deadzone_positive: [0.661, 0.259, 0.500, 0.408]
+      deadzone_negative: [0.721, 0.357, 0.500, 0.508]
+    runtime_gates:
+      enabled: false

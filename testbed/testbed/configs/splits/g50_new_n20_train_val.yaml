@@ -1,0 +1,10 @@
+schema_version: 1
+generated_at: '2026-07-15T00:00:00+08:00'
+contract: g50_nested_time_balanced_data_volume_ablation_v1
+dataset_dir: /data/pingfan/Excavator_real_stack_data/pro_real_teleop_20260713_20hz_v1
+selection_basis: one episode at offset 2 from each consecutive six-episode training block
+parent_split: /data/pingfan/Excavator_real_stack_data/runs/g47_pro_real_teleop_ingest_20260714/g47_new_style_chronological_split_v1.json
+train_ids: [4, 10, 17, 23, 30, 36, 42, 48, 54, 60, 67, 73, 79, 85, 92, 98, 104, 115, 121, 131]
+val_ids: [135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 147, 148, 149, 150, 151, 152, 153, 154, 155]
+test_ids: [156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 174, 175]
+reserved_ids: [105, 106, 107, 108, 109]

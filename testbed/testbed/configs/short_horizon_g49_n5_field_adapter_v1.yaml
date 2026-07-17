@@ -1,0 +1,48 @@
+# FIELD-SUPPLIED ADAPTATION TEMPLATE — not a runtime control configuration.
+#
+# Axis order for every four-value field is:
+#   [swing, boom, stick, bucket]
+#
+# Keep every null unresolved until an operator reviews the current machine,
+# test pose, and live shadow trace.  The short-horizon contract validator must
+# reject this template until every required field is supplied.  Do not copy
+# generic action_clip values into this file.
+
+schema_version: short_horizon_rollout_trace_v1
+test_id: null
+state_origin: live_policy_on
+control_authority: bounded_control
+policy_id: g49_n5_new_fourcam_camera_role_transition
+
+# Filled automatically from the packaged bundle by deployment tooling, or
+# copied from runtime_bundle_manifest.json after independent verification.
+checkpoint_sha256: null
+resolved_config_sha256: null
+
+# N5 was trained at 20 Hz.  The first authorized slice is one second.
+sampling_hz: 20.0
+horizon_ticks: 20
+camera_names: [video4, video5, video6, video7]
+
+# Must be chosen from the live four-camera timing preflight.
+max_observation_gap_ms: null
+max_camera_age_ms: null
+
+# Evaluated raw-policy command-domain deadzones.  Recalibrate if the machine or
+# command mapping changed before field use.
+deadzone_positive: [0.661, 0.259, 0.500, 0.408]
+deadzone_negative: [0.721, 0.357, 0.500, 0.508]
+
+# Must be reviewed for the current pose.  These are deliberately null so the
+# contract cannot accidentally authorize motion with inherited defaults.
+command_abs_limit: null
+command_delta_limit: null
+qvel_abort_limit: null
+qpos_lower_limit: null
+qpos_upper_limit: null
+
+# Per axis: [allow_negative, allow_positive].
+allowed_direction_mask: null
+
+require_deadman: true
+require_controller_ack: true

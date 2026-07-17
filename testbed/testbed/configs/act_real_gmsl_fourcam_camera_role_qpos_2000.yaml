@@ -1,0 +1,57 @@
+# [Offline experiment: explicit camera identity and eye/stick role encoding]
+# Matched against baseline_qpos_no_transform: same 24 episodes, 19/5 split,
+# qpos-only input, four cameras, image transform, optimizer and epoch budget.
+
+task:
+  task_name: real_gmsl_four_camera_role_qpos_2000
+  equipment_model: real_excavator
+  dataset_dir: /data/pingfan/Excavator_real_stack_data/usb_hdf5_qc_20260708_72_104/real_teleop_v1_episodes_72_104_20hz
+  num_episodes: 1000000
+  episode_len:
+  episode_ids: [73, 74, 75, 76, 78, 79, 80, 82, 83, 84, 85, 86, 87, 90, 91, 92, 93, 94, 97, 98, 99, 100, 102, 104]
+  camera_names: [video4, video5, video6, video7]
+  backend:
+    name: real
+    dt: 0.05
+
+policy:
+  class: ACT
+  device: cuda
+  low_dim_keys: [qpos]
+  act_params:
+    chunk_size: 20
+    kl_weight: 10.0
+    hidden_dim: 512
+    dim_feedforward: 3200
+    state_dim: 4
+    camera_role_encoding:
+      enabled: true
+      roles:
+        video4: eye
+        video5: eye
+        video6: stick
+        video7: stick
+
+train:
+  lr: 1.0e-5
+  num_epochs: 2000
+  batch_size: 4
+  seed: 0
+  device: cuda
+  num_workers: 4
+  prefetch_factor: 2
+  persistent_workers: true
+  pin_memory: true
+  split_seed: 0
+  train_split_ratio: 0.8
+  reuse_split: true
+  split_path: /data/pingfan/Excavator_real_stack_data/usb_hdf5_qc_20260708_72_104/runs/ckpts/baseline_qpos_no_transform/train_val_split.yaml
+  val_every: 5
+  save_latest_every: 100
+  checkpoint_every: 500
+  checkpoint_keep_last: 3
+  plot_every: 50
+  amp: true
+  amp_dtype: auto
+  ckpt_dir: /data/pingfan/Excavator_real_stack_data/usb_hdf5_qc_20260708_72_104/runs/ckpts/fourcam_camera_role_qpos_2000_20260714
+  image_transform: none

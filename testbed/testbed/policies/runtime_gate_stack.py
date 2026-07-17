@@ -35,6 +35,16 @@ class RuntimeGateResult:
 
 
 @dataclass(frozen=True)
+class RuntimeGateState:
+    """Mutable causal gate history captured at an evaluation branch point."""
+
+    feature_history: tuple[np.ndarray, ...]
+    candidate_run: int
+    eligibility_run: int
+    gohome_emitted: bool
+
+
+@dataclass(frozen=True)
 class _ModelBundle:
     model: torch.nn.Module
     mean: np.ndarray
@@ -233,6 +243,24 @@ class RuntimeGateStack:
         self._candidate_run = 0
         self._eligibility_run = 0
         self._gohome_emitted = False
+
+    def snapshot_state(self) -> RuntimeGateState:
+        return RuntimeGateState(
+            feature_history=tuple(row.copy() for row in self._feature_history),
+            candidate_run=int(self._candidate_run),
+            eligibility_run=int(self._eligibility_run),
+            gohome_emitted=bool(self._gohome_emitted),
+        )
+
+    def restore_state(self, state: RuntimeGateState) -> None:
+        if not isinstance(state, RuntimeGateState):
+            raise TypeError("state must be RuntimeGateState")
+        self._feature_history = [
+            np.asarray(row, dtype=np.float32).copy() for row in state.feature_history
+        ]
+        self._candidate_run = int(state.candidate_run)
+        self._eligibility_run = int(state.eligibility_run)
+        self._gohome_emitted = bool(state.gohome_emitted)
 
     def step(
         self,

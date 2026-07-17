@@ -1,0 +1,77 @@
+# [Execution target G28/H1: Goal/Effect ACT formal candidate]
+# Opt-in multi-task ACT experiment. The continuous action head remains the
+# source of truth; goal/effect heads are auxiliary and never gate or replace it.
+
+task:
+  task_name: real_gmsl_eye2_20hz_goal_effect_v1
+  equipment_model: real_excavator
+  dataset_dir: /data/pingfan/Excavator_real_stack_data/usb_hdf5_qc_20260708_72_104/real_teleop_v1_episodes_72_104_20hz
+  num_episodes: 1000000
+  episode_len:
+  episode_ids: [97, 78, 100, 85, 86, 75, 102, 80, 104, 76, 99, 83, 73, 93, 87, 98, 90, 82, 79, 94, 91, 84, 74, 92]
+  camera_names: [video4, video5]
+  backend:
+    name: real
+    dt: 0.05
+
+policy:
+  class: ACT
+  device: cuda
+  low_dim_keys: [qpos]
+  act_params:
+    chunk_size: 20
+    kl_weight: 10.0
+    hidden_dim: 512
+    dim_feedforward: 3200
+    state_dim: 4
+
+train:
+  lr: 1.0e-5
+  num_epochs: 200
+  batch_size: 4
+  seed: 0
+  device: cuda
+  num_workers: 0
+  prefetch_factor:
+  persistent_workers: false
+  pin_memory: true
+  split_seed: 0
+  train_split_ratio: 0.8
+  reuse_split: true
+  split_path: /data/pingfan/Excavator_real_stack_data/usb_hdf5_qc_20260708_72_104/runs/goal_state_hold_liveness_20260712/h1_direct_relabel_formal/ckpt/train_val_split.yaml
+  val_every: 5
+  save_latest_every: 50
+  checkpoint_every: 200
+  plot_every: 200
+  amp: true
+  amp_dtype: auto
+  ckpt_dir: /data/pingfan/Excavator_real_stack_data/usb_hdf5_qc_20260708_72_104/runs/goal_state_liveness_20260712/g28_goal_effect_act_formal/ckpt
+  init_ckpt: /data/pingfan/Excavator_real_stack_data/usb_hdf5_qc_20260708_72_104/runs/goal_state_hold_liveness_20260712/h2_transition_state_hold_finetune_e16_200/ckpt/policy_best.ckpt
+  init_allow_missing: true
+  intent_loss:
+    enabled: true
+    weight: 0.05
+    positive_weight: 8.0
+    threshold_json: /data/pingfan/Excavator_real_stack_data/usb_hdf5_qc_20260708_72_104/runs/goal_state_hold_liveness_20260712/h2_transition_state_hold_finetune_e16_200/direct_policy_output_mechanical_deadzone.json
+  state_hold_transition:
+    enabled: true
+    threshold_json: /data/pingfan/Excavator_real_stack_data/usb_hdf5_qc_20260708_72_104/runs/goal_state_hold_liveness_20260712/h2_transition_state_hold_finetune_e16_200/direct_policy_output_mechanical_deadzone.json
+    probability: 0.5
+    hold_horizon_steps: 20
+  demo_target_hold_loss:
+    enabled: true
+    threshold_json: /data/pingfan/Excavator_real_stack_data/usb_hdf5_qc_20260708_72_104/runs/goal_state_hold_liveness_20260712/h2_transition_state_hold_finetune_e16_200/direct_policy_output_mechanical_deadzone.json
+    weight: 0.1
+    assist_trigger_fraction: 0.5
+    margin: 0.02
+    hold_horizon_steps: 20
+    min_consecutive_steps: 2
+  goal_effect:
+    enabled: true
+    horizons: [4, 8, 20]
+    delta_threshold: [0.0015, 0.0015, 0.0015, 0.0015]
+    unsupported_axes: [2]
+    goal_delta_weight: 0.10
+    goal_direction_weight: 0.05
+    effect_delta_weight: 0.10
+    consistency_weight: 0.02

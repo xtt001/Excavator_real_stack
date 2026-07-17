@@ -1,0 +1,85 @@
+# [G49/N5: new-only four-camera camera-role ACT with transition supervision]
+experiment_contract:
+  experiment_id: g49_n5_new_fourcam_camera_role_transition
+  comparison_role: camera_role_transition_cross_test
+  expected_num_epochs: 2000
+  expected_camera_names: [video4, video5, video6, video7]
+  camera_role_encoding_enabled: true
+  deadzone_loss_enabled: true
+  state_hold_transition_enabled: true
+  effective_action_enabled: false
+  policy_action_scale: [1.0, 1.0, 1.0, 1.0]
+  forbidden_source_episode_ids: [105, 106, 107, 108, 109]
+  forbidden_legacy_heldout_dataset: /data/pingfan/Excavator_real_stack_data/usb_hdf5_qc_20260709_105_109/real_teleop_v1_episodes_105_109_20hz
+
+task:
+  task_name: real_gmsl_fourcam_g49_n5_new_camera_role_transition_2000
+  equipment_model: real_excavator
+  dataset_dir: /data/pingfan/Excavator_real_stack_data/g48_new_trainval_view_v1
+  train_ready_manifest_path: /data/pingfan/Excavator_real_stack_data/g48_new_trainval_view_v1/train_ready_manifest.json
+  num_episodes: 1000000
+  episode_len:
+  camera_names: [video4, video5, video6, video7]
+  backend:
+    name: real
+    dt: 0.05
+
+policy:
+  class: ACT
+  device: cuda
+  low_dim_keys: [qpos]
+  act_params:
+    chunk_size: 20
+    kl_weight: 10.0
+    hidden_dim: 512
+    dim_feedforward: 3200
+    state_dim: 4
+    camera_role_encoding:
+      enabled: true
+      roles:
+        video4: eye
+        video5: eye
+        video6: stick
+        video7: stick
+
+train:
+  lr: 1.0e-5
+  num_epochs: 2000
+  batch_size: 4
+  seed: 0
+  device: cuda
+  num_workers: 4
+  prefetch_factor: 2
+  persistent_workers: true
+  pin_memory: true
+  split_seed: 0
+  train_split_ratio: 0.8571428571428571
+  reuse_split: true
+  split_path: /data/pingfan/Excavator_real_stack_data/g48_new_trainval_view_v1/train_val_split.yaml
+  val_every: 10
+  save_latest_every: 100
+  checkpoint_every: 500
+  checkpoint_keep_last: 3
+  plot_every: 500
+  amp: true
+  amp_dtype: auto
+  ckpt_dir: /data/pingfan/Excavator_real_stack_data/runs/g49_new_data_first_batch_20260714/training_runs/n5_new_fourcam_role_transition_boundary_2000/ckpt
+  image_transform: none
+  intent_loss:
+    enabled: false
+  deadzone_loss:
+    enabled: true
+    threshold_json: /data/pingfan/Excavator_real_stack_data/usb_hdf5_qc_20260708_72_104/runs/goal_state_hold_liveness_20260712/h2_transition_state_hold_finetune_e16_200/direct_policy_output_mechanical_deadzone.json
+    same_dir_promote_weight: 1.0
+    idle_suppression_weight: 0.0
+    wrong_effective_weight: 0.0
+    margin: 0.0
+    same_dir_window: expert_transition_window
+    same_dir_window_steps: 5
+  state_hold_transition:
+    enabled: true
+    threshold_json: /data/pingfan/Excavator_real_stack_data/usb_hdf5_qc_20260708_72_104/runs/goal_state_hold_liveness_20260712/h2_transition_state_hold_finetune_e16_200/direct_policy_output_mechanical_deadzone.json
+    probability: 0.5
+    hold_horizon_steps: 20
+  effective_action:
+    enabled: false

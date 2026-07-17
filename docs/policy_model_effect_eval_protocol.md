@@ -1,5 +1,11 @@
 # Policy 模型效果评估协议
 
+测试执行前必须先查阅并维护
+`docs/model_test_intent_and_capability_boundaries.md`。本文件规定“怎么跑”，该文档规定
+“结果允许说明什么”。新增或实质修改测试时，必须在同一工作切片更新 capability card、
+coverage map、registry lifecycle 和 expiry trigger；缺少这些记录的结果不得用于模型晋级、
+运行时修改或真机测试决策。
+
 本文档固定以后比较 policy 模型效果时的离线分析口径。整体 MAE 只能说明
 全局平均误差，不能单独判断局部动作是否能开始、是否能正确结束，也不能判断
 模型是否只是输出接近 0 的安全动作。因此模型效果必须按本文方法分析。
@@ -17,6 +23,16 @@
 5. 使用视觉输入的模型必须做 FPV 敏感性检查，不能只做同一 episode 的正常 replay。
 6. 每次训练完成后的离线 eval 必须包含固定 qpos、多 FPV 替换 replay。这个检查不是
    live 前临时加测，而是训练 checkpoint 是否可进入 shadow/live 的固定 gate。
+7. startup/transition anchor 数量必须解释其生成原因、每轴方向分布和 episode 聚类；不得把
+   同一 episode 中的多个 anchor 当成相互独立试验。模型排序至少同时报告 episode macro、
+   axis/direction macro 和原始 micro 指标。
+8. state-hold 必须把“目标轴曾经恢复”“完整 expert-effective 意图被保留”“精确 ternary
+   intent vector 命中”以及全 horizon 的 unexpected/opposite/flip 分开报告。目标轴恢复不能
+   单独作为安全启动率。
+9. state-hold recovery 必须报告 1/3/5/10/20 tick 或其他预声明 horizon 曲线；20 tick 只作为
+   宽松的软件死锁否决窗口，除非当前数据另有真实 response 标定，否则不能视作物理成功门槛。
+10. 多轴指标必须成对报告 active-direction recall 和包含 extra-axis 惩罚的 exact-vector 指标；
+    只报告前者会奖励过度激活。
 
 ## 现有可用工具
 
@@ -221,6 +237,71 @@ python -m testbed.cli.offline_policy_eval \
 - 如果 `image_match_metrics` 显示 qpos 匹配很差，本次结果记为 `inconclusive`，需要换
   episode 或改用更合适的 image mapping。
 - 这个 gate 通过不代表模型一定能 live 成功；它只是 live 前必须满足的最低离线条件。
+
+### 0.5 动作死区耦合的 state-hold liveness gate
+
+普通 HDF5 replay 会在每个 step 无条件读取下一条专家观测。即使当前 policy
+动作没有越过机械死区、真机本应保持不动，离线 replay 仍会把专家已经移动后的
+图像、qpos 和 qvel 交给 policy。因此，普通 replay 的 eventual liveness 不能排除
+“动作不生效 -> 状态不推进 -> 后续强动作永远不会出现”的闭环死锁。
+
+进入 live control 前，必须额外运行 state-hold liveness gate：
+
+- 从完整 episode 提取每个轴、每个方向的 `inactive -> expert-effective` 转换，
+  不得只检查 episode 第一次启动；
+- 每个 anchor 都从 episode 起点重新 warm up policy、temporal aggregation 和
+  runtime gate 历史；
+- state-hold 分支固定 anchor 图像和 qpos，并显式使用零 qvel；
+- 只有同轴、同方向动作越过该方向的机械死区才算恢复；
+- 同时运行 teacher-forced 分支，用于标记被专家状态推进隐藏的失败；
+- 机械死区必须与最终 policy 输出处于同一 action domain。policy 直接输出到控制
+  链时，不得复用为旧 `action_scale` 预先换算的 raw-policy deadzone 表。
+
+E52 direct-output 示例：
+
+```bash
+PYTHONPATH=/home/pingfan/Excavator_real_stack/testbed \
+python -m testbed.cli.offline_state_hold_demo_target \
+  --config testbed/testbed/configs/policy_real_gmsl_eye2_e52_v1.yaml \
+  --bundle-dir <PORTABLE_E52_BUNDLE_DIR> \
+  --candidate-manifest <E52_CANDIDATE_MANIFEST> \
+  --dataset-dir <20HZ_HDF5_DATASET_DIR> \
+  --episode-id <EPISODE_ID> \
+  --hold-horizon-steps <DECLARED_HORIZON> \
+  --trace-full-horizon-after-recovery \
+  --assist-mode both \
+  --device cuda \
+  --output-dir <OUTPUT_DIR>
+```
+
+该入口采用以下显式离线语义，并在 `run_summary.json` 中记录 override：
+
+- `action_scale=[1, 1, 1, 1]`，不压缩模型动作；
+- `output_mode=control` 仅用于取得最终离线动作，不连接真机 backend；
+- direct-output deadzone 从配置中的 `deadzone_assist.deadzone_positive/negative`
+  机械标定值解析；
+- `assist-mode disabled` 检查 E52 自身是否会锁死；`enabled` 仅作为救援 A/B，
+  不能替代 no-assist 结果。
+
+每次运行至少保留：
+
+- `run_summary.json`；
+- `resolved_direct_output_deadzone.json`；
+- `state_hold_anchors.jsonl`；
+- `state_hold_anchors.csv`；
+- `state_hold_summary.json`。
+
+判定规则：
+
+- `state_hold_deadlocked_anchors > 0`：liveness gate 失败，不能进入 live control；
+- `hidden_by_teacher_forcing_anchors > 0`：现有普通 replay 给出了假安全信号，必须按
+  state-hold 结果判失败；
+- safety/wrong-motion 审计必须开启 `--trace-full-horizon-after-recovery`，避免正确方向
+  首次恢复后提前停止，从而漏掉随后出现的额外、反向或翻转动作；首次恢复 delay 和
+  liveness status 仍按原定义记录；
+- assist 开启后恢复只能证明 assist 能救回该 anchor，不能证明 gate 本身已经修复；
+- hold horizon 必须在报告中显式记录。通过该诊断仍不等于证明真机成功，因为离线
+  数据不包含完整的动作反事实动力学；该 gate 的用途是可靠地证伪吸收式软件状态。
 
 ### 1. 起步窗口
 

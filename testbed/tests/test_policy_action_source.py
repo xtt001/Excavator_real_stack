@@ -267,7 +267,9 @@ class PolicyActionSourceTests(unittest.TestCase):
             [0.3, -0.25, 0.25, -0.3],
         )
 
-    def test_runtime_gates_keep_shadow_zero_and_expose_raw_gohome_decision(self) -> None:
+    def test_runtime_gates_keep_shadow_zero_and_expose_raw_gohome_decision(
+        self,
+    ) -> None:
         policy = DummyIntentPolicy([0.5, -0.25, 0.1, -0.9])
         gate_stack = DummyRuntimeGateStack()
         source = PolicyActionSource(
@@ -282,8 +284,12 @@ class PolicyActionSourceTests(unittest.TestCase):
         action, info = source.next_action(_obs())
 
         np.testing.assert_allclose(action, np.zeros(4))
-        np.testing.assert_allclose(info.extras["policy_action"], [0.5, -0.25, 0.1, -0.9])
-        np.testing.assert_allclose(info.extras["policy_scaled_action"], [0.2, -0.15, 0.1, -0.05])
+        np.testing.assert_allclose(
+            info.extras["policy_action"], [0.5, -0.25, 0.1, -0.9]
+        )
+        np.testing.assert_allclose(
+            info.extras["policy_scaled_action"], [0.2, -0.15, 0.1, -0.05]
+        )
         np.testing.assert_allclose(info.extras["policy_returned_action"], np.zeros(4))
         self.assertEqual(info.extras["policy_gate_stack_id"], "E52-test")
         self.assertEqual(info.extras["gohome_raw_active"], 1)
@@ -312,7 +318,9 @@ class PolicyActionSourceTests(unittest.TestCase):
         self.assertEqual(info.extras["gohome_request_suppressed"], 0)
         self.assertEqual(info.extras["gohome_request_suppression_reason"], "")
 
-    def test_deadzone_assist_lifts_stable_intent_above_directional_deadzone(self) -> None:
+    def test_deadzone_assist_lifts_stable_intent_above_directional_deadzone(
+        self,
+    ) -> None:
         policy = DummyPolicy([0.33, -0.26, 0.1, -0.2])
         source = PolicyActionSource(
             policy=policy,
@@ -339,7 +347,9 @@ class PolicyActionSourceTests(unittest.TestCase):
             [1, 1, 0, 0],
         )
         self.assertEqual(second_info.extras["policy_deadzone_assist_active"], 1)
-        self.assertEqual(second_info.extras["policy_deadzone_assist_axes"], "swing+,boom-")
+        self.assertEqual(
+            second_info.extras["policy_deadzone_assist_axes"], "swing+,boom-"
+        )
         np.testing.assert_allclose(
             second_info.extras["policy_scaled_action"],
             [0.33, -0.26, 0.1, -0.2],
@@ -348,7 +358,9 @@ class PolicyActionSourceTests(unittest.TestCase):
             second_info.extras["policy_assisted_action"],
             [0.62, -0.52, 0.1, -0.2],
         )
-        np.testing.assert_allclose(second_info.extras["policy_returned_action"], second_action)
+        np.testing.assert_allclose(
+            second_info.extras["policy_returned_action"], second_action
+        )
 
     def test_deadzone_assist_resets_when_direction_changes(self) -> None:
         class SequencePolicy:
@@ -571,9 +583,7 @@ class PolicyActionSourceTests(unittest.TestCase):
                     10,
                 )
                 self.assertEqual(
-                    handle[
-                        "diagnostics/gohome_request_suppression_reason"
-                    ].asstr()[0],
+                    handle["diagnostics/gohome_request_suppression_reason"].asstr()[0],
                     "policy_output_mode_shadow_zero",
                 )
 
@@ -587,7 +597,8 @@ class PolicyActionSourceTests(unittest.TestCase):
             logger.record_step(
                 local_step=3,
                 receiver_mode="armed",
-                obs=_obs() | {"step_id": 3, "timestamp_ns": 10, "joint_timestamp_ns": 9},
+                obs=_obs()
+                | {"step_id": 3, "timestamp_ns": 10, "joint_timestamp_ns": 9},
                 raw_action=np.array([0.1, 0.2, 0.3, 0.4], dtype=np.float32),
                 safe_action=np.array([0.01, 0.02, 0.03, 0.04], dtype=np.float32),
                 action_info=ActionInfo(
@@ -640,8 +651,12 @@ class PolicyActionSourceTests(unittest.TestCase):
             logger.close()
 
             run_dir = Path(tmp) / "unit"
-            step_lines = (run_dir / "steps.jsonl").read_text(encoding="utf-8").splitlines()
-            summary = yaml.safe_load((run_dir / "summary.json").read_text(encoding="utf-8"))
+            step_lines = (
+                (run_dir / "steps.jsonl").read_text(encoding="utf-8").splitlines()
+            )
+            summary = yaml.safe_load(
+                (run_dir / "summary.json").read_text(encoding="utf-8")
+            )
             termination = yaml.safe_load(
                 (run_dir / "termination.json").read_text(encoding="utf-8")
             )
@@ -667,7 +682,8 @@ class PolicyActionSourceTests(unittest.TestCase):
             logger.record_step(
                 local_step=4,
                 receiver_mode="armed",
-                obs=_obs() | {"step_id": 4, "timestamp_ns": 10, "joint_timestamp_ns": 9},
+                obs=_obs()
+                | {"step_id": 4, "timestamp_ns": 10, "joint_timestamp_ns": 9},
                 raw_action=np.array([0.1, 0.2, 0.3, 0.4], dtype=np.float32),
                 safe_action=np.zeros(4, dtype=np.float32),
                 action_info=ActionInfo(
@@ -702,7 +718,11 @@ class PolicyActionSourceTests(unittest.TestCase):
             logger.close()
 
             step = yaml.safe_load(
-                ((Path(tmp) / "unit" / "steps.jsonl").read_text(encoding="utf-8").splitlines())[0]
+                (
+                    (Path(tmp) / "unit" / "steps.jsonl")
+                    .read_text(encoding="utf-8")
+                    .splitlines()
+                )[0]
             )
 
         self.assertEqual(step["policy_gate_stack_id"], "E52")
@@ -760,7 +780,9 @@ class PolicyActionSourceTests(unittest.TestCase):
                 "testbed.policies.act.adapter.ACTAdapter.from_checkpoint",
                 return_value="loaded",
             ) as from_checkpoint:
-                loaded = load_act_policy_from_bundle(bundle_dir=bundle, temporal_agg=True)
+                loaded = load_act_policy_from_bundle(
+                    bundle_dir=bundle, temporal_agg=True
+                )
 
         self.assertEqual(loaded, "loaded")
         kwargs = from_checkpoint.call_args.kwargs
@@ -772,6 +794,19 @@ class PolicyActionSourceTests(unittest.TestCase):
         self.assertTrue(kwargs["policy_config"]["train_with_zero_latent"])
         self.assertTrue(kwargs["temporal_agg"])
         self.assertEqual(kwargs["device"], "cpu")
+
+    def test_policy_observation_preserves_explicit_previous_final_command(self) -> None:
+        obs = _obs()
+        obs["previous_final_command"] = np.array(
+            [0.1, -0.2, 0.3, -0.4], dtype=np.float32
+        )
+
+        converted = _policy_obs_from_real_obs(obs, camera_name="fpv")
+
+        np.testing.assert_allclose(
+            converted["previous_final_command"],
+            [0.1, -0.2, 0.3, -0.4],
+        )
 
     def test_load_act_policy_from_bundle_allows_null_episode_len(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -823,7 +858,9 @@ class PolicyActionSourceTests(unittest.TestCase):
         adapter._max_episode_len = 4
 
         for step in range(7):
-            a_hat = torch.ones((1, adapter._num_queries, 4), dtype=torch.float32) * (step + 1)
+            a_hat = torch.ones((1, adapter._num_queries, 4), dtype=torch.float32) * (
+                step + 1
+            )
             action = adapter._aggregate(a_hat)
             self.assertEqual(action.shape, (4,))
             adapter._t += 1

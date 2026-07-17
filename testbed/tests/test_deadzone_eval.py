@@ -34,12 +34,14 @@ def test_deadzone_window_counts_same_direction_and_extra_actions() -> None:
 
     assert len(rows) == 1
     row = rows[0]
-    assert row["expert_any_effective_frames"] == 3
+    assert row["single_demo_any_effective_frames"] == 3
     assert row["policy_any_effective_frames"] == 3
-    assert row["same_axis_dir_effective_frames"] == 2
-    assert row["policy_extra_or_wrong_effective_frames"] == 1
-    assert row["same_axis_dir_effective_pct_of_expert_effective"] == 100.0 * 2.0 / 3.0
-    assert row["policy_extra_or_wrong_effective_pct"] == 100.0 / 6.0
+    assert row["single_demo_same_axis_direction_effective_frames"] == 2
+    assert row["policy_outside_single_demo_frame_effective_frames"] == 1
+    assert row[
+        "single_demo_same_axis_direction_effective_pct_of_demo_effective"
+    ] == 100.0 * 2.0 / 3.0
+    assert row["policy_outside_single_demo_frame_effective_pct"] == 100.0 / 6.0
     assert row["policy_boom_pos_eff_pct"] == 100.0 * 2.0 / 6.0
     assert row["policy_bucket_pos_eff_pct"] == 100.0 / 6.0
 
@@ -55,11 +57,11 @@ def test_build_window_ranges_handles_empty_effective_segment() -> None:
     ranges = build_window_ranges(
         np.zeros(20, dtype=bool),
         total_steps=20,
-        windows=("start40", "end80", "longest_expert_effective_segment_gap5"),
+        windows=("start40", "end80", "longest_single_demo_effective_segment_gap5"),
     )
 
     assert ranges == [
         ("start40", 0, 20),
         ("end80", 0, 20),
-        ("longest_expert_effective_segment_gap5", 0, 0),
+        ("longest_single_demo_effective_segment_gap5", 0, 0),
     ]

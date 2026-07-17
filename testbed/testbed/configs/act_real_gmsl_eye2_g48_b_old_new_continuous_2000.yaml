@@ -1,0 +1,58 @@
+# [Execution target G48/B: old+new continuous ACT data-value test]
+experiment_contract:
+  comparison_role: mixed_style_continuous_reference
+  expected_num_epochs: 2000
+  policy_action_scale: [1.0, 1.0, 1.0, 1.0]
+  effective_action_enabled: false
+  allow_pending_init_checkpoint: false
+  forbidden_source_episode_ids: [105, 106, 107, 108, 109]
+  forbidden_legacy_heldout_dataset: /data/pingfan/Excavator_real_stack_data/usb_hdf5_qc_20260709_105_109/real_teleop_v1_episodes_105_109_20hz
+
+task:
+  task_name: real_gmsl_eye2_g48_b_old_new_continuous_2000
+  equipment_model: real_excavator
+  dataset_dir: /data/pingfan/Excavator_real_stack_data/g48_old_new_trainval_composite_v1
+  train_ready_manifest_path: /data/pingfan/Excavator_real_stack_data/g48_old_new_trainval_composite_v1/train_ready_manifest.json
+  num_episodes: 1000000
+  episode_len:
+  camera_names: [video4, video5]
+  backend:
+    name: real
+    dt: 0.05
+
+policy:
+  class: ACT
+  device: cuda
+  low_dim_keys: [qpos]
+  act_params:
+    chunk_size: 20
+    kl_weight: 10.0
+    hidden_dim: 512
+    dim_feedforward: 3200
+    state_dim: 4
+
+train:
+  lr: 1.0e-5
+  num_epochs: 2000
+  batch_size: 4
+  seed: 0
+  device: cuda
+  num_workers: 0
+  prefetch_factor:
+  persistent_workers: false
+  pin_memory: true
+  split_seed: 0
+  train_split_ratio: 0.875
+  reuse_split: true
+  split_path: /data/pingfan/Excavator_real_stack_data/g48_old_new_trainval_composite_v1/train_val_split.yaml
+  val_every: 10
+  save_latest_every: 100
+  checkpoint_every: 500
+  plot_every: 500
+  amp: true
+  amp_dtype: auto
+  ckpt_dir: /data/pingfan/Excavator_real_stack_data/runs/g48_act_training_preparation_20260714/training_runs/b_old_new_continuous_2000/ckpt
+  state_hold_transition:
+    enabled: false
+  effective_action:
+    enabled: false

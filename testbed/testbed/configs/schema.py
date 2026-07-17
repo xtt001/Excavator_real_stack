@@ -24,7 +24,9 @@ class TaskConfig(BaseModel):
 
     task_name: str = "real_excavation_teleop_v1"
     equipment_model: str = "real_excavator"
-    dataset_dir: str = Field(..., description="Directory where HDF5 episodes are read/written.")
+    dataset_dir: str = Field(
+        ..., description="Directory where HDF5 episodes are read/written."
+    )
     num_episodes: int = Field(default=30, gt=0)
     episode_len: int = Field(default=1000, gt=0)
     camera_names: list[str] = Field(default_factory=lambda: ["fpv"])
@@ -36,7 +38,9 @@ class PolicyConfig(BaseModel):
 
     name: str = "act"
     params: dict = Field(default_factory=dict)
-    low_dim_keys: list[Literal["qpos", "qvel"]] = Field(default_factory=lambda: ["qpos", "qvel"])
+    low_dim_keys: list[Literal["qpos", "qvel", "previous_final_command"]] = Field(
+        default_factory=lambda: ["qpos", "qvel"]
+    )
 
 
 class ACTPolicyParams(BaseModel):
@@ -66,8 +70,8 @@ class TrainConfig(BaseModel):
     batch_size: int = Field(default=8, gt=0)
     seed: int = 0
     device: str = "cuda"
-    num_workers: int = 0
-    prefetch_factor: int | None = None
+    num_workers: int = Field(default=0, ge=0)
+    prefetch_factor: int | None = Field(default=None, ge=1)
     persistent_workers: bool = False
     pin_memory: bool = True
     split_seed: int | None = None
@@ -75,9 +79,50 @@ class TrainConfig(BaseModel):
     split_path: str | None = None
     reuse_split: bool = True
     val_every: int = 5
-    save_latest_every: int = 10
-    checkpoint_every: int = 50
+    save_latest_every: int = Field(
+        default=100,
+        gt=0,
+        description="Epoch cadence for the resume-capable policy_latest.ckpt.",
+    )
+    checkpoint_every: int = Field(
+        default=500,
+        gt=0,
+        description="Epoch cadence for model-only periodic inference candidates.",
+    )
+    checkpoint_keep_last: int = Field(
+        default=3,
+        gt=0,
+        description="Number of this run's periodic inference candidates to retain.",
+    )
     plot_every: int = 50
     amp: bool = True
     amp_dtype: Literal["auto", "bf16", "fp16"] = "auto"
     resume_ckpt: str | None = None
+    temporal_input: dict = Field(
+        default_factory=dict,
+        description=(
+            "Opt-in causal visual history input. Disabled by default so the "
+            "single-frame ACT path remains the rollback reference."
+        ),
+    )
+    goal_effect: dict = Field(
+        default_factory=dict,
+        description=(
+            "Optional future-goal and action-conditioned effect auxiliary "
+            "objective; it never overrides the continuous action."
+        ),
+    )
+    action_state_effort: dict = Field(
+        default_factory=dict,
+        description=(
+            "Optional ordinal idle/near/safe deadzone supervision; it never "
+            "overrides the continuous runtime action."
+        ),
+    )
+    effective_action: dict = Field(
+        default_factory=dict,
+        description=(
+            "Optional neutral/positive/negative effective action targets and "
+            "transition weighting; runtime remains continuous ACT only."
+        ),
+    )

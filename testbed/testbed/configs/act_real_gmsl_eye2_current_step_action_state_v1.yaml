@@ -1,0 +1,79 @@
+# [Execution target G35/H1: Causal current-step action-state ACT candidate]
+# Auxiliary action-state supervision is restricted to the first decoder query.
+# Future chunk states remain continuous ACT imitation targets and cannot train a
+# shared state head to pull the current action toward a later bucket command.
+
+task:
+  task_name: real_gmsl_eye2_20hz_current_step_action_state_v1
+  equipment_model: real_excavator
+  dataset_dir: /data/pingfan/Excavator_real_stack_data/usb_hdf5_qc_20260708_72_104/real_teleop_v1_episodes_72_104_20hz
+  num_episodes: 1000000
+  episode_len:
+  episode_ids: [97, 78, 100, 85, 86, 75, 102, 80, 104, 76, 99, 83, 73, 93, 87, 98, 90, 82, 79, 94, 91, 84, 74, 92]
+  camera_names: [video4, video5]
+  backend:
+    name: real
+    dt: 0.05
+
+policy:
+  class: ACT
+  device: cuda
+  low_dim_keys: [qpos]
+  act_params:
+    chunk_size: 20
+    kl_weight: 10.0
+    hidden_dim: 512
+    dim_feedforward: 3200
+    state_dim: 4
+
+train:
+  lr: 1.0e-5
+  num_epochs: 200
+  batch_size: 4
+  seed: 0
+  device: cuda
+  num_workers: 0
+  prefetch_factor:
+  persistent_workers: false
+  pin_memory: true
+  split_seed: 0
+  train_split_ratio: 0.8
+  reuse_split: true
+  split_path: /data/pingfan/Excavator_real_stack_data/usb_hdf5_qc_20260708_72_104/runs/goal_state_hold_liveness_20260712/h1_direct_relabel_formal/ckpt/train_val_split.yaml
+  val_every: 5
+  save_latest_every: 50
+  checkpoint_every: 200
+  plot_every: 200
+  amp: true
+  amp_dtype: auto
+  ckpt_dir: /data/pingfan/Excavator_real_stack_data/usb_hdf5_qc_20260708_72_104/runs/goal_state_liveness_20260712/g35_current_step_action_state_formal/ckpt
+  init_ckpt: /data/pingfan/Excavator_real_stack_data/usb_hdf5_qc_20260708_72_104/runs/ckpts/baseline_qpos_no_transform/policy_best.ckpt
+  init_allow_missing: true
+  intent_loss:
+    enabled: false
+  deadzone_loss:
+    enabled: false
+  window_deadzone_loss:
+    enabled: false
+  temporal_release_loss:
+    enabled: false
+  demo_target_hold_loss:
+    enabled: false
+  state_hold_transition:
+    enabled: false
+  goal_effect:
+    enabled: false
+  action_state_effort:
+    enabled: true
+    threshold_json: /data/pingfan/Excavator_real_stack_data/usb_hdf5_qc_20260708_72_104/runs/goal_state_hold_liveness_20260712/h2_transition_state_hold_finetune_e16_200/direct_policy_output_mechanical_deadzone.json
+    near_margin: 0.0
+    safe_margin: 0.02
+    required_margin: 0.02
+    persistence_steps: 2
+    current_steps: 1
+    class_weights: [1.0, 4.0, 4.0, 4.0, 4.0]
+    classification_weight: 0.2
+    margin_weight: 1.0
+    idle_weight: 0.1
+    wrong_weight: 0.2
+    persistence_weight: 0.25

@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "contract": "g50_fixed_g49_validation_only_replay_v1",
+  "dataset_dir": "/data/pingfan/Excavator_real_stack_data/g48_new_trainval_view_v1",
+  "train_ready_episode_ids": [
+    10120, 10121, 10122, 10123, 10124,
+    10125, 10126, 10127, 10128, 10129,
+    10130, 10131, 10132, 10133, 10134,
+    10135, 10136, 10137, 10138, 10139
+  ],
+  "selection_boundary": "validation episodes only; sealed test episodes excluded"
+}

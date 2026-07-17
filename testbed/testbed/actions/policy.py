@@ -30,6 +30,21 @@ class DeadzoneAssistConfig:
     min_consecutive_steps: int
 
 
+@dataclass(frozen=True)
+class PolicyActionSourceState:
+    """Complete mutable action-pipeline state for deterministic branch replay."""
+
+    step: int
+    record_start_pending: bool
+    last_qpos: np.ndarray | None
+    last_obs_time_ns: int | None
+    filtered_qvel: np.ndarray
+    assist_last_sign: np.ndarray
+    assist_consecutive_steps: np.ndarray
+    policy_state: Any
+    runtime_gate_state: Any | None
+
+
 class PolicyActionSource(ActionSource):
     """
     Wrap a trained policy as an ActionSource.
@@ -51,7 +66,10 @@ class PolicyActionSource(ActionSource):
         output_mode: str = "shadow_zero",
         qvel_mode: str = "raw",
         qvel_diff_tau_s: float = 0.15,
-        qvel_diff_clip_rad_s: float | list[float] | tuple[float, ...] | np.ndarray = 2.0,
+        qvel_diff_clip_rad_s: float
+        | list[float]
+        | tuple[float, ...]
+        | np.ndarray = 2.0,
         fail_safe_zero: bool = True,
         record_start_on_reset: bool = False,
         deadzone_assist: dict[str, Any] | None = None,
@@ -102,6 +120,9 @@ class PolicyActionSource(ActionSource):
             stats_path=cfg.get("stats_path"),
             device=cfg.get("device"),
             temporal_agg=bool(cfg.get("temporal_agg", True)),
+            temporal_aggregation_diagnostics=bool(
+                cfg.get("temporal_aggregation_diagnostics", False)
+            ),
         )
         camera_names = cfg.get("camera_names", cfg.get("cameras"))
         policy_camera_names = (
@@ -111,7 +132,9 @@ class PolicyActionSource(ActionSource):
         )
         if camera_names is None and policy_camera_names:
             camera_names = policy_camera_names
-        parsed_camera_names = _camera_names_list(camera_names, default=str(cfg.get("camera", "fpv")))
+        parsed_camera_names = _camera_names_list(
+            camera_names, default=str(cfg.get("camera", "fpv"))
+        )
         if policy_camera_names and parsed_camera_names != policy_camera_names:
             raise ValueError(
                 "teleop.policy.camera_names does not match the loaded policy bundle: "
@@ -161,6 +184,72 @@ class PolicyActionSource(ActionSource):
         if hasattr(self._policy, "reset"):
             self._policy.reset()
 
+    def snapshot_state(self) -> PolicyActionSourceState:
+        """Capture policy, gate, qvel, assist, and source sequence state."""
+
+        policy_snapshot = getattr(self._policy, "snapshot_state", None)
+        if not callable(policy_snapshot):
+            raise TypeError("policy does not implement snapshot_state()")
+        gate_state = None
+        if self._runtime_gate_stack is not None:
+            gate_snapshot = getattr(self._runtime_gate_stack, "snapshot_state", None)
+            if not callable(gate_snapshot):
+                raise TypeError("runtime gate stack does not implement snapshot_state()")
+            gate_state = gate_snapshot()
+        return PolicyActionSourceState(
+            step=int(self._step),
+            record_start_pending=bool(self._record_start_pending),
+            last_qpos=(
+                None if self._last_qpos is None else self._last_qpos.copy()
+            ),
+            last_obs_time_ns=(
+                None
+                if self._last_obs_time_ns is None
+                else int(self._last_obs_time_ns)
+            ),
+            filtered_qvel=self._filtered_qvel.copy(),
+            assist_last_sign=self._assist_last_sign.copy(),
+            assist_consecutive_steps=self._assist_consecutive_steps.copy(),
+            policy_state=policy_snapshot(),
+            runtime_gate_state=gate_state,
+        )
+
+    def restore_state(self, state: PolicyActionSourceState) -> None:
+        """Restore a state produced by :meth:`snapshot_state` without aliasing."""
+
+        if not isinstance(state, PolicyActionSourceState):
+            raise TypeError("state must be PolicyActionSourceState")
+        policy_restore = getattr(self._policy, "restore_state", None)
+        if not callable(policy_restore):
+            raise TypeError("policy does not implement restore_state()")
+        if (self._runtime_gate_stack is None) != (state.runtime_gate_state is None):
+            raise ValueError("runtime gate state/config mismatch")
+        self._step = int(state.step)
+        self._record_start_pending = bool(state.record_start_pending)
+        self._last_qpos = (
+            None if state.last_qpos is None else state.last_qpos.copy()
+        )
+        self._last_obs_time_ns = (
+            None
+            if state.last_obs_time_ns is None
+            else int(state.last_obs_time_ns)
+        )
+        self._filtered_qvel = np.asarray(
+            state.filtered_qvel, dtype=np.float32
+        ).copy()
+        self._assist_last_sign = np.asarray(
+            state.assist_last_sign, dtype=np.int8
+        ).copy()
+        self._assist_consecutive_steps = np.asarray(
+            state.assist_consecutive_steps, dtype=np.int32
+        ).copy()
+        policy_restore(state.policy_state)
+        if self._runtime_gate_stack is not None:
+            gate_restore = getattr(self._runtime_gate_stack, "restore_state", None)
+            if not callable(gate_restore):
+                raise TypeError("runtime gate stack does not implement restore_state()")
+            gate_restore(state.runtime_gate_state)
+
     def next_action(self, obs: dict[str, Any]) -> tuple[np.ndarray, ActionInfo]:
         t0 = time.perf_counter()
         now_ns = time.time_ns()
@@ -179,7 +268,9 @@ class PolicyActionSource(ActionSource):
                     )
                 predicted_action, intent_probabilities = inference(policy_obs)
             policy_action = as_real_action(predicted_action, clip=False)
-            policy_action = np.clip(policy_action, -self._clip, self._clip).astype(np.float32)
+            policy_action = np.clip(policy_action, -self._clip, self._clip).astype(
+                np.float32
+            )
             gated_action = policy_action
             if self._runtime_gate_stack is not None:
                 gate_result = self._runtime_gate_stack.step(
@@ -217,12 +308,29 @@ class PolicyActionSource(ActionSource):
                 "policy_action_scale": self._action_scale.copy(),
                 "policy_qvel_mode": self._qvel_mode,
                 "policy_qvel_input": qvel_input.copy(),
+                "policy_previous_final_command_input": np.asarray(
+                    policy_obs.get(
+                        "previous_final_command",
+                        np.zeros(len(ACTION_AXIS_NAMES), dtype=np.float32),
+                    ),
+                    dtype=np.float32,
+                ).copy(),
                 "policy_inference_latency_ms": latency_ms,
                 "policy_step": int(self._step),
                 "policy_error": "",
                 **assist_extras,
                 **gate_extras,
             }
+            factorized_diagnostics = getattr(
+                self._policy, "factorized_diagnostics", None
+            )
+            if isinstance(factorized_diagnostics, dict):
+                extras.update(factorized_diagnostics)
+            temporal_aggregation_diagnostics = getattr(
+                self._policy, "temporal_aggregation_diagnostics", None
+            )
+            if isinstance(temporal_aggregation_diagnostics, dict):
+                extras.update(temporal_aggregation_diagnostics)
             if self._runtime_gate_stack is not None:
                 gohome_suppressed = (
                     raw_gohome_requested and self._output_mode == "shadow_zero"
@@ -262,6 +370,7 @@ class PolicyActionSource(ActionSource):
                 "policy_action_scale": self._action_scale.copy(),
                 "policy_qvel_mode": self._qvel_mode,
                 "policy_qvel_input": zero.copy(),
+                "policy_previous_final_command_input": zero.copy(),
                 "policy_inference_latency_ms": latency_ms,
                 "policy_step": int(self._step),
                 "policy_error": f"{type(exc).__name__}: {exc}",
@@ -291,9 +400,13 @@ class PolicyActionSource(ActionSource):
         return policy_obs, qvel
 
     def _policy_qvel(self, obs: dict[str, Any]) -> np.ndarray:
-        raw_qvel = np.asarray(obs.get("qvel", np.zeros(4)), dtype=np.float32).reshape(-1)
+        raw_qvel = np.asarray(obs.get("qvel", np.zeros(4)), dtype=np.float32).reshape(
+            -1
+        )
         if raw_qvel.shape != (4,):
-            raise ValueError(f"observation qvel must have shape (4,), got {raw_qvel.shape}")
+            raise ValueError(
+                f"observation qvel must have shape (4,), got {raw_qvel.shape}"
+            )
         if self._qvel_mode == "raw":
             return raw_qvel.astype(np.float32, copy=True)
         if self._qvel_mode == "zero":
@@ -312,7 +425,9 @@ class PolicyActionSource(ActionSource):
             return self._filtered_qvel.copy()
         dt = max(1e-3, float(obs_time_ns - self._last_obs_time_ns) * 1e-9)
         raw = (qpos - self._last_qpos) / dt
-        raw = np.clip(raw, -self._qvel_diff_clip, self._qvel_diff_clip).astype(np.float32)
+        raw = np.clip(raw, -self._qvel_diff_clip, self._qvel_diff_clip).astype(
+            np.float32
+        )
         if self._qvel_diff_tau_s <= 0.0:
             self._filtered_qvel = raw
         else:
@@ -330,7 +445,9 @@ class PolicyActionSource(ActionSource):
     ) -> tuple[np.ndarray, dict[str, Any]]:
         cfg = self._deadzone_assist
         if not cfg.enabled:
-            return action.astype(np.float32, copy=True), _deadzone_assist_disabled_extras(cfg)
+            return action.astype(
+                np.float32, copy=True
+            ), _deadzone_assist_disabled_extras(cfg)
 
         assisted = np.asarray(action, dtype=np.float32).copy()
         sign = np.sign(assisted).astype(np.int8)
@@ -393,11 +510,16 @@ def load_act_policy_from_bundle(
     stats_path: str | Path | None = None,
     device: str | None = None,
     temporal_agg: bool = True,
+    temporal_aggregation_diagnostics: bool = False,
 ) -> Any:
     """Load the ACT policy bundle produced by excavator_testbed."""
 
     bundle = Path(bundle_dir)
-    resolved_path = Path(resolved_config_path) if resolved_config_path else bundle / "resolved_config.yaml"
+    resolved_path = (
+        Path(resolved_config_path)
+        if resolved_config_path
+        else bundle / "resolved_config.yaml"
+    )
     ckpt = Path(ckpt_path) if ckpt_path else bundle / "policy_best.ckpt"
     stats = Path(stats_path) if stats_path else bundle / "dataset_stats.pkl"
     missing = [path for path in (resolved_path, ckpt, stats) if not path.exists()]
@@ -417,6 +539,9 @@ def load_act_policy_from_bundle(
         policy_config=policy_config,
         norm_stats_path=stats,
         temporal_agg=bool(temporal_agg),
+        temporal_aggregation_diagnostics=bool(
+            temporal_aggregation_diagnostics
+        ),
         device=str(device or resolved.get("policy", {}).get("device", "cuda")),
     )
 
@@ -439,6 +564,9 @@ def _act_policy_config_from_resolved(resolved: dict[str, Any]) -> dict[str, Any]
         "dim_feedforward": int(act_params.get("dim_feedforward", 3200)),
         "vision_feature_scale": float(act_params.get("vision_feature_scale", 1.0)),
         "proprio_feature_scale": float(act_params.get("proprio_feature_scale", 1.0)),
+        "camera_role_encoding": copy.deepcopy(
+            act_params.get("camera_role_encoding", {}) or {}
+        ),
         "lr_backbone": 1e-5,
         "backbone": "resnet18",
         "enc_layers": 4,
@@ -452,6 +580,41 @@ def _act_policy_config_from_resolved(resolved: dict[str, Any]) -> dict[str, Any]
         "train_with_zero_latent": bool(act_params.get("train_with_zero_latent", False)),
         "intent_loss": copy.deepcopy(
             train_cfg.get("intent_loss", policy_cfg.get("intent_loss", {})) or {}
+        ),
+        "factorized_intent_effort": copy.deepcopy(
+            train_cfg.get(
+                "factorized_intent_effort",
+                policy_cfg.get("factorized_intent_effort", {}),
+            )
+            or {}
+        ),
+        "goal_effect": copy.deepcopy(
+            train_cfg.get("goal_effect", policy_cfg.get("goal_effect", {})) or {}
+        ),
+        # Action-state/effort is an auxiliary training head, but the model
+        # architecture must still be reconstructed when loading its bundle so
+        # the checkpoint's extra head is accepted.  It never changes the
+        # runtime continuous action source.
+        "action_state_effort": copy.deepcopy(
+            train_cfg.get(
+                "action_state_effort",
+                policy_cfg.get("action_state_effort", {}),
+            )
+            or {}
+        ),
+        "effective_action": copy.deepcopy(
+            train_cfg.get(
+                "effective_action",
+                policy_cfg.get("effective_action", {}),
+            )
+            or {}
+        ),
+        "temporal_input": copy.deepcopy(
+            train_cfg.get(
+                "temporal_input",
+                policy_cfg.get("temporal_input", {}),
+            )
+            or {}
         ),
     }
 
@@ -480,6 +643,38 @@ def _policy_obs_from_real_obs(
     }
     for name in names:
         policy_obs[f"image_{name}"] = _resolve_camera_image(obs, camera_name=name)
+    # Keep causal image timing metadata for the opt-in temporal ACT adapter.
+    # The legacy single-frame path simply ignores these extra keys.
+    image_timestamps = obs.get("image_timestamp_ns")
+    if isinstance(image_timestamps, dict):
+        policy_obs["image_timestamp_ns"] = {
+            str(name): int(value)
+            for name, value in image_timestamps.items()
+            if isinstance(value, (int, np.integer))
+            and not isinstance(value, (bool, np.bool_))
+        }
+    elif isinstance(image_timestamps, (int, np.integer)) and not isinstance(
+        image_timestamps, (bool, np.bool_)
+    ):
+        policy_obs["image_timestamp_ns"] = int(image_timestamps)
+    for timestamp_key in ("sync_timestamp_ns", "timestamp_ns"):
+        timestamp = obs.get(timestamp_key)
+        if isinstance(timestamp, (int, np.integer)) and not isinstance(
+            timestamp, (bool, np.bool_)
+        ):
+            policy_obs[timestamp_key] = int(timestamp)
+    if "previous_final_command" in obs:
+        previous_final_command = np.asarray(
+            obs["previous_final_command"], dtype=np.float32
+        ).reshape(-1)
+        if previous_final_command.shape != (len(ACTION_AXIS_NAMES),):
+            raise ValueError(
+                "observation previous_final_command must have shape "
+                f"({len(ACTION_AXIS_NAMES)},), got {previous_final_command.shape}"
+            )
+        if not np.isfinite(previous_final_command).all():
+            raise ValueError("observation previous_final_command must be finite")
+        policy_obs["previous_final_command"] = previous_final_command.copy()
     return policy_obs
 
 
@@ -508,7 +703,9 @@ def _decode_encoded_image(payload: Any) -> np.ndarray:
     try:
         import cv2
     except ImportError as exc:
-        raise RuntimeError("opencv-python is required to decode encoded FPV images") from exc
+        raise RuntimeError(
+            "opencv-python is required to decode encoded FPV images"
+        ) from exc
     if isinstance(payload, dict):
         payload = payload.get("data", payload.get("bytes", b""))
     if isinstance(payload, (bytes, bytearray, memoryview)):
@@ -535,7 +732,9 @@ def _broadcast_qvel_clip(value: Any) -> np.ndarray:
         return np.full(4, max(0.0, float(value)), dtype=np.float32)
     arr = np.asarray(value, dtype=np.float32).reshape(-1)
     if arr.shape != (4,):
-        raise ValueError(f"qvel_diff_clip_rad_s must be scalar or shape (4,), got {arr.shape}")
+        raise ValueError(
+            f"qvel_diff_clip_rad_s must be scalar or shape (4,), got {arr.shape}"
+        )
     return np.maximum(arr, 0.0).astype(np.float32, copy=True)
 
 
@@ -593,9 +792,7 @@ def _deadzone_assist_disabled_extras(
         "policy_deadzone_assist_mask": np.zeros(4, dtype=np.int32),
         "policy_deadzone_assist_axes": "",
         "policy_deadzone_assist_trigger_fraction": float(cfg.trigger_fraction),
-        "policy_deadzone_assist_min_consecutive_steps": int(
-            cfg.min_consecutive_steps
-        ),
+        "policy_deadzone_assist_min_consecutive_steps": int(cfg.min_consecutive_steps),
         "policy_deadzone_assist_positive": cfg.deadzone_positive.copy(),
         "policy_deadzone_assist_negative": cfg.deadzone_negative.copy(),
     }
@@ -628,7 +825,12 @@ def policy_bundle_manifest(bundle_dir: str | Path) -> dict[str, Any]:
 
     bundle = Path(bundle_dir)
     manifest = {"bundle_dir": str(bundle)}
-    for name in ("policy_best.ckpt", "dataset_stats.pkl", "resolved_config.yaml", "run_metadata.json"):
+    for name in (
+        "policy_best.ckpt",
+        "dataset_stats.pkl",
+        "resolved_config.yaml",
+        "run_metadata.json",
+    ):
         path = bundle / name
         manifest[name] = {
             "path": str(path),

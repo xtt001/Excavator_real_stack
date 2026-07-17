@@ -1,0 +1,14 @@
+schema_version: 1
+output_dir: /data/pingfan/Excavator_real_stack_data/g48_old_new_trainval_composite_v1
+forbidden_source_episode_ids: [105, 106, 107, 108, 109]
+sources:
+  - name: pro_real_teleop_20260713
+    dataset_dir: /data/pingfan/Excavator_real_stack_data/pro_real_teleop_20260713_20hz_v1
+    split_path: /data/pingfan/Excavator_real_stack_data/runs/g47_pro_real_teleop_ingest_20260714/g47_new_style_chronological_split_v1.json
+    include_roles: [train, val]
+    composite_start: 10000
+  - name: real_teleop_v1_20260708
+    dataset_dir: /data/pingfan/Excavator_real_stack_data/usb_hdf5_qc_20260708_72_104/real_teleop_v1_episodes_72_104_20hz
+    split_path: /data/pingfan/Excavator_real_stack_data/usb_hdf5_qc_20260708_72_104/runs/goal_state_liveness_20260712/g37_transition_aware_formal/train_val_split.yaml
+    include_roles: [train]
+    composite_start: 20000

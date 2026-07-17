@@ -1,0 +1,75 @@
+# [Execution target G38/H2: 2000-epoch transition boundary candidate]
+# Same G37 A contract; only the training horizon and output directory differ.
+
+task:
+  task_name: real_gmsl_eye2_20hz_g38_transition_boundary_2000
+  equipment_model: real_excavator
+  dataset_dir: /data/pingfan/Excavator_real_stack_data/usb_hdf5_qc_20260708_72_104/real_teleop_v1_episodes_72_104_20hz
+  num_episodes: 1000000
+  episode_len:
+  episode_ids: [97, 78, 100, 85, 86, 75, 102, 80, 104, 76, 99, 83, 73, 93, 87, 98, 90, 82, 79, 77, 94, 91, 84, 74, 92]
+  camera_names: [video4, video5]
+  backend:
+    name: real
+    dt: 0.05
+
+policy:
+  class: ACT
+  device: cuda
+  low_dim_keys: [qpos]
+  act_params:
+    chunk_size: 20
+    kl_weight: 10.0
+    hidden_dim: 512
+    dim_feedforward: 3200
+    state_dim: 4
+
+train:
+  lr: 1.0e-5
+  num_epochs: 2000
+  batch_size: 4
+  seed: 0
+  device: cuda
+  num_workers: 0
+  prefetch_factor:
+  persistent_workers: false
+  pin_memory: true
+  split_seed: 0
+  train_split_ratio: 0.8
+  reuse_split: true
+  split_path: /data/pingfan/Excavator_real_stack_data/usb_hdf5_qc_20260708_72_104/runs/goal_state_liveness_20260712/g37_transition_aware_formal/train_val_split.yaml
+  val_every: 10
+  save_latest_every: 100
+  checkpoint_every: 500
+  plot_every: 500
+  amp: true
+  amp_dtype: auto
+  ckpt_dir: /data/pingfan/Excavator_real_stack_data/usb_hdf5_qc_20260708_72_104/runs/goal_state_liveness_20260712/g38_transition_boundary_2000_formal/ckpt
+  init_ckpt: /data/pingfan/Excavator_real_stack_data/usb_hdf5_qc_20260708_72_104/runs/ckpts/baseline_qpos_no_transform/policy_best.ckpt
+  init_allow_missing: false
+  intent_loss:
+    enabled: false
+  deadzone_loss:
+    enabled: true
+    threshold_json: /data/pingfan/Excavator_real_stack_data/usb_hdf5_qc_20260708_72_104/runs/goal_state_hold_liveness_20260712/h2_transition_state_hold_finetune_e16_200/direct_policy_output_mechanical_deadzone.json
+    same_dir_promote_weight: 1.0
+    idle_suppression_weight: 0.0
+    wrong_effective_weight: 0.0
+    margin: 0.0
+    same_dir_window: expert_transition_window
+    same_dir_window_steps: 5
+  window_deadzone_loss:
+    enabled: false
+  temporal_release_loss:
+    enabled: false
+  demo_target_hold_loss:
+    enabled: false
+  state_hold_transition:
+    enabled: true
+    threshold_json: /data/pingfan/Excavator_real_stack_data/usb_hdf5_qc_20260708_72_104/runs/goal_state_hold_liveness_20260712/h2_transition_state_hold_finetune_e16_200/direct_policy_output_mechanical_deadzone.json
+    probability: 0.5
+    hold_horizon_steps: 20
+  goal_effect:
+    enabled: false
+  action_state_effort:
+    enabled: false

@@ -1,0 +1,9 @@
+schema_version: 1
+output_dir: /data/pingfan/Excavator_real_stack_data/g50_new_n80_trainval_view_v1
+forbidden_source_episode_ids: [105, 106, 107, 108, 109]
+sources:
+  - name: pro_real_teleop_20260713_n80
+    dataset_dir: /data/pingfan/Excavator_real_stack_data/pro_real_teleop_20260713_20hz_v1
+    split_path: /home/pingfan/Excavator_real_stack_e52_deadlock_eval/testbed/testbed/configs/splits/g50_new_n80_train_val.yaml
+    include_roles: [train, val]
+    composite_start: 40000

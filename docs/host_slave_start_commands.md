@@ -437,6 +437,48 @@ run 目录生成 `e53_no_motion_report.json`。只有该报告 `ok: true`，且�
 动作链和预期方向后，才能继续。不同 anchor 的变量、产物定位和检查命令以 E52 plan
 中的 `C20`、`C26` 为准。
 
+### G49 N5 四相机 shadow（不授权动作）
+
+N5 使用专用配置，策略按训练时间基准 20 Hz 推理，control pump 继续以 50 Hz
+重复最近的机器侧零动作。不要使用通用四相机配置中的 50 Hz policy sampling 或
+第四轴 `0.75` action scale。
+
+先确保二进制 bundle 已单独放到：
+
+```text
+policy_bundles/real_gmsl_fourcam_g49_n5_v1
+```
+
+然后在从端仓库运行只读 preflight：
+
+```bash
+cd /media/mundane/D/Excavator_real_stack
+export PYTHON="$PWD/.venv/bin/python"
+export PYTHONPATH="$PWD/testbed"
+
+"$PYTHON" -m testbed.cli.preflight_act_shadow_deployment \
+  --config testbed/testbed/configs/policy_real_gmsl_fourcam_g49_n5_shadow_v1.yaml \
+  --bundle-dir policy_bundles/real_gmsl_fourcam_g49_n5_v1
+```
+
+preflight 返回 `ok: true` 后，底层仍按本附录的 `--no-receiver` 方式启动。第二个
+终端使用 N5 专用 no-motion 包装脚本；它会再次执行同一个 preflight，然后调用
+通用 shadow runner：
+
+```bash
+cd /media/mundane/D/Excavator_real_stack
+export CONFIG=testbed/testbed/configs/policy_real_gmsl_fourcam_g49_n5_shadow_v1.yaml
+export BUNDLE_DIR=policy_bundles/real_gmsl_fourcam_g49_n5_v1
+export EXPECT_CAMERA_NAMES=video4,video5,video6,video7
+export TEST_LOG_DIR=/media/mundane/EXTERNAL_USB/policy_control_tests/g49_n5_shadow
+export MAX_STEPS=400
+./scripts/run_g49_n5_policy_shadow_check.sh
+```
+
+这一步只验证四路现场观测、N5 推理、时序聚合和零动作链。不要把 YAML 改成
+`control`。未来短程动作实验必须另行填写并通过
+`short_horizon_g49_n5_field_adapter_v1.yaml`，且仍需独立 runtime arming。
+
 ## 运行分工
 
 | 端 | 负责内容 | 不应启动 |
