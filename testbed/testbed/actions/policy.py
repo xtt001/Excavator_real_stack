@@ -123,6 +123,7 @@ class PolicyActionSource(ActionSource):
             temporal_aggregation_diagnostics=bool(
                 cfg.get("temporal_aggregation_diagnostics", False)
             ),
+            inference_precision=str(cfg.get("inference_precision", "fp32")),
         )
         camera_names = cfg.get("camera_names", cfg.get("cameras"))
         policy_camera_names = (
@@ -316,6 +317,9 @@ class PolicyActionSource(ActionSource):
                     dtype=np.float32,
                 ).copy(),
                 "policy_inference_latency_ms": latency_ms,
+                "policy_inference_precision": str(
+                    getattr(self._policy, "inference_precision", "fp32")
+                ),
                 "policy_step": int(self._step),
                 "policy_error": "",
                 **assist_extras,
@@ -511,6 +515,7 @@ def load_act_policy_from_bundle(
     device: str | None = None,
     temporal_agg: bool = True,
     temporal_aggregation_diagnostics: bool = False,
+    inference_precision: str = "fp32",
 ) -> Any:
     """Load the ACT policy bundle produced by excavator_testbed."""
 
@@ -543,6 +548,7 @@ def load_act_policy_from_bundle(
             temporal_aggregation_diagnostics
         ),
         device=str(device or resolved.get("policy", {}).get("device", "cuda")),
+        inference_precision=inference_precision,
     )
 
 

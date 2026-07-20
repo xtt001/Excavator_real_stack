@@ -781,7 +781,9 @@ class PolicyActionSourceTests(unittest.TestCase):
                 return_value="loaded",
             ) as from_checkpoint:
                 loaded = load_act_policy_from_bundle(
-                    bundle_dir=bundle, temporal_agg=True
+                    bundle_dir=bundle,
+                    temporal_agg=True,
+                    inference_precision="fp16",
                 )
 
         self.assertEqual(loaded, "loaded")
@@ -794,6 +796,7 @@ class PolicyActionSourceTests(unittest.TestCase):
         self.assertTrue(kwargs["policy_config"]["train_with_zero_latent"])
         self.assertTrue(kwargs["temporal_agg"])
         self.assertEqual(kwargs["device"], "cpu")
+        self.assertEqual(kwargs["inference_precision"], "fp16")
 
     def test_policy_observation_preserves_explicit_previous_final_command(self) -> None:
         obs = _obs()

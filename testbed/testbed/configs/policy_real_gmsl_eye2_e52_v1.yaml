@@ -51,6 +51,8 @@ teleop:
     camera: video4
     camera_names: ["video4", "video5"]
     temporal_agg: true
+    # Keep fp32 until fp16 passes checkpoint-level parity and Orin latency checks.
+    inference_precision: fp32
     output_mode: shadow_zero
     qvel_mode: raw
     qvel_diff_tau_s: 0.15

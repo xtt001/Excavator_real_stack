@@ -238,6 +238,70 @@ class DETRVAE(nn.Module):
             self.goal_effect_head = None
             self.action_context_residual = None
 
+    def _extract_camera_features(self, image, *, batch_cameras):
+        """Run the shared backbone while preserving camera-major feature layout.
+
+        Inference can fold cameras into the batch dimension so the shared
+        backbone is launched once.  Training keeps the historical sequential
+        path to avoid changing its numerical execution contract.
+        """
+        if not batch_cameras:
+            all_cam_features = []
+            all_cam_pos = []
+            for cam_id, _cam_name in enumerate(self.camera_names):
+                features, pos = self.backbones[0](image[:, cam_id])
+                all_cam_features.append(
+                    self.input_proj(features[0]) * self.vision_feature_scale
+                )
+                all_cam_pos.append(pos[0])
+            return all_cam_features, self._add_camera_role_encoding(all_cam_pos)
+
+        batch_size = image.shape[0]
+        camera_count = len(self.camera_names)
+        camera_images = image[:, :camera_count].reshape(
+            batch_size * camera_count,
+            *image.shape[2:],
+        )
+        features, pos = self.backbones[0](camera_images)
+        projected = self.input_proj(features[0]) * self.vision_feature_scale
+        projected = projected.reshape(
+            batch_size,
+            camera_count,
+            *projected.shape[1:],
+        )
+        all_cam_features = [projected[:, cam_id] for cam_id in range(camera_count)]
+
+        position = pos[0]
+        if position.shape[0] == batch_size * camera_count:
+            position = position.reshape(
+                batch_size,
+                camera_count,
+                *position.shape[1:],
+            )
+            all_cam_pos = [position[:, cam_id] for cam_id in range(camera_count)]
+        elif position.shape[0] == 1:
+            # Sine position encoding is image-independent and returns one map.
+            all_cam_pos = [position for _ in range(camera_count)]
+        else:
+            raise ValueError(
+                "Batched ACT backbone returned an unsupported position batch "
+                f"dimension {position.shape[0]}; expected 1 or "
+                f"{batch_size * camera_count}."
+            )
+        return all_cam_features, self._add_camera_role_encoding(all_cam_pos)
+
+    def _add_camera_role_encoding(self, positions):
+        if self.camera_role_encoding is None:
+            return positions
+        return [
+            position
+            + self.camera_role_encoding(camera_index).to(
+                dtype=position.dtype,
+                device=position.device,
+            )
+            for camera_index, position in enumerate(positions)
+        ]
+
     def forward(self, qpos, image, env_state, actions=None, is_pad=None):
         """
         qpos: batch, qpos_dim
@@ -298,11 +362,14 @@ class DETRVAE(nn.Module):
                         "temporal_input camera count mismatch: "
                         f"expected {len(self.camera_names)}, got {image.shape[2]}"
                     )
-            # Image observation features and position embeddings
-            all_cam_features = []
-            all_cam_pos = []
-            for cam_id, cam_name in enumerate(self.camera_names):
-                if self.temporal_input_enabled:
+            # Image observation features and position embeddings.  The V1.3
+            # temporal experiment retains its causal per-camera path, while
+            # ordinary single-frame inference folds cameras into one shared
+            # backbone batch.
+            if self.temporal_input_enabled:
+                all_cam_features = []
+                all_cam_pos = []
+                for cam_id, _cam_name in enumerate(self.camera_names):
                     batch, history = image.shape[:2]
                     camera_image = image[:, :, cam_id]
                     flat_camera_image = camera_image.reshape(
@@ -349,19 +416,19 @@ class DETRVAE(nn.Module):
                             "backbone returned an unexpected temporal position batch size: "
                             f"got {pos.shape[0]} for batch={batch}, history={history}"
                         )
-                else:
-                    features, pos = self.backbones[0](image[:, cam_id]) # HARDCODED
-                    features = features[0] # take the last layer feature
-                    pos = pos[0]
-                    features = self.input_proj(features)
-                if self.camera_role_encoding is not None:
-                    role_encoding = self.camera_role_encoding(cam_id).to(
-                        dtype=pos.dtype,
-                        device=pos.device,
-                    )
-                    pos = pos + role_encoding
-                all_cam_features.append(features * self.vision_feature_scale)
-                all_cam_pos.append(pos)
+                    if self.camera_role_encoding is not None:
+                        role_encoding = self.camera_role_encoding(cam_id).to(
+                            dtype=pos.dtype,
+                            device=pos.device,
+                        )
+                        pos = pos + role_encoding
+                    all_cam_features.append(features * self.vision_feature_scale)
+                    all_cam_pos.append(pos)
+            else:
+                all_cam_features, all_cam_pos = self._extract_camera_features(
+                    image,
+                    batch_cameras=not is_training,
+                )
             # proprioception features
             proprio_input = self.input_proj_robot_state(qpos) * self.proprio_feature_scale
             # fold camera dimension into width dimension

@@ -175,6 +175,7 @@ def load_policy_for_episode(
     max_episode_len: int,
     temporal_agg: bool,
     device: str | None,
+    inference_precision: str = "fp32",
 ) -> Any:
     """Load ACT policy while patching auto episode_len for long offline replay."""
 
@@ -200,6 +201,7 @@ def load_policy_for_episode(
         norm_stats_path=norm_stats_path,
         temporal_agg=bool(temporal_agg),
         device=str(device or patched.get("policy", {}).get("device", "cuda")),
+        inference_precision=inference_precision,
     )
 
 

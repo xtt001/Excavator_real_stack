@@ -18,6 +18,7 @@ limit.
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 import json
 import pickle
 from copy import deepcopy
@@ -83,6 +84,7 @@ class ACTAdapterState:
     all_time_actions: torch.Tensor | None
     temporal_weight_cache: dict[int, torch.Tensor]
     cached_actions: torch.Tensor | None
+    last_raw_action_chunk: torch.Tensor | None
     temporal_aggregation_diagnostics: dict[str, Any] | None
     factorized_diagnostics: dict[str, Any] | None
     goal_effect_diagnostics: dict[str, Any] | None
@@ -115,6 +117,30 @@ def _goal_effect_diagnostics(outputs: Any) -> dict[str, Any] | None:
             tensor = tensor[0]
         result[f"policy_{key}"] = tensor.numpy().tolist()
     return result
+
+
+_INFERENCE_PRECISIONS = ("fp32", "fp16")
+
+
+def _resolve_inference_autocast_dtype(
+    value: Any,
+    *,
+    device: torch.device,
+) -> torch.dtype | None:
+    precision = str(value or "fp32").strip().lower()
+    if precision not in _INFERENCE_PRECISIONS:
+        raise ValueError(
+            "inference_precision must be one of "
+            f"{_INFERENCE_PRECISIONS}, got {value!r}"
+        )
+    if precision == "fp16":
+        if device.type != "cuda":
+            raise ValueError(
+                "inference_precision='fp16' requires a CUDA device; "
+                f"resolved device is {device}."
+            )
+        return torch.float16
+    return None
 
 
 def _resolve_deadzone_loss_config(raw: Any) -> dict[str, Any]:
@@ -541,6 +567,7 @@ class ACTAdapter(Policy):
         temporal_agg: bool = False,
         device: str = "cuda",
         temporal_aggregation_diagnostics: bool = False,
+        inference_precision: str = "fp32",
     ):
         from testbed.policies.act.detr.main import build_ACT_model_and_optimizer
 
@@ -550,6 +577,11 @@ class ACTAdapter(Policy):
         self._temporal_aggregation_diagnostics_enabled = bool(
             temporal_aggregation_diagnostics
         )
+        self._inference_autocast_dtype = _resolve_inference_autocast_dtype(
+            inference_precision,
+            device=self.device,
+        )
+        self._inference_precision = str(inference_precision or "fp32").strip().lower()
         self.kl_weight = policy_config.get("kl_weight", 10)
         self._camera_names = list(policy_config.get("camera_names", []))
         self._temporal_input = resolve_temporal_input_config(
@@ -663,6 +695,7 @@ class ACTAdapter(Policy):
         self._temporal_last_timestamps: dict[str, int] = {}
         self._temporal_fallback_timestamp = 0
         self._last_temporal_input_diagnostics: dict[str, Any] | None = None
+        self._last_raw_action_chunk: torch.Tensor | None = None
 
         self._normalize = transforms.Normalize(
             mean=[0.485, 0.456, 0.406],
@@ -691,6 +724,7 @@ class ACTAdapter(Policy):
         factorized_aggregator = getattr(self, "_factorized_aggregator", None)
         if factorized_aggregator is not None:
             factorized_aggregator.reset()
+        self._last_raw_action_chunk = None
 
     def snapshot_state(self) -> ACTAdapterState:
         """Capture temporal inference state without sharing mutable storage."""
@@ -712,6 +746,11 @@ class ACTAdapter(Policy):
                 None
                 if self._cached_actions is None
                 else self._cached_actions.detach().clone()
+            ),
+            last_raw_action_chunk=(
+                None
+                if getattr(self, "_last_raw_action_chunk", None) is None
+                else self._last_raw_action_chunk.detach().clone()
             ),
             temporal_aggregation_diagnostics=deepcopy(
                 self._last_temporal_aggregation_diagnostics
@@ -755,6 +794,11 @@ class ACTAdapter(Policy):
             None
             if state.cached_actions is None
             else state.cached_actions.detach().to(self.device).clone()
+        )
+        self._last_raw_action_chunk = (
+            None
+            if state.last_raw_action_chunk is None
+            else state.last_raw_action_chunk.detach().to(self.device).clone()
         )
         self._last_temporal_aggregation_diagnostics = deepcopy(
             state.temporal_aggregation_diagnostics
@@ -811,6 +855,16 @@ class ACTAdapter(Policy):
         """Return the last opt-in aggregation decomposition in direct units."""
 
         return deepcopy(getattr(self, "_last_temporal_aggregation_diagnostics", None))
+
+    @property
+    def inference_precision(self) -> str:
+        return self._inference_precision
+
+    def last_raw_action_chunk(self) -> np.ndarray:
+        """Return the latest normalized ACT chunk for parity diagnostics."""
+        if self._last_raw_action_chunk is None:
+            raise RuntimeError("no ACT inference has run since reset")
+        return self._last_raw_action_chunk.cpu().numpy().copy()
 
     # ── inference ─────────────────────────────────────────────────────────────
 
@@ -942,21 +996,7 @@ class ACTAdapter(Policy):
 
         if self._model.training:
             self._model.eval()
-        with torch.inference_mode():
-            (
-                a_hat,
-                _,
-                _,
-                intent_logits,
-                goal_effect_outputs,
-                _action_state_logits,
-                _effective_action_phase_logits,
-            ) = self._unpack_model_output(
-                self._model(proprio, image, None)
-            )  # (1, C, Na)
-        self._last_goal_effect_diagnostics = _goal_effect_diagnostics(
-            goal_effect_outputs
-        )
+        a_hat, intent_logits = self._forward_inference(proprio, image)
         if intent_logits is not None and (
             intent_logits.ndim != 3
             or intent_logits.shape[0] != 1
@@ -1088,6 +1128,51 @@ class ACTAdapter(Policy):
         else:
             source = "local_step_fallback"
         return timestamps, source
+
+    def _forward_inference(
+        self,
+        proprio: torch.Tensor,
+        image: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        # A few lightweight compatibility tests construct the adapter with
+        # ``__new__`` and install only the fields needed for prediction.  Keep
+        # those legacy stubs on the default FP32 path instead of requiring the
+        # new constructor-owned precision field.
+        inference_autocast_dtype = getattr(
+            self, "_inference_autocast_dtype", None
+        )
+        autocast_context = (
+            nullcontext()
+            if inference_autocast_dtype is None
+            else torch.autocast(
+                device_type=self.device.type,
+                dtype=inference_autocast_dtype,
+                enabled=True,
+            )
+        )
+        with torch.inference_mode(), autocast_context:
+            (
+                a_hat,
+                _,
+                _,
+                intent_logits,
+                goal_effect_outputs,
+                _action_state_logits,
+                _effective_action_phase_logits,
+            ) = self._unpack_model_output(
+                self._model(proprio, image, None)
+            )
+
+        # Keep temporal aggregation, sigmoid and CPU conversion in FP32.  The
+        # reduced precision scope is limited to the neural-network forward.
+        a_hat = a_hat.float()
+        if intent_logits is not None:
+            intent_logits = intent_logits.float()
+        self._last_raw_action_chunk = a_hat[0].detach()
+        self._last_goal_effect_diagnostics = _goal_effect_diagnostics(
+            goal_effect_outputs
+        )
+        return a_hat, intent_logits
 
     def _build_proprio(self, obs: dict) -> torch.Tensor:
         parts: list[np.ndarray] = []
@@ -1928,7 +2013,8 @@ class ACTAdapter(Policy):
         temporal_agg: bool = False,
         device: str = "cuda",
         temporal_aggregation_diagnostics: bool = False,
-    ) -> ACTAdapter:
+        inference_precision: str = "fp32",
+    ) -> "ACTAdapter":
         """
         Convenience factory: load an ACT policy from a checkpoint file.
 
@@ -1950,6 +2036,7 @@ class ACTAdapter(Policy):
             temporal_agg=temporal_agg,
             temporal_aggregation_diagnostics=temporal_aggregation_diagnostics,
             device=device,
+            inference_precision=inference_precision,
         )
 
         raw = torch.load(ckpt_path, map_location="cpu")
