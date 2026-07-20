@@ -52,6 +52,9 @@ teleop:
     camera_names: [video4, video5, video6, video7]
     temporal_agg: true
     temporal_aggregation_diagnostics: true
+    # V1.3.1 freezes FP32 as the field-equivalent default. FP16 remains an
+    # explicit opt-in and must pass the recorded-observation precision gate.
+    inference_precision: fp32
     output_mode: shadow_zero
     qvel_mode: raw
     qvel_diff_tau_s: 0.15

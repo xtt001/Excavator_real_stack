@@ -1,0 +1,93 @@
+schema_version: policy_release_manifest_v1
+policy_version: v1.3.1
+release_tag: policy-v1.3.1
+release_branch: release/v1.3
+release_status: frozen
+
+identity:
+  human_name: highest-success single-cycle four-camera ACT
+  behavior_baseline_commit: 86bcf5d5c44edd3708880cd7a30a7216e63dfd26
+  performance_port_commit: ea87322
+  performance_source_commit: db720c1fb3dcaf5edd7b43d65b58f2219aa48163
+  training_config: testbed/testbed/configs/act_real_gmsl_fourcam_g49_n5_new_camera_role_transition_2000.yaml
+  training_config_sha256: 41a498b4048051880da2e0bdff2b0de4dfc808150669515ae5fb70ccfaae597a
+  runtime_config: testbed/testbed/configs/policy_real_gmsl_fourcam_g49_n5_shadow_v1.yaml
+
+model_contract:
+  cameras: [video4, video5, video6, video7]
+  camera_roles:
+    video4: eye
+    video5: eye
+    video6: stick
+    video7: stick
+  low_dim_keys: [qpos]
+  chunk_size: 20
+  temporal_aggregation: true
+  policy_sampling_hz: 20
+  control_pump_hz: 50
+  default_inference_precision: fp32
+  output_mode_in_checked_in_config: shadow_zero
+
+training_data:
+  manifest_sha256: 93d16983e70b0a614908cdf232d8f5879946b5e6b6175ae7dee6dfc5199e0348
+  split_sha256: 4b796da6520e1469ec4cd0d1d94af7a9886c1fde8e1a16b123ea36a474aa3ebc
+  split_rule: fixed train/validation split; forbidden legacy held-out episodes remain excluded
+
+runtime_bundle:
+  candidate_id: g49_n5_new_fourcam_camera_role_transition
+  files:
+    policy_best.ckpt:
+      sha256: 0c9b755447f1c06a893394fb1111b9365eb47a8670523b6eeaef8b2df7e13b0e
+      size_bytes: 335711177
+    dataset_stats.pkl:
+      sha256: f6248e7a24eae5af9c0c758cba5eb21d19e74fea16571df58b2e008e21fe6361
+      size_bytes: 19199
+    resolved_config.yaml:
+      sha256: ef5211342553d328e06891b013f9e7f641c2bd3617b958666669fff0a6a0822e
+      size_bytes: 2909
+    run_metadata.json:
+      sha256: cc29bdd67fdc511eea15f21190bdd5c3bc7e753050855a44a8f87236bfdd5725
+      size_bytes: 15944
+
+verification:
+  full_test_suite:
+    result: pass
+    tests_passed: 581
+    subtests_passed: 4
+  deployment_preflight:
+    result: pass
+    mode: shadow_zero
+    bundle_hashes_verified: true
+  checkpoint_load:
+    result: pass
+    strict_state_dict: true
+    replay_steps_per_episode: 100
+    validation_episode_ids: [10120, 10129, 10139]
+  fp32_camera_batching:
+    result: pass
+    executed_action_max_abs_diff: 0.0005360543727874756
+    executed_deadzone_class_disagreements: 0
+    executed_deadzone_class_total: 1200
+    raw_chunk_deadzone_class_disagreements: 3
+    raw_chunk_deadzone_class_total: 24000
+    p95_speedup_range_on_rtx_5070_ti: [1.4308404338153264, 1.5259400372751846]
+  fp16_opt_in:
+    result: offline_pass_not_enabled_by_default
+    executed_action_max_abs_diff: 0.0002518296241760254
+    executed_deadzone_class_disagreements: 0
+    executed_deadzone_class_total: 1200
+    raw_chunk_deadzone_class_disagreements: 0
+    raw_chunk_deadzone_class_total: 24000
+    p95_speedup_range_on_rtx_5070_ti: [1.066867050208552, 1.2396998386484812]
+
+evidence_scope:
+  - Checkpoint identity and loading were verified against the frozen binary hashes.
+  - Numeric and latency evidence is offline teacher-forced replay on an RTX 5070 Ti.
+  - The evidence does not prove Jetson AGX Orin latency or real closed-loop equivalence.
+  - FP32 camera batching is enabled; FP16 remains an explicit opt-in.
+
+known_limitations:
+  - V1 is a single-cycle policy and does not consume explicit dig, dump, or next-hover goal tokens.
+  - V1 does not own terrain depletion, target selection, or multi-cycle stopping decisions.
+  - Raw unaggregated chunks had 3 of 24000 deadzone-class boundary disagreements under FP32 camera batching, while all 1200 executed actions retained their class.
+  - Real-machine completion and Orin performance remain field evidence, not claims of this offline freeze.

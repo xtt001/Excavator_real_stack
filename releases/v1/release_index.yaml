@@ -1,0 +1,41 @@
+schema_version: policy_release_index_v1
+lineage: excavator_real_single_cycle_act_v1
+frozen_behavior_scope: single-cycle excavation followed by policy-to-gohome handoff
+
+versions:
+  - version: v1.0.0
+    name: two-eye continuous ACT baseline
+    status: historical_experiment
+    training_config: testbed/testbed/configs/act_real_gmsl_eye2_g49_n0_new_continuous_2000.yaml
+    git_tag: null
+
+  - version: v1.1.0
+    name: naive four-camera continuous ACT
+    status: historical_experiment
+    training_config: testbed/testbed/configs/act_real_gmsl_fourcam_g49_n3_new_continuous_2000.yaml
+    git_tag: null
+
+  - version: v1.2.0
+    name: four-camera ACT with camera and physical-role encoding
+    status: historical_experiment
+    training_config: testbed/testbed/configs/act_real_gmsl_fourcam_g49_n4_new_camera_role_2000.yaml
+    git_tag: null
+
+  - version: v1.3.0
+    name: highest-success single-cycle policy
+    status: behavior_baseline
+    source_commit: 86bcf5d5c44edd3708880cd7a30a7216e63dfd26
+    training_config: testbed/testbed/configs/act_real_gmsl_fourcam_g49_n5_new_camera_role_transition_2000.yaml
+    runtime_bundle_manifest: releases/v1/v1.3.1.yaml
+    git_tag: null
+
+  - version: v1.3.1
+    name: V1.3.0 with checkpoint-compatible four-camera inference optimization
+    status: frozen_release
+    release_manifest: releases/v1/v1.3.1.yaml
+    git_tag: policy-v1.3.1
+
+versioning_rules:
+  major: changes task or data semantics, such as conditioned cycle and multi-cycle sessions
+  minor: changes learned policy capability or observation/conditioning semantics
+  patch: preserves checkpoint and task semantics while fixing runtime, safety, or performance

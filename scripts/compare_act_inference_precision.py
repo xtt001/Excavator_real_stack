@@ -38,6 +38,18 @@ def main() -> None:
     parser.add_argument("--max-action-abs-diff", type=float, default=None)
     parser.add_argument("--min-p95-speedup", type=float, default=1.0)
     parser.add_argument("--require-deadzone-equivalence", action="store_true")
+    parser.add_argument(
+        "--require-raw-chunk-deadzone-equivalence", action="store_true"
+    )
+    parser.add_argument("--max-batching-action-abs-diff", type=float, default=None)
+    parser.add_argument("--min-batching-p95-speedup", type=float, default=1.0)
+    parser.add_argument(
+        "--require-batching-deadzone-equivalence", action="store_true"
+    )
+    parser.add_argument(
+        "--require-batching-raw-chunk-deadzone-equivalence",
+        action="store_true",
+    )
     args = parser.parse_args()
 
     bundle = args.bundle_dir.resolve()
@@ -61,6 +73,17 @@ def main() -> None:
     )
     thresholds = load_deadzone_thresholds(args.deadzone_json)
 
+    sequential_fp32 = _run_precision(
+        precision="fp32",
+        bundle=bundle,
+        checkpoint=checkpoint,
+        resolved_path=resolved_path,
+        stats_path=stats_path,
+        observations=observations,
+        device=str(args.device),
+        warmup_steps=max(0, int(args.warmup_steps)),
+        batch_cameras=False,
+    )
     runs = {}
     for precision in ("fp32", "fp16"):
         runs[precision] = _run_precision(
@@ -72,6 +95,7 @@ def main() -> None:
             observations=observations,
             device=str(args.device),
             warmup_steps=max(0, int(args.warmup_steps)),
+            batch_cameras=True,
         )
 
     executed = _comparison(
@@ -84,6 +108,17 @@ def main() -> None:
         runs["fp16"]["raw_chunks"],
         thresholds=thresholds,
     )
+    batching_executed = _comparison(
+        sequential_fp32["actions"],
+        runs["fp32"]["actions"],
+        thresholds=thresholds,
+    )
+    batching_raw_chunks = _comparison(
+        sequential_fp32["raw_chunks"],
+        runs["fp32"]["raw_chunks"],
+        thresholds=thresholds,
+    )
+    sequential_latency = sequential_fp32["latency_ms"]
     fp32_latency = runs["fp32"]["latency_ms"]
     fp16_latency = runs["fp16"]["latency_ms"]
     p50_speedup = _safe_ratio(
@@ -93,6 +128,14 @@ def main() -> None:
     p95_speedup = _safe_ratio(
         np.percentile(fp32_latency, 95),
         np.percentile(fp16_latency, 95),
+    )
+    batching_p50_speedup = _safe_ratio(
+        np.percentile(sequential_latency, 50),
+        np.percentile(fp32_latency, 50),
+    )
+    batching_p95_speedup = _safe_ratio(
+        np.percentile(sequential_latency, 95),
+        np.percentile(fp32_latency, 95),
     )
     report = {
         "schema_version": 1,
@@ -108,10 +151,17 @@ def main() -> None:
         "device": str(args.device),
         "temporal_aggregation": True,
         "latency_ms": {
+            "fp32_sequential_cameras": _latency_summary(sequential_latency),
             "fp32": _latency_summary(fp32_latency),
             "fp16": _latency_summary(fp16_latency),
+            "batching_p50_speedup": batching_p50_speedup,
+            "batching_p95_speedup": batching_p95_speedup,
             "p50_speedup": p50_speedup,
             "p95_speedup": p95_speedup,
+        },
+        "fp32_camera_batching": {
+            "executed_action_comparison": batching_executed,
+            "raw_action_chunk_comparison": batching_raw_chunks,
         },
         "executed_action_comparison": executed,
         "raw_action_chunk_comparison": raw_chunks,
@@ -122,6 +172,20 @@ def main() -> None:
             p95_speedup=p95_speedup,
             min_p95_speedup=float(args.min_p95_speedup),
             require_deadzone_equivalence=bool(args.require_deadzone_equivalence),
+            require_raw_chunk_deadzone_equivalence=bool(
+                args.require_raw_chunk_deadzone_equivalence
+            ),
+            batching_executed=batching_executed,
+            batching_raw_chunks=batching_raw_chunks,
+            max_batching_action_abs_diff=args.max_batching_action_abs_diff,
+            batching_p95_speedup=batching_p95_speedup,
+            min_batching_p95_speedup=float(args.min_batching_p95_speedup),
+            require_batching_deadzone_equivalence=bool(
+                args.require_batching_deadzone_equivalence
+            ),
+            require_batching_raw_chunk_deadzone_equivalence=bool(
+                args.require_batching_raw_chunk_deadzone_equivalence
+            ),
         ),
     }
     args.output_json.parent.mkdir(parents=True, exist_ok=True)
@@ -172,6 +236,7 @@ def _run_precision(
     observations: list[dict[str, Any]],
     device: str,
     warmup_steps: int,
+    batch_cameras: bool,
 ) -> dict[str, np.ndarray]:
     policy = load_policy_for_episode(
         bundle_dir=bundle,
@@ -183,6 +248,10 @@ def _run_precision(
         device=device,
         inference_precision=precision,
     )
+    model = getattr(policy, "_model", None)
+    if model is None or not hasattr(model, "_batch_cameras_during_inference"):
+        raise ValueError("loaded ACT model does not expose the camera batching gate")
+    model._batch_cameras_during_inference = bool(batch_cameras)
     for index in range(warmup_steps):
         policy.predict(observations[index % len(observations)])
     policy.reset()
@@ -259,6 +328,14 @@ def _acceptance(
     p95_speedup: float | None,
     min_p95_speedup: float,
     require_deadzone_equivalence: bool,
+    require_raw_chunk_deadzone_equivalence: bool = False,
+    batching_executed: dict[str, Any] | None = None,
+    batching_raw_chunks: dict[str, Any] | None = None,
+    max_batching_action_abs_diff: float | None = None,
+    batching_p95_speedup: float | None = None,
+    min_batching_p95_speedup: float = 1.0,
+    require_batching_deadzone_equivalence: bool = False,
+    require_batching_raw_chunk_deadzone_equivalence: bool = False,
 ) -> dict[str, Any]:
     checks: dict[str, bool] = {
         "p95_latency_speedup": (
@@ -273,9 +350,28 @@ def _acceptance(
         checks["executed_action_deadzone_class"] = (
             int(executed["deadzone_class_disagreement_count"]) == 0
         )
+    if require_raw_chunk_deadzone_equivalence:
         checks["raw_chunk_deadzone_class"] = (
             int(raw_chunks["deadzone_class_disagreement_count"]) == 0
         )
+    if batching_executed is not None and batching_raw_chunks is not None:
+        checks["fp32_camera_batching_p95_latency_speedup"] = (
+            batching_p95_speedup is not None
+            and batching_p95_speedup >= min_batching_p95_speedup
+        )
+        if max_batching_action_abs_diff is not None:
+            checks["fp32_camera_batching_executed_action_max_abs_diff"] = (
+                float(batching_executed["max_abs_diff"])
+                <= float(max_batching_action_abs_diff)
+            )
+        if require_batching_deadzone_equivalence:
+            checks["fp32_camera_batching_executed_action_deadzone_class"] = (
+                int(batching_executed["deadzone_class_disagreement_count"]) == 0
+            )
+        if require_batching_raw_chunk_deadzone_equivalence:
+            checks["fp32_camera_batching_raw_chunk_deadzone_class"] = (
+                int(batching_raw_chunks["deadzone_class_disagreement_count"]) == 0
+            )
     return {
         "evaluated": bool(checks),
         "passed": bool(checks) and all(checks.values()),
@@ -283,6 +379,17 @@ def _acceptance(
         "max_action_abs_diff_limit": max_action_abs_diff,
         "min_p95_speedup": min_p95_speedup,
         "require_deadzone_equivalence": require_deadzone_equivalence,
+        "require_raw_chunk_deadzone_equivalence": (
+            require_raw_chunk_deadzone_equivalence
+        ),
+        "max_batching_action_abs_diff_limit": max_batching_action_abs_diff,
+        "min_batching_p95_speedup": min_batching_p95_speedup,
+        "require_batching_deadzone_equivalence": (
+            require_batching_deadzone_equivalence
+        ),
+        "require_batching_raw_chunk_deadzone_equivalence": (
+            require_batching_raw_chunk_deadzone_equivalence
+        ),
     }
 
 

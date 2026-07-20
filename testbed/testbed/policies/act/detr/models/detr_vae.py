@@ -136,6 +136,7 @@ class DETRVAE(nn.Module):
         super().__init__()
         self.num_queries = num_queries
         self.camera_names = camera_names
+        self._batch_cameras_during_inference = True
         self.vision_feature_scale = float(vision_feature_scale)
         self.proprio_feature_scale = float(proprio_feature_scale)
         temporal_cfg = dict(temporal_input_config or {})
@@ -427,7 +428,10 @@ class DETRVAE(nn.Module):
             else:
                 all_cam_features, all_cam_pos = self._extract_camera_features(
                     image,
-                    batch_cameras=not is_training,
+                    batch_cameras=(
+                        not is_training
+                        and bool(self._batch_cameras_during_inference)
+                    ),
                 )
             # proprioception features
             proprio_input = self.input_proj_robot_state(qpos) * self.proprio_feature_scale
