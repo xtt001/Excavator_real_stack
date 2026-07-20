@@ -102,6 +102,7 @@ class PolicyActionSource(ActionSource):
             stats_path=cfg.get("stats_path"),
             device=cfg.get("device"),
             temporal_agg=bool(cfg.get("temporal_agg", True)),
+            inference_precision=str(cfg.get("inference_precision", "fp32")),
         )
         camera_names = cfg.get("camera_names", cfg.get("cameras"))
         policy_camera_names = (
@@ -218,6 +219,9 @@ class PolicyActionSource(ActionSource):
                 "policy_qvel_mode": self._qvel_mode,
                 "policy_qvel_input": qvel_input.copy(),
                 "policy_inference_latency_ms": latency_ms,
+                "policy_inference_precision": str(
+                    getattr(self._policy, "inference_precision", "fp32")
+                ),
                 "policy_step": int(self._step),
                 "policy_error": "",
                 **assist_extras,
@@ -393,6 +397,7 @@ def load_act_policy_from_bundle(
     stats_path: str | Path | None = None,
     device: str | None = None,
     temporal_agg: bool = True,
+    inference_precision: str = "fp32",
 ) -> Any:
     """Load the ACT policy bundle produced by excavator_testbed."""
 
@@ -418,6 +423,7 @@ def load_act_policy_from_bundle(
         norm_stats_path=stats,
         temporal_agg=bool(temporal_agg),
         device=str(device or resolved.get("policy", {}).get("device", "cuda")),
+        inference_precision=inference_precision,
     )
 
 
@@ -439,6 +445,9 @@ def _act_policy_config_from_resolved(resolved: dict[str, Any]) -> dict[str, Any]
         "dim_feedforward": int(act_params.get("dim_feedforward", 3200)),
         "vision_feature_scale": float(act_params.get("vision_feature_scale", 1.0)),
         "proprio_feature_scale": float(act_params.get("proprio_feature_scale", 1.0)),
+        "camera_role_encoding": copy.deepcopy(
+            act_params.get("camera_role_encoding", {}) or {}
+        ),
         "lr_backbone": 1e-5,
         "backbone": "resnet18",
         "enc_layers": 4,

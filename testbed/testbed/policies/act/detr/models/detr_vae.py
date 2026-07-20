@@ -10,6 +10,11 @@ from .transformer import build_transformer, TransformerEncoder, TransformerEncod
 
 import numpy as np
 
+from testbed.policies.act.camera_role_encoding import (
+    CameraRoleEncoding,
+    resolve_camera_role_encoding_config,
+)
+
 
 def reparametrize(mu, logvar):
     std = logvar.div(2).exp()
@@ -42,6 +47,7 @@ class DETRVAE(nn.Module):
         vision_feature_scale=1.0,
         proprio_feature_scale=1.0,
         intent_dim=0,
+        camera_role_encoding_config=None,
     ):
         """ Initializes the model.
         Parameters:
@@ -61,6 +67,19 @@ class DETRVAE(nn.Module):
         self.transformer = transformer
         self.encoder = encoder
         hidden_dim = transformer.d_model
+        camera_role_cfg = resolve_camera_role_encoding_config(
+            camera_role_encoding_config,
+            camera_names=camera_names,
+        )
+        self.camera_role_encoding = (
+            CameraRoleEncoding(
+                hidden_dim=hidden_dim,
+                camera_names=camera_names,
+                config=camera_role_cfg,
+            )
+            if camera_role_cfg["enabled"]
+            else None
+        )
         self.action_head = nn.Linear(hidden_dim, action_dim)
         self.intent_head = nn.Linear(hidden_dim, int(intent_dim)) if int(intent_dim) > 0 else None
         self.is_pad_head = nn.Linear(hidden_dim, 1)
@@ -87,6 +106,70 @@ class DETRVAE(nn.Module):
         # decoder extra parameters
         self.latent_out_proj = nn.Linear(self.latent_dim, hidden_dim) # project latent sample to embedding
         self.additional_pos_embed = nn.Embedding(2, hidden_dim) # learned position embedding for proprio and latent
+
+    def _extract_camera_features(self, image, *, batch_cameras):
+        """Run the shared backbone while preserving camera-major feature layout.
+
+        Inference can fold cameras into the batch dimension so the shared
+        backbone is launched once.  Training keeps the historical sequential
+        path to avoid changing its numerical execution contract.
+        """
+        if not batch_cameras:
+            all_cam_features = []
+            all_cam_pos = []
+            for cam_id, _cam_name in enumerate(self.camera_names):
+                features, pos = self.backbones[0](image[:, cam_id])
+                all_cam_features.append(
+                    self.input_proj(features[0]) * self.vision_feature_scale
+                )
+                all_cam_pos.append(pos[0])
+            return all_cam_features, self._add_camera_role_encoding(all_cam_pos)
+
+        batch_size = image.shape[0]
+        camera_count = len(self.camera_names)
+        camera_images = image[:, :camera_count].reshape(
+            batch_size * camera_count,
+            *image.shape[2:],
+        )
+        features, pos = self.backbones[0](camera_images)
+        projected = self.input_proj(features[0]) * self.vision_feature_scale
+        projected = projected.reshape(
+            batch_size,
+            camera_count,
+            *projected.shape[1:],
+        )
+        all_cam_features = [projected[:, cam_id] for cam_id in range(camera_count)]
+
+        position = pos[0]
+        if position.shape[0] == batch_size * camera_count:
+            position = position.reshape(
+                batch_size,
+                camera_count,
+                *position.shape[1:],
+            )
+            all_cam_pos = [position[:, cam_id] for cam_id in range(camera_count)]
+        elif position.shape[0] == 1:
+            # Sine position encoding is image-independent and returns one map.
+            all_cam_pos = [position for _ in range(camera_count)]
+        else:
+            raise ValueError(
+                "Batched ACT backbone returned an unsupported position batch "
+                f"dimension {position.shape[0]}; expected 1 or "
+                f"{batch_size * camera_count}."
+            )
+        return all_cam_features, self._add_camera_role_encoding(all_cam_pos)
+
+    def _add_camera_role_encoding(self, positions):
+        if self.camera_role_encoding is None:
+            return positions
+        return [
+            position
+            + self.camera_role_encoding(camera_index).to(
+                dtype=position.dtype,
+                device=position.device,
+            )
+            for camera_index, position in enumerate(positions)
+        ]
 
     def forward(self, qpos, image, env_state, actions=None, is_pad=None):
         """
@@ -128,14 +211,10 @@ class DETRVAE(nn.Module):
 
         if self.backbones is not None:
             # Image observation features and position embeddings
-            all_cam_features = []
-            all_cam_pos = []
-            for cam_id, cam_name in enumerate(self.camera_names):
-                features, pos = self.backbones[0](image[:, cam_id]) # HARDCODED
-                features = features[0] # take the last layer feature
-                pos = pos[0]
-                all_cam_features.append(self.input_proj(features) * self.vision_feature_scale)
-                all_cam_pos.append(pos)
+            all_cam_features, all_cam_pos = self._extract_camera_features(
+                image,
+                batch_cameras=not is_training,
+            )
             # proprioception features
             proprio_input = self.input_proj_robot_state(qpos) * self.proprio_feature_scale
             # fold camera dimension into width dimension
@@ -274,6 +353,7 @@ def build(args):
         vision_feature_scale=getattr(args, "vision_feature_scale", 1.0),
         proprio_feature_scale=getattr(args, "proprio_feature_scale", 1.0),
         intent_dim=getattr(args, "intent_dim", 0),
+        camera_role_encoding_config=getattr(args, "camera_role_encoding", None),
     )
 
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)

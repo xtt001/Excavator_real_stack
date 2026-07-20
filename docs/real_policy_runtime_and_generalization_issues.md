@@ -141,6 +141,79 @@
 - FP16/TensorRT 会带来数值差异。若“推理精度不降低”要求严格 bit-level 或 FP32 输出一致，则不应作为第一阶段方案。
 - 如果接受数值小差异但动作行为一致，可以单独评估 TensorRT/FP16。
 
+#### 四相机共享 backbone 合批
+
+ACT 的视觉 backbone 在不同相机之间共享权重。推理阶段把
+`(batch, camera, channel, height, width)` 折叠为
+`(batch * camera, channel, height, width)`，可以用一次 backbone 调用处理所有
+相机，再恢复相机维度并按原 camera order 拼接特征。该路径：
+
+- 只在没有 expert action 输入的推理前向中启用；训练和 validation 继续使用原逐相机路径；
+- 不改变 checkpoint、模型参数、相机顺序、Transformer token 布局或 temporal aggregation；
+- 不需要重新训练，但不同 batch shape 可能让 CUDA 选择不同卷积 kernel，因此不承诺 bitwise FP32 一致；
+- 上机前仍需比较 raw action chunk、deadzone direction class、temporal aggregation 后动作以及持续负载延迟。
+
+开发机 RTX 5070 Ti 的合成输入 smoke 使用 `batch=1`、四相机、
+`216x384`、ResNet18、hidden dim 512：完整随机初始化 ACT 前向 median 从
+`8.37 ms` 降至 `5.24 ms`，约 `1.60x`；归一化 action chunk 的
+`max_abs_diff` 为 `2.23e-4`。已有双相机 E52 checkpoint smoke 的 median 从
+`5.27 ms` 降至 `4.19 ms`，约 `1.26x`，归一化 action chunk
+`max_abs_diff` 为 `4.35e-5`。这些数字只用于证明本地实现有实际收益和小量数值差异，
+不能外推 Jetson AGX Orin 的加速比例，也不是现场动作等价结论。
+
+#### 可切换 FP16 推理与精度检查
+
+Runtime policy 配置支持 `inference_precision: fp32|fp16`，默认和当前现场配置均保持
+`fp32`。`fp16` 只包围 ACT 神经网络前向；temporal aggregation、intent sigmoid、
+动作反归一化和 CPU 输出继续使用 FP32。它不改变 checkpoint，也不需要重新训练。
+
+在启用 `fp16` 现场控制前，使用同一 checkpoint 和同一段已录制观测运行：
+
+```bash
+PYTHONPATH=.:testbed python scripts/compare_act_inference_precision.py \
+  --bundle-dir /path/to/policy_bundle \
+  --episode-file /path/to/episode.hdf5 \
+  --deadzone-json /path/to/deadzone.json \
+  --device cuda \
+  --max-steps 200 \
+  --warmup-steps 20 \
+  --require-deadzone-equivalence \
+  --output-json artifacts/act_precision/fp32_vs_fp16.json
+```
+
+报告同时比较 temporal aggregation 后的执行动作、每次前向反归一化后的 raw action
+chunk、deadzone direction class 和 P50/P95 latency。该检查是 recorded-observation
+teacher-forced replay，只能验证数值和动作语义是否保持，不能替代真机闭环验证。动作
+误差阈值不在脚本中猜测；需要门控时，依据当前控制容差显式传入
+`--max-action-abs-diff`。性能验收默认要求 P95 latency 至少不退化，可用
+`--min-p95-speedup` 提高目标，但不应为了让报告通过而降低到 `1.0` 以下。
+
+开发机 RTX 5070 Ti 上，已有双相机 E52 checkpoint 对 episode 91 的 100 个连续步骤
+实测结果是：FP32 P50/P95 为 `4.77/4.88 ms`，FP16 为 `4.84/5.12 ms`，FP16
+反而更慢；聚合动作最大绝对差为 `1.09e-4`，400 个执行动作轴和 8,000 个 raw
+chunk 动作轴均没有发生 deadzone class 改变。因此该 checkpoint 在开发机上通过了
+本次语义一致性检查，但没有通过性能门槛，不能据此默认启用 FP16。Orin 和四相机
+checkpoint 必须分别实测。
+
+当前成功率最高的四相机 camera-role checkpoint 在同一开发机上的 200 步测试中，
+逐相机 FP32 的 P95 为 `10.27 ms`，共享 backbone 合批后的 FP32 P95 为
+`6.67 ms`，约 `1.54x`；合批 FP16 P95 为 `5.73 ms`。合批 FP32 相对逐相机
+FP32 在 800 个聚合执行动作轴和 16,000 个 raw chunk 轴上均没有 deadzone class
+变化。FP16 虽然没有改变 800 个聚合执行轴，却改变了 16,000 个 raw chunk 轴中的
+3 个，因此严格 raw-chunk 等价门槛不通过，现场配置继续保持 FP32。
+
+进一步对 20 条 validation episode 分布采样 500 个观测：TF32 加
+`torch.compile(mode="reduce-overhead")` 将本地稳态 P95 降至约 `3.93 ms`，但
+40,000 个 raw chunk 轴中有 5 个 deadzone class 变化；FP16 有 8 个。两者在这组
+样本的 2,000 个 temporal-aggregation 执行动作轴中均没有类别变化。这只能说明聚合
+在当前离线样本中吸收了临界数值差异，不能证明 Orin 或真机闭环等价。当前相机合批
+是默认候选；FP16、TF32 和 compile 仍应作为显式实验开关。
+
+分段 profile 显示，逐相机推理时 backbone 约占 wall time 的 `52.7%`；合批后
+Transformer 上升为最大阶段，约占 `53.6%`。因此后续模型侧优化应优先针对
+Transformer 的线性层和 attention 矩阵运算，而不是继续压缩已经降到次要位置的
+相机预处理。
+
 ### 2.5 减少日志和 I/O 阻塞
 
 现象风险：

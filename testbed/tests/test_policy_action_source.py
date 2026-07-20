@@ -760,7 +760,11 @@ class PolicyActionSourceTests(unittest.TestCase):
                 "testbed.policies.act.adapter.ACTAdapter.from_checkpoint",
                 return_value="loaded",
             ) as from_checkpoint:
-                loaded = load_act_policy_from_bundle(bundle_dir=bundle, temporal_agg=True)
+                loaded = load_act_policy_from_bundle(
+                    bundle_dir=bundle,
+                    temporal_agg=True,
+                    inference_precision="fp16",
+                )
 
         self.assertEqual(loaded, "loaded")
         kwargs = from_checkpoint.call_args.kwargs
@@ -772,6 +776,7 @@ class PolicyActionSourceTests(unittest.TestCase):
         self.assertTrue(kwargs["policy_config"]["train_with_zero_latent"])
         self.assertTrue(kwargs["temporal_agg"])
         self.assertEqual(kwargs["device"], "cpu")
+        self.assertEqual(kwargs["inference_precision"], "fp16")
 
     def test_load_act_policy_from_bundle_allows_null_episode_len(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
