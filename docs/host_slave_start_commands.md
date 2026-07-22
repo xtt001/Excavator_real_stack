@@ -3,6 +3,82 @@
 本文作为当前现场主从分体测试和录制的主文档，集中记录应启动的命令、链路检查、
 QC 和停止顺序。历史 runbook/checklist 已并入本页。
 
+## 现场常用命令集合（置顶）
+
+下面按现场启动顺序整理。`start`、IMU 日志、eye 预览发布、主端 sender 和主端 GUI
+都是持续运行进程，应各占一个终端；camera bring-up 执行完成后会自行退出。
+
+### 1. 从端：camera bring-up
+
+```bash
+cd /media/mundane/D/Excavator_real_stack
+GMSL_VIDEO_DEVICES="4 5 6 7" ./scripts/bring_up_gmsl_cameras.sh
+```
+
+### 2. 从端：start 全链路
+
+```bash
+cd /media/mundane/D/Excavator_real_stack
+./scripts/slave_real_stack.sh run --force --policy-remote
+```
+
+如果本次明确使用 Pro 实机遥操作录制目录，则用包装入口代替上面的命令：
+
+```bash
+cd /media/mundane/D/Excavator_real_stack
+./scripts/run_pro_real_teleop_recording.sh
+```
+
+### 3. 从端：log IMU/qvel
+
+```bash
+cd /media/mundane/D/Excavator_real_stack
+./scripts/log_imu_qvel_quality.py \
+  --rate-hz 50 \
+  --duration-s 0 \
+  --print-every-s 1 \
+  --verbose-imu
+```
+
+### 4. 主端：sender
+
+```bash
+cd ~/Excavator_real_stack
+export PYTHON="$HOME/miniforge3/envs/excavator-real-stack/bin/python"
+export GO_HOME_BUTTON=3
+"${PYTHON}" -m pip install --no-build-isolation --no-deps -e ./testbed
+"${PYTHON}" -m testbed.cli.teleop_remote \
+  --config testbed/testbed/configs/teleop_real_v1.yaml \
+  --host 192.168.100.1 \
+  --port 8770 \
+  --input joystick \
+  --rate-hz 50 \
+  --record-start-button 2 \
+  --record-start-joystick-id 0 \
+  --policy-start-button 4 \
+  --go-home-button "${GO_HOME_BUTTON}" \
+  --confirm-remote-control
+```
+
+### 5. 从端：发布 GUI 所需的 video4 / eye 预览
+
+在第 2 步已经生成 GMSL SHM 后，另开从端终端：
+
+```bash
+cd /media/mundane/D/Excavator_real_stack
+./scripts/start_gmsl_eye_stream.sh
+```
+
+### 6. 主端：GUI
+
+```bash
+cd ~/Excavator_real_stack
+./scripts/start_host_dashboard.sh --always-on-top
+```
+
+不需要窗口置顶时去掉 `--always-on-top`。各命令的前置条件、状态判断和故障排查见
+下方对应章节。
+
 当前主端 SSH 配置使用：
 
 ```sshconfig
@@ -205,8 +281,13 @@ cd /media/mundane/D/Excavator_real_stack
 
 这个终端同时托管底层链路和唯一的 `policy_remote` receiver。按一次 `Ctrl+C`
 会先停止 receiver，再停止 gateway、相机链路和 bridge。
-`--policy-remote` 会自动使用 `policy_real_gmsl_four_camera_v1.yaml`、`policy_remote` input、
-`control` output、`action_scale=1.0`、GMSL 四路相机、USB HDF5 目录和 policy test log 目录。
+`--policy-remote` 会自动使用 `policy_real_gmsl_fourcam_g49_n5_control_v1.yaml` 和
+`real_gmsl_fourcam_g49_n5_v1` bundle；命令本身不变。receiver 启动时保持手动模式，
+按主端手柄按钮 `4` 才切到 N5 live control，再按一次回到手动。N5 policy 按训练时基
+20 Hz 更新，control pump 保持 50 Hz，动作缩放为四轴 `1.0`。
+
+当前配置不启用 N5 的自动 go-home 输出：模型不会主动产生 `go_home_requested`。
+按钮 `3` 的人工 go-home 仍保留，使用现有已标定的 `GoHomeController`。
 
 如果当前只是检查 IMU/qvel，不想启动 receiver，使用下面这个命令。它会启动
 bridge、GMSL 预处理和 gateway，但不开 receiver：
@@ -226,6 +307,20 @@ cd /media/mundane/D/Excavator_real_stack
 `--no-camera` 会让 gateway 进入无相机模式，`read_state` 只转发 joint/IMU 状态并返回空
 `images`，不会再等待 GMSL/FPV 共享内存。上面两个 `--no-receiver` 模式下，IMU/qvel
 日志脚本仍然连接默认 gateway `127.0.0.1:8765`；不要改成 `--port 8766`。
+
+### 2.5. 从端发布 video4 / eye_left 低延迟预览
+
+全链路启动且 `/dev/shm/excavator_gmsl_video4` 已生成后，在从端另开终端：
+
+```bash
+cd /media/mundane/D/Excavator_real_stack
+./scripts/start_gmsl_eye_stream.sh
+```
+
+该进程旁路读取现有 video4 SHM，不会再次打开 `/dev/video4`，也不参与 control pump、
+gateway 或 HDF5 录制。它只在 SHM 序号变化时编码新帧，默认以 JPEG quality 80 发布到
+`/excavator/eye/video4/image_raw/compressed`；ROS QoS 使用 `best_effort + depth=1`，避免
+网络或显示变慢时累计旧帧。终端会周期打印发布帧率、码率和 JPEG 编码耗时。
 
 ### 3. 从端另开终端看 CAN
 
@@ -315,6 +410,52 @@ export GO_HOME_BUTTON=3
   --confirm-remote-control
 ```
 
+sender 默认以不超过 10Hz 把本机动作状态和从端 receiver 返回状态镜像到
+`127.0.0.1:8781/UDP`，供只读 GUI 使用。这个 localhost 镜像不建立第二条 `8770`
+连接，GUI 未启动或中途关闭都不影响 50Hz 控制发送。需要显式关闭镜像时才加
+`--no-local-status`。
+
+### 6.5. 主端打开集成状态 GUI
+
+完成第 2.5 步后，在主端任意终端运行；GUI 可以先于 sender 启动，此时状态项显示
+`WAIT`：
+
+```bash
+cd ~/Excavator_real_stack
+./scripts/start_host_dashboard.sh
+```
+
+界面统一显示 video4 / eye_left 预览、sender/receiver/bridge/control ACK、四路 IMU
+在线/姿态有效性/帧龄/丢包、录制 episode/步数、HDF5 写入结果和文件大小、外置盘
+挂载及剩余空间、在线 QC、最近状态事件。状态链路为
+`receiver -> 8770 同一 TCP 回包 -> sender -> localhost UDP 8781 -> GUI`；界面本身
+不连接 `8770`、不发送 action、不触发录制，也不负责真机急停。
+
+顶部醒目区固定显示“已录制条数 / 正在录制 / 正在保存 / 正在回位”四张大卡片。
+“已录制条数”按从端数据目录中实际存在的合法 `episode_<N>.hdf5` 成功文件计数，
+同时注明本次 receiver 进程保存数和最近 episode；不把进程内 `saved` 误当历史总数。
+其下固定显示四张 IMU 健康卡和 HOME 标定卡。HOME 卡优先显示从端 receiver 实际
+加载的四轴目标 rad/deg、成功容差、启用状态、runtime/phase 一致性、timeout/dwell
+及配置来源；旧 receiver 尚未重启、不含 HOME 状态字段时，才回退到主端 `--config`
+指定的同一份 YAML。当前标定脚本没有保存可靠的标定时间，因此 GUI 不用文件修改
+时间冒充标定时间。
+
+右上角“保持窗口最前”复选框可随时打开或取消窗口置顶，切换只影响主端窗口层级，
+不会影响视频、状态接收或真机控制。默认不置顶；需要启动时直接置顶可运行：
+
+```bash
+./scripts/start_host_dashboard.sh --always-on-top
+```
+
+video4 的 ROS 接收、JPEG 解码和 Qt 显示相互独立；三段之间都只保留最新帧，因此
+GUI 卡顿或窗口缩放时不会排队回放旧画面。GUI 启动时即使主从网卡或 Jetson 暂时
+离线，视频线程也会每 2 秒重建 ROS 订阅，链路恢复后无需重启界面。需要只看画面、
+不看状态时仍可使用：
+
+```bash
+./scripts/start_host_eye_viewer.sh
+```
+
 ### 7. 点火、go-home、录制和模型控制
 
 ```text
@@ -331,7 +472,7 @@ export GO_HOME_BUTTON=3
 
 ```text
 button 2 -> start HDF5 recording
-button 3 -> go-home
+button 3 -> operator-requested go-home（N5 模型暂不主动请求）
 button 4 -> manual/model control toggle
 ```
 
@@ -437,12 +578,54 @@ run 目录生成 `e53_no_motion_report.json`。只有该报告 `ok: true`，且�
 动作链和预期方向后，才能继续。不同 anchor 的变量、产物定位和检查命令以 E52 plan
 中的 `C20`、`C26` 为准。
 
+### G49 N5 四相机 shadow（不授权动作）
+
+N5 使用专用配置，策略按训练时间基准 20 Hz 推理，control pump 继续以 50 Hz
+重复最近的机器侧零动作。不要使用通用四相机配置中的 50 Hz policy sampling 或
+第四轴 `0.75` action scale。
+
+先确保二进制 bundle 已单独放到：
+
+```text
+policy_bundles/real_gmsl_fourcam_g49_n5_v1
+```
+
+然后在从端仓库运行只读 preflight：
+
+```bash
+cd /media/mundane/D/Excavator_real_stack
+export PYTHON="$PWD/.venv/bin/python"
+export PYTHONPATH="$PWD/testbed"
+
+"$PYTHON" -m testbed.cli.preflight_act_shadow_deployment \
+  --config testbed/testbed/configs/policy_real_gmsl_fourcam_g49_n5_shadow_v1.yaml \
+  --bundle-dir policy_bundles/real_gmsl_fourcam_g49_n5_v1
+```
+
+preflight 返回 `ok: true` 后，底层仍按本附录的 `--no-receiver` 方式启动。第二个
+终端使用 N5 专用 no-motion 包装脚本；它会再次执行同一个 preflight，然后调用
+通用 shadow runner：
+
+```bash
+cd /media/mundane/D/Excavator_real_stack
+export CONFIG=testbed/testbed/configs/policy_real_gmsl_fourcam_g49_n5_shadow_v1.yaml
+export BUNDLE_DIR=policy_bundles/real_gmsl_fourcam_g49_n5_v1
+export EXPECT_CAMERA_NAMES=video4,video5,video6,video7
+export TEST_LOG_DIR=/media/mundane/EXTERNAL_USB/policy_control_tests/g49_n5_shadow
+export MAX_STEPS=400
+./scripts/run_g49_n5_policy_shadow_check.sh
+```
+
+这一步只验证四路现场观测、N5 推理、时序聚合和零动作链。不要把 YAML 改成
+`control`。未来短程动作实验必须另行填写并通过
+`short_horizon_g49_n5_field_adapter_v1.yaml`，且仍需独立 runtime arming。
+
 ## 运行分工
 
 | 端 | 负责内容 | 不应启动 |
 |----|----------|----------|
-| 从端 `slave-jetson` / `192.168.100.1` | real CAN bridge、Orbbec、FPV 到 SHM、gateway、`tb-receiver-real` 本地写 USB | 主端手柄读取 |
-| 主端 | `tb-teleop-remote` 摇杆控制、QC | C++ real CAN bridge、训练 HDF5 写盘 |
+| 从端 `slave-jetson` / `192.168.100.1` | real CAN bridge、Orbbec、FPV/GMSL 到 SHM、video4 预览发布、gateway、`tb-receiver-real` 本地写 USB | 主端手柄读取 |
+| 主端 | `tb-teleop-remote` 摇杆控制、只读集成 GUI、rqt、QC | C++ real CAN bridge、训练 HDF5 写盘 |
 
 关键端口：
 
@@ -450,6 +633,8 @@ run 目录生成 `e53_no_motion_report.json`。只有该报告 `ok: true`，且�
 - 从端 control pump 直连本机 C++ bridge：`127.0.0.1:8766`
 - 从端 gateway 也连接本机 C++ bridge：`127.0.0.1:8766`，用于 `read_state` 和 FPV
 - 主端 remote action 连接从端 receiver：`192.168.100.1:8770`
+- 主端 sender 到只读 GUI 状态镜像：`127.0.0.1:8781/UDP`
+- 从端 video4 预览 topic：`/excavator/eye/video4/image_raw/compressed`
 
 ## 补充说明
 
@@ -618,9 +803,10 @@ pygame `joystick 0`，右侧物理摇杆是 pygame `joystick 1`；左侧控制 `
 - 按左侧按钮 `2` 前，receiver 处于 receive/armed 状态，会接收和下发控制，但不会写入 HDF5。
 - 按左侧按钮 `2` 后开始正式 HDF5 录制；从端 `slave_real_stack.sh run --force --policy-remote` 终端按一次 `Ctrl+C`
   会先下发零命令，再停止当前 episode 并保存已有数据；主端 `teleop_remote` 的 `Ctrl+C` 只断开 sender。
-- go-home 启用前需要在 `testbed/testbed/configs/policy_real_gmsl_four_camera_v1.yaml` 中配置
-  `teleop.recording.go_home.home_pose_rad` 并设为 `enabled: true`，也可以用
-  `./scripts/calibrate_home_pose_from_current.sh` 从当前姿态采样写入。
+- 当前 N5 live-control 配置保留已标定的人工 go-home；模型自动 go-home gate 关闭。
+  后续重新标定时应更新 `policy_real_gmsl_fourcam_g49_n5_control_v1.yaml` 中的
+  `teleop.recording.go_home`，也可以用 `./scripts/calibrate_home_pose_from_current.sh`
+  从当前姿态采样写入。
 - `swing` 是圆周角，`216°` 和 `-144°` 是同一物理分支附近。go-home、phase label
   和 go-home 区域采样必须使用最短角误差；不要用 `home_pose_rad - qpos` 的普通差值
   判断 swing 距离或控制方向。bridge 输出也应优先保持 IMU4 raw yaw 的非负分支。

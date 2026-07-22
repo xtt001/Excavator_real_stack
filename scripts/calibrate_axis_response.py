@@ -16,6 +16,7 @@ import datetime as dt
 import json
 import math
 import socket
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -29,7 +30,8 @@ AXIS_INDEX = {
 }
 AXIS_NAMES = tuple(AXIS_INDEX)
 ZERO_ACTION = [0.0, 0.0, 0.0, 0.0]
-HARD_MAX_AMPLITUDE = 0.20
+DEFAULT_APPROVED_MAX_AMPLITUDE = 0.20
+ABSOLUTE_MAX_AMPLITUDE = 1.0
 
 
 def parse_args() -> argparse.Namespace:
@@ -50,7 +52,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--amplitudes",
         default="0.03,0.05,0.07,0.10,0.12",
-        help="Comma-separated normalized commands, each in (0, 0.20].",
+        help="Comma-separated normalized commands, each in (0, approved maximum].",
+    )
+    parser.add_argument(
+        "--approved-max-amplitude",
+        type=float,
+        default=DEFAULT_APPROVED_MAX_AMPLITUDE,
+        help=(
+            "Operator-approved normalized command ceiling. Defaults to 0.20; "
+            "must be set explicitly for larger field-response trials."
+        ),
     )
     parser.add_argument("--duration-s", type=float, default=0.45)
     parser.add_argument("--settle-s", type=float, default=0.80)
@@ -127,6 +138,10 @@ def main() -> int:
                         summaries.append(trial["summary"])
                         _append_jsonl(output, trial)
                         _print_summary(trial["summary"])
+                        if bool(trial["summary"].get("aborted", False)):
+                            raise RuntimeError(
+                                "axis-response sequence stopped after abort-delta limit"
+                            )
         finally:
             try:
                 _send_action(sock, ZERO_ACTION)
@@ -164,57 +179,108 @@ def _run_trial(
     baseline_qpos = _vector4(baseline, "qpos")
     baseline_qvel = _vector4(baseline, "qvel")
     start_monotonic = time.monotonic()
+    command_deadline = start_monotonic + duration_s
+    settle_deadline = command_deadline + settle_s
     aborted = False
     first_motion_latency_s: float | None = None
+    force_zero = threading.Event()
+    stop_pump = threading.Event()
+    pump_lock = threading.Lock()
+    pump_state: dict[str, Any] = {
+        "latest_ack": {"ack": False, "fault_code": "command pump not started"},
+        "command_send_count": 0,
+        "zero_send_count": 0,
+        "error": None,
+    }
+    peer = sock.getpeername()
+    command_sock = socket.create_connection((peer[0], peer[1]), timeout=sock.gettimeout())
+    command_sock.settimeout(sock.gettimeout())
 
-    deadline = start_monotonic + duration_s
-    while time.monotonic() < deadline:
-        ack = _send_action(sock, _action(axis_idx, command))
-        state = _read_state(sock, step_id)
-        step_id += 1
-        sample = _sample_record(
-            phase="command",
-            axis=axis,
-            command=command,
-            state=state,
-            ack=ack,
-            t0=start_monotonic,
-            baseline_qpos=baseline_qpos,
-            baseline_qvel=baseline_qvel,
-        )
-        samples.append(sample)
+    def command_pump() -> None:
+        next_send = start_monotonic
+        try:
+            while not stop_pump.is_set():
+                now = time.monotonic()
+                use_zero = force_zero.is_set() or now >= command_deadline
+                ack = _send_action(
+                    command_sock,
+                    ZERO_ACTION if use_zero else _action(axis_idx, command),
+                )
+                with pump_lock:
+                    pump_state["latest_ack"] = ack
+                    count_key = "zero_send_count" if use_zero else "command_send_count"
+                    pump_state[count_key] = int(pump_state[count_key]) + 1
+                next_send += period_s
+                delay = next_send - time.monotonic()
+                if delay > 0.0:
+                    stop_pump.wait(delay)
+                else:
+                    next_send = time.monotonic()
+        except BaseException as exc:  # surfaced in the state-sampling thread
+            with pump_lock:
+                pump_state["error"] = exc
+        finally:
+            try:
+                ack = _send_action(command_sock, ZERO_ACTION)
+                with pump_lock:
+                    pump_state["latest_ack"] = ack
+                    pump_state["zero_send_count"] = int(pump_state["zero_send_count"]) + 1
+            except Exception:
+                pass
+            try:
+                _request(command_sock, "close.request")
+            except Exception:
+                pass
+            command_sock.close()
 
-        active_delta = float(sample["qpos_delta"][axis_idx])
-        active_qvel_delta = float(sample["qvel_delta"][axis_idx])
-        if first_motion_latency_s is None and (
-            abs(active_delta) >= motion_qpos_threshold_rad
-            or abs(active_qvel_delta) >= motion_qvel_threshold_rad_s
-        ):
-            first_motion_latency_s = float(sample["t_s"])
-        if abs(active_delta) >= abort_delta_rad:
-            aborted = True
-            break
-        _sleep_until_next(period_s)
-
-    _send_action(sock, ZERO_ACTION)
-    settle_deadline = time.monotonic() + settle_s
-    while time.monotonic() < settle_deadline:
-        ack = _send_action(sock, ZERO_ACTION)
-        state = _read_state(sock, step_id)
-        step_id += 1
-        samples.append(
-            _sample_record(
-                phase="settle",
+    pump_thread = threading.Thread(target=command_pump, name="axis-command-pump", daemon=True)
+    pump_thread.start()
+    try:
+        while time.monotonic() < settle_deadline:
+            state = _read_state(sock, step_id)
+            step_id += 1
+            now = time.monotonic()
+            phase = "command" if now < command_deadline and not force_zero.is_set() else "settle"
+            with pump_lock:
+                ack = dict(pump_state["latest_ack"])
+                pump_error = pump_state["error"]
+            if pump_error is not None:
+                raise RuntimeError(f"50 Hz command pump failed: {pump_error}")
+            sample = _sample_record(
+                phase=phase,
                 axis=axis,
-                command=0.0,
+                command=command if phase == "command" else 0.0,
                 state=state,
                 ack=ack,
                 t0=start_monotonic,
                 baseline_qpos=baseline_qpos,
                 baseline_qvel=baseline_qvel,
             )
-        )
-        _sleep_until_next(period_s)
+            samples.append(sample)
+
+            active_delta = float(sample["qpos_delta"][axis_idx])
+            active_qvel_delta = float(sample["qvel_delta"][axis_idx])
+            if first_motion_latency_s is None and (
+                abs(active_delta) >= motion_qpos_threshold_rad
+                or abs(active_qvel_delta) >= motion_qvel_threshold_rad_s
+            ):
+                first_motion_latency_s = float(sample["t_s"])
+            if abs(active_delta) >= abort_delta_rad:
+                aborted = True
+                force_zero.set()
+    finally:
+        force_zero.set()
+        stop_pump.set()
+        pump_thread.join(timeout=max(2.0, float(sock.gettimeout() or 0.0) + 1.0))
+        if pump_thread.is_alive():
+            raise RuntimeError("50 Hz command pump did not stop")
+
+    with pump_lock:
+        command_send_count = int(pump_state["command_send_count"])
+        zero_send_count = int(pump_state["zero_send_count"])
+        pump_error = pump_state["error"]
+    if pump_error is not None:
+        raise RuntimeError(f"50 Hz command pump failed: {pump_error}")
 
     summary = _summarize_trial(
         axis=axis,
@@ -225,6 +291,13 @@ def _run_trial(
         aborted=aborted,
         first_motion_latency_s=first_motion_latency_s,
         motion_qpos_threshold_rad=motion_qpos_threshold_rad,
+    )
+    summary["requested_command_duration_s"] = float(duration_s)
+    summary["command_send_count"] = command_send_count
+    summary["zero_send_count"] = zero_send_count
+    summary["requested_command_rate_hz"] = float(rate_hz)
+    summary["effective_command_rate_hz"] = (
+        float(command_send_count) / float(duration_s) if duration_s > 0.0 else 0.0
     )
     trial = {
         "type": "axis_response_trial",
@@ -447,10 +520,18 @@ def _validate_args(args: argparse.Namespace, amplitudes: tuple[float, ...]) -> N
         raise ValueError("motion thresholds must be positive")
     if args.abort_delta_rad <= 0.0:
         raise ValueError("--abort-delta-rad must be positive")
+    if not (
+        0.0 < args.approved_max_amplitude <= ABSOLUTE_MAX_AMPLITUDE
+    ):
+        raise ValueError(
+            "--approved-max-amplitude must be in "
+            f"(0, {ABSOLUTE_MAX_AMPLITUDE}]"
+        )
     for amplitude in amplitudes:
-        if not (0.0 < amplitude <= HARD_MAX_AMPLITUDE):
+        if not (0.0 < amplitude <= args.approved_max_amplitude):
             raise ValueError(
-                f"amplitude {amplitude} is outside (0, {HARD_MAX_AMPLITUDE}]"
+                f"amplitude {amplitude} is outside operator-approved range "
+                f"(0, {args.approved_max_amplitude}]"
             )
 
 

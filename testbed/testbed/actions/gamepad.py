@@ -355,6 +355,8 @@ class JoystickActionSource(ActionSource):
             release_rate=cfg.get("release_rate", 6.0),
             recenter_rate=cfg.get("recenter_rate", 7.0),
             exponent=cfg.get("exponent", 1.0),
+            positive_exponent=cfg.get("positive_exponent"),
+            negative_exponent=cfg.get("negative_exponent"),
             default_dt=default_dt,
         )
 

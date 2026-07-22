@@ -21,7 +21,8 @@ if [[ "${EXCAVATOR_CAMERA_SOURCE:-fpv}" == "gmsl" ]]; then
     camera_args+=(--gmsl-camera "${camera}")
   done
   camera_args+=(--gmsl-max-group-skew-ms "${EXCAVATOR_GMSL_MAX_GROUP_SKEW_MS:-5.0}")
-  camera_args+=(--gmsl-group-timeout-ms "${EXCAVATOR_GMSL_GROUP_TIMEOUT_MS:-50.0}")
+  # 仅保留 CLI 兼容参数；gateway 使用每路帧缓存并立即返回最近时间戳组。
+  camera_args+=(--gmsl-group-timeout-ms "${EXCAVATOR_GMSL_GROUP_TIMEOUT_MS:-0.0}")
 fi
 
 exec python3 -m excavator_bridge_gateway.gateway_server \

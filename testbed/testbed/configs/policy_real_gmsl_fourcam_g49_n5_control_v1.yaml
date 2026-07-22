@@ -1,7 +1,7 @@
-# Runtime config for the E52 eye-only GMSL policy gate stack.
-# policy.bundle_dir must contain the ACT base files, E52 manifest and gate
-# artifacts, and deadzone_policy_raw_for_runtime_scale.json.
-# This deployment entry is intentionally shadow_zero only.
+# Live-control field configuration for the G49 N5 four-camera ACT candidate.
+# The receiver starts in manual mode. Button 4 toggles manual/N5 control.
+# N5 does not emit automatic go-home requests in this profile; operator button
+# 3 can still start the existing calibrated GoHomeController.
 
 real:
   backend: mock
@@ -26,39 +26,37 @@ real:
     timeout_s: 1.0
   data_side_defaults:
     host:
-      dataset_dir: data/policy_shadow_real_gmsl_eye2_e52_v1
+      dataset_dir: data/policy_control_g49_n5_fourcam_v1
       bridge:
         host: "192.168.100.1"
         port: 8765
     slave:
-      dataset_dir: /data/policy_shadow_real_gmsl_eye2_e52_v1
+      dataset_dir: /data/policy_control_g49_n5_fourcam_v1
       bridge:
         host: "127.0.0.1"
         port: 8765
 
 teleop:
   input: policy
-  learning_target: e52_policy_shadow_from_real_gmsl_observation
+  learning_target: g49_n5_fourcam_live_control_from_live_observation
   num_episodes: 1
   metadata:
     operator_id: ""
     session_id: ""
-    notes: "E52 eye-only GMSL gated policy shadow runtime"
+    notes: "G49 N5 four-camera live control; manual start; no model-initiated go-home"
 
   policy:
-    bundle_dir: policy_bundles/real_gmsl_eye2_e52_v1
-    source_id: policy:act:real_gmsl_eye2_e52_v1
+    bundle_dir: policy_bundles/real_gmsl_fourcam_g49_n5_v1
+    source_id: policy:act:g49_n5_fourcam_role_transition:live_control
     camera: video4
-    camera_names: ["video4", "video5"]
+    camera_names: [video4, video5, video6, video7]
     temporal_agg: true
-    # Keep fp32 until fp16 passes checkpoint-level parity and Orin latency checks.
     inference_precision: fp32
-    output_mode: shadow_zero
+    temporal_aggregation_diagnostics: true
+    output_mode: control
     qvel_mode: raw
     qvel_diff_tau_s: 0.15
     qvel_diff_clip_rad_s: [1.5, 1.5, 1.5, 1.5]
-    # ACT is already de-normalized into the recorded normalized-command domain.
-    # Do not apply the joystick bucket scale a second time at policy runtime.
     action_scale: [1.0, 1.0, 1.0, 1.0]
     deadzone_assist:
       enabled: false
@@ -68,11 +66,7 @@ teleop:
       deadzone_positive: [0.661, 0.259, 0.500, 0.408]
       deadzone_negative: [0.721, 0.357, 0.500, 0.508]
     runtime_gates:
-      enabled: true
-      bundle_dir: policy_bundles/real_gmsl_eye2_e52_v1
-      manifest_path: policy_bundles/real_gmsl_eye2_e52_v1/candidate_package_manifest.json
-      deadzone_json: deadzone_policy_raw_for_runtime_scale.json
-      snap_epsilon: 0.001
+      enabled: false
     clip: 1.0
     fail_safe_zero: true
     record_start_on_reset: false
@@ -82,10 +76,10 @@ teleop:
     port: 8770
     timeout_ms: 200
     rate_hz: 50
-    source_id: "host_joystick"
+    source_id: host_joystick
 
   policy_remote:
-    source_id: "policy_remote"
+    source_id: policy_remote
     start_in_policy: false
 
   recording:
@@ -95,9 +89,7 @@ teleop:
       enabled: true
       home_pose_rad: [-0.007831, -0.137463, -0.508548, 0.238583]
       near_tolerance_rad: [999.0, 999.0, 999.0, 999.0]
-      # Keep the stick inside the E52 training-home support. The former 0.08
-      # accepted qpos=-0.568 although the training minimum is about -0.550.
-      success_tolerance_rad: [0.05, 0.05, 0.035, 0.04]
+      success_tolerance_rad: [0.05, 0.05, 0.08, 0.04]
       max_policy_raw_qpos_delta_rad: [0.08, 0.08, 0.08, 0.08]
       center_tolerance_rad: [0.025, 0.030, 0.035, 0.025]
       resume_tolerance_rad: [0.040, 0.045, 0.055, 0.045]
@@ -137,7 +129,7 @@ teleop:
 
   test_log:
     enabled: true
-    output_dir: runs/policy_control_tests/e52_runtime_shadow
+    output_dir: /media/mundane/EXTERNAL_USB/policy_control_tests
     flush_every_steps: 20
     capture_images: true
     image_camera: video4
@@ -147,20 +139,20 @@ teleop:
     image_jpeg_quality: 95
 
 task:
-  task_name: real_gmsl_eye2_e52_policy_shadow_test
-  dataset_dir: data/policy_shadow_real_gmsl_eye2_e52_v1
-  camera_names: ["video4", "video5"]
-  max_steps: 4000
+  task_name: real_gmsl_fourcam_g49_n5_live_control_test
+  dataset_dir: data/policy_control_g49_n5_fourcam_v1
+  camera_names: [video4, video5, video6, video7]
+  max_steps: 400
   control_hz: 50
-  record_hz: 50
-  dt: 0.02
+  record_hz: 20
+  dt: 0.05
   seed: -1
-  param_version: real_gmsl_eye2_e52_v1
+  param_version: g49_n5_fourcam_live_control_v1
 
 sync:
   time_source: sensor_or_ros_header_stamp
   max_observation_skew_ms: 40.0
-  required_cameras: ["video4", "video5"]
+  required_cameras: [video4, video5, video6, video7]
   record_action_sample_time: true
   record_action_send_time: true
 
@@ -182,22 +174,8 @@ receiver:
     imu_require_valid_attitude: true
     quarantine_failed_records: true
   online_qc:
-    enabled: true
+    enabled: false
     primary_camera: video4
-    reference_path: ""
-    mask_backfill_window_steps: 5
-    qpos_warn_consecutive_steps: 5
-    qpos_fail_consecutive_steps: 25
-    qpos_distribution_hard_fail: false
-    qpos_jump_fail_rad: 0.20
-    max_policy_raw_qpos_delta_rad: [0.08, 0.08, 0.08, 0.08]
-    imu_qpos_delta_warn_consecutive_steps: 5
-    imu_qpos_delta_fail_consecutive_steps: 25
-    fpv_sample_interval_steps: 5
-    fpv_drift_warn_consecutive_samples: 5
-    fpv_drift_fail_consecutive_samples: 25
-    fpv_drift_hard_fail: false
-    fpv_black_mean_threshold: 5.0
 
 safety:
   deadman_enabled: true

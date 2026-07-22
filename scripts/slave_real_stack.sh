@@ -7,6 +7,7 @@ PID_DIR="${STATE_DIR}/pids"
 LOG_ROOT="${EXCAVATOR_SLAVE_STACK_LOG_ROOT:-${ROOT_DIR}/artifacts/slave_stack}"
 LOG_DIR_FILE="${STATE_DIR}/log_dir"
 CAMERA_MODE_FILE="${STATE_DIR}/camera_mode"
+IMU_MODE_FILE="${STATE_DIR}/imu_mode"
 LOG_VIEW="${EXCAVATOR_LOG_VIEW:-dashboard}"
 
 CONTROL_HOST="${EXCAVATOR_CONTROL_HOST:-127.0.0.1}"
@@ -27,6 +28,7 @@ BUCKET_IMU0_REFERENCE_RAD="${EXCAVATOR_BUCKET_IMU0_REFERENCE_RAD:-0}"
 BUCKET_IMU0_SIGN="${EXCAVATOR_BUCKET_IMU0_SIGN:-${EXCAVATOR_BUCKET_IMU0_GYRO_SIGN:-1}}"
 DAOYUAN_STICK_POLICY_OFFSET_RAD="${EXCAVATOR_DAOYUAN_STICK_POLICY_OFFSET_RAD:-0.19801020488135143}"
 DAOYUAN_BUCKET_POLICY_OFFSET_RAD="${EXCAVATOR_DAOYUAN_BUCKET_POLICY_OFFSET_RAD:--2.006833804661174}"
+SWING_POLICY_OFFSET_RAD="${EXCAVATOR_SWING_POLICY_OFFSET_RAD:-0}"
 BUCKET_GRAVITY_HINGE_REFERENCE_RAD="${EXCAVATOR_BUCKET_GRAVITY_HINGE_REFERENCE_RAD:-2.0839045979023254}"
 BUCKET_GRAVITY_HINGE_POLICY_OFFSET_RAD="${EXCAVATOR_BUCKET_GRAVITY_HINGE_POLICY_OFFSET_RAD:--2.025561263010988}"
 BUCKET_GRAVITY_HINGE_MEDIAN_WINDOW="${EXCAVATOR_BUCKET_GRAVITY_HINGE_MEDIAN_WINDOW:-21}"
@@ -72,8 +74,8 @@ STARTED_SERVICES=()
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/slave_real_stack.sh start [--force] [--policy-remote] [--no-camera] [--no-receiver] [--skip-usb] [--skip-can] [--install-python-package]
-  scripts/slave_real_stack.sh run [--force] [--policy-remote] [--no-camera] [--no-receiver] [--skip-usb] [--skip-can] [--install-python-package]
+  scripts/slave_real_stack.sh start [--force] [--policy-remote] [--no-camera] [--no-imu] [--no-receiver] [--skip-usb] [--skip-can] [--install-python-package]
+  scripts/slave_real_stack.sh run [--force] [--policy-remote] [--no-camera] [--no-imu] [--no-receiver] [--skip-usb] [--skip-can] [--install-python-package]
   scripts/slave_real_stack.sh stop [--force]
   scripts/slave_real_stack.sh restart [--force] [start options]
   scripts/slave_real_stack.sh status
@@ -91,6 +93,8 @@ Common profiles:
                    recording, and policy control toggle.
   --no-camera      Do not start camera services; gateway read_state returns
                    empty images for read-only IMU/qvel diagnostics.
+  --no-imu         Do not setup, candump, or read the IMU CAN interface. Bridge
+                   publishes placeholder zero qpos/qvel and unit-quaternion IMU.
 
 Common environment overrides:
   EXCAVATOR_USB_MOUNT=/media/mundane/EXTERNAL_USB
@@ -99,6 +103,7 @@ Common environment overrides:
   EXCAVATOR_ROS_WS=/home/mundane/orbbec_ws
   EXCAVATOR_CAN_IF=can2 EXCAVATOR_CAN_BITRATE=250000
   EXCAVATOR_IMU_IF=can5 EXCAVATOR_IMU_CAN_BITRATE=1000000  # set EXCAVATOR_IMU_IF=usbcan0 for ZLG USBCAN IMU input
+  EXCAVATOR_NO_IMU=0                         # set 1 or pass --no-imu to publish placeholder IMU state
   EXCAVATOR_IMU_RAW_CAN_LOG=1                 # set 0 to disable background candump
   EXCAVATOR_IMU_RAW_CAN_LOG_IF=can5           # defaults to EXCAVATOR_IMU_IF; SocketCAN only
   EXCAVATOR_JOINT_RPY_PROFILE=daoyuan_chain   # daoyuan_chain | legacy_diff
@@ -108,6 +113,7 @@ Common environment overrides:
   EXCAVATOR_BUCKET_IMU0_SIGN=1                # set -1 if bucket qpos/qvel sign is reversed
   EXCAVATOR_DAOYUAN_STICK_POLICY_OFFSET_RAD=0.19801020488135143
   EXCAVATOR_DAOYUAN_BUCKET_POLICY_OFFSET_RAD=-2.006833804661174
+  EXCAVATOR_SWING_POLICY_OFFSET_RAD=0            # raw swing yaw is already in policy space; default adds no offset
   EXCAVATOR_BUCKET_GRAVITY_HINGE_REFERENCE_RAD=2.0839045979023254
   EXCAVATOR_BUCKET_GRAVITY_HINGE_POLICY_OFFSET_RAD=-2.025561263010988
   EXCAVATOR_BUCKET_GRAVITY_HINGE_MEDIAN_WINDOW=21
@@ -145,8 +151,21 @@ is_socketcan_if() {
   [[ "$1" =~ ^can[0-9]+$ ]]
 }
 
+bool_to_01() {
+  local raw="${1:-0}"
+  raw="${raw,,}"
+  case "${raw}" in
+    1|true|yes|on)
+      printf '1'
+      ;;
+    *)
+      printf '0'
+      ;;
+  esac
+}
+
 apply_policy_remote_profile() {
-  CONFIG_PATH="${EXCAVATOR_TELEOP_CONFIG:-${ROOT_DIR}/testbed/testbed/configs/policy_real_gmsl_four_camera_v1.yaml}"
+  CONFIG_PATH="${EXCAVATOR_TELEOP_CONFIG:-${ROOT_DIR}/testbed/testbed/configs/policy_real_gmsl_fourcam_g49_n5_control_v1.yaml}"
   RECEIVER_INPUT="${EXCAVATOR_RECEIVER_INPUT:-policy_remote}"
   RECEIVER_RECORD_MODE="${EXCAVATOR_RECEIVER_RECORD_MODE:-record}"
   POLICY_OUTPUT_MODE="${EXCAVATOR_POLICY_OUTPUT_MODE:-}"
@@ -395,8 +414,17 @@ mount_usb() {
 }
 
 setup_can() {
-  log "setting up CAN ${CAN_IF} bitrate=${CAN_BITRATE}; IMU ${IMU_IF} bitrate=${IMU_CAN_BITRATE}"
+  local no_imu="${1:-0}"
+  if [[ "${no_imu}" == "1" ]]; then
+    log "setting up CAN ${CAN_IF} bitrate=${CAN_BITRATE}; IMU disabled"
+  else
+    log "setting up CAN ${CAN_IF} bitrate=${CAN_BITRATE}; IMU ${IMU_IF} bitrate=${IMU_CAN_BITRATE}"
+  fi
   "${ROOT_DIR}/control/setup/setup_can.sh" "${CAN_IF}" "${CAN_BITRATE}"
+  if [[ "${no_imu}" == "1" ]]; then
+    log "IMU disabled: skipping IMU CAN setup for ${IMU_IF}"
+    return
+  fi
   if is_socketcan_if "${IMU_IF}"; then
     "${ROOT_DIR}/control/setup/setup_can.sh" "${IMU_IF}" "${IMU_CAN_BITRATE}"
   else
@@ -423,10 +451,13 @@ prepare_start() {
 start_stack() {
   local force="$1"
   local no_camera="$2"
-  local no_receiver="$3"
-  local skip_usb="$4"
-  local skip_can="$5"
-  local skip_pip="${6:-${EXCAVATOR_SKIP_PIP_INSTALL}}"
+  local no_imu="$3"
+  local no_receiver="$4"
+  local skip_usb="$5"
+  local skip_can="$6"
+  local skip_pip="${7:-${EXCAVATOR_SKIP_PIP_INSTALL}}"
+  local bridge_imu_simulation=false
+  local imu_mode=hardware
 
   if [[ "${force}" == "1" ]]; then
     stop_stack 1
@@ -444,8 +475,18 @@ start_stack() {
   else
     printf '%s\n' "${CAMERA_STACK}" >"${CAMERA_MODE_FILE}"
   fi
+  if [[ "${no_imu}" == "1" ]]; then
+    bridge_imu_simulation=true
+    imu_mode=placeholder
+    printf 'placeholder\n' >"${IMU_MODE_FILE}"
+  else
+    printf 'hardware\n' >"${IMU_MODE_FILE}"
+  fi
   export ROOT_DIR CONTROL_HOST CONTROL_PORT GATEWAY_HOST GATEWAY_PORT RECEIVER_PORT
   export CAN_IF IMU_IF IMU_RAW_CAN_LOG_IF DATASET_DIR CONFIG_PATH RECEIVER_INPUT RECEIVER_RECORD_MODE
+  export EXCAVATOR_NO_IMU="${no_imu}"
+  export EXCAVATOR_IMU_PLACEHOLDER="${no_imu}"
+  export BRIDGE_IMU_SIMULATION="${bridge_imu_simulation}"
   export EXCAVATOR_JOINT_RPY_PROFILE="${JOINT_RPY_PROFILE}"
   export EXCAVATOR_BUCKET_IMU0_PROFILE="${BUCKET_IMU0_PROFILE}"
   export EXCAVATOR_BUCKET_QPOS_SOURCE="${BUCKET_QPOS_SOURCE}"
@@ -454,6 +495,7 @@ start_stack() {
   export EXCAVATOR_BUCKET_IMU0_GYRO_SIGN="${BUCKET_IMU0_SIGN}"
   export EXCAVATOR_DAOYUAN_STICK_POLICY_OFFSET_RAD="${DAOYUAN_STICK_POLICY_OFFSET_RAD}"
   export EXCAVATOR_DAOYUAN_BUCKET_POLICY_OFFSET_RAD="${DAOYUAN_BUCKET_POLICY_OFFSET_RAD}"
+  export EXCAVATOR_SWING_POLICY_OFFSET_RAD="${SWING_POLICY_OFFSET_RAD}"
   export EXCAVATOR_BUCKET_GRAVITY_HINGE_REFERENCE_RAD="${BUCKET_GRAVITY_HINGE_REFERENCE_RAD}"
   export EXCAVATOR_BUCKET_GRAVITY_HINGE_POLICY_OFFSET_RAD="${BUCKET_GRAVITY_HINGE_POLICY_OFFSET_RAD}"
   export EXCAVATOR_BUCKET_GRAVITY_HINGE_MEDIAN_WINDOW="${BUCKET_GRAVITY_HINGE_MEDIAN_WINDOW}"
@@ -472,11 +514,13 @@ start_stack() {
     mount_usb
   fi
   if [[ "${skip_can}" != "1" ]]; then
-    setup_can
+    setup_can "${no_imu}"
   fi
-  log "joint rpy profile=${JOINT_RPY_PROFILE} bucket qpos source=${BUCKET_QPOS_SOURCE} imu0_profile=${BUCKET_IMU0_PROFILE} reference_rad=${BUCKET_IMU0_REFERENCE_RAD} sign=${BUCKET_IMU0_SIGN} daoyuan_stick_offset=${DAOYUAN_STICK_POLICY_OFFSET_RAD} daoyuan_bucket_offset=${DAOYUAN_BUCKET_POLICY_OFFSET_RAD} gravity_ref=${BUCKET_GRAVITY_HINGE_REFERENCE_RAD} gravity_offset=${BUCKET_GRAVITY_HINGE_POLICY_OFFSET_RAD} median=${BUCKET_GRAVITY_HINGE_MEDIAN_WINDOW}"
+  log "joint rpy profile=${JOINT_RPY_PROFILE} bucket qpos source=${BUCKET_QPOS_SOURCE} imu_mode=${imu_mode} imu0_profile=${BUCKET_IMU0_PROFILE} reference_rad=${BUCKET_IMU0_REFERENCE_RAD} sign=${BUCKET_IMU0_SIGN} swing_offset=${SWING_POLICY_OFFSET_RAD} daoyuan_stick_offset=${DAOYUAN_STICK_POLICY_OFFSET_RAD} daoyuan_bucket_offset=${DAOYUAN_BUCKET_POLICY_OFFSET_RAD} gravity_ref=${BUCKET_GRAVITY_HINGE_REFERENCE_RAD} gravity_offset=${BUCKET_GRAVITY_HINGE_POLICY_OFFSET_RAD} median=${BUCKET_GRAVITY_HINGE_MEDIAN_WINDOW}"
 
-  if [[ "${IMU_RAW_CAN_LOG}" == "1" ]]; then
+  if [[ "${no_imu}" == "1" ]]; then
+    log "IMU disabled: skipping raw IMU candump"
+  elif [[ "${IMU_RAW_CAN_LOG}" == "1" ]]; then
     if ! is_socketcan_if "${IMU_RAW_CAN_LOG_IF}"; then
       log "skipping raw IMU candump for non-SocketCAN interface: ${IMU_RAW_CAN_LOG_IF}"
     else
@@ -497,7 +541,7 @@ start_stack() {
       --imu-if "${IMU_IF}" \
       --can-bus-enabled true \
       --can-simulation false \
-      --imu-simulation false \
+      --imu-simulation "${BRIDGE_IMU_SIMULATION}" \
       --create-mapping true \
       --control-mode "${CONTROL_MODE}" \
       --pid-yaml "${PID_YAML_PATH}" \
@@ -624,15 +668,21 @@ start_stack() {
 }
 
 status_stack() {
-  local name pid state args pids mapping shm_name camera_mode
+  local name pid state args pids mapping shm_name camera_mode imu_mode
   local -a mappings
   if [[ -s "${CAMERA_MODE_FILE}" ]]; then
     camera_mode="$(cat "${CAMERA_MODE_FILE}")"
   else
     camera_mode="${CAMERA_STACK}"
   fi
+  if [[ -s "${IMU_MODE_FILE}" ]]; then
+    imu_mode="$(cat "${IMU_MODE_FILE}")"
+  else
+    imu_mode="hardware"
+  fi
   printf 'log_dir=%s\n' "$(log_dir)"
   printf 'camera_mode=%s\n' "${camera_mode}"
+  printf 'imu_mode=%s\n' "${imu_mode}"
   for name in "${SERVICES[@]}"; do
     pid="$(service_pid "${name}")"
     if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
@@ -652,6 +702,9 @@ status_stack() {
     printf 'usb mounted: %s\n' "${USB_MOUNT}"
   else
     printf 'usb not mounted: %s\n' "${USB_MOUNT}"
+  fi
+  if [[ "${imu_mode}" == "placeholder" ]]; then
+    printf 'imu disabled: bridge publishes placeholder qpos/qvel and does not read raw IMU CAN\n'
   fi
   if [[ "${camera_mode}" == "none" ]]; then
     printf 'camera disabled: read_state images are empty\n'
@@ -687,6 +740,7 @@ dashboard_logs() {
   EXCAVATOR_DASH_PID_DIR="${PID_DIR}" \
   EXCAVATOR_DASH_CAN_IF="${CAN_IF}" \
   EXCAVATOR_DASH_IMU_IF="${IMU_IF}" \
+  EXCAVATOR_DASH_IMU_MODE="$(cat "${IMU_MODE_FILE}" 2>/dev/null || printf hardware)" \
   EXCAVATOR_DASH_CONTROL_PORT="${CONTROL_PORT}" \
   EXCAVATOR_DASH_GATEWAY_PORT="${GATEWAY_PORT}" \
   EXCAVATOR_DASH_RECEIVER_PORT="${RECEIVER_PORT}" \
@@ -710,6 +764,7 @@ services = [item for item in sys.argv[2].split(",") if item]
 pid_dir = Path(os.environ.get("EXCAVATOR_DASH_PID_DIR", ""))
 can_if = os.environ.get("EXCAVATOR_DASH_CAN_IF", "-")
 imu_if = os.environ.get("EXCAVATOR_DASH_IMU_IF", "-")
+imu_mode = os.environ.get("EXCAVATOR_DASH_IMU_MODE", "hardware")
 ports = (
     os.environ.get("EXCAVATOR_DASH_CONTROL_PORT", "-"),
     os.environ.get("EXCAVATOR_DASH_GATEWAY_PORT", "-"),
@@ -800,7 +855,7 @@ def draw_top() -> None:
     lines = [
         "Excavator slave stack dashboard | Ctrl+C stops managed services",
         f"log_dir={log_dir}",
-        f"can={can_if} imu={imu_if} ports bridge/gateway/receiver={ports[0]}/{ports[1]}/{ports[2]}",
+        f"can={can_if} imu={imu_if}({imu_mode}) ports bridge/gateway/receiver={ports[0]}/{ports[1]}/{ports[2]}",
         f"services {service_text}",
         recv1,
         recv2,
@@ -928,21 +983,23 @@ tail_logs() {
 run_stack() {
   local force="$1"
   local no_camera="$2"
-  local no_receiver="$3"
-  local skip_usb="$4"
-  local skip_can="$5"
-  local skip_pip="$6"
+  local no_imu="$3"
+  local no_receiver="$4"
+  local skip_usb="$5"
+  local skip_can="$6"
+  local skip_pip="$7"
 
   trap 'log "interrupt received; stopping managed slave services"; stop_stack 0; exit 130' INT TERM
-  start_stack "${force}" "${no_camera}" "${no_receiver}" "${skip_usb}" "${skip_can}" "${skip_pip}"
+  start_stack "${force}" "${no_camera}" "${no_imu}" "${no_receiver}" "${skip_usb}" "${skip_can}" "${skip_pip}"
   log "following logs. Press Ctrl+C here to stop managed slave services."
   tail_logs
 }
 
 main() {
   local command="${1:-}"
-  local force=0 no_camera=0 no_receiver=0 skip_usb=0 skip_can=0 skip_pip="${EXCAVATOR_SKIP_PIP_INSTALL}"
+  local force=0 no_camera=0 no_imu no_receiver=0 skip_usb=0 skip_can=0 skip_pip="${EXCAVATOR_SKIP_PIP_INSTALL}"
   local tail_service=""
+  no_imu="$(bool_to_01 "${EXCAVATOR_NO_IMU:-0}")"
   if [[ -z "${command}" ]]; then
     usage
     exit 1
@@ -963,6 +1020,9 @@ main() {
         ;;
       --no-camera)
         no_camera=1
+        ;;
+      --no-imu)
+        no_imu=1
         ;;
       --no-receiver|--no-recorder)
         no_receiver=1
@@ -996,17 +1056,17 @@ main() {
 
   case "${command}" in
     start)
-      start_stack "${force}" "${no_camera}" "${no_receiver}" "${skip_usb}" "${skip_can}" "${skip_pip}"
+      start_stack "${force}" "${no_camera}" "${no_imu}" "${no_receiver}" "${skip_usb}" "${skip_can}" "${skip_pip}"
       ;;
     run)
-      run_stack "${force}" "${no_camera}" "${no_receiver}" "${skip_usb}" "${skip_can}" "${skip_pip}"
+      run_stack "${force}" "${no_camera}" "${no_imu}" "${no_receiver}" "${skip_usb}" "${skip_can}" "${skip_pip}"
       ;;
     stop)
       stop_stack "${force}"
       ;;
     restart)
       stop_stack "${force}"
-      start_stack 0 "${no_camera}" "${no_receiver}" "${skip_usb}" "${skip_can}" "${skip_pip}"
+      start_stack 0 "${no_camera}" "${no_imu}" "${no_receiver}" "${skip_usb}" "${skip_can}" "${skip_pip}"
       ;;
     status)
       status_stack

@@ -1,0 +1,147 @@
+# No-motion field configuration for the G49 N5 four-camera ACT candidate.
+# The policy is sampled at its 20 Hz training time base while the latest zero
+# command is repeated by the 50 Hz control pump.  This file must remain
+# shadow_zero; bounded motion uses a separately reviewed rollout contract.
+
+real:
+  backend: mock
+  state_reader: mock
+  data_side: host
+  control_hz: 50
+  image_width: 384
+  image_height: 216
+  mock_velocity_scale_rad_s: 0.5
+  control_pump:
+    enabled: true
+    hz: 50
+    send_immediately_on_update: false
+    zero_on_stop: true
+    bridge:
+      host: "127.0.0.1"
+      port: 8766
+      timeout_s: 0.2
+  bridge:
+    host: "127.0.0.1"
+    port: 0
+    timeout_s: 1.0
+  data_side_defaults:
+    host:
+      dataset_dir: data/policy_shadow_g49_n5_fourcam_v1
+      bridge:
+        host: "192.168.100.1"
+        port: 8765
+    slave:
+      dataset_dir: /data/policy_shadow_g49_n5_fourcam_v1
+      bridge:
+        host: "127.0.0.1"
+        port: 8765
+
+teleop:
+  input: policy
+  learning_target: g49_n5_fourcam_shadow_from_live_observation
+  num_episodes: 1
+  metadata:
+    operator_id: ""
+    session_id: ""
+    notes: "G49 N5 four-camera role-transition ACT shadow-only field preflight"
+
+  policy:
+    bundle_dir: policy_bundles/real_gmsl_fourcam_g49_n5_v1
+    source_id: policy:act:g49_n5_fourcam_role_transition
+    camera: video4
+    camera_names: [video4, video5, video6, video7]
+    temporal_agg: true
+    inference_precision: fp32
+    temporal_aggregation_diagnostics: true
+    output_mode: shadow_zero
+    qvel_mode: raw
+    qvel_diff_tau_s: 0.15
+    qvel_diff_clip_rad_s: [1.5, 1.5, 1.5, 1.5]
+    action_scale: [1.0, 1.0, 1.0, 1.0]
+    deadzone_assist:
+      enabled: false
+      trigger_fraction: 0.5
+      min_consecutive_steps: 2
+      margin: [0.02, 0.02, 0.02, 0.02]
+      deadzone_positive: [0.661, 0.259, 0.500, 0.408]
+      deadzone_negative: [0.721, 0.357, 0.500, 0.508]
+    runtime_gates:
+      enabled: false
+    clip: 1.0
+    fail_safe_zero: true
+    record_start_on_reset: false
+
+  remote:
+    bind_host: "0.0.0.0"
+    port: 8770
+    timeout_ms: 200
+    rate_hz: 50
+    source_id: host_joystick
+
+  policy_remote:
+    source_id: policy_remote
+    start_in_policy: false
+
+  recording:
+    enabled: false
+    wait_for_start: true
+    go_home:
+      enabled: false
+
+  test_log:
+    enabled: true
+    output_dir: /media/mundane/EXTERNAL_USB/policy_control_tests/g49_n5_shadow
+    flush_every_steps: 1
+    capture_images: true
+    image_camera: video4
+    image_interval_steps: 20
+    image_policy_only: true
+    image_dir: camera_frames
+    image_jpeg_quality: 95
+
+task:
+  task_name: real_gmsl_fourcam_g49_n5_shadow_test
+  dataset_dir: data/policy_shadow_g49_n5_fourcam_v1
+  camera_names: [video4, video5, video6, video7]
+  max_steps: 400
+  control_hz: 50
+  record_hz: 20
+  dt: 0.05
+  seed: -1
+  param_version: g49_n5_fourcam_shadow_v1
+
+sync:
+  time_source: sensor_or_ros_header_stamp
+  max_observation_skew_ms: 40.0
+  required_cameras: [video4, video5, video6, video7]
+  record_action_sample_time: true
+  record_action_send_time: true
+
+video:
+  target_latency_ms: 120.0
+  transport_hint: low_latency
+  prefer_compressed_transport: true
+  record_format: jpeg
+  jpeg_quality: 95
+
+receiver:
+  health:
+    mode: strict
+    bridge_snapshot_timeout_ms: 200
+    fpv_max_stale_ms: 1000
+    primary_camera: video4
+    camera_max_stale_ms: 1000
+    imu_require_online: true
+    imu_require_valid_attitude: true
+    quarantine_failed_records: true
+  online_qc:
+    enabled: false
+    primary_camera: video4
+
+safety:
+  deadman_enabled: true
+  estop_enabled: true
+  manual_override_enabled: true
+  sensor_timeout_s: 1.0
+  action_clip: 1.0
+  max_delta_per_step: 1.0

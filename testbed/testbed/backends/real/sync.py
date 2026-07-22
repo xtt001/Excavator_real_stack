@@ -211,7 +211,13 @@ class SynchronizedObservationBuilder:
             observation["action_timestamp_ns"] = int(action_timestamp_ns)
         if image_metadata:
             observation["image_metadata"] = image_metadata
-        for key in ("imu_debug", "qpos_raw_imu", "qpos_raw_imu_deg"):
+        for key in (
+            "imu_debug",
+            "qpos_raw_imu",
+            "qpos_raw_imu_deg",
+            "imu_source",
+            "imu_placeholder",
+        ):
             if key in joint_payload:
                 observation[key] = joint_payload[key]
         return SyncResult(
@@ -276,6 +282,10 @@ def _sensor_health_from_joint_payload(joint_payload: Mapping[str, Any]) -> dict[
     health: dict[str, Any] = {}
     if "imu_health" in joint_payload:
         health["imu"] = joint_payload["imu_health"]
+    if "imu_source" in joint_payload:
+        health["imu_source"] = str(joint_payload["imu_source"])
+    if "imu_placeholder" in joint_payload:
+        health["imu_placeholder"] = bool(joint_payload["imu_placeholder"])
     if "snapshot_age_ms" in joint_payload:
         health["bridge_snapshot_age_ms"] = float(joint_payload["snapshot_age_ms"])
     if "state_loop_tick" in joint_payload:

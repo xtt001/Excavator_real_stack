@@ -10,6 +10,12 @@ from scripts.summarize_e52_control_trace import summarize_trace
 
 ROOT = Path(__file__).resolve().parents[2]
 CONTROL_SCRIPT = ROOT / "scripts/run_e52_policy_control_trace.sh"
+ACT_BASELINE_CONTROL_SCRIPT = (
+    ROOT / "scripts/run_e52_act_baseline_control_trace.sh"
+)
+ACT_BASELINE_POLICY_REMOTE_SCRIPT = (
+    ROOT / "scripts/run_e52_act_baseline_policy_remote_stack.sh"
+)
 
 
 def _step(index: int) -> dict:
@@ -140,5 +146,50 @@ def test_control_trace_entrypoint_requires_confirmation_and_runs_analysis() -> N
     assert "summarize_e52_control_trace.py" in source
     assert "No steps.jsonl found under ${SESSION_ROOT}" in source
     assert "exit 1" in source
+    assert "ssh" not in source.lower()
+    assert "rsync" not in source.lower()
+
+
+def test_act_only_baseline_entrypoint_requires_gohome_and_explicit_bypass() -> None:
+    source = ACT_BASELINE_CONTROL_SCRIPT.read_text(encoding="utf-8")
+
+    assert os.access(ACT_BASELINE_CONTROL_SCRIPT, os.X_OK)
+    assert "CONFIRM_GO_HOME_DONE" in source
+    assert "CONFIRM_HARDWARE_MOTION" in source
+    assert "CONFIRM_ACT_ONLY_BASELINE" in source
+    assert 'policy["runtime_gates"] = {"enabled": False}' in source
+    assert 'policy["report_intent"] = True' in source
+    assert 'assist["axis_enabled"] = [True, True, True, True]' in source
+    assert "--act-only-baseline" in source
+    assert "--policy-output-mode control" in source
+    assert "summarize_policy_test_log.py" in source
+    assert "automatic gohome" in source
+    assert "receiver port ${RECEIVER_PORT} is already listening" in source
+    assert "--no-receiver" in source
+    assert "ssh" not in source.lower()
+    assert "rsync" not in source.lower()
+
+
+def test_act_only_policy_remote_entrypoint_uses_host_policy_button() -> None:
+    source = ACT_BASELINE_POLICY_REMOTE_SCRIPT.read_text(encoding="utf-8")
+
+    assert os.access(ACT_BASELINE_POLICY_REMOTE_SCRIPT, os.X_OK)
+    assert "CONFIRM_GO_HOME_BEFORE_POLICY" in source
+    assert "CONFIRM_HARDWARE_MOTION" in source
+    assert "CONFIRM_ACT_ONLY_BASELINE" in source
+    assert 'policy["runtime_gates"] = {"enabled": False}' in source
+    assert 'policy["report_intent"] = True' in source
+    assert 'assist["axis_enabled"] = [True, True, True, True]' in source
+    assert 'teleop.setdefault("policy_remote", {})["start_in_policy"] = False' in source
+    assert "--act-only-baseline" in source
+    assert 'EXCAVATOR_RECEIVER_INPUT="policy_remote"' in source
+    assert 'EXCAVATOR_POLICY_OUTPUT_MODE="control"' in source
+    assert "deadzone assist=all-axis" in source
+    assert 'POLICY_REMOTE_MAX_STEPS="${E52_POLICY_REMOTE_MAX_STEPS:-50000}"' in source
+    assert 'EXCAVATOR_MAX_STEPS="${POLICY_REMOTE_MAX_STEPS}"' in source
+    assert "Ignoring generic MAX_STEPS=" in source
+    assert "go_home_done" in source
+    assert "policy button 4" in source
+    assert "slave_real_stack.sh run --force --policy-remote" in source
     assert "ssh" not in source.lower()
     assert "rsync" not in source.lower()

@@ -52,6 +52,22 @@ std::string env_string(const char* name) {
     return raw == nullptr ? std::string{} : std::string(raw);
 }
 
+bool env_bool(const char* name, bool default_value = false) noexcept {
+    std::string raw = env_string(name);
+    if (raw.empty()) {
+        return default_value;
+    }
+    std::transform(raw.begin(), raw.end(), raw.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    if (raw == "1" || raw == "true" || raw == "yes" || raw == "on") {
+        return true;
+    }
+    if (raw == "0" || raw == "false" || raw == "no" || raw == "off") {
+        return false;
+    }
+    return default_value;
+}
+
 double env_double(const char* name, double default_value) noexcept {
     const char* raw = std::getenv(name);
     if (raw == nullptr || raw[0] == '\0') {
@@ -138,6 +154,10 @@ double daoyuan_chain_stick_policy_offset_rad() noexcept {
 double daoyuan_chain_bucket_policy_offset_rad() noexcept {
     return env_double("EXCAVATOR_DAOYUAN_BUCKET_POLICY_OFFSET_RAD",
                       kDaoyuanChainBucketPolicyOffsetRad);
+}
+
+double swing_policy_offset_rad() noexcept {
+    return env_double("EXCAVATOR_SWING_POLICY_OFFSET_RAD", 0.0);
 }
 
 double bucket_imu0_axis_sign(BucketImu0Profile profile) noexcept {
@@ -482,14 +502,24 @@ bool ExcavatorConverter::hardwareStateToRobotState(const HardwareState& raw_in, 
     }
     st->status = hw->motor.status;
     st->motor_rpm = swap_joint_2_3_on_first4(hw->motor.motor_rpm);
+    if (env_bool("EXCAVATOR_IMU_PLACEHOLDER") || env_bool("EXCAVATOR_NO_IMU")) {
+        st->position.setZero();
+        st->velocity.setZero();
+        st->acceleration.setZero();
+        st->velocity_scalar.setZero();
+        st->imu = hw->imu;
+        return true;
+    }
     const BucketImu0Profile bucket_profile = bucket_imu0_profile();
     const JointRpyProfile joint_profile = joint_rpy_profile();
     const BucketQposSource bucket_source = bucket_qpos_source(bucket_profile);
+    const bool daoyuan_bucket_source =
+        joint_profile == JointRpyProfile::DaoyuanChain ||
+        bucket_source == BucketQposSource::DaoyuanChainRpy;
     const auto rpy_rad = continuousImuRpy(*hw);
     BucketQuaternionCharts bucket_charts;
     bool bucket_observed = false;
-    if (joint_profile == JointRpyProfile::DaoyuanChain ||
-        bucket_source == BucketQposSource::DaoyuanChainRpy) {
+    if (daoyuan_bucket_source) {
         bucket_observed = bucket_daoyuan_chain_charts(rpy_rad, bucket_charts);
     } else if (bucket_source == BucketQposSource::GravityHinge) {
         bucket_observed = bucketGravityHingeCharts(
@@ -512,6 +542,25 @@ bool ExcavatorConverter::hardwareStateToRobotState(const HardwareState& raw_in, 
                 position_observed = false;
                 break;
             }
+        }
+    }
+    double bucket_initial_output_rad = bucket_charts.primary_phase_rad;
+    if (position_observed && daoyuan_bucket_source && !bucket_phase_continuous_ready_) {
+        double gravity_primary_phase_rad = 0.0;
+        double gravity_secondary_phase_rad = 0.0;
+        if (!bucketGravityHingeCharts(
+                *hw,
+                bucket_gravity_hinge_policy_offset_rad(),
+                bucket_gravity_hinge_median_window(),
+                gravity_primary_phase_rad,
+                gravity_secondary_phase_rad)) {
+            position_observed = false;
+        } else {
+            // Daoyuan RPY determines motion continuously but is ambiguous by 2*pi
+            // after a fresh process start. Use gravity only to select that initial
+            // branch; subsequent samples continue to follow the RPY phase delta.
+            bucket_initial_output_rad = align_angle_to_reference_branch(
+                bucket_charts.primary_phase_rad, gravity_primary_phase_rad);
         }
     }
     const bool can_publish_position = position_observed || resp_position_continuous_ready_;
@@ -568,7 +617,7 @@ bool ExcavatorConverter::hardwareStateToRobotState(const HardwareState& raw_in, 
                                                      bucket_charts.secondary_phase_rad,
                                                      bucket_charts.primary_strength,
                                                      bucket_charts.secondary_strength,
-                                                     bucket_charts.primary_phase_rad);
+                                                     bucket_initial_output_rad);
     }
     const Vector8d branch_reference = st->position;
     applyPositionContinuity(*st, position_observed, branch_reference);
@@ -578,6 +627,9 @@ bool ExcavatorConverter::hardwareStateToRobotState(const HardwareState& raw_in, 
             align_swing_to_nonnegative_raw_yaw_branch(st->position(0), swing_raw_yaw);
         resp_position_continuous_(0) = st->position(0);
     }
+    // Preserve the IMU yaw slope/direction while restoring the calibrated
+    // policy-space zero point. Velocity is unchanged by this constant offset.
+    st->position(0) += swing_policy_offset_rad();
     constexpr std::uint32_t kInitialBiasCycles = 20;
     if (!resp_velocity_bias_ready_) {
         resp_velocity_bias_sum_ += st->velocity;

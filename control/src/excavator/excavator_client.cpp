@@ -151,6 +151,14 @@ bool ExcavatorClient::update() {
 
     ExcavatorState resp{};
     if (!converter_.hardwareStateToRobotState(comm_.hardwareState(), resp)) {
+        // The converter deliberately rejects kinematics until every required
+        // IMU has established a valid pose branch. It still populates resp.imu
+        // with the raw per-device health/sample data for diagnostics. Publish
+        // only that diagnostic portion while preserving the last valid
+        // qpos/qvel and keep returning false, so incomplete kinematics can
+        // never enter the controller or command path.
+        auto access = channel_.unsafeAccessForWorker();
+        access.resp().imu = resp.imu;
         return false;
     }
     ExcavatorState ref{};

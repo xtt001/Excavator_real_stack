@@ -87,6 +87,30 @@ class FpvShmReader:
         except OSError:
             self._mm = None
 
+    def latest_sequence(self) -> Optional[int]:
+        """Return the published sequence without copying the RGB payload."""
+        if self._mm is None:
+            try:
+                self._mm = _open_map(self._name, create=False)
+            except OSError:
+                return None
+        magic, version = struct.unpack_from("<II", self._mm, 0)
+        if magic != MAGIC or version not in (VERSION, GMSL_VERSION):
+            return None
+        return int(struct.unpack_from("<I", self._mm, 64)[0])
+
+    def read_latest_if_new(self, last_sequence: int | None) -> Optional[FpvFrame]:
+        """Copy the latest frame only when its sequence differs from the caller's."""
+        sequence = self.latest_sequence()
+        if sequence is None or (last_sequence is not None and sequence == int(last_sequence)):
+            return None
+        frame = self.read_latest()
+        if frame is None or (
+            last_sequence is not None and int(frame.sequence) == int(last_sequence)
+        ):
+            return None
+        return frame
+
     def read_latest(self) -> Optional[FpvFrame]:
         if self._mm is None:
             try:

@@ -99,7 +99,8 @@ def test_inference_forward_calls_shared_backbone_once() -> None:
     qpos = torch.zeros(1, 4)
 
     with torch.inference_mode():
-        action, is_pad, latent, intent = model(qpos, image, None)
+        output = model(qpos, image, None)
+        action, is_pad, latent, intent = output[:4]
 
     assert backbone.call_shapes == [(4, 3, 5, 7)]
     assert action.shape == (1, 3, 4)
@@ -116,7 +117,8 @@ def test_training_forward_keeps_historical_per_camera_backbone_calls() -> None:
     actions = torch.zeros(2, 3, 4)
     is_pad = torch.zeros(2, 3, dtype=torch.bool)
 
-    action, _, _, _ = model(qpos, image, None, actions=actions, is_pad=is_pad)
+    output = model(qpos, image, None, actions=actions, is_pad=is_pad)
+    action, _, _, _ = output[:4]
 
     assert backbone.call_shapes == [(2, 3, 5, 7)] * 4
     assert action.shape == (2, 3, 4)

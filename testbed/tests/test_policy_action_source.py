@@ -21,7 +21,9 @@ from testbed.cli.record_real import (
     ReceiverHealthSnapshot,
     ReceiverTestLogger,
     _add_policy_action_diagnostics,
+    _policy_remote_status_payload,
 )
+from testbed.cli.teleop_remote import _format_receiver_policy_status
 from testbed.data.recorder import EpisodeRecorder
 from testbed.policies.runtime_gate_stack import RuntimeGateResult
 
@@ -267,6 +269,52 @@ class PolicyActionSourceTests(unittest.TestCase):
             [0.3, -0.25, 0.25, -0.3],
         )
 
+    def test_act_only_mode_reports_intent_without_runtime_gate(self) -> None:
+        source = PolicyActionSource(
+            policy=DummyIntentPolicy([0.5, -0.25, 0.1, -0.9]),
+            source_id="unit",
+            output_mode="control",
+            report_intent=True,
+        )
+
+        action, info = source.next_action(_obs())
+
+        np.testing.assert_allclose(action, [0.5, -0.25, 0.1, -0.9])
+        np.testing.assert_allclose(
+            info.extras["policy_intent_probabilities"],
+            np.full(8, 0.75),
+        )
+        self.assertNotIn("policy_gate_stack_id", info.extras)
+
+    def test_policy_remote_status_reports_raw_command_and_intent(self) -> None:
+        action_info = ActionInfo(
+            source_type="policy",
+            source_id="policy:unit",
+            extras={
+                "policy_remote_mode": "policy",
+                "model_control": 1,
+                "policy_action": np.array([0.1, 0.2, 0.3, 0.4]),
+                "policy_assisted_action": np.array([0.1, 0.2, 0.3, 0.42]),
+                "policy_returned_action": np.array([0.1, 0.2, 0.3, 0.4]),
+                "policy_intent_probabilities": np.arange(8) / 10.0,
+            },
+        )
+        payload = _policy_remote_status_payload(object(), action_info)
+        payload["commanded_action"] = [0.11, 0.19, 0.31, 0.39]
+
+        np.testing.assert_allclose(
+            payload["policy_action"], [0.1, 0.2, 0.3, 0.4]
+        )
+        self.assertEqual(len(payload["policy_intent_probabilities"]), 8)
+        text = _format_receiver_policy_status(
+            SimpleNamespace(payload=payload, receive_time_ns=1)
+        )
+        self.assertIn("model_raw=", text)
+        self.assertIn("assisted=", text)
+        self.assertIn("commanded=", text)
+        self.assertIn("intent8(sw+,sw-,bo+,bo-,st+,st-,bk+,bk-)=", text)
+        self.assertIn("bucket_intent=+0.60/-0.70", text)
+
     def test_runtime_gates_keep_shadow_zero_and_expose_raw_gohome_decision(self) -> None:
         policy = DummyIntentPolicy([0.5, -0.25, 0.1, -0.9])
         gate_stack = DummyRuntimeGateStack()
@@ -348,7 +396,71 @@ class PolicyActionSourceTests(unittest.TestCase):
             second_info.extras["policy_assisted_action"],
             [0.62, -0.52, 0.1, -0.2],
         )
-        np.testing.assert_allclose(second_info.extras["policy_returned_action"], second_action)
+        np.testing.assert_allclose(
+            second_info.extras["policy_deadzone_assist_trigger_fraction"],
+            [0.5, 0.5, 0.5, 0.5],
+        )
+        np.testing.assert_allclose(
+            second_info.extras["policy_returned_action"], second_action
+        )
+
+    def test_deadzone_assist_can_be_limited_to_bucket_axis(self) -> None:
+        source = PolicyActionSource(
+            policy=DummyPolicy([0.4, -0.3, 0.3, 0.3]),
+            source_id="unit",
+            output_mode="control",
+            deadzone_assist={
+                "enabled": True,
+                "axis_enabled": [False, False, False, True],
+                "trigger_fraction": 0.5,
+                "margin": 0.02,
+                "min_consecutive_steps": 2,
+                "deadzone_positive": [0.6, 0.4, 0.5, 0.408],
+                "deadzone_negative": [0.7, 0.5, 0.5, 0.508],
+            },
+        )
+
+        first, _ = source.next_action(_obs())
+        second, info = source.next_action(_obs())
+
+        np.testing.assert_allclose(first, [0.4, -0.3, 0.3, 0.3])
+        np.testing.assert_allclose(second, [0.4, -0.3, 0.3, 0.428])
+        np.testing.assert_array_equal(
+            info.extras["policy_deadzone_assist_axis_enabled"], [0, 0, 0, 1]
+        )
+        np.testing.assert_array_equal(
+            info.extras["policy_deadzone_assist_mask"], [0, 0, 0, 1]
+        )
+        self.assertEqual(info.extras["policy_deadzone_assist_axes"], "bucket+")
+
+    def test_deadzone_assist_supports_per_axis_trigger_fraction(self) -> None:
+        source = PolicyActionSource(
+            policy=DummyPolicy([0.24, 0.1, 0.2, 0.16]),
+            source_id="unit",
+            output_mode="control",
+            deadzone_assist={
+                "enabled": True,
+                "axis_enabled": [True, True, True, True],
+                "trigger_fraction": [0.36, 0.5, 0.5, 0.375],
+                "margin": [0.02, 0.02, 0.02, 0.02],
+                "min_consecutive_steps": 2,
+                "deadzone_positive": [0.661, 0.259, 0.5, 0.408],
+                "deadzone_negative": [0.721, 0.357, 0.5, 0.508],
+            },
+        )
+
+        first, _ = source.next_action(_obs())
+        second, info = source.next_action(_obs())
+
+        np.testing.assert_allclose(first, [0.24, 0.1, 0.2, 0.16])
+        np.testing.assert_allclose(second, [0.681, 0.1, 0.2, 0.428])
+        np.testing.assert_array_equal(
+            info.extras["policy_deadzone_assist_mask"], [1, 0, 0, 1]
+        )
+        np.testing.assert_allclose(
+            info.extras["policy_deadzone_assist_trigger_fraction"],
+            [0.36, 0.5, 0.5, 0.375],
+        )
 
     def test_deadzone_assist_resets_when_direction_changes(self) -> None:
         class SequencePolicy:
@@ -813,6 +925,41 @@ class PolicyActionSourceTests(unittest.TestCase):
         self.assertEqual(kwargs["policy_config"]["state_dim"], 4)
         self.assertEqual(kwargs["policy_config"]["low_dim_keys"], ["qpos"])
         self.assertEqual(kwargs["policy_config"]["max_episode_len"], 400)
+
+    def test_load_act_policy_from_bundle_relocates_deadzone_thresholds(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle = Path(tmp)
+            (bundle / "policy_best.ckpt").write_bytes(b"ckpt")
+            (bundle / "dataset_stats.pkl").write_bytes(b"stats")
+            bundled_thresholds = bundle / "deadzone_policy_raw_for_runtime_scale.json"
+            bundled_thresholds.write_text("{}", encoding="utf-8")
+            (bundle / "resolved_config.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "task": {"camera_names": ["video4", "video5"]},
+                        "policy": {"device": "cpu", "low_dim_keys": ["qpos"]},
+                        "train": {
+                            "intent_loss": {
+                                "enabled": True,
+                                "threshold_json": (
+                                    "/data/training/deadzone_policy_raw_for_runtime_scale.json"
+                                ),
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch(
+                "testbed.policies.act.adapter.ACTAdapter.from_checkpoint",
+                return_value="loaded",
+            ) as from_checkpoint:
+                loaded = load_act_policy_from_bundle(bundle_dir=bundle)
+
+        self.assertEqual(loaded, "loaded")
+        intent_loss = from_checkpoint.call_args.kwargs["policy_config"]["intent_loss"]
+        self.assertEqual(intent_loss["threshold_json"], str(bundled_thresholds))
 
     def test_act_temporal_aggregation_grows_past_initial_horizon(self) -> None:
         import torch

@@ -49,7 +49,13 @@ def resolve_camera_role_encoding_config(
 
 
 class CameraRoleEncoding(nn.Module):
-    """Add learned per-camera and shared physical-role identity to spatial tokens."""
+    """Add learned per-camera and shared physical-role identity to spatial tokens.
+
+    Both tables start at zero, so enabling the module is an exact functional
+    rollback to the legacy ACT concatenation before training. Cameras assigned
+    the same physical role share one role vector while retaining their own
+    camera identity vector.
+    """
 
     def __init__(
         self,

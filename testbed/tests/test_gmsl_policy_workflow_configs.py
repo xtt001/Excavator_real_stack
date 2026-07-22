@@ -5,6 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 
@@ -118,3 +119,50 @@ def test_teleop_recording_config_declares_gmsl_online_qc_primary_camera() -> Non
     assert cfg["task"]["camera_names"] == expected_gmsl
     assert cfg["receiver"]["health"]["primary_camera"] == "video4"
     assert cfg["receiver"]["online_qc"]["primary_camera"] == "video4"
+
+
+def test_pro_real_teleop_preserves_axis_signs_and_shapes_hydraulic_response() -> None:
+    cfg = _load_yaml(CONFIG_DIR / "teleop_real_v1.yaml")
+    joystick = cfg["teleop"]["joystick"]
+
+    assert joystick["joystick_ids"] == [0, 1, 0, 1]
+    assert joystick["axis_map"] == [1, 1, 0, 0]
+    assert joystick["invert"] == [True, False, True, False]
+    assert joystick["deadzone"] == 0.05
+    assert joystick["scale"] == [0.8, 0.8, 0.8, 0.7]
+    assert joystick["response_profile"] == {
+        "enabled": True,
+        "use_measured_dt": False,
+        "deadzone": [0.0, 0.0, 0.0, 0.0],
+        "attack_rate": [2.0, 1.5, 1.5, 1.5],
+        "release_rate": 6.0,
+        "recenter_rate": 7.0,
+        "exponent": 1.0,
+        "positive_exponent": [0.22, 0.74, 0.52, 0.42],
+        "negative_exponent": [0.22, 0.35, 0.52, 0.25],
+    }
+    assert cfg["teleop"]["learning_target"] == "operator_command_from_observation"
+    assert cfg["task"]["dataset_dir"] == "data/real_teleop_v1"
+
+    # The paired scale/exponent change must preserve the field-measured
+    # hydraulic onset at about 30% physical stick travel. This avoids trading
+    # lower top speed for a larger no-motion region.
+    remapped_30_percent = (0.30 - joystick["deadzone"]) / (
+        1.0 - joystick["deadzone"]
+    )
+    positive_onset = [
+        scale * remapped_30_percent**exponent
+        for scale, exponent in zip(
+            joystick["scale"],
+            joystick["response_profile"]["positive_exponent"],
+        )
+    ]
+    negative_onset = [
+        scale * remapped_30_percent**exponent
+        for scale, exponent in zip(
+            joystick["scale"],
+            joystick["response_profile"]["negative_exponent"],
+        )
+    ]
+    assert positive_onset == pytest.approx([0.6, 0.3, 0.4, 0.4], abs=0.005)
+    assert negative_onset == pytest.approx([0.6, 0.5, 0.4, 0.5], abs=0.005)

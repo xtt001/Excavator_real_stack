@@ -23,6 +23,14 @@ AXES = ("swing", "boom", "stick", "bucket")
 IMU_AXIS_NAMES = ("x", "y", "z")
 IMU_RPY_NAMES = ("roll", "pitch", "yaw")
 IMU_QUATERNION_NAMES = ("w", "x", "y", "z")
+# imu_health/imu_debug use physical-chain order, not the policy AXES order.
+# Keep this mapping explicit anywhere a health bit or device index is shown.
+IMU_LAYOUT = (
+    {"index": 0, "name": "bucket", "can_id": "0x122"},
+    {"index": 1, "name": "stick", "can_id": "0x124"},
+    {"index": 2, "name": "boom", "can_id": "0x121"},
+    {"index": 3, "name": "swing", "can_id": "0x123"},
+)
 BUCKET_QUATERNION_POLICY_OFFSET_RAD = -0.4060066694119653
 BUCKET_PRIMARY_CHART_MIN_STRENGTH = 0.35
 BUCKET_TILT_OUTER_REFERENCE_RAD = -0.012059366757032714
@@ -92,6 +100,242 @@ def _safe_finite_float(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return out if math.isfinite(out) else None
+
+
+def _health_bits4(value: Any) -> list[int] | None:
+    if not isinstance(value, list) or len(value) < len(IMU_LAYOUT):
+        return None
+    out: list[int] = []
+    for raw in value[: len(IMU_LAYOUT)]:
+        try:
+            parsed = int(raw)
+        except (TypeError, ValueError):
+            return None
+        if parsed not in (0, 1):
+            return None
+        out.append(parsed)
+    return out
+
+
+def _health_ages4(value: Any) -> list[float] | None:
+    if not isinstance(value, list) or len(value) < len(IMU_LAYOUT):
+        return None
+    out: list[float] = []
+    for raw in value[: len(IMU_LAYOUT)]:
+        parsed = _safe_finite_float(raw)
+        if parsed is None:
+            return None
+        out.append(parsed)
+    return out
+
+
+def _debug_snapshot_initialized(imu_debug: Any) -> bool | None:
+    if not isinstance(imu_debug, dict):
+        return None
+    devices = imu_debug.get("devices")
+    if not isinstance(devices, list) or len(devices) < len(IMU_LAYOUT):
+        return None
+    initialized = False
+    for raw_device in devices[: len(IMU_LAYOUT)]:
+        if not isinstance(raw_device, dict):
+            return None
+        try:
+            device_addr = int(raw_device.get("device_addr", 0) or 0)
+            host_rx_time_ns = int(raw_device.get("host_rx_time_ns", 0) or 0)
+        except (TypeError, ValueError):
+            return None
+        initialized = initialized or device_addr > 0 or host_rx_time_ns > 0
+    return initialized
+
+
+def _imu_labels(indices: list[int]) -> list[str]:
+    return [
+        f"imu{index}:{IMU_LAYOUT[index]['name']}@{IMU_LAYOUT[index]['can_id']}"
+        for index in indices
+    ]
+
+
+def classify_imu_status(
+    imu_health: Any,
+    imu_debug: Any = None,
+    *,
+    max_stale_ms: float = 100.0,
+) -> dict[str, Any]:
+    """Classify per-device IMU health without double-counting one device.
+
+    Offline devices are not also labelled stale/invalid. A default bridge
+    snapshot (all device_addr/host_rx_time fields still zero) is reported as
+    unavailable rather than as four physical IMUs missing.
+    """
+
+    unavailable = {
+        "state": "imu_health_unavailable",
+        "fault_device_count": None,
+        "fault_indices": [],
+        "fault_devices": [],
+        "missing_indices": [],
+        "stale_indices": [],
+        "invalid_attitude_indices": [],
+        "invalid_gyro_indices": [],
+        "invalid_accel_indices": [],
+        "error_codes": ["imu_health_unavailable"],
+        "online_bits": "----",
+        "valid_attitude_bits": "----",
+        "valid_quaternion_bits": "----",
+        "valid_gyro_bits": "----",
+        "valid_accel_bits": "----",
+    }
+    if not isinstance(imu_health, dict):
+        return unavailable
+
+    online = _health_bits4(imu_health.get("online"))
+    if online is None:
+        return unavailable
+
+    snapshot_initialized = _debug_snapshot_initialized(imu_debug)
+    if not any(online) and snapshot_initialized is not True:
+        reason = (
+            "imu_snapshot_uninitialized"
+            if snapshot_initialized is False
+            else "imu_health_unavailable"
+        )
+        return {
+            **unavailable,
+            "state": reason,
+            "error_codes": [reason],
+            "online_bits": bits(online),
+        }
+
+    valid_attitude = _health_bits4(imu_health.get("valid_attitude"))
+    # Daoyuan CAN packets provide native RPY but no quaternion. Keep the bit
+    # visible for diagnosis without treating it as a required runtime signal.
+    valid_quaternion = _health_bits4(imu_health.get("valid_quaternion"))
+    valid_gyro = _health_bits4(imu_health.get("valid_gyro"))
+    valid_accel = _health_bits4(imu_health.get("valid_accel"))
+    ages_ms = _health_ages4(imu_health.get("host_rx_age_ms"))
+    missing_fields = [
+        name
+        for name, value in (
+            ("valid_attitude", valid_attitude),
+            ("valid_gyro", valid_gyro),
+            ("valid_accel", valid_accel),
+            ("host_rx_age_ms", ages_ms),
+        )
+        if value is None
+    ]
+    if missing_fields:
+        return {
+            **unavailable,
+            "state": "imu_health_unavailable",
+            "error_codes": ["imu_health_unavailable:" + ",".join(missing_fields)],
+            "online_bits": bits(online),
+            "missing_fields": missing_fields,
+        }
+
+    assert valid_attitude is not None
+    assert valid_gyro is not None
+    assert valid_accel is not None
+    assert ages_ms is not None
+    missing = [index for index, value in enumerate(online) if value == 0]
+    stale = [
+        index
+        for index, (is_online, age_ms) in enumerate(zip(online, ages_ms))
+        if is_online == 1 and (age_ms < 0.0 or age_ms > float(max_stale_ms))
+    ]
+    invalid_attitude = [
+        index
+        for index, (is_online, value) in enumerate(zip(online, valid_attitude))
+        if is_online == 1 and index not in stale and value == 0
+    ]
+    invalid_gyro = [
+        index
+        for index, (is_online, value) in enumerate(zip(online, valid_gyro))
+        if is_online == 1 and index not in stale and value == 0
+    ]
+    invalid_accel = [
+        index
+        for index, (is_online, value) in enumerate(zip(online, valid_accel))
+        if is_online == 1 and index not in stale and value == 0
+    ]
+    fault_indices = sorted(
+        set(missing + stale + invalid_attitude + invalid_gyro + invalid_accel)
+    )
+    reasons_by_index: dict[int, list[str]] = {index: [] for index in fault_indices}
+    for reason, indices in (
+        ("offline", missing),
+        ("stale", stale),
+        ("attitude_invalid", invalid_attitude),
+        ("gyro_invalid", invalid_gyro),
+        ("accel_invalid", invalid_accel),
+    ):
+        for index in indices:
+            reasons_by_index[index].append(reason)
+    fault_devices = [
+        {
+            **IMU_LAYOUT[index],
+            "label": _imu_labels([index])[0],
+            "reasons": reasons_by_index[index],
+        }
+        for index in fault_indices
+    ]
+    error_codes = []
+    for prefix, indices in (
+        ("imu_missing", missing),
+        ("imu_stale", stale),
+        ("imu_attitude_invalid", invalid_attitude),
+        ("imu_gyro_invalid", invalid_gyro),
+        ("imu_accel_invalid", invalid_accel),
+    ):
+        if indices:
+            error_codes.append(prefix + ":" + ",".join(str(index) for index in indices))
+    state = (
+        "ok"
+        if not fault_indices
+        else "single_imu_error"
+        if len(fault_indices) == 1
+        else "multiple_imu_errors"
+    )
+    return {
+        "state": state,
+        "fault_device_count": len(fault_indices),
+        "fault_indices": fault_indices,
+        "fault_devices": fault_devices,
+        "missing_indices": missing,
+        "stale_indices": stale,
+        "invalid_attitude_indices": invalid_attitude,
+        "invalid_gyro_indices": invalid_gyro,
+        "invalid_accel_indices": invalid_accel,
+        "error_codes": error_codes,
+        "online_bits": bits(online),
+        "valid_attitude_bits": bits(valid_attitude),
+        "valid_quaternion_bits": (
+            "----" if valid_quaternion is None else bits(valid_quaternion)
+        ),
+        "valid_gyro_bits": bits(valid_gyro),
+        "valid_accel_bits": bits(valid_accel),
+    }
+
+
+def format_imu_status(status: dict[str, Any]) -> str:
+    parts = [
+        f"imu_state={status.get('state', 'imu_health_unavailable')}",
+        f"fault_devices={status.get('fault_device_count', '?')}",
+    ]
+    for key, label in (
+        ("missing_indices", "offline"),
+        ("stale_indices", "stale"),
+        ("invalid_attitude_indices", "attitude_invalid"),
+        ("invalid_gyro_indices", "gyro_invalid"),
+        ("invalid_accel_indices", "accel_invalid"),
+    ):
+        indices = status.get(key)
+        if isinstance(indices, list) and indices:
+            parts.append(label + "=" + ",".join(_imu_labels(indices)))
+    errors = status.get("error_codes")
+    if status.get("state") in {"imu_health_unavailable", "imu_snapshot_uninitialized"}:
+        if isinstance(errors, list) and errors:
+            parts.append("reason=" + ",".join(str(value) for value in errors))
+    return " ".join(parts)
 
 
 def bucket_imu0_reference_rad(imu_debug: dict[str, Any] | None = None) -> float:
@@ -295,6 +539,12 @@ def parse_args() -> argparse.Namespace:
         help="do not write the flat IMU vendor CSV",
     )
     parser.add_argument("--print-every-s", type=float, default=1.0, help="terminal print interval")
+    parser.add_argument(
+        "--imu-max-stale-ms",
+        type=float,
+        default=100.0,
+        help="per-IMU host receive age above this is reported stale",
+    )
     parser.add_argument("--window-s", type=float, default=1.0, help="quality check window")
     parser.add_argument(
         "--stationary-qpos-span-rad",
@@ -348,16 +598,49 @@ def to_float_list(value: Any, n: int) -> list[float] | None:
         return None
 
 
+def to_optional_float_list(value: Any, n: int) -> list[float | None] | None:
+    if not isinstance(value, list) or len(value) < n:
+        return None
+    out: list[float | None] = []
+    for raw in value[:n]:
+        if raw is None:
+            out.append(None)
+            continue
+        parsed = _safe_finite_float(raw)
+        if parsed is None:
+            return None
+        out.append(parsed)
+    return out
+
+
 def finite_list(values: list[float] | None) -> bool:
     return values is not None and all(math.isfinite(v) for v in values)
 
 
-def safe_float(value: Any, default: float = -1.0) -> float:
+def _device_signal(
+    devices: list[Any],
+    device_index: int,
+    field: str,
+    size: int,
+    *,
+    valid_field: str,
+) -> list[float] | None:
+    if device_index >= len(devices):
+        return None
+    device = devices[device_index]
+    if not isinstance(device, dict):
+        return None
     try:
-        out = float(value)
+        if int(device.get("online", 1)) == 0:
+            return None
+        # Keep older logs usable when a validity field was not yet emitted,
+        # but never consume a value explicitly marked invalid.
+        if valid_field in device and int(device.get(valid_field, 0)) == 0:
+            return None
     except (TypeError, ValueError):
-        return default
-    return out if math.isfinite(out) else default
+        return None
+    values = to_float_list(device.get(field), size)
+    return values if finite_list(values) else None
 
 
 def angle_delta_rad(current: float, previous: float) -> float:
@@ -377,7 +660,9 @@ def qvel_from_qpos(current: list[float], previous: list[float] | None, dt_s: flo
     return [angle_delta_rad(c, p) / dt_s for c, p in zip(current, previous)]
 
 
-def gyro_joint_qvel_rad_s(imu_debug: dict[str, Any] | None) -> list[float] | None:
+def gyro_joint_qvel_rad_s(
+    imu_debug: dict[str, Any] | None,
+) -> list[float | None] | None:
     if not isinstance(imu_debug, dict):
         return None
     devices = imu_debug.get("devices")
@@ -385,11 +670,14 @@ def gyro_joint_qvel_rad_s(imu_debug: dict[str, Any] | None) -> list[float] | Non
         return None
 
     def gyro_dps(device_index: int, axis_index: int) -> float | None:
-        device = devices[device_index]
-        if not isinstance(device, dict):
-            return None
-        gyro = to_float_list(device.get("gyro_dps"), 3)
-        if not finite_list(gyro):
+        gyro = _device_signal(
+            devices,
+            device_index,
+            "gyro_dps",
+            3,
+            valid_field="valid_gyro",
+        )
+        if gyro is None:
             return None
         return gyro[axis_index]
 
@@ -397,25 +685,43 @@ def gyro_joint_qvel_rad_s(imu_debug: dict[str, Any] | None) -> list[float] | Non
     imu2_y = gyro_dps(1, 1)
     imu3_y = gyro_dps(2, 1)
     imu4_z = gyro_dps(3, 2)
-    if None in (imu1_bucket, imu2_y, imu3_y, imu4_z):
-        return None
     deg_to_rad = math.pi / 180.0
     if joint_rpy_profile(imu_debug) == "daoyuan_chain":
         return [
-            -float(imu4_z) * deg_to_rad,
-            float(imu3_y) * deg_to_rad,
-            (float(imu2_y) + float(imu3_y)) * deg_to_rad,
-            -(float(imu1_bucket) + float(imu2_y)) * deg_to_rad,
+            None if imu4_z is None else -float(imu4_z) * deg_to_rad,
+            None if imu3_y is None else float(imu3_y) * deg_to_rad,
+            (
+                None
+                if imu2_y is None or imu3_y is None
+                else (float(imu2_y) + float(imu3_y)) * deg_to_rad
+            ),
+            (
+                None
+                if imu1_bucket is None or imu2_y is None
+                else -(float(imu1_bucket) + float(imu2_y)) * deg_to_rad
+            ),
         ]
     return [
-        -float(imu4_z) * deg_to_rad,
-        float(imu3_y) * deg_to_rad,
-        (float(imu2_y) - float(imu3_y)) * deg_to_rad,
-        bucket_imu0_axis_sign(imu_debug) * (float(imu2_y) - float(imu1_bucket)) * deg_to_rad,
+        None if imu4_z is None else -float(imu4_z) * deg_to_rad,
+        None if imu3_y is None else float(imu3_y) * deg_to_rad,
+        (
+            None
+            if imu2_y is None or imu3_y is None
+            else (float(imu2_y) - float(imu3_y)) * deg_to_rad
+        ),
+        (
+            None
+            if imu1_bucket is None or imu2_y is None
+            else bucket_imu0_axis_sign(imu_debug)
+            * (float(imu2_y) - float(imu1_bucket))
+            * deg_to_rad
+        ),
     ]
 
 
-def imu_joint_qpos_from_rpy_rad(imu_debug: dict[str, Any] | None) -> list[float] | None:
+def imu_joint_qpos_from_rpy_rad(
+    imu_debug: dict[str, Any] | None,
+) -> list[float | None] | None:
     if not isinstance(imu_debug, dict):
         return None
     devices = imu_debug.get("devices")
@@ -423,11 +729,14 @@ def imu_joint_qpos_from_rpy_rad(imu_debug: dict[str, Any] | None) -> list[float]
         return None
 
     def rpy_rad(device_index: int, axis_index: int) -> float | None:
-        device = devices[device_index]
-        if not isinstance(device, dict):
-            return None
-        rpy = to_float_list(device.get("rpy_rad"), 3)
-        if not finite_list(rpy):
+        rpy = _device_signal(
+            devices,
+            device_index,
+            "rpy_rad",
+            3,
+            valid_field="valid_attitude",
+        )
+        if rpy is None:
             return None
         return rpy[axis_index]
 
@@ -435,22 +744,42 @@ def imu_joint_qpos_from_rpy_rad(imu_debug: dict[str, Any] | None) -> list[float]
     imu2_y = rpy_rad(1, 1)
     imu3_y = rpy_rad(2, 1)
     imu4_z = rpy_rad(3, 2)
-    if None in (imu1_bucket, imu2_y, imu3_y, imu4_z):
-        return None
     if joint_rpy_profile(imu_debug) == "daoyuan_chain":
         return [
-            float(imu4_z),
-            float(imu3_y),
-            float(imu2_y) + float(imu3_y) + daoyuan_chain_stick_policy_offset_rad(imu_debug),
-            -(float(imu1_bucket) + float(imu2_y))
-            + daoyuan_chain_bucket_policy_offset_rad(imu_debug),
+            None if imu4_z is None else float(imu4_z),
+            None if imu3_y is None else float(imu3_y),
+            (
+                None
+                if imu2_y is None or imu3_y is None
+                else float(imu2_y)
+                + float(imu3_y)
+                + daoyuan_chain_stick_policy_offset_rad(imu_debug)
+            ),
+            (
+                None
+                if imu1_bucket is None or imu2_y is None
+                else -(float(imu1_bucket) + float(imu2_y))
+                + daoyuan_chain_bucket_policy_offset_rad(imu_debug)
+            ),
         ]
     return [
-        float(imu4_z),
-        float(imu3_y),
-        float(imu2_y) - float(imu3_y),
-        bucket_imu0_axis_sign(imu_debug)
-        * (float(imu1_bucket) - float(imu2_y) - bucket_imu0_reference_rad(imu_debug)),
+        None if imu4_z is None else float(imu4_z),
+        None if imu3_y is None else float(imu3_y),
+        (
+            None
+            if imu2_y is None or imu3_y is None
+            else float(imu2_y) - float(imu3_y)
+        ),
+        (
+            None
+            if imu1_bucket is None or imu2_y is None
+            else bucket_imu0_axis_sign(imu_debug)
+            * (
+                float(imu1_bucket)
+                - float(imu2_y)
+                - bucket_imu0_reference_rad(imu_debug)
+            )
+        ),
     ]
 
 
@@ -464,13 +793,13 @@ def _bucket_tilt_raw_from_accel_rad(
         return None
 
     def accel(device_index: int) -> list[float] | None:
-        device = devices[device_index]
-        if not isinstance(device, dict):
-            return None
-        values = to_float_list(device.get("accel_mps2"), 3)
-        if not finite_list(values):
-            return None
-        return values
+        return _device_signal(
+            devices,
+            device_index,
+            "accel_mps2",
+            3,
+            valid_field="valid_accel",
+        )
 
     imu0_accel = accel(0)
     imu1_accel = accel(1)
@@ -530,13 +859,13 @@ def _bucket_gravity_hinge_raw_from_accel_rad(
         return None
 
     def accel(device_index: int) -> list[float] | None:
-        device = devices[device_index]
-        if not isinstance(device, dict):
-            return None
-        values = to_float_list(device.get("accel_mps2"), 3)
-        if not finite_list(values):
-            return None
-        return values
+        return _device_signal(
+            devices,
+            device_index,
+            "accel_mps2",
+            3,
+            valid_field="valid_accel",
+        )
 
     imu0_accel = accel(0)
     imu1_accel = accel(1)
@@ -737,34 +1066,26 @@ class BucketQuaternionPhaseTracker:
 
     @staticmethod
     def _raw_roll_minus_pitch_rad(devices: list[Any]) -> float | None:
-        try:
-            imu0 = devices[0]
-            imu1 = devices[1]
-        except IndexError:
+        roll0 = _device_signal(
+            devices, 0, "rpy_raw_deg", 3, valid_field="valid_attitude"
+        )
+        pitch1 = _device_signal(
+            devices, 1, "rpy_raw_deg", 3, valid_field="valid_attitude"
+        )
+        if roll0 is None or pitch1 is None:
             return None
-        if not isinstance(imu0, dict) or not isinstance(imu1, dict):
-            return None
-        roll0 = to_float_list(imu0.get("rpy_raw_deg"), 3)
-        pitch1 = to_float_list(imu1.get("rpy_raw_deg"), 3)
-        if not finite_list(roll0) or not finite_list(pitch1):
-            return None
-        assert roll0 is not None and pitch1 is not None
         return math.radians(float(roll0[0]) - float(pitch1[1]))
 
     @staticmethod
     def _raw_daoyuan_chain_bucket_rad(devices: list[Any]) -> float | None:
-        try:
-            imu0 = devices[0]
-            imu1 = devices[1]
-        except IndexError:
+        roll0 = _device_signal(
+            devices, 0, "rpy_raw_deg", 3, valid_field="valid_attitude"
+        )
+        pitch1 = _device_signal(
+            devices, 1, "rpy_raw_deg", 3, valid_field="valid_attitude"
+        )
+        if roll0 is None or pitch1 is None:
             return None
-        if not isinstance(imu0, dict) or not isinstance(imu1, dict):
-            return None
-        roll0 = to_float_list(imu0.get("rpy_raw_deg"), 3)
-        pitch1 = to_float_list(imu1.get("rpy_raw_deg"), 3)
-        if not finite_list(roll0) or not finite_list(pitch1):
-            return None
-        assert roll0 is not None and pitch1 is not None
         return -math.radians(float(roll0[0]) + float(pitch1[1]))
 
     def update_from_devices(
@@ -856,7 +1177,7 @@ def imu_joint_qpos_raw_deg(
     imu_debug: dict[str, Any] | None,
     *,
     bucket_tracker: BucketQuaternionPhaseTracker | None = None,
-) -> list[float] | None:
+) -> list[float | None] | None:
     if not isinstance(imu_debug, dict):
         return None
     devices = imu_debug.get("devices")
@@ -864,11 +1185,14 @@ def imu_joint_qpos_raw_deg(
         return None
 
     def rpy_raw_deg(device_index: int, axis_index: int) -> float | None:
-        device = devices[device_index]
-        if not isinstance(device, dict):
-            return None
-        rpy = to_float_list(device.get("rpy_raw_deg"), 3)
-        if not finite_list(rpy):
+        rpy = _device_signal(
+            devices,
+            device_index,
+            "rpy_raw_deg",
+            3,
+            valid_field="valid_attitude",
+        )
+        if rpy is None:
             return None
         return rpy[axis_index]
 
@@ -912,37 +1236,51 @@ def imu_joint_qpos_raw_deg(
         charts = _bucket_quaternion_charts_rad(devices, profile=profile, sign=sign)
         bucket_rad = None if charts is None else charts[0]
     bucket_deg = None if bucket_rad is None else math.degrees(bucket_rad)
-    if None in (imu1_y, imu2_y, imu3_y, imu4_z, bucket_deg):
-        return None
     if joint_profile == "daoyuan_chain":
         return [
-            float(imu4_z),
-            float(imu3_y),
-            float(imu2_y) + float(imu3_y) + math.degrees(daoyuan_chain_stick_policy_offset_rad(imu_debug)),
-            float(bucket_deg),
+            None if imu4_z is None else float(imu4_z),
+            None if imu3_y is None else float(imu3_y),
+            (
+                None
+                if imu2_y is None or imu3_y is None
+                else float(imu2_y)
+                + float(imu3_y)
+                + math.degrees(daoyuan_chain_stick_policy_offset_rad(imu_debug))
+            ),
+            None if bucket_deg is None else float(bucket_deg),
         ]
     return [
-        float(imu4_z),
-        float(imu3_y),
-        float(imu2_y) - float(imu3_y),
-        float(bucket_deg),
+        None if imu4_z is None else float(imu4_z),
+        None if imu3_y is None else float(imu3_y),
+        (
+            None
+            if imu2_y is None or imu3_y is None
+            else float(imu2_y) - float(imu3_y)
+        ),
+        None if bucket_deg is None else float(bucket_deg),
     ]
 
 
-def qpos_delta_rad(current: list[float], reference: list[float] | None) -> list[float] | None:
+def qpos_delta_rad(
+    current: list[float],
+    reference: list[float | None] | None,
+) -> list[float | None] | None:
     if reference is None:
         return None
-    return [angle_delta_rad(c, r) for c, r in zip(current, reference)]
+    return [None if r is None else angle_delta_rad(c, r) for c, r in zip(current, reference)]
 
 
-def vec_minus(current: list[float] | None, reference: list[float] | None) -> list[float] | None:
+def vec_minus(
+    current: list[float | None] | None,
+    reference: list[float | None] | None,
+) -> list[float | None] | None:
     if current is None or reference is None:
         return None
-    return [c - r for c, r in zip(current, reference)]
+    return [None if c is None or r is None else c - r for c, r in zip(current, reference)]
 
 
 def branch_alias_axes_from_direct_delta(
-    direct_delta_deg: list[float] | None,
+    direct_delta_deg: list[float | None] | None,
     *,
     alias_period_deg: float = 360.0,
     tolerance_deg: float = 20.0,
@@ -951,6 +1289,8 @@ def branch_alias_axes_from_direct_delta(
         return []
     axes: list[str] = []
     for name, delta in zip(AXES, direct_delta_deg):
+        if delta is None:
+            continue
         if not math.isfinite(delta):
             continue
         branch_count = round(delta / alias_period_deg)
@@ -975,10 +1315,13 @@ def bits(values: Any) -> str:
     return "".join(out)
 
 
-def fmt_vec(values: list[float] | None, width: int = 6, precision: int = 3) -> str:
+def fmt_vec(values: list[float | None] | None, width: int = 6, precision: int = 3) -> str:
     if values is None:
         return "n/a"
-    return "[" + " ".join(f"{v:{width}.{precision}f}" for v in values) + "]"
+    return "[" + " ".join(
+        f"{'n/a':>{width}}" if value is None else f"{value:{width}.{precision}f}"
+        for value in values
+    ) + "]"
 
 
 def fmt_axis_header(width: int = 10, label_width: int = 22) -> str:
@@ -987,7 +1330,7 @@ def fmt_axis_header(width: int = 10, label_width: int = 22) -> str:
 
 def fmt_axis_row(
     label: str,
-    values: list[float] | None,
+    values: list[float | None] | None,
     *,
     width: int = 10,
     precision: int = 2,
@@ -996,13 +1339,16 @@ def fmt_axis_row(
     prefix = "  " + f"{label:<{label_width}}"
     if values is None:
         return prefix + "n/a"
-    return prefix + "".join(f"{v:{width}.{precision}f}" for v in values)
+    return prefix + "".join(
+        f"{'n/a':>{width}}" if value is None else f"{value:{width}.{precision}f}"
+        for value in values
+    )
 
 
-def rad_to_deg(values: list[float] | None) -> list[float] | None:
+def rad_to_deg(values: list[float | None] | None) -> list[float | None] | None:
     if values is None:
         return None
-    return [v * 180.0 / math.pi for v in values]
+    return [None if value is None else value * 180.0 / math.pi for value in values]
 
 
 def _vendor_csv_fieldnames() -> list[str]:
@@ -1018,6 +1364,10 @@ def _vendor_csv_fieldnames() -> list[str]:
         "dt_s",
         "snapshot_age_ms",
         "state_loop_tick",
+        "imu_state",
+        "imu_fault_device_count",
+        "imu_error_codes",
+        "imu_fault_devices",
         "bucket_imu0_profile",
         "bucket_imu0_reference_rad",
         "bucket_imu0_sign",
@@ -1130,7 +1480,7 @@ def _put_axis_values(
     out: dict[str, Any],
     prefix: str,
     suffix: str,
-    values: list[float] | None,
+    values: list[float | None] | None,
 ) -> None:
     for axis, name in enumerate(AXES):
         value = None if values is None or axis >= len(values) else values[axis]
@@ -1148,6 +1498,11 @@ def vendor_csv_row(row: dict[str, Any]) -> dict[str, Any]:
     sign = row.get("bucket_imu0_sign")
     if sign is None:
         sign = bucket_imu0_axis_sign(imu_debug)
+    imu_status = row.get("imu_status")
+    if not isinstance(imu_status, dict):
+        imu_status = {}
+    error_codes = imu_status.get("error_codes")
+    fault_devices = imu_status.get("fault_devices")
     out: dict[str, Any] = {
         "schema_version": row.get("schema_version"),
         "sample_index": row.get("sample_index"),
@@ -1160,6 +1515,22 @@ def vendor_csv_row(row: dict[str, Any]) -> dict[str, Any]:
         "dt_s": _csv_value(row.get("dt_s")),
         "snapshot_age_ms": _csv_value(row.get("snapshot_age_ms")),
         "state_loop_tick": row.get("state_loop_tick"),
+        "imu_state": _csv_value(imu_status.get("state")),
+        "imu_fault_device_count": _csv_value(imu_status.get("fault_device_count")),
+        "imu_error_codes": (
+            ";".join(str(value) for value in error_codes)
+            if isinstance(error_codes, list)
+            else ""
+        ),
+        "imu_fault_devices": (
+            ";".join(
+                str(device.get("label"))
+                for device in fault_devices
+                if isinstance(device, dict) and device.get("label")
+            )
+            if isinstance(fault_devices, list)
+            else ""
+        ),
         "bucket_imu0_profile": profile,
         "bucket_imu0_reference_rad": _csv_value(reference_rad),
         "bucket_imu0_sign": _csv_value(sign),
@@ -1238,17 +1609,42 @@ def vendor_csv_row(row: dict[str, Any]) -> dict[str, Any]:
     _put_axis_values(out, "qpos", "deg", to_float_list(row.get("qpos_deg"), 4))
     _put_axis_values(out, "qvel_bridge", "rad_s", to_float_list(row.get("qvel_bridge"), 4))
     _put_axis_values(out, "qvel_qpos_diff", "rad_s", to_float_list(row.get("qvel_qpos_diff"), 4))
-    _put_axis_values(out, "qvel_raw_imu", "rad_s", to_float_list(row.get("qvel_raw_imu_rad_s"), 4))
+    _put_axis_values(
+        out,
+        "qvel_raw_imu",
+        "rad_s",
+        to_optional_float_list(row.get("qvel_raw_imu_rad_s"), 4),
+    )
     _put_axis_values(
         out,
         "qvel_residual",
         "rad_s",
         to_float_list(row.get("qvel_residual_bridge_minus_qpos_diff"), 4),
     )
-    _put_axis_values(out, "qpos_raw_imu", "rad", to_float_list(row.get("qpos_raw_imu"), 4))
-    _put_axis_values(out, "qpos_raw_imu", "deg", to_float_list(row.get("qpos_raw_imu_deg"), 4))
-    _put_axis_values(out, "qpos_folded_imu", "rad", to_float_list(row.get("qpos_folded_imu"), 4))
-    _put_axis_values(out, "qpos_folded_imu", "deg", to_float_list(row.get("qpos_folded_imu_deg"), 4))
+    _put_axis_values(
+        out,
+        "qpos_raw_imu",
+        "rad",
+        to_optional_float_list(row.get("qpos_raw_imu"), 4),
+    )
+    _put_axis_values(
+        out,
+        "qpos_raw_imu",
+        "deg",
+        to_optional_float_list(row.get("qpos_raw_imu_deg"), 4),
+    )
+    _put_axis_values(
+        out,
+        "qpos_folded_imu",
+        "rad",
+        to_optional_float_list(row.get("qpos_folded_imu"), 4),
+    )
+    _put_axis_values(
+        out,
+        "qpos_folded_imu",
+        "deg",
+        to_optional_float_list(row.get("qpos_folded_imu_deg"), 4),
+    )
 
     devices = imu_debug.get("devices") if isinstance(imu_debug, dict) else None
     if not isinstance(devices, list):
@@ -1288,10 +1684,10 @@ def vendor_csv_row(row: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def deg_to_rad(values: list[float] | None) -> list[float] | None:
+def deg_to_rad(values: list[float | None] | None) -> list[float | None] | None:
     if values is None:
         return None
-    return [v * math.pi / 180.0 for v in values]
+    return [None if value is None else value * math.pi / 180.0 for value in values]
 
 
 def mean_abs(columns: list[list[float | None]], axis: int) -> float | None:
@@ -1441,31 +1837,71 @@ def quality_from_window(
     }
 
 
-def print_imu_debug(imu_debug: dict[str, Any] | None) -> None:
+def print_imu_debug(
+    imu_debug: dict[str, Any] | None,
+    *,
+    imu_status: dict[str, Any] | None = None,
+) -> None:
     if not isinstance(imu_debug, dict):
-        print("  imu_debug: unavailable; rebuild/restart bridge if raw gyro is needed", flush=True)
+        print(
+            "  imu_debug: unavailable; per-device samples cannot be inspected",
+            flush=True,
+        )
         return
     devices = imu_debug.get("devices")
     if not isinstance(devices, list):
         print("  imu_debug.devices: unavailable", flush=True)
         return
+    fault_reasons: dict[int, str] = {}
+    if isinstance(imu_status, dict):
+        raw_fault_devices = imu_status.get("fault_devices")
+        if isinstance(raw_fault_devices, list):
+            for raw_fault in raw_fault_devices:
+                if not isinstance(raw_fault, dict):
+                    continue
+                try:
+                    index = int(raw_fault.get("index"))
+                except (TypeError, ValueError):
+                    continue
+                reasons = raw_fault.get("reasons")
+                if isinstance(reasons, list):
+                    fault_reasons[index] = ",".join(str(reason) for reason in reasons)
     print(
-        "  imu  addr on quat gyro    age_ms loss | gyro_dps[x y z]        rpy_deg[x y z]        raw_deg[x y z]",
+        "  slot physical-id       addr on att quat(opt) gyro acc    age_ms loss fault",
         flush=True,
     )
-    for index, device in enumerate(devices[:4]):
-        if not isinstance(device, dict):
+    for layout in IMU_LAYOUT:
+        index = int(layout["index"])
+        raw_device = devices[index] if index < len(devices) else None
+        device = raw_device if isinstance(raw_device, dict) else None
+        physical_id = f"{layout['name']}@{layout['can_id']}"
+        if device is None:
+            print(
+                f"  imu{index} {physical_id:<17} {'-':>4}  -   -    -    -   - {'n/a':>9} "
+                f"{'-':>4} unavailable",
+                flush=True,
+            )
             continue
+        age_ms = _safe_finite_float(device.get("host_rx_age_ms"))
+        age_text = "n/a" if age_ms is None else f"{age_ms:.1f}"
+        reason_text = fault_reasons.get(index, "ok")
+        print(
+            f"  imu{index} {physical_id:<17} {str(device.get('device_addr', '-')):>4} "
+            f"{str(device.get('online', '-')):>2} "
+            f"{str(device.get('valid_attitude', '-')):>3} "
+            f"{str(device.get('valid_quaternion', '-')):>4} "
+            f"{str(device.get('valid_gyro', '-')):>4} "
+            f"{str(device.get('valid_accel', '-')):>3} "
+            f"{age_text:>9} "
+            f"{str(device.get('packet_loss_count', '-')):>4} {reason_text}",
+            flush=True,
+        )
         rpy_rad = to_float_list(device.get("rpy_rad"), 3)
         print(
-            f"  imu{index:<1} {str(device.get('device_addr')):>4} "
-            f"{str(device.get('online')):>2} {str(device.get('valid_quaternion')):>4} "
-            f"{str(device.get('valid_gyro')):>4} "
-            f"{safe_float(device.get('host_rx_age_ms')):9.1f} "
-            f"{str(device.get('packet_loss_count')):>4} | "
-            f"{fmt_vec(to_float_list(device.get('gyro_dps'), 3), width=7, precision=2)} "
-            f"{fmt_vec(rad_to_deg(rpy_rad), width=8, precision=2)} "
-            f"{fmt_vec(to_float_list(device.get('rpy_raw_deg'), 3), width=8, precision=2)}",
+            "       "
+            f"gyro_dps={fmt_vec(to_float_list(device.get('gyro_dps'), 3), width=7, precision=2)} "
+            f"rpy_deg={fmt_vec(rad_to_deg(rpy_rad), width=8, precision=2)} "
+            f"raw_deg={fmt_vec(to_float_list(device.get('rpy_raw_deg'), 3), width=8, precision=2)}",
             flush=True,
         )
 
@@ -1474,6 +1910,8 @@ def main() -> int:
     args = parse_args()
     if args.rate_hz <= 0.0:
         raise SystemExit("--rate-hz must be positive")
+    if args.imu_max_stale_ms < 0.0:
+        raise SystemExit("--imu-max-stale-ms must be non-negative")
     output_path = args.output or default_output_path()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     summary_path = output_path.with_name(output_path.stem + "_summary.json")
@@ -1530,12 +1968,27 @@ def main() -> int:
     bucket_profile_counts: dict[str, int] = {}
     bucket_reference_counts: dict[str, int] = {}
     bucket_sign_counts: dict[str, int] = {}
+    imu_state_counts: dict[str, int] = {}
+    imu_error_code_counts: dict[str, int] = {}
+    imu_fault_device_row_counts = {
+        str(layout["name"]): 0 for layout in IMU_LAYOUT
+    }
+    imu_fault_reason_row_counts: dict[str, int] = {}
+    max_imu_fault_devices = 0
 
     print(f"[imu-qvel] reading {args.host}:{args.port} at target {args.rate_hz:.1f} Hz", flush=True)
     print(f"[imu-qvel] writing {output_path}", flush=True)
     if vendor_csv_path is not None:
         print(f"[imu-qvel] vendor CSV {vendor_csv_path}", flush=True)
     print("[imu-qvel] qvel axes: swing, boom, stick, bucket", flush=True)
+    print(
+        "[imu-qvel] IMU health order: "
+        + ", ".join(
+            f"imu{layout['index']}={layout['name']}@{layout['can_id']}"
+            for layout in IMU_LAYOUT
+        ),
+        flush=True,
+    )
 
     csv_fh = None
     csv_writer: csv.DictWriter | None = None
@@ -1601,6 +2054,31 @@ def main() -> int:
                 if not isinstance(imu_debug, dict):
                     missing_imu_debug += 1
                     imu_debug = None
+                imu_status = classify_imu_status(
+                    imu_health,
+                    imu_debug,
+                    max_stale_ms=args.imu_max_stale_ms,
+                )
+                imu_state = str(imu_status["state"])
+                imu_state_counts[imu_state] = imu_state_counts.get(imu_state, 0) + 1
+                for error_code in imu_status.get("error_codes", []):
+                    key = str(error_code)
+                    imu_error_code_counts[key] = imu_error_code_counts.get(key, 0) + 1
+                fault_device_count = imu_status.get("fault_device_count")
+                if isinstance(fault_device_count, int):
+                    max_imu_fault_devices = max(max_imu_fault_devices, fault_device_count)
+                for fault_device in imu_status.get("fault_devices", []):
+                    if not isinstance(fault_device, dict):
+                        continue
+                    device_name = str(fault_device.get("name", "unknown"))
+                    imu_fault_device_row_counts[device_name] = (
+                        imu_fault_device_row_counts.get(device_name, 0) + 1
+                    )
+                    for reason in fault_device.get("reasons", []):
+                        reason_key = str(reason)
+                        imu_fault_reason_row_counts[reason_key] = (
+                            imu_fault_reason_row_counts.get(reason_key, 0) + 1
+                        )
                 actual_bucket_profile = bucket_imu0_profile(imu_debug)
                 actual_bucket_reference_rad = bucket_imu0_reference_rad(imu_debug)
                 actual_bucket_sign = bucket_imu0_axis_sign(imu_debug)
@@ -1682,7 +2160,10 @@ def main() -> int:
                     qpos_policy_minus_raw_imu_deg_direct
                 )
                 raw_minus_bridge = (
-                    [a - b for a, b in zip(raw_imu_qvel, qvel_bridge)]
+                    [
+                        None if raw is None else raw - bridge
+                        for raw, bridge in zip(raw_imu_qvel, qvel_bridge)
+                    ]
                     if raw_imu_qvel is not None
                     else None
                 )
@@ -1787,6 +2268,7 @@ def main() -> int:
                     "state_loop_tick": payload.get("state_loop_tick"),
                     "imu_health": imu_health,
                     "imu_debug": imu_debug,
+                    "imu_status": imu_status,
                     "quality": quality,
                 }
                 fout.write(json.dumps(row, separators=(",", ":"), ensure_ascii=False) + "\n")
@@ -1806,13 +2288,17 @@ def main() -> int:
                     if branch_alias_bad_axes:
                         bad_parts.append("branch_alias=" + ",".join(branch_alias_bad_axes))
                     bad = "ok" if not bad_parts else ";".join(bad_parts)
-                    health = imu_health if isinstance(imu_health, dict) else {}
                     print(
                         f"[imu-qvel] t={elapsed_s:7.1f}s hz={actual_hz:5.1f} bad={bad} "
-                        f"imu={bits(health.get('online'))} gyro={bits(health.get('valid_gyro'))} "
+                        f"online={imu_status['online_bits']} "
+                        f"att={imu_status['valid_attitude_bits']} "
+                        f"quat={imu_status['valid_quaternion_bits']}(opt) "
+                        f"gyro={imu_status['valid_gyro_bits']} "
+                        f"acc={imu_status['valid_accel_bits']} "
                         f"bucket_profile={actual_bucket_profile} sign={actual_bucket_sign:g}",
                         flush=True,
                     )
+                    print("  " + format_imu_status(imu_status), flush=True)
                     print(fmt_axis_header(width=10, label_width=22), flush=True)
                     print(
                         fmt_axis_row(
@@ -1924,8 +2410,8 @@ def main() -> int:
                         ),
                         flush=True,
                     )
-                    if args.verbose_imu:
-                        print_imu_debug(imu_debug)
+                    if args.verbose_imu or imu_status["state"] != "ok":
+                        print_imu_debug(imu_debug, imu_status=imu_status)
                     next_print_s = elapsed_s + args.print_every_s
 
                 last_qpos = qpos
@@ -1953,6 +2439,15 @@ def main() -> int:
         "target_rate_hz": args.rate_hz,
         "duration_s": (time.monotonic_ns() - started_mono_ns) / 1e9,
         "axes": list(AXES),
+        "imu_status": {
+            "layout": [dict(layout) for layout in IMU_LAYOUT],
+            "max_stale_ms": args.imu_max_stale_ms,
+            "state_counts": imu_state_counts,
+            "error_code_counts": imu_error_code_counts,
+            "fault_device_row_counts": imu_fault_device_row_counts,
+            "fault_reason_row_counts": imu_fault_reason_row_counts,
+            "max_fault_devices_in_one_row": max_imu_fault_devices,
+        },
         "qpos": summarize_qpos(qpos_samples),
         "qvel_bridge": summarize_matrix(qvel_samples),
         "qvel_qpos_diff": summarize_matrix(diff_samples),
@@ -2024,6 +2519,10 @@ def main() -> int:
             else bucket_imu0_axis_sign()
         ),
         "notes": [
+            "imu_health and imu_debug use physical order: imu0=bucket@0x122, imu1=stick@0x124, imu2=boom@0x121, imu3=swing@0x123; this differs from policy AXES order.",
+            "imu_status counts unique faulty devices per row. Multiple invalid flags on one IMU remain single_imu_error; offline devices are not double-counted as stale or invalid.",
+            "valid_quaternion is reported but is optional for the current Daoyuan native-RPY chain, so quaternion=0 alone is not counted as an IMU fault.",
+            "imu_snapshot_uninitialized means the bridge has not published a real per-device diagnostic snapshot; it must not be interpreted as four physical IMUs offline.",
             "qvel_bridge is the qvel currently returned by read_state.",
             "qvel_qpos_diff is finite-difference qpos using bridge timestamps.",
             "qpos/qpos_deg are the current joint pose in radians/degrees.",

@@ -40,6 +40,17 @@ class ActionSmoothingTests(unittest.TestCase):
         self.assertAlmostEqual(profile.apply(raw_value=0.5, current_value=0.8, delta_time=0.1), 0.5)
         self.assertAlmostEqual(profile.apply(raw_value=0.0, current_value=0.8, delta_time=0.1), 0.4)
 
+    def test_axis_response_profile_supports_directional_exponents(self) -> None:
+        profile = AxisResponseProfile(
+            deadzone=0.0,
+            exponent=1.0,
+            positive_exponent=0.5,
+            negative_exponent=0.25,
+        )
+
+        self.assertAlmostEqual(profile.remap(0.25), 0.5)
+        self.assertAlmostEqual(profile.remap(-0.0625), -0.5)
+
     def test_action_response_smoother_tracks_state_per_axis(self) -> None:
         smoother = ActionResponseSmoother(
             deadzone=0.0,
@@ -58,6 +69,23 @@ class ActionSmoothingTests(unittest.TestCase):
         smoother.reset()
         reset_step = smoother.apply(np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32), delta_time=0.1)
         np.testing.assert_allclose(reset_step, np.array([0.2, 0.0, 0.0, 0.0], dtype=np.float32))
+
+    def test_action_response_smoother_broadcasts_directional_exponents_per_axis(self) -> None:
+        smoother = ActionResponseSmoother(
+            deadzone=0.0,
+            attack_rate=100.0,
+            release_rate=100.0,
+            recenter_rate=100.0,
+            positive_exponent=[0.5, 1.0, 1.0, 1.0],
+            negative_exponent=[0.25, 1.0, 1.0, 1.0],
+            default_dt=0.1,
+        )
+
+        actual = smoother.apply(
+            np.array([0.25, -0.0625, 0.0, 0.0], dtype=np.float32),
+            delta_time=0.1,
+        )
+        np.testing.assert_allclose(actual, np.array([0.5, -0.0625, 0.0, 0.0]))
 
 
 if __name__ == "__main__":

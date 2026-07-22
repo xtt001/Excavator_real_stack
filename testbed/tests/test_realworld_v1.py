@@ -436,6 +436,7 @@ class RealworldV1Tests(unittest.TestCase):
                     "imu": {
                         "online": [1, 1, 1, 1],
                         "valid_attitude": [1, 1, 1, 1],
+                        "host_rx_age_ms": [10.0, 11.0, 12.0, 13.0],
                     },
                 },
             }
@@ -465,6 +466,30 @@ class RealworldV1Tests(unittest.TestCase):
         self.assertFalse(snapshot.ok)
         self.assertEqual(snapshot.error_code, "imu_missing:1")
         self.assertEqual(snapshot.imu_summary, "1011")
+
+        obs = healthy_obs()
+        obs["sensor_health"]["imu"]["host_rx_age_ms"] = [10.0, 250.0, 12.0, 13.0]
+        snapshot = evaluator.evaluate(
+            obs=obs,
+            action_info=healthy_info,
+            control_result=healthy_control,
+            now_ns=now_ns,
+        )
+        self.assertFalse(snapshot.ok)
+        self.assertEqual(snapshot.error_code, "imu_stale:1")
+
+        obs = healthy_obs()
+        obs["sensor_health"]["imu_placeholder"] = True
+        obs["sensor_health"]["imu"]["online"] = [0, 0, 0, 0]
+        obs["sensor_health"]["imu"]["valid_attitude"] = [0, 0, 0, 0]
+        snapshot = evaluator.evaluate(
+            obs=obs,
+            action_info=healthy_info,
+            control_result=healthy_control,
+            now_ns=now_ns,
+        )
+        self.assertTrue(snapshot.ok)
+        self.assertEqual(snapshot.imu_summary, "fake")
 
         cases = [
             (
@@ -4970,6 +4995,8 @@ class RealworldV1Tests(unittest.TestCase):
                     "host_rx_age_ms": [10.0, 11.0, 10.5, 9.5],
                 },
                 "snapshot_age_ms": 15.0,
+                "imu_source": "placeholder",
+                "imu_placeholder": True,
                 "qpos_raw_imu": np.array([0.1, 0.2, 0.3, 0.4], dtype=np.float32),
                 "imu_debug": {
                     "devices": [
@@ -4999,7 +5026,11 @@ class RealworldV1Tests(unittest.TestCase):
         sensor_health = result.observation["sensor_health"]
         self.assertEqual(sensor_health["imu"]["online"], [1, 0, 1, 1])
         self.assertEqual(sensor_health["imu"]["packet_loss_count"], [0, 2, 0, 0])
+        self.assertEqual(sensor_health["imu_source"], "placeholder")
+        self.assertTrue(sensor_health["imu_placeholder"])
         self.assertAlmostEqual(sensor_health["bridge_snapshot_age_ms"], 15.0)
+        self.assertEqual(result.observation["imu_source"], "placeholder")
+        self.assertTrue(result.observation["imu_placeholder"])
         self.assertIn("imu_debug", result.observation)
         np.testing.assert_allclose(result.observation["qpos_raw_imu"], [0.1, 0.2, 0.3, 0.4])
 
