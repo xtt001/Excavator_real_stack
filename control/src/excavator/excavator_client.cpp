@@ -48,8 +48,8 @@ bool ExcavatorClient::stop() {
 bool ExcavatorClient::reset() {
     device_.fault_code = 0;
     {
-        std::lock_guard<std::mutex> lock(ref_command_queue_mu_);
-        ref_command_queue_.clear();
+        std::lock_guard<std::mutex> lock(latest_ref_command_mu_);
+        latest_ref_command_.reset();
     }
     ExcavatorState ref{};
     (void)channel_.setRef(ref);
@@ -62,8 +62,8 @@ bool ExcavatorClient::reset() {
 }
 
 void ExcavatorClient::submitServo(const ExcavatorCommand& cmd) {
-    std::lock_guard<std::mutex> lock(ref_command_queue_mu_);
-    ref_command_queue_.push_back(cmd);
+    std::lock_guard<std::mutex> lock(latest_ref_command_mu_);
+    latest_ref_command_ = cmd;
 }
 
 bool ExcavatorClient::setPidVectors(const std::vector<std::vector<double>>& pid_vectors) {
@@ -71,8 +71,8 @@ bool ExcavatorClient::setPidVectors(const std::vector<std::vector<double>>& pid_
 }
 
 void ExcavatorClient::clearServo() {
-    std::lock_guard<std::mutex> lock(ref_command_queue_mu_);
-    ref_command_queue_.clear();
+    std::lock_guard<std::mutex> lock(latest_ref_command_mu_);
+    latest_ref_command_.reset();
 }
 
 void ExcavatorClient::toggleStatusBit(int status_idx) {
@@ -117,14 +117,11 @@ void ExcavatorClient::applyCachedStatusToRef(ExcavatorState& ref) {
 }
 
 bool ExcavatorClient::takeServoCmd(ExcavatorCommand& out_cmd) {
-    std::lock_guard<std::mutex> lock(ref_command_queue_mu_);
-    if (ref_command_queue_.empty()) {
+    std::lock_guard<std::mutex> lock(latest_ref_command_mu_);
+    if (!latest_ref_command_.has_value()) {
         return false;
     }
-    out_cmd = ref_command_queue_.front();
-    if (ref_command_queue_.size() > 1U) {
-        ref_command_queue_.pop_front();
-    }
+    out_cmd = *latest_ref_command_;
     return true;
 }
 

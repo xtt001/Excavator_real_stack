@@ -196,9 +196,15 @@ def _load_steps(path: Path) -> list[dict[str, Any]]:
 
 def _compute_metrics(steps: list[dict[str, Any]], *, warmup_steps: int) -> dict[str, Any]:
     checked = steps[min(len(steps), warmup_steps) :]
+    policy_steps = [
+        step
+        for step in checked
+        if str(step.get("policy_remote_mode", "")) == "policy"
+        or _float(step.get("policy_inference_latency_ms")) > 0.0
+    ]
     latencies = [
         _float(step.get("policy_inference_latency_ms"))
-        for step in checked
+        for step in policy_steps
         if _float(step.get("policy_inference_latency_ms")) > 0.0
     ]
     wall_times = [_int(step.get("wall_time_ns")) for step in steps if _int(step.get("wall_time_ns")) > 0]
@@ -228,6 +234,52 @@ def _compute_metrics(steps: list[dict[str, Any]], *, warmup_steps: int) -> dict[
         for idx, step in enumerate(steps)
         if int(step.get("policy_remote_activated", 0) or 0)
     ]
+    pump_alignment = [
+        int(step.get("action_pump_command_current", -1))
+        for step in policy_steps
+        if int(step.get("action_pump_command_current", -1)) >= 0
+    ]
+    policy_loop_ms = [
+        (_int(current.get("wall_time_ns")) - _int(previous.get("wall_time_ns")))
+        / 1_000_000.0
+        for previous, current in zip(policy_steps, policy_steps[1:])
+        if _int(current.get("local_step")) == _int(previous.get("local_step")) + 1
+        and _int(current.get("wall_time_ns")) > _int(previous.get("wall_time_ns"))
+    ]
+    sample_to_update_ms = _timestamp_deltas_ms(
+        policy_steps,
+        start_key="action_sample_timestamp_ns",
+        end_key="action_update_timestamp_ns",
+    )
+    update_to_send_ms = _timestamp_deltas_ms(
+        policy_steps,
+        start_key="action_update_timestamp_ns",
+        end_key="action_send_timestamp_ns",
+    )
+    sample_to_send_ms = _timestamp_deltas_ms(
+        policy_steps,
+        start_key="action_sample_timestamp_ns",
+        end_key="action_send_timestamp_ns",
+    )
+    image_to_send_ms = [
+        (_int(step.get("action_send_timestamp_ns")) - _newest_image_timestamp_ns(step))
+        / 1_000_000.0
+        for step in policy_steps
+        if _newest_image_timestamp_ns(step) > 0
+        and _int(step.get("action_send_timestamp_ns"))
+        >= _newest_image_timestamp_ns(step)
+    ]
+    image_to_sample_ms = [
+        (
+            _int(step.get("action_sample_timestamp_ns"))
+            - _newest_image_timestamp_ns(step)
+        )
+        / 1_000_000.0
+        for step in policy_steps
+        if _newest_image_timestamp_ns(step) > 0
+        and _int(step.get("action_sample_timestamp_ns"))
+        >= _newest_image_timestamp_ns(step)
+    ]
     return {
         "steps": len(steps),
         "checked_steps": len(checked),
@@ -236,6 +288,31 @@ def _compute_metrics(steps: list[dict[str, Any]], *, warmup_steps: int) -> dict[
         "latency_p50_ms": _percentile(latencies, 50),
         "latency_p95_ms": _percentile(latencies, 95),
         "latency_max_ms": max(latencies) if latencies else 0.0,
+        "policy_loop_p50_ms": _percentile(policy_loop_ms, 50),
+        "policy_loop_p95_ms": _percentile(policy_loop_ms, 95),
+        "sample_to_update_p50_ms": _percentile(sample_to_update_ms, 50),
+        "sample_to_update_p95_ms": _percentile(sample_to_update_ms, 95),
+        "update_to_send_p50_ms": _percentile(update_to_send_ms, 50),
+        "update_to_send_p95_ms": _percentile(update_to_send_ms, 95),
+        "sample_to_send_p50_ms": _percentile(sample_to_send_ms, 50),
+        "sample_to_send_p95_ms": _percentile(sample_to_send_ms, 95),
+        "image_to_send_p50_ms": _percentile(image_to_send_ms, 50),
+        "image_to_send_p95_ms": _percentile(image_to_send_ms, 95),
+        "image_to_sample_p50_ms": _percentile(image_to_sample_ms, 50),
+        "image_to_sample_p95_ms": _percentile(image_to_sample_ms, 95),
+        "frame_alignment_enabled_count": sum(
+            1
+            for step in policy_steps
+            if int(step.get("policy_frame_alignment_enabled", 0) or 0)
+        ),
+        "frame_reused_count": sum(
+            1
+            for step in policy_steps
+            if int(step.get("policy_frame_reused", 0) or 0)
+        ),
+        "pump_alignment_known_count": len(pump_alignment),
+        "pump_current_count": sum(value == 1 for value in pump_alignment),
+        "pump_stale_count": sum(value == 0 for value in pump_alignment),
         "policy_error_count": sum(
             1 for step in checked if str(step.get("policy_error", "")).strip()
         ),
@@ -305,6 +382,11 @@ def _verdict(
         reasons.append(f"controller_ack_bad_count={metrics['ack_bad_count']}")
     if metrics["fault_codes"]:
         reasons.append(f"controller_fault_codes={metrics['fault_codes']}")
+    if int(metrics["pump_stale_count"]):
+        reasons.append(
+            "action_pump_stale_command_count="
+            f"{metrics['pump_stale_count']}/{metrics['pump_alignment_known_count']}"
+        )
     if expect_output_mode:
         modes = set(metrics["output_modes"].keys())
         if modes != {expect_output_mode}:
@@ -341,6 +423,30 @@ def _print_log_summary(
         f"p50={metrics['latency_p50_ms']:.2f} "
         f"p95={metrics['latency_p95_ms']:.2f} "
         f"max={metrics['latency_max_ms']:.2f}"
+    )
+    print(
+        "Policy chain ms: "
+        f"loop_p50/p95={metrics['policy_loop_p50_ms']:.2f}/"
+        f"{metrics['policy_loop_p95_ms']:.2f} "
+        f"sample_update={metrics['sample_to_update_p50_ms']:.2f}/"
+        f"{metrics['sample_to_update_p95_ms']:.2f} "
+        f"update_send={metrics['update_to_send_p50_ms']:.2f}/"
+        f"{metrics['update_to_send_p95_ms']:.2f} "
+        f"image_send={metrics['image_to_send_p50_ms']:.2f}/"
+        f"{metrics['image_to_send_p95_ms']:.2f}"
+    )
+    print(
+        "Frame alignment: "
+        f"enabled_steps={metrics['frame_alignment_enabled_count']} "
+        f"reused_steps={metrics['frame_reused_count']} "
+        f"image_sample={metrics['image_to_sample_p50_ms']:.2f}/"
+        f"{metrics['image_to_sample_p95_ms']:.2f}"
+    )
+    print(
+        "Pump alignment: "
+        f"current={metrics['pump_current_count']} "
+        f"stale={metrics['pump_stale_count']} "
+        f"known={metrics['pump_alignment_known_count']}"
     )
     print(
         "Policy action: "
@@ -404,6 +510,28 @@ def _vec(value: Any) -> list[float]:
 
 def _steps_vec_max_abs(steps: Iterable[dict[str, Any]], key: str) -> float:
     return _vectors_max_abs([_vec(step.get(key)) for step in steps])
+
+
+def _timestamp_deltas_ms(
+    steps: Iterable[dict[str, Any]],
+    *,
+    start_key: str,
+    end_key: str,
+) -> list[float]:
+    values: list[float] = []
+    for step in steps:
+        start = _int(step.get(start_key))
+        end = _int(step.get(end_key))
+        if start > 0 and end >= start:
+            values.append((end - start) / 1_000_000.0)
+    return values
+
+
+def _newest_image_timestamp_ns(step: dict[str, Any]) -> int:
+    raw = step.get("image_timestamp_ns")
+    if isinstance(raw, dict):
+        return max((_int(value) for value in raw.values()), default=0)
+    return _int(raw)
 
 
 def _vectors_max_abs(vectors: Iterable[list[float]]) -> float:

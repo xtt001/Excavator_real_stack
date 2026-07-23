@@ -778,6 +778,12 @@ def main(prog: str = "tb-record-real") -> None:
     record_hz = float(task_cfg.get("record_hz", control_hz))
     dt = float(task_cfg.get("dt", 1.0 / record_hz))
     input_device = str(teleop_cfg.get("input", "joystick"))
+    policy_cfg = dict(teleop_cfg.get("policy", {}) or {})
+    frame_alignment_cfg = dict(policy_cfg.get("frame_alignment", {}) or {})
+    frame_alignment_enabled = bool(frame_alignment_cfg.get("enabled", False))
+    frame_alignment_wait_timeout_s = (
+        float(frame_alignment_cfg.get("wait_timeout_ms", 200.0)) / 1000.0
+    )
     recording_enabled = bool(recording_cfg.get("enabled", True))
     wait_for_record_start = bool(recording_cfg.get("wait_for_start", False))
     test_log_cfg = dict(teleop_cfg.get("test_log", {}) or {})
@@ -836,6 +842,25 @@ def main(prog: str = "tb-record-real") -> None:
         log.info(
             "Control action pump enabled at %.1f Hz; recorder loop %.1f Hz.",
             control_pump.hz,
+            record_hz,
+        )
+    if frame_alignment_enabled:
+        if input_device not in {"policy", "policy_remote"}:
+            raise ValueError(
+                "teleop.policy.frame_alignment.enabled requires "
+                "teleop.input=policy or policy_remote"
+            )
+        if control_pump is None:
+            raise ValueError(
+                "teleop.policy.frame_alignment.enabled requires real.control_pump.enabled"
+            )
+        if frame_alignment_wait_timeout_s <= 0.0:
+            raise ValueError(
+                "teleop.policy.frame_alignment.wait_timeout_ms must be positive"
+            )
+        log.info(
+            "Policy frame alignment enabled: %.1f Hz pacing occurs before "
+            "the next observation read.",
             record_hz,
         )
 
@@ -1068,6 +1093,24 @@ def main(prog: str = "tb-record-real") -> None:
             except KeyboardInterrupt:
                 break
             action_source.reset()
+            prepare_action_source = getattr(action_source, "prepare", None)
+            if callable(prepare_action_source):
+                prepare_result = dict(prepare_action_source(ts.observation) or {})
+                warmup_steps = int(prepare_result.get("warmup_steps", 0) or 0)
+                if warmup_steps:
+                    warmup_elapsed_s = float(
+                        prepare_result.get("elapsed_s", 0.0) or 0.0
+                    )
+                    log.info(
+                        "Policy runtime warmup complete: steps=%d elapsed=%.3fs.",
+                        warmup_steps,
+                        warmup_elapsed_s,
+                    )
+                    live_line.message(
+                        "policy_runtime=ready "
+                        f"warmup_steps={warmup_steps} "
+                        f"warmup_s={warmup_elapsed_s:.3f}"
+                    )
             guard.reset()
             online_qc_evaluator = (
                 OnlineTrainingQcEvaluator(online_qc_config)
@@ -1109,6 +1152,11 @@ def main(prog: str = "tb-record-real") -> None:
                         break
 
                     obs = ts.observation
+                    frame_alignment_this_step = _policy_frame_alignment_active(
+                        enabled=frame_alignment_enabled,
+                        input_device=input_device,
+                        action_source=action_source,
+                    )
                     if (
                         record_start_pending
                         and receiver_mode == "armed"
@@ -1144,12 +1192,32 @@ def main(prog: str = "tb-record-real") -> None:
                     go_home_start_rejected = False
                     go_home_start_reject_reason = ""
                     go_home_update = None
+                    action_update_ns = 0
+                    action_pump_update_sequence = -1
+                    action_pump_sent_sequence = -1
                     if receiver_mode == "go_home" and go_home_controller is not None:
                         go_home_update = go_home_controller.update(obs)
                         if remote_control_loop is not None:
                             remote_control_loop.set_scripted_action(go_home_update.action)
                     if remote_control_loop is not None:
-                        remote_control_loop.update_observation(obs)
+                        observation_sequence = remote_control_loop.update_observation(obs)
+                        _pace_before_observation(
+                            enabled=frame_alignment_this_step,
+                            rate_hz=record_hz,
+                            should_stop=lambda: abort,
+                        )
+                        if (
+                            frame_alignment_this_step
+                            and not remote_control_loop.wait_for_observation(
+                                observation_sequence,
+                                timeout_s=frame_alignment_wait_timeout_s,
+                            )
+                        ):
+                            log.warning(
+                                "Policy frame alignment timed out waiting for "
+                                "observation sequence %d.",
+                                observation_sequence,
+                            )
                         (
                             record_start_now,
                             go_home_now,
@@ -1174,7 +1242,12 @@ def main(prog: str = "tb-record-real") -> None:
                         safe_action = sample.safe_action
                         action_info = sample.action_info
                         action_sample_ns = sample.action_sample_timestamp_ns
+                        action_update_ns = sample.action_update_timestamp_ns
                         action_send_ns = sample.action_send_timestamp_ns
+                        action_pump_update_sequence = (
+                            sample.action_pump_update_sequence
+                        )
+                        action_pump_sent_sequence = sample.action_pump_sent_sequence
                         guard_info = sample.guard_info
                         sensor_age_s = sample.sensor_age_s
                         pump_result = (
@@ -1260,12 +1333,25 @@ def main(prog: str = "tb-record-real") -> None:
                             else:
                                 backend.apply_status_toggle_mask(toggle_mask)
 
-                        action_send_ns = time.time_ns()
+                        action_update_ns = time.time_ns()
+                        action_send_ns = action_update_ns
                         if control_pump is not None:
-                            control_pump.update_action(safe_action, state=obs)
-                            pump_result = control_pump.latest_result
+                            pump_result = control_pump.update_action(
+                                safe_action, state=obs
+                            )
+                            action_pump_update_sequence = (
+                                control_pump.latest_update_sequence
+                            )
+                            action_pump_sent_sequence = (
+                                control_pump.latest_sent_sequence
+                            )
                             action_send_ns = int(
                                 pump_result.controller_timestamp_ns or action_send_ns
+                            )
+                            _pace_before_observation(
+                                enabled=frame_alignment_this_step,
+                                rate_hz=record_hz,
+                                should_stop=lambda: abort,
                             )
                             ts_next = backend.observe(
                                 action_timestamp_ns=action_send_ns,
@@ -1274,6 +1360,12 @@ def main(prog: str = "tb-record-real") -> None:
                         else:
                             ts_next = backend.step(safe_action)
                     control_result = dict(ts_next.info.get("control_result", {}))
+                    control_result["action_pump_update_sequence"] = int(
+                        action_pump_update_sequence
+                    )
+                    control_result["action_pump_sent_sequence"] = int(
+                        action_pump_sent_sequence
+                    )
                     receiver_health = health_evaluator.evaluate(
                         obs=obs,
                         action_info=action_info,
@@ -1608,6 +1700,7 @@ def main(prog: str = "tb-record-real") -> None:
                             safe_action=safe_action,
                             action_info=action_info,
                             action_sample_timestamp_ns=action_sample_ns,
+                            action_update_timestamp_ns=action_update_ns,
                             action_send_timestamp_ns=action_send_ns,
                             guard=guard_info,
                             control_result=control_result,
@@ -1678,6 +1771,7 @@ def main(prog: str = "tb-record-real") -> None:
                             safe_action=safe_action,
                             action_info=action_info,
                             action_sample_timestamp_ns=action_sample_ns,
+                            action_update_timestamp_ns=action_update_ns,
                             action_send_timestamp_ns=action_send_ns,
                             guard=guard_info,
                             control_result=control_result,
@@ -2059,7 +2153,8 @@ def main(prog: str = "tb-record-real") -> None:
                         break
                     ts = ts_next
                     local_step += 1
-                    _sleep_to_rate(record_hz, should_stop=lambda: abort)
+                    if not frame_alignment_this_step:
+                        _sleep_to_rate(record_hz, should_stop=lambda: abort)
             except KeyboardInterrupt:
                 abort = True
             finally:
@@ -2571,6 +2666,7 @@ class ReceiverTestLogger:
         receiver_health: ReceiverHealthSnapshot,
         record_start_requested: bool,
         go_home_requested: bool,
+        action_update_timestamp_ns: int = 0,
         go_home_update: Any | None = None,
     ) -> None:
         if self._closed:
@@ -2595,8 +2691,38 @@ class ReceiverTestLogger:
             "action_source_latency_ms": float(
                 getattr(action_info, "latency_ms", 0.0) or 0.0
             ),
+            "remote_action_seq": int(extras.get("remote_action_seq", -1)),
+            "remote_action_host_sample_ns": _int_timestamp(
+                extras.get("remote_action_host_sample_ns")
+            ),
+            "remote_action_receive_ns": _int_timestamp(
+                extras.get("remote_action_receive_ns")
+            ),
+            "remote_action_age_ms": float(
+                extras.get("remote_action_age_ms", 0.0) or 0.0
+            ),
+            "remote_action_stale": int(
+                bool(extras.get("remote_action_stale", False))
+            ),
+            "remote_action_drop_count": int(
+                extras.get("remote_action_drop_count", 0) or 0
+            ),
+            "remote_action_connected": int(
+                bool(extras.get("remote_action_connected", False))
+            ),
             "action_sample_timestamp_ns": int(action_sample_timestamp_ns),
+            "action_update_timestamp_ns": int(action_update_timestamp_ns),
             "action_send_timestamp_ns": int(action_send_timestamp_ns),
+            "action_pump_update_sequence": int(
+                control_result.get("action_pump_update_sequence", -1)
+            ),
+            "action_pump_sent_sequence": int(
+                control_result.get("action_pump_sent_sequence", -1)
+            ),
+            "action_pump_command_current": _action_pump_command_current(
+                safe_action=safe_action,
+                control_result=control_result,
+            ),
             "observation_timestamp_ns": _int_timestamp(obs.get("timestamp_ns")),
             "joint_timestamp_ns": _int_timestamp(obs.get("joint_timestamp_ns")),
             "image_timestamp_ns": _jsonable(obs.get("image_timestamp_ns", {})),
@@ -2954,7 +3080,10 @@ class _ControlLoopSample:
     safe_action: np.ndarray
     action_info: ActionInfo
     action_sample_timestamp_ns: int
+    action_update_timestamp_ns: int
     action_send_timestamp_ns: int
+    action_pump_update_sequence: int
+    action_pump_sent_sequence: int
     control_result: Any
     guard_info: _GuardInfoSnapshot
     sensor_age_s: float | None
@@ -2979,9 +3108,13 @@ class _RemoteControlLoop:
         self._control_pump = control_pump
         self._period_s = 1.0 / float(rate_hz)
         self._lock = threading.RLock()
+        self._processed = threading.Condition(self._lock)
         self._stop = threading.Event()
+        self._wake = threading.Event()
         self._thread: threading.Thread | None = None
         self._latest_obs = initial_obs
+        self._observation_sequence = 0
+        self._processed_observation_sequence = -1
         zero = np.zeros(4, dtype=np.float32)
         init_result = control_pump.latest_result
         self._latest_sample = _ControlLoopSample(
@@ -2993,7 +3126,14 @@ class _RemoteControlLoop:
                 extras={},
             ),
             action_sample_timestamp_ns=0,
+            action_update_timestamp_ns=0,
             action_send_timestamp_ns=int(init_result.controller_timestamp_ns or 0),
+            action_pump_update_sequence=int(
+                getattr(control_pump, "latest_update_sequence", -1)
+            ),
+            action_pump_sent_sequence=int(
+                getattr(control_pump, "latest_sent_sequence", -1)
+            ),
             control_result=init_result,
             guard_info=_GuardInfoSnapshot(triggered=False, reasons=()),
             sensor_age_s=None,
@@ -3019,18 +3159,36 @@ class _RemoteControlLoop:
 
     def stop(self) -> None:
         self._stop.set()
+        self._wake.set()
         thread = self._thread
         if thread is not None and thread.is_alive():
             thread.join(timeout=max(1.0, self._period_s * 4.0))
         self._thread = None
 
-    def update_observation(self, obs: dict[str, Any]) -> None:
+    def update_observation(self, obs: dict[str, Any]) -> int:
         with self._lock:
             self._latest_obs = obs
+            self._observation_sequence += 1
+            sequence = int(self._observation_sequence)
+        self._wake.set()
+        return sequence
+
+    def wait_for_observation(self, sequence: int, *, timeout_s: float) -> bool:
+        """Wait until the control thread has produced a sample for ``sequence``."""
+
+        deadline_s = time.monotonic() + max(0.0, float(timeout_s))
+        with self._processed:
+            while self._processed_observation_sequence < int(sequence):
+                remaining_s = deadline_s - time.monotonic()
+                if remaining_s <= 0.0:
+                    return False
+                self._processed.wait(remaining_s)
+            return True
 
     def set_fault_hold(self, enabled: bool) -> None:
         with self._lock:
             self._fault_hold = bool(enabled)
+        self._wake.set()
 
     def set_scripted_action(self, action: np.ndarray | None) -> None:
         with self._lock:
@@ -3039,6 +3197,7 @@ class _RemoteControlLoop:
                 if action is None
                 else np.asarray(action, dtype=np.float32).reshape(4).copy()
             )
+        self._wake.set()
 
     def latest_sample(self) -> _ControlLoopSample:
         with self._lock:
@@ -3073,13 +3232,17 @@ class _RemoteControlLoop:
                 return
             remaining_s = next_tick_s - time.perf_counter()
             if remaining_s > 0:
-                self._stop.wait(remaining_s)
+                woke_early = self._wake.wait(remaining_s)
+                self._wake.clear()
+                if woke_early:
+                    next_tick_s = time.perf_counter()
             else:
                 next_tick_s = time.perf_counter()
 
     def _step_once(self) -> None:
         with self._lock:
             obs = self._latest_obs
+            observation_sequence = int(self._observation_sequence)
             fault_hold = self._fault_hold
             scripted_action = (
                 None
@@ -3111,7 +3274,8 @@ class _RemoteControlLoop:
         if toggle_mask and scripted_action is None:
             self._control_pump.apply_status_toggle_mask(toggle_mask)
 
-        action_send_ns = time.time_ns()
+        action_update_ns = time.time_ns()
+        action_send_ns = action_update_ns
         pump_result = self._control_pump.update_action(safe_action, state=obs)
         action_send_ns = int(pump_result.controller_timestamp_ns or action_send_ns)
         guard_info = _GuardInfoSnapshot(
@@ -3123,12 +3287,19 @@ class _RemoteControlLoop:
             safe_action=np.asarray(safe_action, dtype=np.float32).copy(),
             action_info=action_info,
             action_sample_timestamp_ns=int(action_sample_ns),
+            action_update_timestamp_ns=int(action_update_ns),
             action_send_timestamp_ns=action_send_ns,
+            action_pump_update_sequence=int(
+                getattr(self._control_pump, "latest_update_sequence", -1)
+            ),
+            action_pump_sent_sequence=int(
+                getattr(self._control_pump, "latest_sent_sequence", -1)
+            ),
             control_result=pump_result,
             guard_info=guard_info,
             sensor_age_s=sensor_age_s,
         )
-        with self._lock:
+        with self._processed:
             self._latest_sample = sample
             self._record_start_requested = (
                 self._record_start_requested
@@ -3140,6 +3311,11 @@ class _RemoteControlLoop:
             self._reset_requested = self._reset_requested or bool(reset_now)
             self._discard_requested = self._discard_requested or bool(discard_now)
             self._quit_requested = self._quit_requested or bool(quit_now)
+            self._processed_observation_sequence = max(
+                self._processed_observation_sequence,
+                observation_sequence,
+            )
+            self._processed.notify_all()
 
 
 class _QcEventLogger:
@@ -3931,6 +4107,28 @@ def _camera_age_ms(obs: dict[str, Any], *, camera_name: str, now_ns: int) -> flo
     return max(0.0, (int(now_ns) - int(timestamp_ns)) / 1_000_000.0)
 
 
+def _action_pump_command_current(
+    *,
+    safe_action: np.ndarray,
+    control_result: dict[str, Any],
+) -> int:
+    """Return whether the acknowledged pump result belongs to this update."""
+
+    update_sequence = int(control_result.get("action_pump_update_sequence", -1))
+    sent_sequence = int(control_result.get("action_pump_sent_sequence", -1))
+    if update_sequence < 0 or sent_sequence < 0:
+        return -1
+    commanded = np.asarray(
+        control_result.get("commanded_action", []), dtype=np.float32
+    ).reshape(-1)
+    expected = np.asarray(safe_action, dtype=np.float32).reshape(-1)
+    return int(
+        sent_sequence == update_sequence
+        and commanded.shape == expected.shape
+        and np.allclose(commanded, expected, rtol=0.0, atol=1e-6)
+    )
+
+
 def _build_step_diagnostics(
     *,
     obs: dict[str, Any],
@@ -3943,6 +4141,7 @@ def _build_step_diagnostics(
     control_result: dict[str, Any],
     receiver_health: ReceiverHealthSnapshot | None = None,
     online_qc: Any | None = None,
+    action_update_timestamp_ns: int = 0,
 ) -> dict[str, Any]:
     commanded_action = control_result.get("commanded_action")
     if commanded_action is None:
@@ -3967,7 +4166,18 @@ def _build_step_diagnostics(
         "controller_timestamp_ns": int(control_result.get("controller_timestamp_ns", 0)),
         "commanded_action": np.asarray(commanded_action, dtype=np.float32),
         "action_sample_timestamp_ns": int(action_sample_timestamp_ns),
+        "action_update_timestamp_ns": int(action_update_timestamp_ns),
         "action_send_timestamp_ns": int(action_send_timestamp_ns),
+        "action_pump_update_sequence": int(
+            control_result.get("action_pump_update_sequence", -1)
+        ),
+        "action_pump_sent_sequence": int(
+            control_result.get("action_pump_sent_sequence", -1)
+        ),
+        "action_pump_command_current": _action_pump_command_current(
+            safe_action=safe_action,
+            control_result=control_result,
+        ),
         "action_source_latency_ms": float(getattr(action_info, "latency_ms", 0.0) or 0.0),
         "observation_timestamp_ns": _int_timestamp(obs.get("timestamp_ns")),
         "sensor_timestamp_ns": _int_timestamp(obs.get("sensor_timestamp_ns")),
@@ -4303,6 +4513,15 @@ def _add_policy_action_diagnostics(
     diagnostics["policy_inference_latency_ms"] = float(
         extras.get("policy_inference_latency_ms", 0.0) or 0.0
     )
+    diagnostics["policy_frame_alignment_enabled"] = int(
+        extras.get("policy_frame_alignment_enabled", 0) or 0
+    )
+    diagnostics["policy_frame_reused"] = int(
+        extras.get("policy_frame_reused", 0) or 0
+    )
+    diagnostics["policy_frame_reuse_count"] = int(
+        extras.get("policy_frame_reuse_count", 0) or 0
+    )
     diagnostics["gohome_candidate_probability"] = float(
         extras.get("gohome_candidate_probability", 0.0) or 0.0
     )
@@ -4469,6 +4688,43 @@ def _check_pygame_events(*, enabled: bool = True) -> tuple[bool, bool]:
 
 
 _last_step_time: float = 0.0
+
+
+def _pace_before_observation(
+    *,
+    enabled: bool,
+    rate_hz: float,
+    should_stop: Callable[[], bool] | None = None,
+) -> None:
+    """Move the existing rate wait ahead of acquisition so policy sees a fresh frame."""
+
+    if enabled:
+        _sleep_to_rate(rate_hz, should_stop=should_stop)
+
+
+def _policy_frame_alignment_active(
+    *,
+    enabled: bool,
+    input_device: str,
+    action_source: Any,
+) -> bool:
+    """Keep policy frame pacing out of the latency-sensitive manual path."""
+
+    if not enabled:
+        return False
+    if str(input_device) == "policy":
+        return True
+    if str(input_device) != "policy_remote":
+        return False
+    status = getattr(action_source, "policy_status", None)
+    if not callable(status):
+        return False
+    try:
+        payload = dict(status() or {})
+    except Exception:
+        log.debug("Failed to query policy status for frame alignment.", exc_info=True)
+        return False
+    return bool(payload.get("model_control", False))
 
 
 def _sleep_to_rate(

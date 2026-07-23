@@ -375,9 +375,15 @@ class RealworldV1Tests(unittest.TestCase):
             safe_action=np.zeros(4, dtype=np.float32),
             action_info=action_info,
             action_sample_timestamp_ns=150,
+            action_update_timestamp_ns=175,
             action_send_timestamp_ns=200,
             guard=guard,
-            control_result={"ack": True, "commanded_action": np.zeros(4)},
+            control_result={
+                "ack": True,
+                "commanded_action": np.zeros(4),
+                "action_pump_update_sequence": 7,
+                "action_pump_sent_sequence": 7,
+            },
             receiver_health=receiver_health,
         )
 
@@ -389,6 +395,10 @@ class RealworldV1Tests(unittest.TestCase):
         self.assertEqual(diagnostics["remote_action_drop_count"], 1)
         self.assertEqual(diagnostics["receiver_health_ok"], 1)
         self.assertEqual(diagnostics["receiver_health_error_code"], "")
+        self.assertEqual(diagnostics["action_update_timestamp_ns"], 175)
+        self.assertEqual(diagnostics["action_pump_update_sequence"], 7)
+        self.assertEqual(diagnostics["action_pump_sent_sequence"], 7)
+        self.assertEqual(diagnostics["action_pump_command_current"], 1)
         np.testing.assert_array_equal(diagnostics["imu_online"], np.ones(4, dtype=np.int32))
         np.testing.assert_array_equal(
             diagnostics["machine_status"], np.arange(12, dtype=np.int32)
@@ -1480,6 +1490,8 @@ class RealworldV1Tests(unittest.TestCase):
         )
         target = np.array([0.4, 0.0, -0.2, 0.1], dtype=np.float32)
         pump.update_action(target)
+        self.assertEqual(pump.latest_update_sequence, 1)
+        self.assertEqual(pump.latest_sent_sequence, -1)
         pump.start()
         try:
             time.sleep(0.09)
@@ -1491,6 +1503,7 @@ class RealworldV1Tests(unittest.TestCase):
         self.assertGreaterEqual(len(actions), 2)
         np.testing.assert_allclose(actions[-1], target)
         np.testing.assert_allclose(stop_result.commanded_action, target)
+        self.assertEqual(pump.latest_sent_sequence, pump.latest_update_sequence)
 
     def test_action_pump_stop_returns_zero_command_result(self) -> None:
         controller = MockLowLevelController()
@@ -1500,13 +1513,23 @@ class RealworldV1Tests(unittest.TestCase):
             send_immediately_on_update=True,
             zero_on_stop=True,
         )
-        pump.update_action(np.array([0.2, -0.1, 0.0, 0.3], dtype=np.float32))
+        update_result = pump.update_action(
+            np.array([0.2, -0.1, 0.0, 0.3], dtype=np.float32)
+        )
+        np.testing.assert_allclose(
+            update_result.commanded_action,
+            [0.2, -0.1, 0.0, 0.3],
+        )
+        self.assertEqual(pump.latest_update_sequence, 1)
+        self.assertEqual(pump.latest_sent_sequence, 1)
 
         result = pump.stop(close_controller=False)
 
         self.assertTrue(result.ack)
         np.testing.assert_allclose(result.commanded_action, np.zeros(4))
         np.testing.assert_allclose(controller.last_action, np.zeros(4))
+        self.assertEqual(pump.latest_update_sequence, 2)
+        self.assertEqual(pump.latest_sent_sequence, 2)
 
     def test_go_home_controller_converges_and_rejects_far_start(self) -> None:
         cfg = GoHomeConfig.from_mapping(
@@ -2970,6 +2993,16 @@ class RealworldV1Tests(unittest.TestCase):
         )
         loop.start()
         try:
+            sequence = loop.update_observation(
+                {
+                    "qpos": np.ones(4, dtype=np.float32),
+                    "safety_state": {},
+                    "sensor_timestamp_ns": time.time_ns(),
+                }
+            )
+            self.assertTrue(
+                loop.wait_for_observation(sequence, timeout_s=0.2)
+            )
             time.sleep(0.16)
         finally:
             loop.stop()

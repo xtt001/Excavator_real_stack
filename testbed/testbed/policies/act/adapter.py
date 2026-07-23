@@ -98,6 +98,62 @@ def _resolve_inference_autocast_dtype(
     return None
 
 
+def _camera_image_to_chw_float(raw_image: np.ndarray, *, key: str) -> np.ndarray:
+    """Convert one supported camera input to the legacy CHW float contract."""
+
+    raw_image = np.asarray(raw_image)
+    image = np.asarray(raw_image, dtype=np.float32)
+    if image.ndim != 3:
+        raise ValueError(
+            f"ACTAdapter.predict(): expected {key!r} to be rank-3, "
+            f"got shape {image.shape}."
+        )
+    if image.shape[0] == 3:
+        return image
+    if image.shape[-1] == 3:
+        image = np.transpose(image, (2, 0, 1))
+        if raw_image.dtype == np.uint8 or image.max() > 1.0:
+            image = image / 255.0
+        return image
+    raise ValueError(
+        f"ACTAdapter.predict(): expected {key!r} to have 3 channels, "
+        f"got shape {image.shape}."
+    )
+
+
+def _single_frame_image_tensor(
+    raw_images: list[np.ndarray],
+    *,
+    keys: list[str],
+    device: torch.device,
+    device_uint8_preprocess: bool,
+) -> torch.Tensor:
+    """Build ``(1, cameras, C, H, W)`` while preserving the legacy fallback."""
+
+    use_device_uint8 = bool(device_uint8_preprocess) and all(
+        np.asarray(image).ndim == 3
+        and np.asarray(image).shape[-1] == 3
+        and np.asarray(image).dtype == np.uint8
+        for image in raw_images
+    )
+    if use_device_uint8:
+        stacked = np.ascontiguousarray(np.stack(raw_images, axis=0))
+        return (
+            torch.from_numpy(stacked)
+            .to(device=device, dtype=torch.float32)
+            .permute(0, 3, 1, 2)
+            .div_(255.0)
+            .unsqueeze(0)
+        )
+
+    images = [
+        _camera_image_to_chw_float(image, key=key)
+        for image, key in zip(raw_images, keys)
+    ]
+    stacked = np.ascontiguousarray(np.stack(images, axis=0))
+    return torch.from_numpy(stacked).float().to(device).unsqueeze(0)
+
+
 @dataclass(frozen=True)
 class ACTAdapterState:
     """All mutable inference state required for deterministic branch replay."""
@@ -564,6 +620,10 @@ class ACTAdapter(Policy):
         temporal_agg: bool = False,
         device: str = "cuda",
         inference_precision: str = "fp32",
+        inference_compile: bool = False,
+        inference_compile_mode: str = "reduce-overhead",
+        inference_compile_dynamic: bool = False,
+        device_uint8_preprocess: bool = False,
         temporal_aggregation_diagnostics: bool = False,
     ):
         from testbed.policies.act.detr.main import build_ACT_model_and_optimizer
@@ -576,6 +636,15 @@ class ACTAdapter(Policy):
             device=self.device,
         )
         self._inference_precision = str(inference_precision or "fp32").strip().lower()
+        self._inference_compile = bool(inference_compile)
+        self._inference_compile_mode = str(
+            inference_compile_mode or "reduce-overhead"
+        ).strip()
+        if not self._inference_compile_mode:
+            raise ValueError("inference_compile_mode must not be empty")
+        self._inference_compile_dynamic = bool(inference_compile_dynamic)
+        self._inference_compile_applied = False
+        self._device_uint8_preprocess = bool(device_uint8_preprocess)
         self._temporal_aggregation_diagnostics_enabled = bool(
             temporal_aggregation_diagnostics
         )
@@ -704,6 +773,23 @@ class ACTAdapter(Policy):
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
 
+    def _compile_model_for_inference(self) -> None:
+        """Apply the opt-in compiler after checkpoint weights are loaded."""
+
+        if not self._inference_compile or self._inference_compile_applied:
+            return
+        compile_fn = getattr(torch, "compile", None)
+        if not callable(compile_fn):
+            raise RuntimeError(
+                "inference_compile=true requires a PyTorch build with torch.compile"
+            )
+        self._model = compile_fn(
+            self._model,
+            mode=self._inference_compile_mode,
+            dynamic=self._inference_compile_dynamic,
+        )
+        self._inference_compile_applied = True
+
     def reset(self) -> None:
         """Called once per inference episode to clear temporal state."""
         self._t = 0
@@ -823,6 +909,10 @@ class ACTAdapter(Policy):
     def inference_precision(self) -> str:
         return self._inference_precision
 
+    @property
+    def inference_compile(self) -> bool:
+        return self._inference_compile
+
     def last_raw_action_chunk(self) -> np.ndarray:
         """Return the latest normalized ACT chunk for parity diagnostics."""
         if self._last_raw_action_chunk is None:
@@ -900,7 +990,8 @@ class ACTAdapter(Policy):
 
         # Assemble image tensor in configured camera order. Ignore metadata
         # keys like `image_format` that may appear in live observations.
-        cam_images: list[np.ndarray] = []
+        raw_cam_images: list[np.ndarray] = []
+        camera_keys: list[str] = []
         for cam in self._camera_names:
             key = f"image_{cam}"
             if key not in obs:
@@ -908,31 +999,28 @@ class ACTAdapter(Policy):
                     f"ACTAdapter.predict(): missing required camera input {key!r}."
                 )
             raw_cam_img = np.asarray(obs[key])
-            cam_img = np.asarray(raw_cam_img, dtype=np.float32)
-            if cam_img.ndim != 3:
+            if raw_cam_img.ndim != 3:
                 raise ValueError(
-                    f"ACTAdapter.predict(): expected {key!r} to be rank-3, got shape {cam_img.shape}."
+                    f"ACTAdapter.predict(): expected {key!r} to be rank-3, "
+                    f"got shape {raw_cam_img.shape}."
                 )
-            # Accept either channel-first float images or raw channel-last RGB.
-            if cam_img.shape[0] == 3:
-                pass
-            elif cam_img.shape[-1] == 3:
-                cam_img = np.transpose(cam_img, (2, 0, 1))
-                if raw_cam_img.dtype == np.uint8:
-                    cam_img = cam_img / 255.0
-                elif cam_img.max() > 1.0:
-                    cam_img = cam_img / 255.0
-            else:
+            if raw_cam_img.shape[0] != 3 and raw_cam_img.shape[-1] != 3:
                 raise ValueError(
-                    f"ACTAdapter.predict(): expected {key!r} to have 3 channels, got shape {cam_img.shape}."
+                    f"ACTAdapter.predict(): expected {key!r} to have 3 channels, "
+                    f"got shape {raw_cam_img.shape}."
                 )
-            cam_images.append(cam_img)
+            raw_cam_images.append(raw_cam_img)
+            camera_keys.append(key)
 
-        if not cam_images:
+        if not raw_cam_images:
             raise ValueError("ACTAdapter.predict(): no camera inputs configured.")
 
         visual_history = getattr(self, "_visual_history", None)
         if visual_history is not None:
+            cam_images = [
+                _camera_image_to_chw_float(image, key=key)
+                for image, key in zip(raw_cam_images, camera_keys)
+            ]
             timestamp_map, timestamp_source = self._resolve_temporal_timestamps(obs)
             snapshot = visual_history.append(
                 {
@@ -969,16 +1057,16 @@ class ACTAdapter(Policy):
             image = torch.from_numpy(img).float().to(self.device).unsqueeze(0)
             # (1, history, n_cams, C, H, W)
         else:
-            img = np.ascontiguousarray(
-                np.stack(cam_images, axis=0)
-            )  # (n_cams, C, H, W)
             self._last_temporal_input_diagnostics = {
                 "enabled": False,
                 "history_steps": 1,
             }
-            image = (
-                torch.from_numpy(img).float().to(self.device).unsqueeze(0)
-            )  # (1, n_cams, C, H, W)
+            image = _single_frame_image_tensor(
+                raw_cam_images,
+                keys=camera_keys,
+                device=self.device,
+                device_uint8_preprocess=self._device_uint8_preprocess,
+            )
         image = self._normalize(image)
 
         if self._model.training:
@@ -1994,6 +2082,10 @@ class ACTAdapter(Policy):
         temporal_agg: bool = False,
         device: str = "cuda",
         inference_precision: str = "fp32",
+        inference_compile: bool = False,
+        inference_compile_mode: str = "reduce-overhead",
+        inference_compile_dynamic: bool = False,
+        device_uint8_preprocess: bool = False,
         temporal_aggregation_diagnostics: bool = False,
     ) -> ACTAdapter:
         """
@@ -2018,6 +2110,10 @@ class ACTAdapter(Policy):
             temporal_aggregation_diagnostics=temporal_aggregation_diagnostics,
             device=device,
             inference_precision=inference_precision,
+            inference_compile=inference_compile,
+            inference_compile_mode=inference_compile_mode,
+            inference_compile_dynamic=inference_compile_dynamic,
+            device_uint8_preprocess=device_uint8_preprocess,
         )
 
         raw = torch.load(ckpt_path, map_location="cpu")
@@ -2031,4 +2127,5 @@ class ACTAdapter(Policy):
         adapter.load_state_dict(sd)
         adapter._model.to(adapter.device)
         adapter._model.eval()
+        adapter._compile_model_for_inference()
         return adapter

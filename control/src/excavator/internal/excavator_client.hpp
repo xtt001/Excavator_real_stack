@@ -10,8 +10,8 @@
 #include <atomic>
 #include <array>
 #include <cstdint>
-#include <deque>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <utility>
@@ -31,7 +31,7 @@ public:
     bool stop() override;
     bool reset() override;
 
-    /** 外部伺服指令入队 */
+    /** 更新外部伺服指令；实时控制只保留最新值，不回放历史指令。 */
     void submitServo(const ExcavatorCommand& cmd);
     bool setPidVectors(const std::vector<std::vector<double>>& pid_vectors);
     void clearServo();
@@ -60,6 +60,8 @@ protected:
     bool update() override;
 
 private:
+    friend class ExcavatorClientCommandTestPeer;
+
     bool takeServoCmd(ExcavatorCommand& out_cmd);
     void toggleStatusBit(int status_idx);
     void applyCachedStatusToRef(ExcavatorState& ref);
@@ -72,8 +74,8 @@ private:
     std::thread worker_{};
     ExcavatorStateChannel channel_{};
     ExcavatorDeviceState device_{};
-    std::deque<ExcavatorCommand> ref_command_queue_{};
-    mutable std::mutex ref_command_queue_mu_{};
+    std::optional<ExcavatorCommand> latest_ref_command_{};
+    mutable std::mutex latest_ref_command_mu_{};
     Vector12i cached_status_{Vector12i::Zero()};
     mutable std::mutex cached_status_mu_{};
 };

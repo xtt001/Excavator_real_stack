@@ -14,6 +14,8 @@ real:
   control_pump:
     enabled: true
     hz: 50
+    # The C++ runtime consumes commands at 50 Hz. Keep one 50 Hz producer here;
+    # an extra immediate send would only duplicate traffic.
     send_immediately_on_update: false
     zero_on_stop: true
     bridge:
@@ -52,6 +54,16 @@ teleop:
     camera_names: [video4, video5, video6, video7]
     temporal_agg: true
     inference_precision: fp32
+    inference_compile: true
+    inference_compile_mode: reduce-overhead
+    inference_compile_dynamic: false
+    device_uint8_preprocess: true
+    inference_warmup_steps: 3
+    # Keep the 20 Hz contract, but acquire the next observation after pacing.
+    # policy_remote also advances ACT only when image timestamps change.
+    frame_alignment:
+      enabled: true
+      wait_timeout_ms: 200
     temporal_aggregation_diagnostics: true
     output_mode: control
     qvel_mode: raw

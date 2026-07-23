@@ -14,6 +14,7 @@ real:
   control_pump:
     enabled: true
     hz: 50
+    # Match live control: one 50 Hz producer, without duplicate immediate sends.
     send_immediately_on_update: false
     zero_on_stop: true
     bridge:
@@ -52,6 +53,16 @@ teleop:
     camera_names: [video4, video5, video6, video7]
     temporal_agg: true
     inference_precision: fp32
+    inference_compile: true
+    inference_compile_mode: reduce-overhead
+    inference_compile_dynamic: false
+    device_uint8_preprocess: true
+    inference_warmup_steps: 3
+    # Match live control: pace first, then acquire; do not advance ACT twice
+    # for the same four-camera timestamp group.
+    frame_alignment:
+      enabled: true
+      wait_timeout_ms: 200
     temporal_aggregation_diagnostics: true
     output_mode: shadow_zero
     qvel_mode: raw

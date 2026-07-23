@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import nullcontext
 from unittest.mock import patch
 
+import numpy as np
 import pytest
 import torch
 from scripts.compare_act_inference_precision import _acceptance, _comparison
@@ -11,6 +12,7 @@ from torch import nn
 from testbed.policies.act.adapter import (
     ACTAdapter,
     _resolve_inference_autocast_dtype,
+    _single_frame_image_tensor,
 )
 
 
@@ -67,6 +69,53 @@ def test_mixed_precision_scope_returns_fp32_policy_outputs() -> None:
     assert action.dtype is torch.float32
     assert intent is not None
     assert intent.dtype is torch.float32
+
+
+def test_device_uint8_preprocess_matches_legacy_tensor() -> None:
+    rng = np.random.default_rng(7)
+    images = [
+        rng.integers(0, 256, size=(12, 16, 3), dtype=np.uint8),
+        rng.integers(0, 256, size=(12, 16, 3), dtype=np.uint8),
+    ]
+    keys = ["image_video4", "image_video5"]
+
+    legacy = _single_frame_image_tensor(
+        images,
+        keys=keys,
+        device=torch.device("cpu"),
+        device_uint8_preprocess=False,
+    )
+    optimized = _single_frame_image_tensor(
+        images,
+        keys=keys,
+        device=torch.device("cpu"),
+        device_uint8_preprocess=True,
+    )
+
+    assert optimized.shape == (1, 2, 3, 12, 16)
+    torch.testing.assert_close(optimized, legacy, rtol=0.0, atol=1e-7)
+
+
+def test_inference_compile_wraps_model_once() -> None:
+    adapter = ACTAdapter.__new__(ACTAdapter)
+    adapter._model = nn.Identity()
+    adapter._inference_compile = True
+    adapter._inference_compile_applied = False
+    adapter._inference_compile_mode = "reduce-overhead"
+    adapter._inference_compile_dynamic = False
+    compiled = nn.Sequential(nn.Identity())
+
+    with patch("torch.compile", return_value=compiled) as compile_fn:
+        adapter._compile_model_for_inference()
+        adapter._compile_model_for_inference()
+
+    compile_fn.assert_called_once()
+    assert compile_fn.call_args.kwargs == {
+        "mode": "reduce-overhead",
+        "dynamic": False,
+    }
+    assert adapter._model is compiled
+    assert adapter._inference_compile_applied is True
 
 
 def test_precision_comparison_detects_deadzone_class_change() -> None:

@@ -1,9 +1,21 @@
+#include <excavator/internal/excavator_client.hpp>
 #include <excavator/internal/excavator_control.hpp>
 
 #include <cstdlib>
 #include <iostream>
 #include <memory>
 #include <string>
+
+namespace excavator {
+
+class ExcavatorClientCommandTestPeer {
+public:
+    static bool takeServoCmd(ExcavatorClient& client, ExcavatorCommand& out_cmd) {
+        return client.takeServoCmd(out_cmd);
+    }
+};
+
+}  // namespace excavator
 
 namespace {
 
@@ -70,10 +82,46 @@ void test_open_loop_motor_signs() {
             "positive bucket action should map above raw neutral");
 }
 
+void test_client_keeps_only_latest_servo_command() {
+    excavator::ExcavatorClient client(
+        "unused_latest_command_test_can",
+        false,
+        "unused_latest_command_test_imu");
+    excavator::ExcavatorCommand first;
+    excavator::ExcavatorCommand latest;
+    excavator::ExcavatorCommand actual;
+    first.speed_scalar.setZero();
+    latest.speed_scalar.setZero();
+    first.speed_scalar(0) = 0.25;
+    latest.speed_scalar(0) = -0.75;
+
+    client.submitServo(first);
+    client.submitServo(latest);
+    require(
+        excavator::ExcavatorClientCommandTestPeer::takeServoCmd(client, actual),
+        "latest servo command should be available");
+    require(
+        actual.speed_scalar(0) == latest.speed_scalar(0),
+        "client must discard superseded servo commands");
+
+    require(
+        excavator::ExcavatorClientCommandTestPeer::takeServoCmd(client, actual),
+        "latest servo command should be held until replaced or cleared");
+    require(
+        actual.speed_scalar(0) == latest.speed_scalar(0),
+        "held servo command changed unexpectedly");
+
+    client.clearServo();
+    require(
+        !excavator::ExcavatorClientCommandTestPeer::takeServoCmd(client, actual),
+        "clearing the servo command should empty the latest-value slot");
+}
+
 }  // namespace
 
 int main() {
     test_open_loop_motor_signs();
+    test_client_keeps_only_latest_servo_command();
     std::cout << "excavator_control_test OK\n";
     return 0;
 }

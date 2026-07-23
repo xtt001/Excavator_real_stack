@@ -10,6 +10,7 @@ import h5py
 import numpy as np
 import yaml
 
+from scripts.summarize_policy_test_log import _compute_metrics
 from testbed.actions.base import ActionInfo
 from testbed.actions.policy import (
     PolicyActionSource,
@@ -21,6 +22,8 @@ from testbed.cli.record_real import (
     ReceiverHealthSnapshot,
     ReceiverTestLogger,
     _add_policy_action_diagnostics,
+    _pace_before_observation,
+    _policy_frame_alignment_active,
     _policy_remote_status_payload,
 )
 from testbed.cli.teleop_remote import _format_receiver_policy_status
@@ -145,6 +148,61 @@ def _runtime_gate_extras() -> dict:
 
 
 class PolicyActionSourceTests(unittest.TestCase):
+    def test_policy_summary_reports_aligned_pump_chain_timing(self) -> None:
+        steps = []
+        for index in range(3):
+            base = 1_000_000_000 + index * 50_000_000
+            steps.append(
+                {
+                    "local_step": index,
+                    "wall_time_ns": base,
+                    "policy_remote_mode": "policy",
+                    "policy_inference_latency_ms": 25.0,
+                    "action_sample_timestamp_ns": base,
+                    "action_update_timestamp_ns": base + 25_000_000,
+                    "action_send_timestamp_ns": base + 27_000_000,
+                    "image_timestamp_ns": {"video4": base - 10_000_000},
+                    "policy_frame_alignment_enabled": 1,
+                    "policy_frame_reused": int(index > 0),
+                    "action_pump_command_current": 1,
+                    "receiver_health_ok": 1,
+                    "controller_ack": 1,
+                }
+            )
+
+        metrics = _compute_metrics(steps, warmup_steps=0)
+
+        self.assertEqual(metrics["policy_loop_p50_ms"], 50.0)
+        self.assertEqual(metrics["sample_to_update_p50_ms"], 25.0)
+        self.assertEqual(metrics["update_to_send_p50_ms"], 2.0)
+        self.assertEqual(metrics["sample_to_send_p50_ms"], 27.0)
+        self.assertEqual(metrics["image_to_sample_p50_ms"], 10.0)
+        self.assertEqual(metrics["image_to_send_p50_ms"], 37.0)
+        self.assertEqual(metrics["frame_alignment_enabled_count"], 3)
+        self.assertEqual(metrics["frame_reused_count"], 2)
+        self.assertEqual(metrics["pump_current_count"], 3)
+        self.assertEqual(metrics["pump_stale_count"], 0)
+
+    def test_policy_prepare_warms_once_and_resets_temporal_state(self) -> None:
+        policy = DummyPolicy([0.5, -0.25, 0.1, -0.9])
+        source = PolicyActionSource(
+            policy=policy,
+            source_id="unit",
+            output_mode="control",
+            inference_warmup_steps=3,
+        )
+
+        result = source.prepare(_obs())
+        repeated = source.prepare(_obs())
+
+        self.assertEqual(result["warmup_steps"], 3)
+        self.assertEqual(result["prepared"], 1)
+        self.assertGreaterEqual(result["elapsed_s"], 0.0)
+        self.assertEqual(len(policy.seen_obs), 3)
+        self.assertEqual(policy.reset_count, 1)
+        self.assertEqual(repeated["warmup_steps"], 0)
+        self.assertEqual(len(policy.seen_obs), 3)
+
     def test_remote_armed_policy_toggles_on_policy_start(self) -> None:
         remote = DummyActionSource(
             [
@@ -219,6 +277,83 @@ class PolicyActionSourceTests(unittest.TestCase):
         self.assertEqual(manual_again_info.extras["policy_remote_mode"], "manual")
         self.assertEqual(manual_again_info.extras["policy_remote_deactivated"], 1)
         self.assertEqual(manual_again_info.extras["model_control"], 0)
+
+    def test_policy_remote_advances_policy_once_per_new_image_frame(self) -> None:
+        remote = DummyActionSource([])
+        model = DummyPolicy([0.5, -0.25, 0.1, -0.9])
+        policy = PolicyActionSource(
+            policy=model,
+            source_id="policy:unit",
+            output_mode="control",
+        )
+        source = RemoteArmedPolicyActionSource(
+            remote=remote,
+            policy=policy,
+            start_in_policy=True,
+            infer_on_new_frame=True,
+        )
+        obs = _obs()
+        obs["image_timestamp_ns"] = {"fpv": 1_000_000_000}
+
+        first_action, first_info = source.next_action(obs)
+        reused_action, reused_info = source.next_action(obs)
+        newer_obs = dict(obs)
+        newer_obs["image_timestamp_ns"] = {"fpv": 1_050_000_000}
+        newer_action, newer_info = source.next_action(newer_obs)
+
+        self.assertEqual(len(model.seen_obs), 2)
+        np.testing.assert_allclose(reused_action, first_action)
+        np.testing.assert_allclose(newer_action, first_action)
+        self.assertEqual(first_info.extras["policy_frame_reused"], 0)
+        self.assertEqual(reused_info.extras["policy_frame_reused"], 1)
+        self.assertEqual(reused_info.extras["policy_frame_reuse_count"], 1)
+        self.assertEqual(newer_info.extras["policy_frame_reused"], 0)
+        self.assertEqual(newer_info.extras["policy_frame_reuse_count"], 0)
+
+    def test_frame_alignment_paces_only_when_enabled(self) -> None:
+        with patch("testbed.cli.record_real._sleep_to_rate") as sleep:
+            _pace_before_observation(enabled=False, rate_hz=20.0)
+            sleep.assert_not_called()
+
+            stop = lambda: False
+            _pace_before_observation(
+                enabled=True,
+                rate_hz=20.0,
+                should_stop=stop,
+            )
+            sleep.assert_called_once_with(20.0, should_stop=stop)
+
+    def test_policy_remote_frame_alignment_never_paces_manual_mode(self) -> None:
+        class Source:
+            def __init__(self, model_control: bool) -> None:
+                self.model_control = model_control
+
+            def policy_status(self) -> dict[str, int]:
+                return {"model_control": int(self.model_control)}
+
+        source = Source(model_control=False)
+        self.assertFalse(
+            _policy_frame_alignment_active(
+                enabled=True,
+                input_device="policy_remote",
+                action_source=source,
+            )
+        )
+        source.model_control = True
+        self.assertTrue(
+            _policy_frame_alignment_active(
+                enabled=True,
+                input_device="policy_remote",
+                action_source=source,
+            )
+        )
+        self.assertTrue(
+            _policy_frame_alignment_active(
+                enabled=True,
+                input_device="policy",
+                action_source=object(),
+            )
+        )
 
     def test_shadow_zero_records_policy_action_but_returns_zero(self) -> None:
         policy = DummyPolicy([0.5, -0.25, 0.1, -0.9])
@@ -717,6 +852,13 @@ class PolicyActionSourceTests(unittest.TestCase):
                         "policy_deadzone_assist_mask": np.array([0, 1, 0, 0]),
                         "policy_deadzone_assist_axes": "boom+",
                         "policy_error": "",
+                        "remote_action_seq": 7,
+                        "remote_action_host_sample_ns": 100,
+                        "remote_action_receive_ns": 110,
+                        "remote_action_age_ms": 1.5,
+                        "remote_action_stale": 0,
+                        "remote_action_drop_count": 2,
+                        "remote_action_connected": 1,
                     },
                 ),
                 action_sample_timestamp_ns=11,
@@ -762,6 +904,9 @@ class PolicyActionSourceTests(unittest.TestCase):
         self.assertIn('"policy_output_mode": "shadow_zero"', step_lines[0])
         self.assertIn('"policy_deadzone_assist_active": 1', step_lines[0])
         self.assertIn('"policy_deadzone_assist_axes": "boom+"', step_lines[0])
+        self.assertIn('"remote_action_seq": 7', step_lines[0])
+        self.assertIn('"remote_action_host_sample_ns": 100', step_lines[0])
+        self.assertIn('"remote_action_receive_ns": 110', step_lines[0])
         self.assertIn('"raw_low_level_command": [0.0, 1.0, 2.0', step_lines[0])
         self.assertEqual(summary["steps"], 1)
         self.assertTrue(summary["zero_command_confirmed"])
@@ -876,6 +1021,10 @@ class PolicyActionSourceTests(unittest.TestCase):
                     bundle_dir=bundle,
                     temporal_agg=True,
                     inference_precision="fp16",
+                    inference_compile=True,
+                    inference_compile_mode="reduce-overhead",
+                    inference_compile_dynamic=False,
+                    device_uint8_preprocess=True,
                 )
 
         self.assertEqual(loaded, "loaded")
@@ -889,6 +1038,10 @@ class PolicyActionSourceTests(unittest.TestCase):
         self.assertTrue(kwargs["temporal_agg"])
         self.assertEqual(kwargs["device"], "cpu")
         self.assertEqual(kwargs["inference_precision"], "fp16")
+        self.assertTrue(kwargs["inference_compile"])
+        self.assertEqual(kwargs["inference_compile_mode"], "reduce-overhead")
+        self.assertFalse(kwargs["inference_compile_dynamic"])
+        self.assertTrue(kwargs["device_uint8_preprocess"])
 
     def test_load_act_policy_from_bundle_allows_null_episode_len(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

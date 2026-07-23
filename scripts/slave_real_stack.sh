@@ -41,6 +41,7 @@ RECEIVER_RECORD_MODE="${EXCAVATOR_RECEIVER_RECORD_MODE:-config}"
 POLICY_OUTPUT_MODE="${EXCAVATOR_POLICY_OUTPUT_MODE:-}"
 POLICY_ACTION_SCALE="${EXCAVATOR_POLICY_ACTION_SCALE:-}"
 TEST_LOG_DIR="${EXCAVATOR_TEST_LOG_DIR:-}"
+TORCHINDUCTOR_CACHE_DIR="${EXCAVATOR_TORCHINDUCTOR_CACHE_DIR:-${ROOT_DIR}/artifacts/torchinductor_cache}"
 PID_YAML_PATH="${EXCAVATOR_PID_YAML:-${ROOT_DIR}/control/config/joint_pid.yaml}"
 SESSION_ID="${EXCAVATOR_SESSION_ID:-remote_teleop_slave_record}"
 NUM_EPISODES="${EXCAVATOR_NUM_EPISODES:-1000000}"
@@ -127,6 +128,7 @@ Common environment overrides:
   EXCAVATOR_POLICY_OUTPUT_MODE=control        # optional for policy/policy_remote
   EXCAVATOR_POLICY_ACTION_SCALE=1.0           # optional for policy/policy_remote
   EXCAVATOR_TEST_LOG_DIR=/media/mundane/EXTERNAL_USB/policy_control_tests
+  EXCAVATOR_TORCHINDUCTOR_CACHE_DIR=/media/mundane/D/Excavator_real_stack/artifacts/torchinductor_cache
   EXCAVATOR_NUM_EPISODES=1000000
   EXCAVATOR_RECEIVER_STOP_TIMEOUT_S=180
   EXCAVATOR_SKIP_PIP_INSTALL=1
@@ -500,6 +502,7 @@ start_stack() {
   export EXCAVATOR_BUCKET_GRAVITY_HINGE_POLICY_OFFSET_RAD="${BUCKET_GRAVITY_HINGE_POLICY_OFFSET_RAD}"
   export EXCAVATOR_BUCKET_GRAVITY_HINGE_MEDIAN_WINDOW="${BUCKET_GRAVITY_HINGE_MEDIAN_WINDOW}"
   export POLICY_OUTPUT_MODE POLICY_ACTION_SCALE TEST_LOG_DIR
+  export TORCHINDUCTOR_CACHE_DIR
   export PID_YAML_PATH SESSION_ID NUM_EPISODES MAX_STEPS BRIDGE_TIMEOUT CONTROL_MODE
   export EXCAVATOR_SKIP_PIP_INSTALL
   export EXCAVATOR_NO_CAMERA="${no_camera}"
@@ -606,6 +609,7 @@ start_stack() {
       if [[ -d .venv ]]; then
         source .venv/bin/activate
       fi
+      mkdir -p "${TORCHINDUCTOR_CACHE_DIR}"
       export PYTHONPATH="${ROOT_DIR}/testbed${PYTHONPATH:+:${PYTHONPATH}}"
       CU12_LIB="${ROOT_DIR}/.venv/lib/python3.10/site-packages/nvidia/cu12/lib"
       if [[ -d "${CU12_LIB}" ]]; then
@@ -771,7 +775,11 @@ ports = (
     os.environ.get("EXCAVATOR_DASH_RECEIVER_PORT", "-"),
 )
 
-log_files = sorted(glob.glob(str(log_dir / "*.log")))
+log_files = [
+    path
+    for path in sorted(glob.glob(str(log_dir / "*.log")))
+    if Path(path).name != "canraw.log"
+]
 if not log_files:
     print(f"[slave-stack] no log files found under {log_dir}", flush=True)
     raise SystemExit(0)
@@ -781,6 +789,7 @@ field_re = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=(\[[^\]]*\]|[^ ]*)")
 timestamp_re = re.compile(r"(20[0-9]{2}-[0-9]{2}-[0-9]{2} [0-9:,]+ .*)")
 
 receiver_status = ""
+policy_runtime_status = "waiting"
 last_event = "waiting for log events"
 current_service = "-"
 top_rows = 8
@@ -852,6 +861,7 @@ def draw_top() -> None:
     rows, cols = term_size()
     service_text = " ".join(service_state(name) for name in services)
     recv1, recv2, recv3 = receiver_lines(cols)
+    runtime_line = fit(f"policy_runtime {policy_runtime_status}", cols)
     lines = [
         "Excavator slave stack dashboard | Ctrl+C stops managed services",
         f"log_dir={log_dir}",
@@ -859,7 +869,7 @@ def draw_top() -> None:
         f"services {service_text}",
         recv1,
         recv2,
-        recv3,
+        recv3 or runtime_line,
         f"last_event {last_event}",
     ]
     rows_used = min(top_rows, rows - 3)
@@ -889,7 +899,7 @@ def service_from_header(text: str) -> str | None:
 
 
 def emit(raw: bytes) -> None:
-    global current_service, receiver_status
+    global current_service, receiver_status, policy_runtime_status
     text = raw.decode(errors="replace")
     text = ansi_re.sub("", text).strip()
     if not text:
@@ -903,6 +913,11 @@ def emit(raw: bytes) -> None:
         event_match = timestamp_re.search(text)
         if event_match:
             scroll_event(f"[receiver] {event_match.group(1)}")
+        draw_top()
+        return
+    if text.startswith("policy_runtime="):
+        policy_runtime_status = text
+        scroll_event(f"[receiver] {text}")
         draw_top()
         return
     scroll_event(f"[{current_service}] {text}")

@@ -77,6 +77,8 @@ class PolicyActionSource(ActionSource):
         runtime_gate_stack: Any | None = None,
         report_intent: bool = False,
         bundle_dir: str | Path | None = None,
+        inference_warmup_steps: int = 0,
+        frame_alignment_enabled: bool = False,
     ) -> None:
         if output_mode not in POLICY_OUTPUT_MODES:
             raise ValueError(
@@ -104,6 +106,11 @@ class PolicyActionSource(ActionSource):
         self._runtime_gate_stack = runtime_gate_stack
         self._report_intent = bool(report_intent)
         self._bundle_dir = None if bundle_dir is None else str(bundle_dir)
+        self._inference_warmup_steps = int(inference_warmup_steps)
+        self._frame_alignment_enabled = bool(frame_alignment_enabled)
+        if self._inference_warmup_steps < 0:
+            raise ValueError("inference_warmup_steps must be non-negative")
+        self._inference_prepared = False
         self._step = 0
         self._record_start_pending = self._record_start_on_reset
         self._last_qpos: np.ndarray | None = None
@@ -124,6 +131,16 @@ class PolicyActionSource(ActionSource):
             device=cfg.get("device"),
             temporal_agg=bool(cfg.get("temporal_agg", True)),
             inference_precision=str(cfg.get("inference_precision", "fp32")),
+            inference_compile=bool(cfg.get("inference_compile", False)),
+            inference_compile_mode=str(
+                cfg.get("inference_compile_mode", "reduce-overhead")
+            ),
+            inference_compile_dynamic=bool(
+                cfg.get("inference_compile_dynamic", False)
+            ),
+            device_uint8_preprocess=bool(
+                cfg.get("device_uint8_preprocess", False)
+            ),
             temporal_aggregation_diagnostics=bool(
                 cfg.get("temporal_aggregation_diagnostics", False)
             ),
@@ -174,6 +191,10 @@ class PolicyActionSource(ActionSource):
             runtime_gate_stack=runtime_gate_stack,
             report_intent=bool(cfg.get("report_intent", False)),
             bundle_dir=bundle_dir,
+            inference_warmup_steps=int(cfg.get("inference_warmup_steps", 0)),
+            frame_alignment_enabled=bool(
+                dict(cfg.get("frame_alignment", {}) or {}).get("enabled", False)
+            ),
         )
 
     def reset(self) -> None:
@@ -188,6 +209,38 @@ class PolicyActionSource(ActionSource):
             self._runtime_gate_stack.reset()
         if hasattr(self._policy, "reset"):
             self._policy.reset()
+
+    def prepare(self, obs: dict[str, Any]) -> dict[str, Any]:
+        """Warm the inference runtime once, then restore clean episode state."""
+
+        if self._inference_prepared or self._inference_warmup_steps == 0:
+            return {
+                "prepared": int(self._inference_prepared),
+                "warmup_steps": 0,
+                "elapsed_s": 0.0,
+            }
+        started = time.perf_counter()
+        completed = 0
+        try:
+            policy_obs, _ = self._policy_obs(obs)
+            inference = (
+                getattr(self._policy, "predict_action_and_intent", None)
+                if self._runtime_gate_stack is not None or self._report_intent
+                else getattr(self._policy, "predict", None)
+            )
+            if not callable(inference):
+                raise TypeError("policy does not implement the configured inference API")
+            for _ in range(self._inference_warmup_steps):
+                inference(policy_obs)
+                completed += 1
+        finally:
+            self.reset()
+        self._inference_prepared = True
+        return {
+            "prepared": 1,
+            "warmup_steps": int(completed),
+            "elapsed_s": float(time.perf_counter() - started),
+        }
 
     def snapshot_state(self) -> PolicyActionSourceState:
         """Capture policy, gate, qvel, assist, and source sequence state."""
@@ -323,6 +376,11 @@ class PolicyActionSource(ActionSource):
                     dtype=np.float32,
                 ).copy(),
                 "policy_inference_latency_ms": latency_ms,
+                "policy_frame_alignment_enabled": int(
+                    self._frame_alignment_enabled
+                ),
+                "policy_frame_reused": 0,
+                "policy_frame_reuse_count": 0,
                 "policy_step": int(self._step),
                 "policy_error": "",
                 **assist_extras,
@@ -383,6 +441,11 @@ class PolicyActionSource(ActionSource):
                 "policy_qvel_input": zero.copy(),
                 "policy_previous_final_command_input": zero.copy(),
                 "policy_inference_latency_ms": latency_ms,
+                "policy_frame_alignment_enabled": int(
+                    self._frame_alignment_enabled
+                ),
+                "policy_frame_reused": 0,
+                "policy_frame_reuse_count": 0,
                 "policy_step": int(self._step),
                 "policy_error": f"{type(exc).__name__}: {exc}",
                 **_deadzone_assist_disabled_extras(self._deadzone_assist),
@@ -533,6 +596,10 @@ def load_act_policy_from_bundle(
     device: str | None = None,
     temporal_agg: bool = True,
     inference_precision: str = "fp32",
+    inference_compile: bool = False,
+    inference_compile_mode: str = "reduce-overhead",
+    inference_compile_dynamic: bool = False,
+    device_uint8_preprocess: bool = False,
     temporal_aggregation_diagnostics: bool = False,
 ) -> Any:
     """Load the ACT policy bundle produced by excavator_testbed."""
@@ -575,6 +642,10 @@ def load_act_policy_from_bundle(
         norm_stats_path=stats,
         temporal_agg=bool(temporal_agg),
         inference_precision=inference_precision,
+        inference_compile=bool(inference_compile),
+        inference_compile_mode=str(inference_compile_mode),
+        inference_compile_dynamic=bool(inference_compile_dynamic),
+        device_uint8_preprocess=bool(device_uint8_preprocess),
         temporal_aggregation_diagnostics=bool(
             temporal_aggregation_diagnostics
         ),
