@@ -192,6 +192,27 @@ def test_runtime_gate_stack_rejects_future_temporal_offset(tmp_path: Path) -> No
         )
 
 
+def test_runtime_gate_stack_prefers_bundle_artifacts_over_manifest_absolute_paths(
+    tmp_path: Path,
+) -> None:
+    manifest, deadzone = _runtime_bundle(tmp_path)
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    for artifact in payload["artifacts"]:
+        artifact["path"] = f"/data/training-machine/{Path(artifact['path']).name}"
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+
+    stack = RuntimeGateStack.from_config(
+        {
+            "enabled": True,
+            "bundle_dir": str(tmp_path),
+            "manifest_path": str(manifest),
+            "deadzone_json": str(deadzone),
+        }
+    )
+
+    assert stack.stack_id == "E52-test"
+
+
 def test_runtime_gate_stack_rejects_invalid_intent_probability(tmp_path: Path) -> None:
     manifest, deadzone = _runtime_bundle(tmp_path)
     stack = RuntimeGateStack.from_config(

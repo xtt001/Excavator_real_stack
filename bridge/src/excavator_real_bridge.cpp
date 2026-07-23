@@ -456,6 +456,8 @@ json imuDebugJson(const excavator_api::ImuDebug& d, std::uint64_t steady_now_ns)
                              : ""},
         {"daoyuan_stick_policy_offset_rad",
          envString("EXCAVATOR_DAOYUAN_STICK_POLICY_OFFSET_RAD", "0.19801020488135143")},
+        {"swing_policy_offset_rad",
+         envString("EXCAVATOR_SWING_POLICY_OFFSET_RAD", "0")},
         {"daoyuan_bucket_policy_offset_rad",
          envString("EXCAVATOR_DAOYUAN_BUCKET_POLICY_OFFSET_RAD", "-2.006833804661174")},
         {"bucket_qpos_source", bucket_qpos_source},
@@ -533,6 +535,9 @@ public:
     explicit BridgeApp(Options options) : options_(std::move(options)) {}
 
     bool startRuntime() {
+        if (options_.imu_simulation) {
+            ::setenv("EXCAVATOR_IMU_PLACEHOLDER", "1", 1);
+        }
         excavator_api::SessionConfig cfg{};
         cfg.can_if_name = options_.can_if;
         cfg.imu_if_name = options_.imu_if;
@@ -851,6 +856,8 @@ private:
             {"env_state", env_state},
             {"snapshot_age_ms", snapshot_age_ms},
             {"state_loop_tick", snap.meta.loop_tick},
+            {"imu_source", options_.imu_simulation ? "placeholder" : "hardware"},
+            {"imu_placeholder", options_.imu_simulation},
             {"imu_health", imuHealthJson(snap.resp.imu_health, steadyNs())},
             {"imu_debug", imuDebugJson(snap.resp.imu_debug, steadyNs())},
         };

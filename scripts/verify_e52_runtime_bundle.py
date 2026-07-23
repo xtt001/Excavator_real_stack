@@ -16,6 +16,13 @@ from testbed.policies.runtime_gate_stack import RuntimeGateStack
 
 EXPECTED_CAMERA_NAMES = ["video4", "video5"]
 EXPECTED_LOW_DIM_KEYS = ["qpos"]
+EXPECTED_ACTION_SCALE = [1.0, 1.0, 1.0, 1.0]
+EXPECTED_GO_HOME_SUCCESS_TOLERANCE = [0.05, 0.05, 0.035, 0.04]
+EXPECTED_DEADZONE_POSITIVE = [0.661, 0.259, 0.500, 0.408]
+EXPECTED_DEADZONE_NEGATIVE = [0.721, 0.357, 0.500, 0.508]
+EXPECTED_ASSIST_AXIS_ENABLED = [True, True, True, True]
+EXPECTED_ASSIST_TRIGGER_FRACTION = [0.36, 0.50, 0.50, 0.375]
+EXPECTED_ASSIST_MARGIN = [0.02, 0.02, 0.02, 0.02]
 REQUIRED_ACT_FILES = (
     "policy_best.ckpt",
     "dataset_stats.pkl",
@@ -42,6 +49,7 @@ def verify_e52_runtime_bundle(
     *,
     config_path: Path,
     bundle_dir: Path,
+    require_runtime_gates: bool = True,
 ) -> dict[str, Any]:
     config = _read_yaml(config_path)
     policy_config = dict(config.get("teleop", {}).get("policy", {}) or {})
@@ -59,8 +67,41 @@ def verify_e52_runtime_bundle(
         )
     if str(policy_config.get("qvel_mode", "")) != "raw":
         raise ValueError("E52 runtime config qvel_mode must be raw")
-    if bool(policy_config.get("deadzone_assist", {}).get("enabled", False)):
-        raise ValueError("E52 runtime config deadzone_assist must remain disabled")
+    if list(policy_config.get("action_scale", [])) != EXPECTED_ACTION_SCALE:
+        raise ValueError(
+            "E52 policy action_scale must preserve the ACT normalized-command "
+            f"domain: {EXPECTED_ACTION_SCALE!r}"
+        )
+    assist_config = dict(policy_config.get("deadzone_assist", {}) or {})
+    assist_enabled = bool(assist_config.get("enabled", False))
+    if require_runtime_gates and assist_enabled:
+        raise ValueError("gated E52 runtime config deadzone_assist must remain disabled")
+    if not require_runtime_gates:
+        expected_assist = {
+            "axis_enabled": EXPECTED_ASSIST_AXIS_ENABLED,
+            "trigger_fraction": EXPECTED_ASSIST_TRIGGER_FRACTION,
+            "min_consecutive_steps": 2,
+            "margin": EXPECTED_ASSIST_MARGIN,
+            "deadzone_positive": EXPECTED_DEADZONE_POSITIVE,
+            "deadzone_negative": EXPECTED_DEADZONE_NEGATIVE,
+        }
+        if not assist_enabled:
+            raise ValueError("E52 ACT-only baseline requires all-axis deadzone assist")
+        for key, expected in expected_assist.items():
+            if assist_config.get(key) != expected:
+                raise ValueError(
+                    f"E52 ACT-only deadzone_assist.{key} must be {expected!r}"
+                )
+    go_home_config = dict(
+        config.get("teleop", {}).get("recording", {}).get("go_home", {}) or {}
+    )
+    if list(go_home_config.get("success_tolerance_rad", [])) != (
+        EXPECTED_GO_HOME_SUCCESS_TOLERANCE
+    ):
+        raise ValueError(
+            "E52 go-home success_tolerance_rad must keep the stick inside "
+            f"training-home support: {EXPECTED_GO_HOME_SUCCESS_TOLERANCE!r}"
+        )
 
     missing = [
         bundle_dir / name
@@ -88,7 +129,66 @@ def verify_e52_runtime_bundle(
         )
 
     runtime_config = dict(policy_config.get("runtime_gates", {}) or {})
-    if not bool(runtime_config.get("enabled", False)):
+    runtime_gates_enabled = bool(runtime_config.get("enabled", False))
+    if not require_runtime_gates:
+        if runtime_gates_enabled:
+            raise ValueError("E52 ACT-only baseline requires runtime_gates.enabled=false")
+        if not bool(policy_config.get("report_intent", False)):
+            raise ValueError("E52 ACT-only baseline requires report_intent=true")
+        manifest_path = bundle_dir / "candidate_package_manifest.json"
+        if not manifest_path.is_file():
+            raise FileNotFoundError(manifest_path)
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest_artifacts = {
+            str(item.get("name", "")): item
+            for item in manifest.get("artifacts", [])
+            if isinstance(item, dict)
+        }
+        act_artifacts = {
+            name: filename
+            for name, filename in REQUIRED_RUNTIME_ARTIFACT_FILES.items()
+            if filename is not None
+        }
+        missing_hashes = [
+            name
+            for name in act_artifacts
+            if not str(manifest_artifacts.get(name, {}).get("sha256", ""))
+        ]
+        if missing_hashes:
+            raise ValueError(
+                "candidate manifest missing ACT artifact sha256: "
+                + ", ".join(missing_hashes)
+            )
+        hash_mismatches = [
+            name
+            for name, filename in act_artifacts.items()
+            if _sha256(bundle_dir / filename)
+            != str(manifest_artifacts[name]["sha256"])
+        ]
+        if hash_mismatches:
+            raise ValueError(
+                "E52 ACT artifact sha256 mismatch: " + ", ".join(hash_mismatches)
+            )
+        return {
+            "ok": True,
+            "bundle_dir": str(bundle_dir),
+            "config_path": str(config_path),
+            "candidate_id": str(manifest.get("candidate_id", "")),
+            "profile": "act_only_baseline",
+            "camera_names": resolved_cameras,
+            "low_dim_keys": low_dim_keys,
+            "output_mode": "shadow_zero",
+            "qvel_mode": "raw",
+            "action_scale": EXPECTED_ACTION_SCALE,
+            "deadzone_assist_enabled": True,
+            "deadzone_assist_axis_enabled": EXPECTED_ASSIST_AXIS_ENABLED,
+            "go_home_success_tolerance_rad": EXPECTED_GO_HOME_SUCCESS_TOLERANCE,
+            "required_act_files": list(REQUIRED_ACT_FILES),
+            "runtime_gate_stack_loaded": False,
+            "intent_reporting_enabled": True,
+            "runtime_artifact_hashes_verified": list(act_artifacts),
+        }
+    if not runtime_gates_enabled:
         raise ValueError("E52 runtime_gates must be enabled")
     runtime_bundle = Path(
         str(runtime_config.get("bundle_dir", bundle_dir))
@@ -182,7 +282,9 @@ def verify_e52_runtime_bundle(
         "low_dim_keys": low_dim_keys,
         "output_mode": "shadow_zero",
         "qvel_mode": "raw",
+        "action_scale": EXPECTED_ACTION_SCALE,
         "deadzone_assist_enabled": False,
+        "go_home_success_tolerance_rad": EXPECTED_GO_HOME_SUCCESS_TOLERANCE,
         "required_act_files": list(REQUIRED_ACT_FILES),
         "runtime_gate_stack_loaded": True,
         "runtime_artifact_hashes_verified": list(REQUIRED_RUNTIME_ARTIFACT_FILES),
@@ -193,11 +295,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--bundle-dir", type=Path, required=True)
+    parser.add_argument(
+        "--act-only-baseline",
+        action="store_true",
+        help="Verify the E52 ACT bundle with runtime gates explicitly disabled.",
+    )
     args = parser.parse_args()
     try:
         report = verify_e52_runtime_bundle(
             config_path=args.config,
             bundle_dir=args.bundle_dir,
+            require_runtime_gates=not args.act_only_baseline,
         )
     except Exception as exc:
         report = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}

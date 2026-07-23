@@ -21,6 +21,12 @@ from testbed.actions.remote import (
     DEFAULT_REMOTE_ACTION_PORT,
     RemoteActionClient,
 )
+from testbed.host_status import (
+    DEFAULT_HOST_STATUS_HOST,
+    DEFAULT_HOST_STATUS_PORT,
+    LocalHostStatusPublisher,
+    build_host_status_snapshot,
+)
 
 log = logging.getLogger(__name__)
 
@@ -166,6 +172,28 @@ def main() -> None:
         default=0.1,
         help="Minimum redraw interval for the fixed sender status monitor.",
     )
+    parser.add_argument(
+        "--local-status-host",
+        default=DEFAULT_HOST_STATUS_HOST,
+        help="Local read-only dashboard UDP destination. Default: 127.0.0.1.",
+    )
+    parser.add_argument(
+        "--local-status-port",
+        type=int,
+        default=DEFAULT_HOST_STATUS_PORT,
+        help="Local read-only dashboard UDP port. Default: 8781.",
+    )
+    parser.add_argument(
+        "--local-status-hz",
+        type=float,
+        default=10.0,
+        help="Maximum localhost dashboard telemetry rate. Default: 10 Hz.",
+    )
+    parser.add_argument(
+        "--no-local-status",
+        action="store_true",
+        help="Disable the localhost read-only dashboard telemetry mirror.",
+    )
     args = parser.parse_args()
 
     if not args.confirm_remote_control:
@@ -288,6 +316,12 @@ def main() -> None:
         source_id=source_id,
         min_interval_s=float(args.monitor_interval_s),
     )
+    local_status = LocalHostStatusPublisher(
+        host=str(args.local_status_host),
+        port=int(args.local_status_port),
+        max_hz=float(args.local_status_hz),
+        enabled=not bool(args.no_local_status),
+    )
     try:
         client.connect()
         action_source.reset()
@@ -335,6 +369,22 @@ def main() -> None:
                         event_flags["quit"],
                     )
             now_s = time.monotonic()
+            receiver_status = client.latest_status()
+            local_status.publish(
+                build_host_status_snapshot(
+                    seq=seq,
+                    target=f"{args.host}:{port}",
+                    configured_hz=rate_hz,
+                    input_device=input_device,
+                    source_id=sender_source_id,
+                    action=action,
+                    action_latency_ms=getattr(info, "latency_ms", None),
+                    extras=extras,
+                    event_flags=event_flags,
+                    receiver_status=receiver_status,
+                ),
+                force=any(event_flags.values()),
+            )
             if monitor.enabled:
                 monitor.update(
                     seq=seq,
@@ -342,7 +392,7 @@ def main() -> None:
                     info=info,
                     extras=extras,
                     event_flags=event_flags,
-                    receiver_status=client.latest_status(),
+                    receiver_status=receiver_status,
                 )
             elif (
                 float(args.log_interval_s) > 0.0
@@ -363,6 +413,7 @@ def main() -> None:
         abort = True
     finally:
         monitor.finish()
+        local_status.close()
         _send_stop(client, seq=seq, source_id=source_id)
         action_source.close()
         client.close()
@@ -608,6 +659,7 @@ class _RemoteTeleopMonitor:
             f"action={_format_action(action)} source_info={source}",
             f"status11={status_text} toggle_mask=0x{toggle_mask:x}",
             _format_receiver_status(receiver_status),
+            _format_receiver_policy_status(receiver_status),
             (
                 "record_start: "
                 f"pulse={_yes_no(extras.get('record_start_requested', False))} "
@@ -714,6 +766,42 @@ def _format_receiver_status(receiver_status: Any | None) -> str:
         f"steps={steps} saved={saved} go_home={go_home} "
         f"health={health}:{health_error} status_age_ms={age_ms}{suffix}"
     )
+
+
+def _format_receiver_policy_status(receiver_status: Any | None) -> str:
+    if receiver_status is None:
+        return "model_report=waiting_for_status"
+    payload = dict(getattr(receiver_status, "payload", {}) or {})
+    action = _status_vector(payload.get("policy_action"), width=4)
+    assisted = _status_vector(payload.get("policy_assisted_action"), width=4)
+    commanded = _status_vector(payload.get("commanded_action"), width=4)
+    intent = _status_vector(payload.get("policy_intent_probabilities"), width=8)
+    if action is None:
+        return "model_report=inactive"
+    action_text = _format_action(action)
+    assisted_text = "-" if assisted is None else _format_action(assisted)
+    commanded_text = "-" if commanded is None else _format_action(commanded)
+    if intent is None:
+        intent_text = "-"
+        bucket_text = "-"
+    else:
+        intent_text = "[" + ",".join(f"{value:.2f}" for value in intent) + "]"
+        bucket_text = f"+{intent[6]:.2f}/-{intent[7]:.2f}"
+    return (
+        f"model_raw={action_text} assisted={assisted_text} "
+        f"commanded={commanded_text} "
+        f"intent8(sw+,sw-,bo+,bo-,st+,st-,bk+,bk-)={intent_text} "
+        f"bucket_intent={bucket_text}"
+    )
+
+
+def _status_vector(value: Any, *, width: int) -> list[float] | None:
+    if not isinstance(value, (list, tuple)) or len(value) != width:
+        return None
+    try:
+        return [float(item) for item in value]
+    except (TypeError, ValueError):
+        return None
 
 
 if __name__ == "__main__":

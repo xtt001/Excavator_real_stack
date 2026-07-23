@@ -11,6 +11,7 @@ double deg_to_rad(double deg) { return deg * excavator::kPi / 180.0; }
 
 constexpr double kBucketQuaternionPolicyOffsetDeg = -23.262468611471;
 constexpr double kBucketGravityHingeOuterBucketDeg = 3.3428268519920032;
+constexpr double kDaoyuanBucketPolicyOffsetRad = -2.006833804661174;
 
 Eigen::Quaternionf pitch_quaternion(double pitch_deg) {
     return Eigen::Quaternionf(Eigen::AngleAxisf(
@@ -90,6 +91,13 @@ void set_bucket_outer_gravity_accel(excavator::ExcavatorHardwareState& hw) {
     hw.imu.devices[1].accel_mps2 = Eigen::Vector3f(6.90000010F, 0.0F, 7.10066216F);
 }
 
+void set_bucket_20260713_power_cycle_gravity_accel(excavator::ExcavatorHardwareState& hw) {
+    hw.imu.devices[0].accel_mps2 =
+        Eigen::Vector3f(0.149960935F, -6.03150988F, 7.67275620F);
+    hw.imu.devices[1].accel_mps2 =
+        Eigen::Vector3f(-1.90111935F, 2.07820511F, 9.34566879F);
+}
+
 Eigen::Quaternionf q_wxyz(double w, double x, double y, double z) {
     return Eigen::Quaternionf(static_cast<float>(w),
                               static_cast<float>(x),
@@ -100,9 +108,20 @@ Eigen::Quaternionf q_wxyz(double w, double x, double y, double z) {
 void test_raw_yaw_branch_survives_startup() {
     excavator::ExcavatorConverter converter;
     excavator::ExcavatorHardwareState invalid_hw;
+    invalid_hw.imu.devices[1].device_addr = 2U;
+    invalid_hw.imu.devices[1].online = 1U;
+    invalid_hw.imu.devices[1].valid_gyro = 1U;
+    invalid_hw.imu.devices[1].host_rx_time_ns = 12345U;
+    invalid_hw.imu.devices[1].gyro_dps = Eigen::Vector3f(1.0F, 2.0F, 3.0F);
     excavator::ExcavatorState out;
     if (converter.hardwareStateToRobotState(invalid_hw, out)) {
         std::cerr << "invalid startup conversion should not publish robot state\n";
+        std::exit(1);
+    }
+    if (out.imu.devices[1].device_addr != 2U || out.imu.devices[1].online != 1U ||
+        out.imu.devices[1].valid_gyro != 1U || out.imu.devices[1].host_rx_time_ns != 12345U ||
+        !out.imu.devices[1].gyro_dps.isApprox(Eigen::Vector3f(1.0F, 2.0F, 3.0F))) {
+        std::cerr << "rejected startup conversion should retain per-IMU diagnostics\n";
         std::exit(1);
     }
 
@@ -117,6 +136,29 @@ void test_raw_yaw_branch_survives_startup() {
     expect_near(out.position(1), deg_to_rad(32.53), "boom wrong");
     expect_near(out.position(2), deg_to_rad(-99.85), "stick wrong");
     expect_near(out.position(3), deg_to_rad(22.50 + kBucketQuaternionPolicyOffsetDeg), "bucket wrong");
+}
+
+void test_swing_policy_offset_preserves_direction() {
+    set_env_var("EXCAVATOR_SWING_POLICY_OFFSET_RAD", "1.82634");
+    excavator::ExcavatorConverter converter;
+    excavator::ExcavatorHardwareState hw;
+    excavator::ExcavatorState out;
+    make_valid_imu(hw, -44.82, -67.32, 32.53, -105.09);
+    if (!converter.hardwareStateToRobotState(hw, out)) {
+        std::cerr << "swing offset conversion failed\n";
+        std::exit(1);
+    }
+    expect_near(out.position(0), deg_to_rad(-105.09) + 1.82634,
+                "swing policy offset wrong");
+
+    make_valid_imu(hw, -44.82, -67.32, 32.53, -104.09);
+    if (!converter.hardwareStateToRobotState(hw, out)) {
+        std::cerr << "second swing offset conversion failed\n";
+        std::exit(1);
+    }
+    expect_near(out.position(0), deg_to_rad(-104.09) + 1.82634,
+                "swing offset should preserve increasing yaw direction");
+    unset_env_var("EXCAVATOR_SWING_POLICY_OFFSET_RAD");
 }
 
 void test_default_valid_attitude_does_not_lock_yaw_branch() {
@@ -503,6 +545,7 @@ void test_daoyuan_chain_profile_decouples_upper_joints() {
     excavator::ExcavatorState out;
 
     make_valid_imu(hw, 0.0, -80.0, -5.0, 10.0);
+    set_bucket_20260713_power_cycle_gravity_accel(hw);
     hw.imu.devices[0].rpy_raw_deg(0) = -130.0F;
     hw.imu.devices[0].rpy_rad(0) = static_cast<float>(deg_to_rad(-130.0));
     hw.imu.devices[0].gyro_dps(0) = 11.0F;
@@ -543,10 +586,56 @@ void test_daoyuan_chain_profile_decouples_upper_joints() {
     unset_env_var("EXCAVATOR_DAOYUAN_BUCKET_POLICY_OFFSET_RAD");
 }
 
+void test_daoyuan_bucket_power_cycle_startup_uses_gravity_branch() {
+    set_env_var("EXCAVATOR_JOINT_RPY_PROFILE", "daoyuan_chain");
+    set_env_var("EXCAVATOR_BUCKET_QPOS_SOURCE", "daoyuan_chain");
+    set_env_var("EXCAVATOR_DAOYUAN_BUCKET_POLICY_OFFSET_RAD", "-2.006833804661174");
+    set_env_var("EXCAVATOR_BUCKET_GRAVITY_HINGE_REFERENCE_RAD", "2.0839045979023254");
+    set_env_var("EXCAVATOR_BUCKET_GRAVITY_HINGE_POLICY_OFFSET_RAD", "-2.025561263010988");
+
+    excavator::ExcavatorHardwareState hw;
+    make_valid_imu(hw, 0.899865806, -11.213500977, 0.0, 0.0);
+    hw.imu.devices[0].rpy_raw_deg(0) = 141.779708862F;
+    hw.imu.devices[0].rpy_rad(0) = static_cast<float>(deg_to_rad(141.779708862));
+    set_bucket_20260713_power_cycle_gravity_accel(hw);
+
+    excavator::ExcavatorConverter before_power_cycle;
+    excavator::ExcavatorState before;
+    if (!before_power_cycle.hardwareStateToRobotState(hw, before)) {
+        std::cerr << "daoyuan pre-power-cycle conversion failed\n";
+        std::exit(1);
+    }
+
+    // A new converter reproduces bridge state after an unexpected power loss.
+    excavator::ExcavatorConverter after_power_cycle;
+    excavator::ExcavatorState after;
+    if (!after_power_cycle.hardwareStateToRobotState(hw, after)) {
+        std::cerr << "daoyuan post-power-cycle conversion failed\n";
+        std::exit(1);
+    }
+
+    const double wrong_rpy_branch =
+        -deg_to_rad(141.779708862 + -11.213500977) + kDaoyuanBucketPolicyOffsetRad;
+    const double expected = wrong_rpy_branch + 2.0 * excavator::kPi;
+    expect_near(before.position(3), expected,
+                "daoyuan startup should align RPY qpos to gravity branch");
+    expect_near(after.position(3), expected,
+                "daoyuan power-cycle startup should preserve the physical branch");
+    expect_not_near(after.position(3), wrong_rpy_branch,
+                    "daoyuan power-cycle startup must not publish the raw -2pi branch");
+
+    unset_env_var("EXCAVATOR_JOINT_RPY_PROFILE");
+    unset_env_var("EXCAVATOR_BUCKET_QPOS_SOURCE");
+    unset_env_var("EXCAVATOR_DAOYUAN_BUCKET_POLICY_OFFSET_RAD");
+    unset_env_var("EXCAVATOR_BUCKET_GRAVITY_HINGE_REFERENCE_RAD");
+    unset_env_var("EXCAVATOR_BUCKET_GRAVITY_HINGE_POLICY_OFFSET_RAD");
+}
+
 }  // namespace
 
 int main() {
     test_raw_yaw_branch_survives_startup();
+    test_swing_policy_offset_preserves_direction();
     test_default_valid_attitude_does_not_lock_yaw_branch();
     test_yaw_zero_crossing_is_unwrapped();
     test_swing_velocity_sign_matches_raw_yaw();
@@ -562,6 +651,7 @@ int main() {
     test_bucket_roll_ccw90_profile_uses_native_rpy_reference_and_matching_qvel();
     test_bucket_gravity_hinge_source_ignores_upper_joint_rpy_coupling();
     test_daoyuan_chain_profile_decouples_upper_joints();
+    test_daoyuan_bucket_power_cycle_startup_uses_gravity_branch();
     std::cout << "excavator_converter_test OK\n";
     return 0;
 }

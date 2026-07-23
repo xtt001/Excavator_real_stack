@@ -33,6 +33,10 @@ static_assert(kCanPayloadSize == kImuCanPayloadBytes, "imu payload");
 inline constexpr std::uint64_t kImuShmMagic = 0x494D555F43414E31ULL;
 inline constexpr auto kLoopPeriod = std::chrono::milliseconds(20);  // 50Hz
 inline constexpr auto kOfflineTimeout = std::chrono::milliseconds(100);
+// The four Daoyuan IMUs produce roughly 72 classic CAN frames per 20 ms tick.
+// Never drain without a bound: if parsing falls behind the producer, an
+// unbounded loop may never reach EAGAIN and publish_shm() will starve forever.
+inline constexpr std::size_t kSocketCanMaxFramesPerTick = 512U;
 
 #if defined(__linux__)
 inline constexpr std::uint32_t kUsbCanDeviceTypeUsbcCanIi = 4U;
@@ -794,7 +798,8 @@ struct ImuCanLib::Impl {
 
     void drain_socketcan() {
         if (can_fd < 0) return;
-        while (true) {
+        for (std::size_t frame_count = 0; frame_count < kSocketCanMaxFramesPerTick;
+             ++frame_count) {
             can_frame frame{};
             const ssize_t n = recv(can_fd, &frame, sizeof(frame), MSG_DONTWAIT);
             if (n < 0) break;
@@ -853,11 +858,12 @@ struct ImuCanLib::Impl {
                                                          .count()))
                              ? 1U
                              : 0U;
-            dst.valid_attitude = ((pf.valid_flags & 0x01U) != 0U) ? 1U : 0U;
+            const bool online = dst.online != 0U;
+            dst.valid_attitude = (online && (pf.valid_flags & 0x01U) != 0U) ? 1U : 0U;
             const bool quaternion_synced = imu_quaternion_halves_synchronized(pf);
-            dst.valid_quaternion = quaternion_synced ? 1U : 0U;
-            dst.valid_gyro = ((pf.valid_flags & 0x02U) != 0U) ? 1U : 0U;
-            dst.valid_accel = ((pf.valid_flags & 0x04U) != 0U) ? 1U : 0U;
+            dst.valid_quaternion = (online && quaternion_synced) ? 1U : 0U;
+            dst.valid_gyro = (online && (pf.valid_flags & 0x02U) != 0U) ? 1U : 0U;
+            dst.valid_accel = (online && (pf.valid_flags & 0x04U) != 0U) ? 1U : 0U;
             dst.imu_timestamp_ms = pf.timestamp_ms;
             dst.host_rx_time_ns = pf.last_rx_ns;
             if (pf.has_euler) {

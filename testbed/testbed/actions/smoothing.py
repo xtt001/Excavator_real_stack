@@ -35,6 +35,8 @@ class AxisResponseProfile:
     release_rate: float = 6.0
     recenter_rate: float = 7.0
     exponent: float = 1.0
+    positive_exponent: float | None = None
+    negative_exponent: float | None = None
 
     def apply(self, raw_value: float, current_value: float, delta_time: float) -> float:
         target_value = self.remap(raw_value)
@@ -57,7 +59,12 @@ class AxisResponseProfile:
             1.0 - float(self.deadzone), 1.0e-6
         )
         normalized = float(np.clip(normalized, 0.0, 1.0))
-        curved = normalized ** max(float(self.exponent), 0.01)
+        exponent = self.exponent
+        if raw_value > 0.0 and self.positive_exponent is not None:
+            exponent = self.positive_exponent
+        elif raw_value < 0.0 and self.negative_exponent is not None:
+            exponent = self.negative_exponent
+        curved = normalized ** max(float(exponent), 0.01)
         return float(np.sign(raw_value) * curved)
 
 
@@ -76,6 +83,8 @@ class ActionResponseSmoother:
         release_rate: float | Sequence[float] = 6.0,
         recenter_rate: float | Sequence[float] = 7.0,
         exponent: float | Sequence[float] = 1.0,
+        positive_exponent: float | Sequence[float] | None = None,
+        negative_exponent: float | Sequence[float] | None = None,
         default_dt: float = 0.02,
     ) -> None:
         deadzone_arr = _broadcast(deadzone, name="deadzone")
@@ -83,6 +92,16 @@ class ActionResponseSmoother:
         release_arr = _broadcast(release_rate, name="release_rate")
         recenter_arr = _broadcast(recenter_rate, name="recenter_rate")
         exponent_arr = _broadcast(exponent, name="exponent")
+        positive_exponent_arr = (
+            exponent_arr
+            if positive_exponent is None
+            else _broadcast(positive_exponent, name="positive_exponent")
+        )
+        negative_exponent_arr = (
+            exponent_arr
+            if negative_exponent is None
+            else _broadcast(negative_exponent, name="negative_exponent")
+        )
 
         self._profiles = [
             AxisResponseProfile(
@@ -91,6 +110,8 @@ class ActionResponseSmoother:
                 release_rate=float(release_arr[i]),
                 recenter_rate=float(recenter_arr[i]),
                 exponent=float(exponent_arr[i]),
+                positive_exponent=float(positive_exponent_arr[i]),
+                negative_exponent=float(negative_exponent_arr[i]),
             )
             for i in range(ACTION_DIM)
         ]

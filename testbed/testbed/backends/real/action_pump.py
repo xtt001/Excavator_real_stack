@@ -54,6 +54,8 @@ class RealActionPump:
             fault_code="init",
         )
         self._latest_error = ""
+        self._action_sequence = 0
+        self._latest_sent_sequence = -1
         self._last_error_log_s = 0.0
         self._stop = threading.Event()
         self._schedule_changed = threading.Event()
@@ -85,6 +87,7 @@ class RealActionPump:
         with self._state_lock:
             self._action = as_real_action(action, clip=True)
             self._state = dict(state) if state is not None else None
+            self._action_sequence += 1
         if self.send_immediately_on_update:
             result = self._send_once()
             with self._state_lock:
@@ -110,6 +113,16 @@ class RealActionPump:
         with self._state_lock:
             return self._latest_error
 
+    @property
+    def latest_update_sequence(self) -> int:
+        with self._state_lock:
+            return int(self._action_sequence)
+
+    @property
+    def latest_sent_sequence(self) -> int:
+        with self._state_lock:
+            return int(self._latest_sent_sequence)
+
     def stop(self, *, close_controller: bool = True) -> ControlResult:
         self._stop.set()
         self._schedule_changed.set()
@@ -122,6 +135,7 @@ class RealActionPump:
             with self._state_lock:
                 self._action = np.zeros(ACTION_DIM, dtype=np.float32)
                 self._state = None
+                self._action_sequence += 1
             result = self._send_once()
         if close_controller:
             self._controller.close()
@@ -140,22 +154,24 @@ class RealActionPump:
                 self._next_send_s = time.perf_counter() + self.period_s
 
     def _send_once(self) -> ControlResult:
-        with self._state_lock:
-            action = self._action.copy()
-            state = dict(self._state) if self._state is not None else None
-        try:
-            with self._send_lock:
+        with self._send_lock:
+            with self._state_lock:
+                action = self._action.copy()
+                state = dict(self._state) if self._state is not None else None
+                action_sequence = int(self._action_sequence)
+            try:
                 result = self._controller.send(action, state=state)
-        except Exception as exc:
-            self._log_send_error(exc, prefix="action send failed")
-            result = _local_result(
-                action=action,
-                ack=False,
-                fault_code=str(exc),
-            )
-        with self._state_lock:
-            self._latest_result = result
-            self._latest_error = "" if result.ack else str(result.fault_code)
+            except Exception as exc:
+                self._log_send_error(exc, prefix="action send failed")
+                result = _local_result(
+                    action=action,
+                    ack=False,
+                    fault_code=str(exc),
+                )
+            with self._state_lock:
+                self._latest_result = result
+                self._latest_error = "" if result.ack else str(result.fault_code)
+                self._latest_sent_sequence = action_sequence
         return result
 
     def _log_send_error(self, exc: Exception, *, prefix: str) -> None:

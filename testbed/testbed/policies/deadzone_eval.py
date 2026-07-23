@@ -1,22 +1,22 @@
-"""Deadzone-based local action effectiveness metrics for offline policy replay."""
+"""Deadzone-based single-demo relation metrics for offline policy replay."""
 
 from __future__ import annotations
 
 import csv
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import numpy as np
 
 from testbed.policies.offline_eval import AXIS_NAMES, load_train_ready_episode_ids
 
-
 DEFAULT_WINDOWS = (
     "start40",
     "end80",
-    "longest_expert_effective_segment_gap5",
+    "longest_single_demo_effective_segment_gap5",
     "full_available",
 )
 
@@ -45,7 +45,9 @@ def load_deadzone_thresholds(path: str | Path) -> dict[str, dict[str, float]]:
     for axis in AXIS_NAMES:
         axis_raw = raw.get(axis)
         if not isinstance(axis_raw, dict):
-            raise ValueError(f"deadzone table is missing axis {axis!r}: {deadzone_path}")
+            raise ValueError(
+                f"deadzone table is missing axis {axis!r}: {deadzone_path}"
+            )
         thresholds[axis] = {
             "pos": _threshold_value(axis_raw.get("pos"), axis=axis, direction="pos"),
             "neg": _threshold_value(axis_raw.get("neg"), axis=axis, direction="neg"),
@@ -72,7 +74,12 @@ def find_episode_action_files(
             summary_path = root / "summary.json"
             if summary_path.exists():
                 summary = json.loads(summary_path.read_text(encoding="utf-8"))
-                episode_ids = [str(summary.get("selected_episode_id") or Path(str(summary["episode_path"])).stem)]
+                episode_ids = [
+                    str(
+                        summary.get("selected_episode_id")
+                        or Path(str(summary["episode_path"])).stem
+                    )
+                ]
             else:
                 episode_ids = [root.name]
 
@@ -82,7 +89,9 @@ def find_episode_action_files(
         if not action_path.exists() and len(episode_ids) == 1:
             action_path = root / "actions.npz"
         if not action_path.exists():
-            raise FileNotFoundError(f"missing offline replay actions for {episode_id}: {action_path}")
+            raise FileNotFoundError(
+                f"missing offline replay actions for {episode_id}: {action_path}"
+            )
         files.append((episode_id, action_path))
     if not files:
         raise ValueError(f"no actions.npz files found under {root}")
@@ -102,7 +111,9 @@ def compute_deadzone_window_rows(
     expert = _validate_action_array(expert_action, name="expert_action")
     policy = _validate_action_array(policy_action, name="policy_action")
     if expert.shape != policy.shape:
-        raise ValueError(f"expert and policy actions must share shape, got {expert.shape} vs {policy.shape}")
+        raise ValueError(
+            f"expert and policy actions must share shape, got {expert.shape} vs {policy.shape}"
+        )
 
     expert_effective = effective_direction_mask(expert, thresholds)
     policy_effective = effective_direction_mask(policy, thresholds)
@@ -149,7 +160,9 @@ def build_window_ranges(
 ) -> list[tuple[str, int, int]]:
     mask = np.asarray(expert_any_effective, dtype=bool)
     if mask.shape != (total_steps,):
-        raise ValueError(f"expert_any_effective must have shape ({total_steps},), got {mask.shape}")
+        raise ValueError(
+            f"expert_any_effective must have shape ({total_steps},), got {mask.shape}"
+        )
     ranges: list[tuple[str, int, int]] = []
     for window in windows:
         if window == "start40":
@@ -158,7 +171,7 @@ def build_window_ranges(
             start, end = max(0, total_steps - 80), total_steps
         elif window == "full_available":
             start, end = 0, total_steps
-        elif window == "longest_expert_effective_segment_gap5":
+        elif window == "longest_single_demo_effective_segment_gap5":
             start, end = longest_true_segment_with_gap(mask, gap=gap)
         else:
             raise ValueError(f"unknown window: {window}")
@@ -206,8 +219,14 @@ def compute_window_row(
 
     expert_any = expert_slice.any(axis=(1, 2)) if steps else np.zeros(0, dtype=bool)
     policy_any = policy_slice.any(axis=(1, 2)) if steps else np.zeros(0, dtype=bool)
-    same_axis_dir = (expert_slice & policy_slice).any(axis=(1, 2)) if steps else np.zeros(0, dtype=bool)
-    extra_or_wrong = (policy_any & ~same_axis_dir) if steps else np.zeros(0, dtype=bool)
+    same_axis_dir = (
+        (expert_slice & policy_slice).any(axis=(1, 2))
+        if steps
+        else np.zeros(0, dtype=bool)
+    )
+    outside_demo_frame = (
+        (policy_any & ~same_axis_dir) if steps else np.zeros(0, dtype=bool)
+    )
     expert_effective_frames = int(expert_any.sum())
 
     row: dict[str, Any] = {
@@ -217,25 +236,37 @@ def compute_window_row(
         "start_step": int(start),
         "end_step_exclusive": int(end),
         "steps": steps,
-        "expert_any_effective_frames": expert_effective_frames,
-        "expert_any_effective_pct": _pct(int(expert_any.sum()), steps),
+        "single_demo_any_effective_frames": expert_effective_frames,
+        "single_demo_any_effective_pct": _pct(int(expert_any.sum()), steps),
         "policy_any_effective_frames": int(policy_any.sum()),
         "policy_any_effective_pct": _pct(int(policy_any.sum()), steps),
-        "same_axis_dir_effective_frames": int(same_axis_dir.sum()),
-        "same_axis_dir_effective_pct_of_expert_effective": (
+        "single_demo_same_axis_direction_effective_frames": int(same_axis_dir.sum()),
+        "single_demo_same_axis_direction_effective_pct_of_demo_effective": (
             _pct(int(same_axis_dir.sum()), expert_effective_frames)
             if expert_effective_frames
             else ""
         ),
-        "policy_extra_or_wrong_effective_frames": int(extra_or_wrong.sum()),
-        "policy_extra_or_wrong_effective_pct": _pct(int(extra_or_wrong.sum()), steps),
+        "policy_outside_single_demo_frame_effective_frames": int(
+            outside_demo_frame.sum()
+        ),
+        "policy_outside_single_demo_frame_effective_pct": _pct(
+            int(outside_demo_frame.sum()), steps
+        ),
     }
 
     for axis_idx, axis in enumerate(AXIS_NAMES):
-        row[f"expert_{axis}_pos_eff_pct"] = _pct(int(expert_slice[:, axis_idx, 0].sum()), steps)
-        row[f"expert_{axis}_neg_eff_pct"] = _pct(int(expert_slice[:, axis_idx, 1].sum()), steps)
-        row[f"policy_{axis}_pos_eff_pct"] = _pct(int(policy_slice[:, axis_idx, 0].sum()), steps)
-        row[f"policy_{axis}_neg_eff_pct"] = _pct(int(policy_slice[:, axis_idx, 1].sum()), steps)
+        row[f"single_demo_{axis}_pos_eff_pct"] = _pct(
+            int(expert_slice[:, axis_idx, 0].sum()), steps
+        )
+        row[f"single_demo_{axis}_neg_eff_pct"] = _pct(
+            int(expert_slice[:, axis_idx, 1].sum()), steps
+        )
+        row[f"policy_{axis}_pos_eff_pct"] = _pct(
+            int(policy_slice[:, axis_idx, 0].sum()), steps
+        )
+        row[f"policy_{axis}_neg_eff_pct"] = _pct(
+            int(policy_slice[:, axis_idx, 1].sum()), steps
+        )
     return row
 
 
@@ -250,22 +281,43 @@ def aggregate_window_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "model": model,
             "window": window,
             "episodes": len({str(row["episode_id"]) for row in group}),
-            "mean_expert_any_effective_pct": _mean(row["expert_any_effective_pct"] for row in group),
-            "mean_policy_any_effective_pct": _mean(row["policy_any_effective_pct"] for row in group),
-            "median_policy_any_effective_pct": _median(row["policy_any_effective_pct"] for row in group),
-            "episodes_policy_any_effective_gt0": sum(float(row["policy_any_effective_pct"]) > 0.0 for row in group),
-            "episodes_policy_any_effective_ge50": sum(float(row["policy_any_effective_pct"]) >= 50.0 for row in group),
-            "mean_same_axis_dir_effective_pct_of_expert_effective": _mean(
-                _numeric_or_zero(row["same_axis_dir_effective_pct_of_expert_effective"]) for row in group
+            "mean_single_demo_any_effective_pct": _mean(
+                row["single_demo_any_effective_pct"] for row in group
             ),
-            "median_same_axis_dir_effective_pct_of_expert_effective": _median(
-                _numeric_or_zero(row["same_axis_dir_effective_pct_of_expert_effective"]) for row in group
+            "mean_policy_any_effective_pct": _mean(
+                row["policy_any_effective_pct"] for row in group
             ),
-            "mean_policy_extra_or_wrong_effective_pct": _mean(
-                row["policy_extra_or_wrong_effective_pct"] for row in group
+            "median_policy_any_effective_pct": _median(
+                row["policy_any_effective_pct"] for row in group
             ),
-            "episodes_extra_or_wrong_ge20pct": sum(
-                float(row["policy_extra_or_wrong_effective_pct"]) >= 20.0 for row in group
+            "episodes_policy_any_effective_gt0": sum(
+                float(row["policy_any_effective_pct"]) > 0.0 for row in group
+            ),
+            "episodes_policy_any_effective_ge50": sum(
+                float(row["policy_any_effective_pct"]) >= 50.0 for row in group
+            ),
+            "mean_single_demo_same_axis_direction_effective_pct_of_demo_effective": _mean(
+                _numeric_or_zero(
+                    row[
+                        "single_demo_same_axis_direction_effective_pct_of_demo_effective"
+                    ]
+                )
+                for row in group
+            ),
+            "median_single_demo_same_axis_direction_effective_pct_of_demo_effective": _median(
+                _numeric_or_zero(
+                    row[
+                        "single_demo_same_axis_direction_effective_pct_of_demo_effective"
+                    ]
+                )
+                for row in group
+            ),
+            "mean_policy_outside_single_demo_frame_effective_pct": _mean(
+                row["policy_outside_single_demo_frame_effective_pct"] for row in group
+            ),
+            "episodes_outside_single_demo_frame_ge20pct": sum(
+                float(row["policy_outside_single_demo_frame_effective_pct"]) >= 20.0
+                for row in group
             ),
         }
         for axis in AXIS_NAMES:
@@ -282,18 +334,24 @@ def aggregate_window_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def build_model_comparison_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     grouped: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
     for row in rows:
-        grouped.setdefault((str(row["episode_id"]), str(row["window"])), {})[str(row["model"])] = row
+        grouped.setdefault((str(row["episode_id"]), str(row["window"])), {})[
+            str(row["model"])
+        ] = row
 
     comparison_rows: list[dict[str, Any]] = []
     for (episode_id, window), by_model in sorted(grouped.items()):
         output: dict[str, Any] = {"episode_id": episode_id, "window": window}
         for model in sorted(by_model):
             row = by_model[model]
-            output[f"{model}_policy_any_effective_pct"] = row["policy_any_effective_pct"]
-            output[f"{model}_same_axis_dir_effective_pct_of_expert_effective"] = (
-                row["same_axis_dir_effective_pct_of_expert_effective"]
-            )
-            output[f"{model}_extra_or_wrong_pct"] = row["policy_extra_or_wrong_effective_pct"]
+            output[f"{model}_policy_any_effective_pct"] = row[
+                "policy_any_effective_pct"
+            ]
+            output[f"{model}_single_demo_same_axis_direction_effective_pct"] = row[
+                "single_demo_same_axis_direction_effective_pct_of_demo_effective"
+            ]
+            output[f"{model}_outside_single_demo_frame_effective_pct"] = row[
+                "policy_outside_single_demo_frame_effective_pct"
+            ]
         comparison_rows.append(output)
     return comparison_rows
 
@@ -317,7 +375,9 @@ def load_rows_for_eval(
     windows: Iterable[str] = DEFAULT_WINDOWS,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for episode_id, action_path in find_episode_action_files(eval_dir, manifest=manifest):
+    for episode_id, action_path in find_episode_action_files(
+        eval_dir, manifest=manifest
+    ):
         with np.load(action_path) as data:
             expert = np.asarray(data["expert_action"], dtype=np.float32)
             policy = np.asarray(data["policy_action"], dtype=np.float32)
@@ -355,7 +415,9 @@ def compute_intent_census_row(
         "should_stop_pct": _pct(steps - should_move_frames, steps),
         "effective_axis_dir_events": int(effective.sum()),
         "multi_dir_move_frames": int((per_step_events > 1).sum()),
-        "multi_dir_move_pct_of_move": _pct(int((per_step_events > 1).sum()), should_move_frames),
+        "multi_dir_move_pct_of_move": _pct(
+            int((per_step_events > 1).sum()), should_move_frames
+        ),
         "mean_effective_dirs_per_move_frame": (
             float(per_step_events[should_move].mean()) if should_move_frames else 0.0
         ),
@@ -384,7 +446,9 @@ def aggregate_intent_census_rows(rows: list[dict[str, Any]]) -> list[dict[str, A
         "multi_dir_move_frames": multi_dir_move_frames,
         "multi_dir_move_pct_of_move": _pct(multi_dir_move_frames, should_move_frames),
         "mean_effective_dirs_per_move_frame": (
-            float(effective_events) / float(should_move_frames) if should_move_frames else 0.0
+            float(effective_events) / float(should_move_frames)
+            if should_move_frames
+            else 0.0
         ),
     }
     for axis in AXIS_NAMES:
@@ -403,14 +467,18 @@ def _threshold_value(value: Any, *, axis: str, direction: str) -> float:
         raise ValueError(f"missing threshold for {axis}.{direction}")
     threshold = float(value)
     if threshold < 0.0:
-        raise ValueError(f"threshold must be non-negative for {axis}.{direction}: {threshold}")
+        raise ValueError(
+            f"threshold must be non-negative for {axis}.{direction}: {threshold}"
+        )
     return threshold
 
 
 def _validate_action_array(action: np.ndarray, *, name: str) -> np.ndarray:
     array = np.asarray(action, dtype=np.float32)
     if array.ndim != 2 or array.shape[1] != len(AXIS_NAMES):
-        raise ValueError(f"{name} must have shape (T, {len(AXIS_NAMES)}), got {array.shape}")
+        raise ValueError(
+            f"{name} must have shape (T, {len(AXIS_NAMES)}), got {array.shape}"
+        )
     return array
 
 

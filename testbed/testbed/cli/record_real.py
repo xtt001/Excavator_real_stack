@@ -18,7 +18,7 @@ import signal
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -77,6 +77,8 @@ _IMU_SCALAR_FIELDS = (
     "host_rx_age_ms",
 )
 
+_STORAGE_STATUS_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+
 
 def _go_home_start_context(receiver_mode: str, has_record_session: bool) -> str | None:
     """Return the active context if go-home may start from this receiver state."""
@@ -99,6 +101,11 @@ def _publish_remote_receiver_status(
     record_steps: int | None = None,
     saved_path: Any | None = None,
     action_info: Any | None = None,
+    control_result: dict[str, Any] | None = None,
+    online_qc: Any | None = None,
+    storage_path: Any | None = None,
+    save_status: Mapping[str, Any] | None = None,
+    home_status: Mapping[str, Any] | None = None,
     message: str = "",
 ) -> None:
     publish = getattr(action_source, "publish_status", None)
@@ -140,10 +147,249 @@ def _publish_remote_receiver_status(
         "receiver_health_error": health_error,
         "message": str(message),
     }
+    payload["health"] = _receiver_health_status_payload(receiver_health)
+    payload["online_qc"] = _online_qc_status_payload(online_qc)
+    payload["storage"] = _storage_status_payload(storage_path)
+    payload["save"] = _save_status_payload(save_status, saved_path=saved_path)
+    payload["home"] = _status_jsonable(dict(home_status or {}))
     payload.update(_policy_remote_status_payload(action_source, action_info))
+    if control_result is not None:
+        commanded = control_result.get("commanded_action")
+        if commanded is not None:
+            payload["commanded_action"] = np.asarray(
+                commanded, dtype=np.float32
+            ).reshape(4).tolist()
     if saved_path is not None:
         payload["saved_path"] = str(saved_path)
     publish(payload)
+
+
+def _receiver_health_status_payload(receiver_health: Any | None) -> dict[str, Any]:
+    if receiver_health is None:
+        return {
+            "available": 0,
+            "ok": 0,
+            "error_code": "waiting_for_health",
+            "errors": [],
+            "imu": {"summary": "----"},
+        }
+    diagnostics = dict(getattr(receiver_health, "diagnostics", {}) or {})
+    imu_fields = {}
+    for key in (
+        "imu_online",
+        "imu_valid_attitude",
+        "imu_valid_quaternion",
+        "imu_valid_gyro",
+        "imu_valid_accel",
+        "imu_packet_loss_count",
+        "imu_host_rx_age_ms",
+    ):
+        if key in diagnostics:
+            imu_fields[key.removeprefix("imu_")] = _status_jsonable(diagnostics[key])
+    return {
+        "available": 1,
+        "ok": int(bool(getattr(receiver_health, "ok", False))),
+        "error_code": str(getattr(receiver_health, "error_code", "") or ""),
+        "errors": [str(item) for item in getattr(receiver_health, "errors", ()) or ()],
+        "imu": {
+            "summary": str(getattr(receiver_health, "imu_summary", "") or "----"),
+            **imu_fields,
+        },
+        "bridge_snapshot_age_ms": _float_or_default(
+            diagnostics.get("bridge_snapshot_age_ms"), -1.0
+        ),
+        "camera_primary": str(diagnostics.get("camera_primary", "") or ""),
+        "camera_age_ms": _float_or_default(
+            diagnostics.get("camera_age_ms"), -1.0
+        ),
+        "remote_action_connected": int(
+            diagnostics.get("remote_action_connected", 0) or 0
+        ),
+        "controller_ack": int(diagnostics.get("controller_ack", 0) or 0),
+    }
+
+
+def _online_qc_status_payload(online_qc: Any | None) -> dict[str, Any]:
+    if online_qc is None:
+        return {
+            "available": 0,
+            "status": "DISABLED",
+            "error_code": "",
+            "warning_codes": [],
+            "train_exclude": 0,
+        }
+    diagnostics = dict(getattr(online_qc, "diagnostics", {}) or {})
+    selected = {}
+    for key in (
+        "online_qc_total_steps",
+        "online_qc_train_exclude_steps",
+        "online_qc_healthy_steps",
+        "online_qc_healthy_fraction",
+        "online_qc_qpos_warn_count",
+        "online_qc_qpos_fail_count",
+        "online_qc_imu_qpos_delta_count",
+        "online_qc_fpv_brightness",
+        "online_qc_fpv_contrast",
+        "online_qc_fpv_drift_score",
+        "online_qc_fpv_drift_count",
+        "online_qc_bucket_reference_status",
+        "online_qc_bucket_semantic_decision",
+        "online_qc_train_ready_candidate",
+    ):
+        if key in diagnostics:
+            selected[key.removeprefix("online_qc_")] = _status_jsonable(
+                diagnostics[key]
+            )
+    return {
+        "available": 1,
+        "status": str(getattr(online_qc, "status", "") or "UNKNOWN"),
+        "error_code": str(getattr(online_qc, "error_code", "") or ""),
+        "warning_codes": [
+            str(item) for item in getattr(online_qc, "warning_codes", ()) or ()
+        ],
+        "train_exclude": int(bool(getattr(online_qc, "train_exclude", False))),
+        **selected,
+    }
+
+
+def _storage_status_payload(path_value: Any | None) -> dict[str, Any]:
+    if path_value is None:
+        return {"available": 0, "mounted": 0, "path": ""}
+    requested = Path(str(path_value)).expanduser()
+    cache_key = str(requested)
+    now_s = time.monotonic()
+    cached = _STORAGE_STATUS_CACHE.get(cache_key)
+    if cached is not None and now_s - cached[0] < 1.0:
+        return dict(cached[1])
+    existing = requested
+    while not existing.exists() and existing != existing.parent:
+        existing = existing.parent
+    try:
+        usage = shutil.disk_usage(existing)
+        mount_point = existing.resolve()
+        while mount_point != mount_point.parent and not os.path.ismount(mount_point):
+            mount_point = mount_point.parent
+        payload = {
+            "available": 1,
+            # A dataset under /media is only considered mounted when its
+            # nearest mount is not the root filesystem. This prevents an
+            # unplugged EXTERNAL_USB path from being reported as healthy.
+            "mounted": int(
+                os.path.ismount(mount_point)
+                and str(mount_point) != str(Path(requested.anchor or "/"))
+            ),
+            "path": str(requested),
+            "mount_point": str(mount_point),
+            "total_bytes": int(usage.total),
+            "used_bytes": int(usage.used),
+            "free_bytes": int(usage.free),
+            "free_fraction": float(usage.free / usage.total) if usage.total else 0.0,
+        }
+        recorded_indices: list[int] = []
+        if requested.is_dir():
+            for episode_path in requested.glob("episode_*.hdf5"):
+                try:
+                    recorded_indices.append(
+                        int(episode_path.stem.removeprefix("episode_"))
+                    )
+                except ValueError:
+                    continue
+        payload["recorded_count"] = int(len(recorded_indices))
+        payload["last_recorded_episode_idx"] = int(
+            max(recorded_indices) if recorded_indices else -1
+        )
+        failed_dir = requested / "failed"
+        payload["failed_count"] = int(
+            sum(1 for item in failed_dir.glob("*.hdf5") if item.is_file())
+            if failed_dir.is_dir()
+            else 0
+        )
+    except OSError as exc:
+        payload = {
+            "available": 0,
+            "mounted": 0,
+            "path": str(requested),
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+    _STORAGE_STATUS_CACHE[cache_key] = (now_s, dict(payload))
+    return payload
+
+
+def _save_status_payload(
+    save_status: Mapping[str, Any] | None,
+    *,
+    saved_path: Any | None,
+) -> dict[str, Any]:
+    payload = dict(save_status or {})
+    payload.setdefault("state", "idle")
+    if saved_path is not None:
+        payload["path"] = str(saved_path)
+    path_text = str(payload.get("path", "") or "")
+    if path_text:
+        try:
+            payload["file_size_bytes"] = int(Path(path_text).stat().st_size)
+        except OSError:
+            pass
+    return _status_jsonable(payload)
+
+
+def _go_home_config_status_payload(
+    go_home_config: Any | None,
+    *,
+    source_path: Any,
+    phase_home_pose: Any | None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "available": 1,
+        "enabled": int(go_home_config is not None),
+        "source_config": str(source_path),
+    }
+    phase_pose = None
+    if phase_home_pose is not None:
+        try:
+            phase_pose = np.asarray(phase_home_pose, dtype=np.float64).reshape(4)
+            payload["phase_home_pose_rad"] = phase_pose.tolist()
+        except (TypeError, ValueError):
+            payload["phase_home_pose_valid"] = 0
+    if go_home_config is None:
+        payload["runtime_phase_consistent"] = -1
+        return payload
+    home_pose = np.asarray(go_home_config.home_pose_rad, dtype=np.float64).reshape(4)
+    payload.update(
+        {
+            "home_pose_rad": home_pose.tolist(),
+            "near_tolerance_rad": np.asarray(
+                go_home_config.near_tolerance_rad, dtype=np.float64
+            ).reshape(4).tolist(),
+            "success_tolerance_rad": np.asarray(
+                go_home_config.success_tolerance_rad, dtype=np.float64
+            ).reshape(4).tolist(),
+            "center_tolerance_rad": np.asarray(
+                go_home_config.center_tolerance_rad, dtype=np.float64
+            ).reshape(4).tolist(),
+            "timeout_s": float(go_home_config.timeout_s),
+            "dwell_s": float(go_home_config.dwell_s),
+            "runtime_phase_consistent": int(
+                phase_pose is not None
+                and np.allclose(home_pose, phase_pose, rtol=0.0, atol=1.0e-6)
+            ),
+        }
+    )
+    return payload
+
+
+def _status_jsonable(value: Any) -> Any:
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, Mapping):
+        return {str(key): _status_jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_status_jsonable(item) for item in value]
+    if isinstance(value, Path):
+        return str(value)
+    return value
 
 
 def _policy_remote_status_payload(
@@ -162,6 +408,16 @@ def _policy_remote_status_payload(
     ):
         if key in extras:
             payload[key] = extras[key]
+    for key, width in (
+        ("policy_action", 4),
+        ("policy_assisted_action", 4),
+        ("policy_returned_action", 4),
+        ("policy_intent_probabilities", 8),
+    ):
+        if key in extras:
+            payload[key] = np.asarray(
+                extras[key], dtype=np.float32
+            ).reshape(width).tolist()
     status = getattr(action_source, "policy_status", None)
     if callable(status):
         try:
@@ -601,6 +857,13 @@ def main(prog: str = "tb-record-real") -> None:
         sensor_timeout_s=safety_cfg.get("sensor_timeout_s", 0.20),
     )
     go_home_config = GoHomeConfig.from_mapping(recording_cfg.get("go_home", {}))
+    home_status = _go_home_config_status_payload(
+        go_home_config,
+        source_path=args.config.resolve(),
+        phase_home_pose=dict(cfg.get("phase_labeling", {}) or {}).get(
+            "home_pose_rad"
+        ),
+    )
     base_meta = _build_episode_metadata(
         task_cfg=task_cfg,
         teleop_cfg=teleop_cfg,
@@ -664,6 +927,16 @@ def main(prog: str = "tb-record-real") -> None:
     else:
         episode_idx = 0
     saved = 0
+    save_status: dict[str, Any] = {
+        "state": "idle",
+        "episode_idx": -1,
+        "steps": 0,
+        "started_ns": 0,
+        "finished_ns": 0,
+        "path": "",
+        "success": -1,
+        "error_code": "",
+    }
     control_output_stopped = False
 
     def _runtime_stop_reason() -> str:
@@ -1068,16 +1341,53 @@ def main(prog: str = "tb-record-real") -> None:
                             remote_control_loop.set_fault_hold(True)
                         if receiver_mode in {"recording", "go_home"} and record_session is not None:
                             _force_zero_control(obs)
+                            failed_steps = len(record_session)
                             stop_reason = (
                                 "go_home_sensor_error"
                                 if receiver_mode == "go_home"
                                 else "sensor_error"
+                            )
+                            save_started_ns = time.time_ns()
+                            save_status = {
+                                "state": "writing",
+                                "episode_idx": int(episode_idx),
+                                "steps": int(failed_steps),
+                                "started_ns": int(save_started_ns),
+                                "finished_ns": 0,
+                                "path": "",
+                                "success": -1,
+                                "error_code": str(receiver_health.error_code),
+                            }
+                            _publish_remote_receiver_status(
+                                action_source,
+                                receiver_mode="saving",
+                                episode_idx=episode_idx,
+                                saved=saved,
+                                record_session=record_session,
+                                receiver_health=receiver_health,
+                                record_steps=failed_steps,
+                                action_info=action_info,
+                                online_qc=online_qc_snapshot,
+                                storage_path=dataset_dir,
+                                save_status=save_status,
+                                home_status=home_status,
+                                message="saving_failed_health_record",
                             )
                             failed_path = record_session.save_failed(
                                 error_code=receiver_health.error_code,
                                 error_time_ns=error_time_ns,
                                 stop_reason=stop_reason,
                             )
+                            save_status = {
+                                "state": "failed",
+                                "episode_idx": int(episode_idx),
+                                "steps": int(failed_steps),
+                                "started_ns": int(save_started_ns),
+                                "finished_ns": int(time.time_ns()),
+                                "path": str(failed_path or ""),
+                                "success": 0,
+                                "error_code": str(receiver_health.error_code),
+                            }
                             if failed_path is not None:
                                 log.error(
                                     "Record episode %d stopped by receiver health %s; saved failed record to %s",
@@ -1124,6 +1434,35 @@ def main(prog: str = "tb-record-real") -> None:
                     ):
                         error_time_ns = time.time_ns()
                         _force_zero_control(obs)
+                        failed_steps = len(record_session)
+                        save_started_ns = time.time_ns()
+                        save_status = {
+                            "state": "writing",
+                            "episode_idx": int(episode_idx),
+                            "steps": int(failed_steps),
+                            "started_ns": int(save_started_ns),
+                            "finished_ns": 0,
+                            "path": "",
+                            "success": -1,
+                            "error_code": str(
+                                online_qc_snapshot.error_code or "online_qc_failed"
+                            ),
+                        }
+                        _publish_remote_receiver_status(
+                            action_source,
+                            receiver_mode="saving",
+                            episode_idx=episode_idx,
+                            saved=saved,
+                            record_session=record_session,
+                            receiver_health=receiver_health,
+                            record_steps=failed_steps,
+                            action_info=action_info,
+                            online_qc=online_qc_snapshot,
+                            storage_path=dataset_dir,
+                            save_status=save_status,
+                            home_status=home_status,
+                            message="saving_failed_online_qc_record",
+                        )
                         failed_path = record_session.save_failed(
                             error_code=str(
                                 online_qc_snapshot.error_code or "online_qc_failed"
@@ -1131,6 +1470,18 @@ def main(prog: str = "tb-record-real") -> None:
                             error_time_ns=error_time_ns,
                             stop_reason="online_qc_failed",
                         )
+                        save_status = {
+                            "state": "failed",
+                            "episode_idx": int(episode_idx),
+                            "steps": int(failed_steps),
+                            "started_ns": int(save_started_ns),
+                            "finished_ns": int(time.time_ns()),
+                            "path": str(failed_path or ""),
+                            "success": 0,
+                            "error_code": str(
+                                online_qc_snapshot.error_code or "online_qc_failed"
+                            ),
+                        }
                         if failed_path is not None:
                             log.error(
                                 "Record episode %d stopped by online QC %s; saved failed record to %s",
@@ -1242,6 +1593,11 @@ def main(prog: str = "tb-record-real") -> None:
                         go_home_update=go_home_update,
                         receiver_health=receiver_health,
                         action_info=action_info,
+                        control_result=control_result,
+                        online_qc=online_qc_snapshot,
+                        storage_path=dataset_dir,
+                        save_status=save_status,
+                        home_status=home_status,
                     )
                     if test_logger is not None:
                         test_logger.record_step(
@@ -1289,6 +1645,7 @@ def main(prog: str = "tb-record-real") -> None:
                                 go_home_update=go_home_update,
                                 receiver_health=receiver_health,
                                 action_info=action_info,
+                                home_status=home_status,
                                 message="go_home_failed_armed",
                             )
                         elif go_home_update.done:
@@ -1311,6 +1668,7 @@ def main(prog: str = "tb-record-real") -> None:
                                 go_home_update=go_home_update,
                                 receiver_health=receiver_health,
                                 action_info=action_info,
+                                home_status=home_status,
                                 message="go_home_done_armed",
                             )
                     if receiver_mode in {"recording", "go_home"} and record_session is not None:
@@ -1361,6 +1719,35 @@ def main(prog: str = "tb-record-real") -> None:
                             _hold_remote_control_zero(remote_control_loop)
                             _force_zero_control(obs)
                             failed_steps = len(record_session)
+                            save_started_ns = time.time_ns()
+                            save_status = {
+                                "state": "writing",
+                                "episode_idx": int(episode_idx),
+                                "steps": int(failed_steps),
+                                "started_ns": int(save_started_ns),
+                                "finished_ns": 0,
+                                "path": "",
+                                "success": -1,
+                                "error_code": str(
+                                    go_home_update.reason or "go_home_failed"
+                                ),
+                            }
+                            _publish_remote_receiver_status(
+                                action_source,
+                                receiver_mode="saving",
+                                episode_idx=episode_idx,
+                                saved=saved,
+                                record_session=record_session,
+                                go_home_update=go_home_update,
+                                receiver_health=receiver_health,
+                                record_steps=failed_steps,
+                                action_info=action_info,
+                                online_qc=online_qc_snapshot,
+                                storage_path=dataset_dir,
+                                save_status=save_status,
+                                home_status=home_status,
+                                message="saving_failed_go_home_record",
+                            )
                             failed_path = record_session.save_failed(
                                 error_code=go_home_update.reason or "go_home_failed",
                                 error_time_ns=time.time_ns(),
@@ -1371,6 +1758,18 @@ def main(prog: str = "tb-record-real") -> None:
                                     else None
                                 ),
                             )
+                            save_status = {
+                                "state": "failed",
+                                "episode_idx": int(episode_idx),
+                                "steps": int(failed_steps),
+                                "started_ns": int(save_started_ns),
+                                "finished_ns": int(time.time_ns()),
+                                "path": str(failed_path or ""),
+                                "success": 0,
+                                "error_code": str(
+                                    go_home_update.reason or "go_home_failed"
+                                ),
+                            }
                             if failed_path is not None:
                                 log.error(
                                     "go-home failed for episode %d: %s; saved failed record to %s",
@@ -1402,6 +1801,10 @@ def main(prog: str = "tb-record-real") -> None:
                                 record_steps=failed_steps,
                                 saved_path=failed_path,
                                 action_info=action_info,
+                                online_qc=online_qc_snapshot,
+                                storage_path=dataset_dir,
+                                save_status=save_status,
+                                home_status=home_status,
                                 message="go_home_failed_record_saved",
                             )
                             ts = ts_next
@@ -1412,6 +1815,33 @@ def main(prog: str = "tb-record-real") -> None:
                             _force_zero_control(obs)
                             receiver_mode = "saving"
                             saved_steps = len(record_session)
+                            save_started_ns = time.time_ns()
+                            save_status = {
+                                "state": "writing",
+                                "episode_idx": int(episode_idx),
+                                "steps": int(saved_steps),
+                                "started_ns": int(save_started_ns),
+                                "finished_ns": 0,
+                                "path": "",
+                                "success": -1,
+                                "error_code": "",
+                            }
+                            _publish_remote_receiver_status(
+                                action_source,
+                                receiver_mode=receiver_mode,
+                                episode_idx=episode_idx,
+                                saved=saved,
+                                record_session=record_session,
+                                go_home_update=go_home_update,
+                                receiver_health=receiver_health,
+                                record_steps=saved_steps,
+                                action_info=action_info,
+                                online_qc=online_qc_snapshot,
+                                storage_path=dataset_dir,
+                                save_status=save_status,
+                                home_status=home_status,
+                                message="saving_hdf5",
+                            )
                             saved_path, saved_success, final_qc_snapshot = (
                                 _save_record_session_with_online_qc_final(
                                     record_session,
@@ -1423,6 +1853,28 @@ def main(prog: str = "tb-record-real") -> None:
                                     ),
                                 )
                             )
+                            save_status = {
+                                "state": "success" if saved_success else "failed",
+                                "episode_idx": int(episode_idx),
+                                "steps": int(saved_steps),
+                                "started_ns": int(save_started_ns),
+                                "finished_ns": int(time.time_ns()),
+                                "path": str(saved_path or ""),
+                                "success": int(bool(saved_success)),
+                                "error_code": str(
+                                    getattr(final_qc_snapshot, "error_code", "") or ""
+                                ),
+                                "qc_status": str(
+                                    getattr(final_qc_snapshot, "status", "") or ""
+                                ),
+                                "qc_warning_codes": [
+                                    str(item)
+                                    for item in getattr(
+                                        final_qc_snapshot, "warning_codes", ()
+                                    )
+                                    or ()
+                                ],
+                            }
                             if saved_success:
                                 log.info(
                                     "Saved go-home completed record: %d steps -> %s",
@@ -1479,6 +1931,10 @@ def main(prog: str = "tb-record-real") -> None:
                                 record_steps=saved_steps,
                                 saved_path=saved_path,
                                 action_info=action_info,
+                                online_qc=final_qc_snapshot,
+                                storage_path=dataset_dir,
+                                save_status=save_status,
+                                home_status=home_status,
                                 message=(
                                     "go_home_done_record_saved"
                                     if saved_success
@@ -1493,12 +1949,60 @@ def main(prog: str = "tb-record-real") -> None:
                         if len(record_session) >= max_steps:
                             receiver_mode = "saving"
                             saved_steps = len(record_session)
+                            save_started_ns = time.time_ns()
+                            save_status = {
+                                "state": "writing",
+                                "episode_idx": int(episode_idx),
+                                "steps": int(saved_steps),
+                                "started_ns": int(save_started_ns),
+                                "finished_ns": 0,
+                                "path": "",
+                                "success": -1,
+                                "error_code": "",
+                            }
+                            _publish_remote_receiver_status(
+                                action_source,
+                                receiver_mode=receiver_mode,
+                                episode_idx=episode_idx,
+                                saved=saved,
+                                record_session=record_session,
+                                receiver_health=receiver_health,
+                                record_steps=saved_steps,
+                                action_info=action_info,
+                                online_qc=online_qc_snapshot,
+                                storage_path=dataset_dir,
+                                save_status=save_status,
+                                home_status=home_status,
+                                message="saving_hdf5",
+                            )
                             saved_path, saved_success, final_qc_snapshot = (
                                 _save_record_session_with_online_qc_final(
                                     record_session,
                                     online_qc_evaluator=online_qc_evaluator,
                                 )
                             )
+                            save_status = {
+                                "state": "success" if saved_success else "failed",
+                                "episode_idx": int(episode_idx),
+                                "steps": int(saved_steps),
+                                "started_ns": int(save_started_ns),
+                                "finished_ns": int(time.time_ns()),
+                                "path": str(saved_path or ""),
+                                "success": int(bool(saved_success)),
+                                "error_code": str(
+                                    getattr(final_qc_snapshot, "error_code", "") or ""
+                                ),
+                                "qc_status": str(
+                                    getattr(final_qc_snapshot, "status", "") or ""
+                                ),
+                                "qc_warning_codes": [
+                                    str(item)
+                                    for item in getattr(
+                                        final_qc_snapshot, "warning_codes", ()
+                                    )
+                                    or ()
+                                ],
+                            }
                             if saved_success:
                                 log.info(
                                     "Saved real v1 record: %d steps -> %s",
@@ -1526,6 +2030,28 @@ def main(prog: str = "tb-record-real") -> None:
                                 )
                             record_session = None
                             episode_idx += 1
+                            _publish_remote_receiver_status(
+                                action_source,
+                                receiver_mode=(
+                                    "complete" if saved >= num_episodes else "armed"
+                                ),
+                                episode_idx=episode_idx,
+                                saved=saved,
+                                record_session=record_session,
+                                receiver_health=receiver_health,
+                                record_steps=saved_steps,
+                                saved_path=saved_path,
+                                action_info=action_info,
+                                online_qc=final_qc_snapshot,
+                                storage_path=dataset_dir,
+                                save_status=save_status,
+                                home_status=home_status,
+                                message=(
+                                    "record_saved"
+                                    if saved_success
+                                    else "record_failed_online_qc"
+                                ),
+                            )
                             break
                     if not recording_enabled and max_steps > 0 and local_step + 1 >= max_steps:
                         log.info("No-record receiver test reached max_steps=%d.", max_steps)
@@ -1700,6 +2226,7 @@ class ReceiverHealthEvaluator:
         camera_max_stale_ms: float | None = None,
         imu_require_online: bool = True,
         imu_require_valid_attitude: bool = True,
+        imu_max_stale_ms: float = 100.0,
     ) -> None:
         self.mode = str(mode or "strict")
         self.require_machine_health = bool(require_machine_health)
@@ -1712,6 +2239,7 @@ class ReceiverHealthEvaluator:
         )
         self.imu_require_online = bool(imu_require_online)
         self.imu_require_valid_attitude = bool(imu_require_valid_attitude)
+        self.imu_max_stale_ms = float(imu_max_stale_ms)
 
     @classmethod
     def from_config(
@@ -1742,6 +2270,7 @@ class ReceiverHealthEvaluator:
             imu_require_valid_attitude=bool(
                 cfg.get("imu_require_valid_attitude", True)
             ),
+            imu_max_stale_ms=float(cfg.get("imu_max_stale_ms", 100.0)),
         )
 
     def evaluate(
@@ -1763,7 +2292,17 @@ class ReceiverHealthEvaluator:
 
         online = _health_bits(imu_health.get("online"), size=4)
         valid_attitude = _health_bits(imu_health.get("valid_attitude"), size=4)
-        imu_summary = _imu_summary(online)
+        valid_quaternion = _health_bits(imu_health.get("valid_quaternion"), size=4)
+        valid_gyro = _health_bits(imu_health.get("valid_gyro"), size=4)
+        valid_accel = _health_bits(imu_health.get("valid_accel"), size=4)
+        packet_loss_count = _health_float_values(
+            imu_health.get("packet_loss_count"), size=4, default=0.0
+        ).astype(np.int64)
+        imu_host_rx_age_ms = _health_float_values(
+            imu_health.get("host_rx_age_ms"), size=4, default=-1.0
+        )
+        imu_placeholder = bool(sensor_health.get("imu_placeholder", False))
+        imu_summary = "fake" if imu_placeholder else _imu_summary(online)
         bridge_age_ms = _float_or_default(
             sensor_health.get("bridge_snapshot_age_ms"), -1.0
         )
@@ -1785,16 +2324,30 @@ class ReceiverHealthEvaluator:
 
         if self.mode != "disabled":
             if self.require_machine_health:
-                if self.imu_require_online:
-                    missing = _bad_health_indices(online)
-                    if missing:
-                        errors.append(f"imu_missing:{','.join(str(i) for i in missing)}")
-                if self.imu_require_valid_attitude:
-                    invalid = _bad_health_indices(valid_attitude)
-                    if invalid:
+                if not imu_placeholder:
+                    if self.imu_require_online:
+                        missing = _bad_health_indices(online)
+                        if missing:
+                            errors.append(
+                                f"imu_missing:{','.join(str(i) for i in missing)}"
+                            )
+                    if self.imu_require_valid_attitude:
+                        invalid = _bad_health_indices(valid_attitude)
+                        if invalid:
+                            errors.append(
+                                "imu_attitude_invalid:"
+                                + ",".join(str(i) for i in invalid)
+                            )
+                    stale = [
+                        int(i)
+                        for i, age_ms in enumerate(imu_host_rx_age_ms)
+                        if age_ms < 0.0 or age_ms > self.imu_max_stale_ms
+                    ]
+                    # Older/non-hardware state readers may not expose this
+                    # field. Enforce it whenever the bridge provides it.
+                    if imu_health.get("host_rx_age_ms") is not None and stale:
                         errors.append(
-                            "imu_attitude_invalid:"
-                            + ",".join(str(i) for i in invalid)
+                            "imu_stale:" + ",".join(str(i) for i in stale)
                         )
                 if bridge_age_ms < 0.0 or bridge_age_ms > self.bridge_snapshot_timeout_ms:
                     errors.append("bridge_stale")
@@ -1818,6 +2371,11 @@ class ReceiverHealthEvaluator:
             "receiver_health_error_code": error_code,
             "imu_online": online.astype(np.int32, copy=True),
             "imu_valid_attitude": valid_attitude.astype(np.int32, copy=True),
+            "imu_valid_quaternion": valid_quaternion.astype(np.int32, copy=True),
+            "imu_valid_gyro": valid_gyro.astype(np.int32, copy=True),
+            "imu_valid_accel": valid_accel.astype(np.int32, copy=True),
+            "imu_packet_loss_count": packet_loss_count.copy(),
+            "imu_host_rx_age_ms": imu_host_rx_age_ms.astype(np.float32, copy=True),
             "fpv_age_ms": float(fpv_age_ms),
             "camera_primary": self.primary_camera,
             "camera_age_ms": float(camera_age_ms),
@@ -3120,6 +3678,12 @@ class _LiveActionLine:
             if assist_active and assist_axes
             else "idle"
         )
+        policy_text = _format_policy_live_diagnostics(extras)
+        source_action_text = (
+            ""
+            if "policy_action" in extras
+            else f"raw={_format_action_line_values(raw_action)} "
+        )
         err_text = (
             receiver_health.error_code
             if receiver_health is not None and receiver_health.error_code
@@ -3138,7 +3702,8 @@ class _LiveActionLine:
             f"{_format_go_home_live_status(mode, go_home_update)}"
             f"hz={hz_text} ctl_ms={control_age_text} "
             f"assist={assist_text} "
-            f"raw={_format_action_line_values(raw_action)} "
+            f"{policy_text}"
+            f"{source_action_text}"
             f"send={_format_action_line_values(commanded_action)} "
             f"step={int(step)} "
             f"remote_ms={remote_age_text} "
@@ -3168,6 +3733,26 @@ class _LiveActionLine:
 def _format_action_line_values(action: Any) -> str:
     values = np.asarray(action, dtype=np.float32).reshape(-1)
     return "[" + ",".join(f"{float(value):+.3f}" for value in values) + "]"
+
+
+def _format_policy_live_diagnostics(extras: dict[str, Any]) -> str:
+    if "policy_action" not in extras:
+        return ""
+    action = _format_action_line_values(extras["policy_action"])
+    assisted = _format_action_line_values(
+        extras.get("policy_assisted_action", extras["policy_action"])
+    )
+    intent = np.asarray(
+        extras.get("policy_intent_probabilities", []), dtype=np.float32
+    ).reshape(-1)
+    if intent.shape != (8,):
+        return f"act={action} assisted={assisted} intent8=- "
+    intent_text = "[" + ",".join(f"{float(value):.2f}" for value in intent) + "]"
+    return (
+        f"act={action} assisted={assisted} "
+        f"intent8(sw+,sw-,bo+,bo-,st+,st-,bk+,bk-)={intent_text} "
+        f"bucket_intent=+{float(intent[6]):.2f}/-{float(intent[7]):.2f} "
+    )
 
 
 def _format_go_home_live_status(mode: str, go_home_update: Any | None) -> str:
@@ -3294,6 +3879,20 @@ def _health_bits(value: Any, *, size: int) -> np.ndarray:
     if count > 0:
         bits[:count] = (arr[:count] != 0).astype(np.int32)
     return bits
+
+
+def _health_float_values(value: Any, *, size: int, default: float) -> np.ndarray:
+    values = np.full(size, float(default), dtype=np.float64)
+    if value is None:
+        return values
+    try:
+        arr = np.asarray(value, dtype=np.float64).reshape(-1)
+    except (TypeError, ValueError):
+        return values
+    count = min(size, int(arr.size))
+    if count > 0:
+        values[:count] = arr[:count]
+    return values
 
 
 def _bad_health_indices(bits: np.ndarray) -> list[int]:
@@ -3652,6 +4251,10 @@ def _add_policy_action_diagnostics(
     diagnostics["policy_deadzone_assist_enabled"] = int(
         extras.get("policy_deadzone_assist_enabled", 0) or 0
     )
+    diagnostics["policy_deadzone_assist_axis_enabled"] = np.asarray(
+        extras.get("policy_deadzone_assist_axis_enabled", np.ones(4)),
+        dtype=np.int32,
+    )
     diagnostics["policy_deadzone_assist_active"] = int(
         extras.get("policy_deadzone_assist_active", 0) or 0
     )
@@ -3662,8 +4265,21 @@ def _add_policy_action_diagnostics(
     diagnostics["policy_deadzone_assist_axes"] = str(
         extras.get("policy_deadzone_assist_axes", "")
     )
-    diagnostics["policy_deadzone_assist_trigger_fraction"] = float(
-        extras.get("policy_deadzone_assist_trigger_fraction", 0.0) or 0.0
+    assist_trigger_fraction = np.asarray(
+        extras.get("policy_deadzone_assist_trigger_fraction", np.zeros(4)),
+        dtype=np.float32,
+    ).reshape(-1)
+    if assist_trigger_fraction.shape == (1,):
+        assist_trigger_fraction = np.full(
+            4, assist_trigger_fraction[0], dtype=np.float32
+        )
+    if assist_trigger_fraction.shape != (4,):
+        raise ValueError(
+            "policy_deadzone_assist_trigger_fraction must be scalar or shape (4,), "
+            f"got {assist_trigger_fraction.shape}"
+        )
+    diagnostics["policy_deadzone_assist_trigger_fraction"] = (
+        assist_trigger_fraction.copy()
     )
     diagnostics["policy_deadzone_assist_min_consecutive_steps"] = _int_timestamp(
         extras.get("policy_deadzone_assist_min_consecutive_steps")

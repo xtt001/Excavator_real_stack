@@ -3,6 +3,11 @@
 # Policy and gohome decisions are logged, but no policy command is emitted.
 set -euo pipefail
 
+if [[ "${CONFIRM_GO_HOME_DONE:-}" != "YES" ]]; then
+  echo "Refusing E52 shadow: run go-home first, wait for go_home_done, then set CONFIRM_GO_HOME_DONE=YES." >&2
+  exit 2
+fi
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT}"
 
@@ -29,7 +34,7 @@ BRIDGE_HOST="${BRIDGE_HOST:-127.0.0.1}"
 BRIDGE_PORT="${BRIDGE_PORT:-8765}"
 BRIDGE_TIMEOUT="${BRIDGE_TIMEOUT:-2.0}"
 
-echo "TEST ONLY: preflighting E52 bundle and running shadow_zero."
+echo "TEST ONLY: go-home confirmed; preflighting E52 bundle and running shadow_zero."
 "${PYTHON}" scripts/verify_e52_runtime_bundle.py \
   --config "${CONFIG}" \
   --bundle-dir "${BUNDLE_DIR}"

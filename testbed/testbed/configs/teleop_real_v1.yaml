@@ -59,7 +59,8 @@ teleop:
     # Buttons stay on left joystick via button_joystick_ids/status_button_device below.
     joystick_ids: [0, 1, 0, 1]
     axis_map: [1, 1, 0, 0]
-    # Left joystick sign is inverted after 2026-05-28 manual validation.
+    # 2026-07-13 field confirmation: keep the current swing hand direction.
+    # The canonical action[0] sign remains unchanged (left=+, right=-).
     invert: [true, false, true, false]
     # reset 勿用 button10：与 excavator_api status bit10（急停）冲突
     reset_button: null
@@ -75,18 +76,32 @@ teleop:
     status_buttons_enabled: true
     status_button_count: 11
     group_switch_button: 11
-    # 轴 [-1,1]：|v|<=0.1 为 0，(0.1,1] 线性映射到 (0,1]，满杆 -> control_api ±1
-    deadzone: 0.1
-    scale: [1.0, 1.0, 1.0, 0.75]
+    # Only suppress centered joystick noise here. Hydraulic onset is handled by
+    # the response curve below instead of consuming most of the stick travel.
+    deadzone: 0.05
+    # Keep the field-confirmed swing direction unchanged. Limit every axis so
+    # sustained/full-stick motion is slower while retaining enough command
+    # headroom above its measured hydraulic onset.
+    scale: [0.8, 0.8, 0.8, 0.7]
     clip: 1.0
     response_profile:
-      enabled: false
+      enabled: true
       use_measured_dt: false
       deadzone: [0.0, 0.0, 0.0, 0.0]
-      attack_rate: 4.0
+      # Concave curves move the measured hydraulic onset to roughly 30%
+      # physical stick travel. Boom/stick/bucket use a slower attack to soften
+      # the transition through that onset. Release/recenter remain fast so
+      # reducing or releasing the stick stops promptly.
+      attack_rate: [2.0, 1.5, 1.5, 1.5]
       release_rate: 6.0
       recenter_rate: 7.0
       exponent: 1.0
+      # Derived from the 2026-07-13 sustained single-axis trace. These place
+      # each directional hydraulic onset near 30% physical stick travel after
+      # applying the per-axis scale above: swing +/-=0.6, boom +=0.3/-=0.5,
+      # stick +/-=0.4, bucket +=0.4/-=0.5.
+      positive_exponent: [0.22, 0.74, 0.52, 0.42]
+      negative_exponent: [0.22, 0.35, 0.52, 0.25]
 
   keyboard:
     key_speed: 0.5
@@ -257,6 +272,7 @@ receiver:
     camera_max_stale_ms: 1000
     imu_require_online: true
     imu_require_valid_attitude: true
+    imu_max_stale_ms: 100
     quarantine_failed_records: true
   online_qc:
     enabled: true

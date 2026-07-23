@@ -91,6 +91,17 @@ def _daoyuan_chain_bucket_policy_offset_rad(
     return _DAOYUAN_CHAIN_BUCKET_POLICY_OFFSET_RAD if value is None else value
 
 
+def _swing_policy_offset_rad(
+    imu_debug: Mapping[str, Any] | None = None,
+) -> float:
+    if isinstance(imu_debug, Mapping):
+        value = _finite_float(imu_debug.get("swing_policy_offset_rad"))
+        if value is not None:
+            return value
+    value = _finite_float(os.environ.get("EXCAVATOR_SWING_POLICY_OFFSET_RAD", "0"))
+    return 0.0 if value is None else value
+
+
 def _bucket_imu0_profile() -> str:
     raw = os.environ.get("EXCAVATOR_BUCKET_IMU0_PROFILE", "legacy_y").strip().lower()
     if raw in {"roll_ccw90", "rotated_ccw90", "imu0_roll", "roll"}:
@@ -1814,6 +1825,11 @@ def _obs_raw_imu_qpos(
     imu3_y = raw_deg(2, 1)
     imu4_z = raw_deg(3, 2)
     joint_profile = _joint_rpy_profile(imu_debug)
+    swing_rad = (
+        np.deg2rad(float(imu4_z)) + _swing_policy_offset_rad(imu_debug)
+        if imu4_z is not None
+        else None
+    )
     if joint_profile == "daoyuan_chain":
         bucket_offset = _daoyuan_chain_bucket_policy_offset_rad(imu_debug)
         if bucket_tracker is not None:
@@ -1825,11 +1841,11 @@ def _obs_raw_imu_qpos(
             bucket_rad = -float(np.deg2rad(float(imu0_roll) + float(imu2_y))) + bucket_offset
         else:
             bucket_rad = None
-        if None in (imu2_y, imu3_y, imu4_z, bucket_rad):
+        if None in (imu2_y, imu3_y, swing_rad, bucket_rad):
             return None
         return np.asarray(
             [
-                np.deg2rad(float(imu4_z)),
+                float(swing_rad),
                 np.deg2rad(float(imu3_y)),
                 np.deg2rad(float(imu2_y) + float(imu3_y))
                 + _daoyuan_chain_stick_policy_offset_rad(imu_debug),
@@ -1848,11 +1864,11 @@ def _obs_raw_imu_qpos(
         )
     else:
         bucket_rad = _bucket_quaternion_qpos_rad(devices)
-    if None in (imu2_y, imu3_y, imu4_z, bucket_rad):
+    if None in (imu2_y, imu3_y, swing_rad, bucket_rad):
         return None
     return np.asarray(
         [
-            np.deg2rad(float(imu4_z)),
+            float(swing_rad),
             np.deg2rad(float(imu3_y)),
             np.deg2rad(float(imu2_y) - float(imu3_y)),
             float(bucket_rad),

@@ -43,6 +43,19 @@ def test_e52_config_is_mechanical_shadow_only_eye2_derivative() -> None:
     policy["source_id"] = "policy:act:real_gmsl_eye2_e52_v1"
     policy["camera_names"] = ["video4", "video5"]
     policy["qvel_mode"] = "raw"
+    policy["action_scale"] = [1.0, 1.0, 1.0, 1.0]
+    policy["deadzone_assist"]["deadzone_positive"] = [
+        0.661,
+        0.259,
+        0.500,
+        0.408,
+    ]
+    policy["deadzone_assist"]["deadzone_negative"] = [
+        0.721,
+        0.357,
+        0.500,
+        0.508,
+    ]
     policy["runtime_gates"] = {
         "enabled": True,
         "bundle_dir": "policy_bundles/real_gmsl_eye2_e52_v1",
@@ -52,6 +65,12 @@ def test_e52_config_is_mechanical_shadow_only_eye2_derivative() -> None:
         "deadzone_json": "deadzone_policy_raw_for_runtime_scale.json",
         "snap_epsilon": 0.001,
     }
+    expected["teleop"]["recording"]["go_home"]["success_tolerance_rad"] = [
+        0.05,
+        0.05,
+        0.035,
+        0.04,
+    ]
     expected["teleop"]["test_log"]["output_dir"] = (
         "runs/policy_control_tests/e52_runtime_shadow"
     )
@@ -64,7 +83,10 @@ def test_e52_config_is_mechanical_shadow_only_eye2_derivative() -> None:
     assert actual == expected
     assert actual["teleop"]["policy"]["output_mode"] == "shadow_zero"
     assert actual["teleop"]["policy"]["deadzone_assist"]["enabled"] is False
-    assert actual["teleop"]["policy"]["action_scale"] == [1.0, 1.0, 1.0, 0.75]
+    assert actual["teleop"]["policy"]["action_scale"] == [1.0, 1.0, 1.0, 1.0]
+    assert actual["teleop"]["recording"]["go_home"][
+        "success_tolerance_rad"
+    ] == [0.05, 0.05, 0.035, 0.04]
 
 
 def test_verify_e52_runtime_bundle_checks_base_contract_and_loads_gate_owner(
@@ -140,9 +162,15 @@ def test_verify_e52_runtime_bundle_checks_base_contract_and_loads_gate_owner(
                         "camera_names": ["video4", "video5"],
                         "output_mode": "shadow_zero",
                         "qvel_mode": "raw",
+                        "action_scale": [1.0, 1.0, 1.0, 1.0],
                         "deadzone_assist": {"enabled": False},
                         "runtime_gates": runtime_config,
-                    }
+                    },
+                    "recording": {
+                        "go_home": {
+                            "success_tolerance_rad": [0.05, 0.05, 0.035, 0.04]
+                        }
+                    },
                 }
             }
         ),
@@ -162,6 +190,13 @@ def test_verify_e52_runtime_bundle_checks_base_contract_and_loads_gate_owner(
     assert report["candidate_id"] == "E52-test"
     assert report["camera_names"] == ["video4", "video5"]
     assert report["low_dim_keys"] == ["qpos"]
+    assert report["action_scale"] == [1.0, 1.0, 1.0, 1.0]
+    assert report["go_home_success_tolerance_rad"] == [
+        0.05,
+        0.05,
+        0.035,
+        0.04,
+    ]
     assert report["runtime_artifact_hashes_verified"] == list(all_artifacts)
     expected_owner_config = dict(runtime_config)
     expected_owner_config["artifacts"] = {
@@ -171,6 +206,47 @@ def test_verify_e52_runtime_bundle_checks_base_contract_and_loads_gate_owner(
         expected_owner_config,
         default_bundle_dir=bundle,
     )
+
+    baseline_config = _read_yaml(config_path)
+    baseline_config["teleop"]["policy"]["runtime_gates"] = {"enabled": False}
+    baseline_config["teleop"]["policy"]["report_intent"] = True
+    baseline_config["teleop"]["policy"]["deadzone_assist"] = {
+        "enabled": True,
+        "axis_enabled": [True, True, True, True],
+        "trigger_fraction": [0.36, 0.50, 0.50, 0.375],
+        "min_consecutive_steps": 2,
+        "margin": [0.02, 0.02, 0.02, 0.02],
+        "deadzone_positive": [0.661, 0.259, 0.500, 0.408],
+        "deadzone_negative": [0.721, 0.357, 0.500, 0.508],
+    }
+    config_path.write_text(
+        yaml.safe_dump(baseline_config),
+        encoding="utf-8",
+    )
+    with patch(
+        "scripts.verify_e52_runtime_bundle.RuntimeGateStack.from_config"
+    ) as load_gate_stack:
+        baseline_report = verify_e52_runtime_bundle(
+            config_path=config_path,
+            bundle_dir=bundle,
+            require_runtime_gates=False,
+        )
+
+    assert baseline_report["ok"] is True
+    assert baseline_report["profile"] == "act_only_baseline"
+    assert baseline_report["runtime_gate_stack_loaded"] is False
+    assert baseline_report["intent_reporting_enabled"] is True
+    assert baseline_report["deadzone_assist_enabled"] is True
+    assert baseline_report["deadzone_assist_axis_enabled"] == [
+        True,
+        True,
+        True,
+        True,
+    ]
+    assert baseline_report["runtime_artifact_hashes_verified"] == list(
+        base_artifacts
+    )
+    load_gate_stack.assert_not_called()
 
 
 def test_e52_shadow_entrypoint_is_executable_and_enforces_no_motion_verifier() -> None:
@@ -184,5 +260,6 @@ def test_e52_shadow_entrypoint_is_executable_and_enforces_no_motion_verifier() -
     assert "--no-record" in source
     assert "e53_verify_no_motion_policy_log.py" in source
     assert "--require-runtime-gate-diagnostics" in source
+    assert "CONFIRM_GO_HOME_DONE" in source
     assert "ssh" not in source.lower()
     assert "rsync" not in source.lower()

@@ -169,16 +169,19 @@ class RuntimeGateStack:
                 raise ValueError(f"candidate manifest missing artifact {name!r}")
             entry = artifacts[name]
             configured = overrides.get(name)
-            path = Path(
-                configured if configured is not None else entry["path"]
-            ).expanduser()
-            if not path.is_absolute() and bundle_dir is not None:
-                path = bundle_dir / path
-            if not path.exists() and configured is None and bundle_dir is not None:
-                relocated = bundle_dir / Path(str(entry["path"])).name
-                if relocated.exists():
-                    path = relocated
-            if not path.exists():
+            if configured is None and bundle_dir is not None:
+                path = bundle_dir / Path(str(entry["path"])).name
+            else:
+                path = Path(
+                    configured if configured is not None else entry["path"]
+                ).expanduser()
+                if not path.is_absolute() and bundle_dir is not None:
+                    path = bundle_dir / path
+            try:
+                path_available = path.exists()
+            except OSError:
+                path_available = False
+            if not path_available:
                 raise FileNotFoundError(path)
             expected_sha = str(entry.get("sha256", ""))
             if expected_sha and _sha256(path) != expected_sha:
