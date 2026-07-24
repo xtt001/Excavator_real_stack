@@ -287,6 +287,33 @@ def test_m0_gate_contract_keeps_all_values_deferred_and_test_locked() -> None:
             assert metric["value"] is None
             assert metric["required_artifact_sha256"] == []
 
+    g4 = {
+        metric["metric"]: metric
+        for metric in contract["threshold_families"]["G4"]
+    }
+    latency = g4["token_response_latency_ticks"]
+    assert "expert_train_validation_distribution" in latency["required_sources"]
+    assert (
+        "B1_repeated_same_checkpoint_validation_replay"
+        in latency["required_sources"]
+    )
+    assert "B1_same_checkpoint_repeat_latency_jitter" in latency[
+        "threshold_formula"
+    ]
+    repeat = g4["same_token_repeat_consistency"]
+    assert repeat["required_sources"] == [
+        "B1_repeated_same_checkpoint_validation_replay",
+        "condition_support_index",
+    ]
+    assert "B2" not in repeat["threshold_formula"]
+    assert "repeat_consistency_validation_q02_5" in repeat["threshold_formula"]
+
+    for metric in contract["threshold_families"]["G5"][:2]:
+        assert (
+            "B0_repeated_same_checkpoint_validation_replay"
+            in metric["required_sources"]
+        )
+
     unlocked = deepcopy(contract)
     unlocked["held_out_test"]["authorized"] = True
     with pytest.raises(ValueError, match="held-out test locked"):

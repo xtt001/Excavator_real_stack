@@ -442,6 +442,17 @@ def gate_thresholds_contract(
         "B0_validation_replay",
         "B1_conditioned_validation_replay",
         "B2_shuffled_condition_null",
+        "B1_repeated_same_checkpoint_validation_replay",
+        "condition_support_index",
+    ]
+    token_latency_sources = [
+        *expert_sources,
+        "B1_conditioned_validation_replay",
+        "B1_repeated_same_checkpoint_validation_replay",
+        "condition_support_index",
+    ]
+    same_token_repeat_sources = [
+        "B1_repeated_same_checkpoint_validation_replay",
         "condition_support_index",
     ]
     robustness_sources = [
@@ -503,6 +514,17 @@ def gate_thresholds_contract(
         "upper_bound = B2_episode_null_q02_5 - "
         "B1_same_checkpoint_repeat_abs_delta_q97_5; pass only when "
         "paired_bootstrap_CI95(B1_minus_B2).upper < upper_bound"
+    )
+    token_latency_upper = (
+        "upper_bound = "
+        "expert_validation_condition_relevant_action_onset_ticks_q97_5 + "
+        "B1_same_checkpoint_repeat_latency_jitter_ticks_q97_5"
+    )
+    same_token_repeat_lower = (
+        "lower_bound = "
+        "B1_same_checkpoint_repeat_consistency_validation_q02_5; pass only "
+        "when source_episode_bootstrap_CI95(heldout_consistency).lower >= "
+        "lower_bound"
     )
     retention_lower = (
         "lower_bound = unperturbed_B1_validation_q02_5 - "
@@ -607,24 +629,24 @@ def gate_thresholds_contract(
             deferred(
                 "token_response_latency_ticks",
                 direction="upper",
-                required_sources=condition_sources,
+                required_sources=token_latency_sources,
                 definition=(
                     "20 Hz ticks from token replacement to the first "
                     "repeat-noise-exceeding effective action response"
                 ),
                 aggregation="per_supported_anchor_then_source_episode_q95",
-                threshold_formula=expert_upper,
+                threshold_formula=token_latency_upper,
             ),
             deferred(
                 "same_token_repeat_consistency",
                 direction="lower",
-                required_sources=condition_sources,
+                required_sources=same_token_repeat_sources,
                 definition=(
                     "one minus normalized action difference across repeated "
                     "replays of the same checkpoint, state, and condition"
                 ),
                 aggregation="per_anchor_then_source_episode_mean",
-                threshold_formula=condition_lower,
+                threshold_formula=same_token_repeat_lower,
             ),
             deferred(
                 "current_sector_sensitivity",
@@ -665,7 +687,7 @@ def gate_thresholds_contract(
                 "two_cycle_phase_coverage",
                 direction="lower",
                 required_sources=[
-                    *expert_sources,
+                    *b0_sources,
                     "B1_two_cycle_validation_replay",
                 ],
                 definition=(
@@ -679,7 +701,7 @@ def gate_thresholds_contract(
                 "ready_boundary_discontinuity",
                 direction="upper",
                 required_sources=[
-                    *expert_sources,
+                    *b0_sources,
                     "B1_two_cycle_validation_replay",
                 ],
                 definition=(
