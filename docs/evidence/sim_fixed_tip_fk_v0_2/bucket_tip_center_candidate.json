@@ -1,0 +1,107 @@
+{
+  "candidate_id": "bucket_center_tooth_leading_edge_midpoint_v0_1",
+  "status": "provisional_fixed_geometry_candidate",
+  "definition": "Midpoint of the lowest leading-edge segment on the middle bucket tooth.",
+  "source_geometry": {
+    "model": "remake5",
+    "mesh": "/home/pingfan/AGXUnityE85ExcavatorSim/Assets/remake5/meshes/watou.STL",
+    "mesh_sha256": "bf31258722e2854a4250808ef74c58790b8b6e8b4ad8fc8b6f581eb612ba39af",
+    "stl_edge_endpoints_m": [
+      [
+        0.04528464,
+        -0.08775727,
+        -0.58576298
+      ],
+      [
+        0.04528482,
+        -0.07855723,
+        -0.58576298
+      ]
+    ],
+    "stl_edge_midpoint_m": [
+      0.04528473,
+      -0.08315725,
+      -0.58576298
+    ],
+    "unity_import_conversion": [
+      "-stl_x",
+      "stl_y",
+      "stl_z"
+    ]
+  },
+  "fixed_point": {
+    "frame": "remake5/bucket",
+    "unity_bucket_local_m": [
+      -0.04528473,
+      -0.08315725,
+      -0.58576298
+    ]
+  },
+  "visual_evidence": {
+    "figure": "bucket_tip_center_candidate.png",
+    "real": {
+      "camera": "video6",
+      "dataset": "/data/pingfan/Excavator_real_stack_data/pro_real_teleop_20260713_20hz_v1",
+      "episode": 100,
+      "frame": 0,
+      "visibility": "visible",
+      "visual_pick_pixel_xy": [
+        170,
+        90
+      ]
+    },
+    "simulator": {
+      "camera": "stick_down",
+      "dataset": "/data/pingfan/excavator_testbed_data/yulong_v2_2_pro_full_task_four_camera_jpeg_20260717",
+      "episode": 25,
+      "frame": 0,
+      "visibility": "visible",
+      "visual_pick_pixel_xy": [
+        256,
+        104
+      ]
+    },
+    "frame_zero_spot_check": {
+      "real": {
+        "camera": "video6",
+        "episodes": [
+          2,
+          30,
+          60,
+          90,
+          120,
+          150,
+          175
+        ],
+        "middle_tooth_visible": 7,
+        "reviewed": 7
+      },
+      "simulator": {
+        "camera": "stick_down",
+        "episodes": [
+          0,
+          7,
+          14,
+          21,
+          28,
+          35
+        ],
+        "middle_tooth_visible": 6,
+        "reviewed": 6
+      }
+    },
+    "visual_picks_are_calibrated_reprojections": false
+  },
+  "allowed_uses": [
+    "fixed rigid-link endpoint for simulator FK export",
+    "visual annotation target when the middle tooth is visible",
+    "cross-view consistency diagnostic"
+  ],
+  "forbidden_claims": [
+    "actual soil contact point in every frame",
+    "visible keypoint in every camera or every digging phase",
+    "calibrated two-dimensional reprojection",
+    "authoritative real-machine metric alignment without a separate frame check"
+  ],
+  "occlusion_policy": "Mark visibility false when soil, carried material or the bucket shell hides the middle-tooth edge. Continue obtaining its pose from rigid-link FK rather than moving the reference point to another visible tooth."
+}

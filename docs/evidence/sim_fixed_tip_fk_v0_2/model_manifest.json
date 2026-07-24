@@ -1,0 +1,82 @@
+{
+  "bucket_tip_bucket_local_m": [
+    -0.045284729450941086,
+    -0.0831572487950325,
+    -0.5857629776000977
+  ],
+  "candidate_id": "bucket_center_tooth_leading_edge_midpoint_v0_1",
+  "dig_area_cell_names": [
+    "D00",
+    "D01",
+    "D10",
+    "D11",
+    "D20",
+    "D21"
+  ],
+  "dig_area_grid_shape_long_by_short": [
+    3,
+    2
+  ],
+  "dig_area_half_extents_m": [
+    1.25,
+    0.02500000037252903,
+    1.5
+  ],
+  "domain_qpos_max": [
+    0.5561822652816772,
+    0.901524007320404,
+    0.8803166747093201,
+    0.9986607432365417
+  ],
+  "domain_qpos_min": [
+    0.4622317850589752,
+    0.00907142274081707,
+    0.06762450188398361,
+    0.008699269033968449
+  ],
+  "final_test_is_whole_trajectory_held_out": true,
+  "final_test_was_not_used_for_hyperparameter_or_model_class_selection": true,
+  "input_order": [
+    "swing_position_norm",
+    "boom_position_norm",
+    "stick_position_norm",
+    "bucket_position_norm"
+  ],
+  "input_semantics": "normalized qpos observed by the YuLong runtime",
+  "machine_to_grid_affine": [
+    [
+      -0.9999996423721313,
+      7.0959091935662855e-09,
+      -6.496465143612795e-09
+    ],
+    [
+      -5.390062440824295e-08,
+      1.32399293306662e-07,
+      0.9999998807907104
+    ],
+    [
+      -4.947359144580332e-08,
+      0.9999998807907104,
+      1.3535057519220572e-07
+    ],
+    [
+      -2.6446778774261475,
+      -0.44102713465690613,
+      -2.2128448406988355e-08
+    ]
+  ],
+  "out_of_domain_policy": "reject_do_not_extrapolate",
+  "output_order": [
+    "bucket_tip_machine_root_x_m",
+    "bucket_tip_machine_root_y_m",
+    "bucket_tip_machine_root_z_m"
+  ],
+  "output_semantics": "fixed center-tooth leading-edge point in machine-root local meters",
+  "real_qpos_radian_conversion": "not_calibrated_do_not_assume_Unity_profile",
+  "schema_version": "fixed_tip_fk_model/v1",
+  "selected_model_path": "/home/pingfan/Excavator_real_stack/docs/evidence/sim_fixed_tip_fk_v0_2/fixed_tip_fk_selected.ts",
+  "selected_model_sha256": "a8ffdcb70b20b368b2196a8ba10fc9422d769f545679b9ed3835c8975fb6d3e3",
+  "selected_model_type": "polynomial",
+  "source_samples": "/home/pingfan/Excavator_real_stack/docs/evidence/sim_fixed_tip_fk_v0_2/fixed_tip_samples.jsonl",
+  "source_samples_sha256": "96aa2f7a5eddae72f11ea4a29a3489b35678be3359bdcef39a8184c70b3ac830"
+}

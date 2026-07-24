@@ -1,0 +1,5286 @@
+{
+  "domain": {
+    "final_test_all_axes_inside_train_range": 0.9769736842105263,
+    "final_test_per_axis_inside_train_range": [
+      1.0,
+      1.0,
+      0.9769736842105263,
+      1.0
+    ],
+    "historical_in_grid_proxy_qpos_coverage": {
+      "all_axes_inside_fraction": 0.6801900984959998,
+      "available": true,
+      "per_axis_inside_fraction": [
+        0.7644003260221647,
+        0.9362107627864352,
+        0.9258623975605108,
+        0.9800534449269896
+      ],
+      "qpos_quantile_01": [
+        0.4353387653827667,
+        0.042106145471334455,
+        0.00020371683058328927,
+        0.0010580208012834192
+      ],
+      "qpos_quantile_50": [
+        0.5104459524154663,
+        0.6060093641281128,
+        0.4549027383327484,
+        0.4685841500759125
+      ],
+      "qpos_quantile_99": [
+        0.6049067735671996,
+        1.0,
+        0.966767106056213,
+        0.9915620708465576
+      ],
+      "row_count": 246609
+    },
+    "train_qpos_max": [
+      0.5561822652816772,
+      0.901524007320404,
+      0.8803166747093201,
+      0.9986607432365417
+    ],
+    "train_qpos_min": [
+      0.4622317850589752,
+      0.00907142274081707,
+      0.06762450188398361,
+      0.008699269033968449
+    ],
+    "train_qpos_quantile_01": [
+      0.46816166639328005,
+      0.011568731022998692,
+      0.11941033117473125,
+      0.011864915350452065
+    ],
+    "train_qpos_quantile_99": [
+      0.5519007146358489,
+      0.8424410700798026,
+      0.8434338718652724,
+      0.9922575742006302
+    ]
+  },
+  "machine_to_grid_affine": [
+    [
+      -0.9999996423721313,
+      7.0959091935662855e-09,
+      -6.496465143612795e-09
+    ],
+    [
+      -5.390062440824295e-08,
+      1.32399293306662e-07,
+      0.9999998807907104
+    ],
+    [
+      -4.947359144580332e-08,
+      0.9999998807907104,
+      1.3535057519220572e-07
+    ],
+    [
+      -2.6446778774261475,
+      -0.44102713465690613,
+      -2.2128448406988355e-08
+    ]
+  ],
+  "machine_to_grid_transform_residual_m": {
+    "max": 2.731428025981586e-07,
+    "p95": 2.4755667027420714e-07
+  },
+  "mlp_tuning": [
+    {
+      "best_epoch": 1145,
+      "best_tune_distance_p95_m": 0.009979252377524965,
+      "history": [
+        {
+          "epoch": 5,
+          "train_normalized_mse": 0.17432174269567458,
+          "tune_distance_p95_m": 0.5708028465509413,
+          "tune_distance_rmse_m": 0.2662302255630493
+        },
+        {
+          "epoch": 10,
+          "train_normalized_mse": 0.031233129434679683,
+          "tune_distance_p95_m": 0.27875736504793147,
+          "tune_distance_rmse_m": 0.12228477746248245
+        },
+        {
+          "epoch": 15,
+          "train_normalized_mse": 0.00907482263190966,
+          "tune_distance_p95_m": 0.14221681654453272,
+          "tune_distance_rmse_m": 0.06774561107158661
+        },
+        {
+          "epoch": 20,
+          "train_normalized_mse": 0.003583830340128196,
+          "tune_distance_p95_m": 0.1364644028246402,
+          "tune_distance_rmse_m": 0.0582476481795311
+        },
+        {
+          "epoch": 25,
+          "train_normalized_mse": 0.0020437455703422687,
+          "tune_distance_p95_m": 0.07880137674510478,
+          "tune_distance_rmse_m": 0.04250868782401085
+        },
+        {
+          "epoch": 30,
+          "train_normalized_mse": 0.0013818008653623494,
+          "tune_distance_p95_m": 0.0680991049855947,
+          "tune_distance_rmse_m": 0.03729676455259323
+        },
+        {
+          "epoch": 35,
+          "train_normalized_mse": 0.0010029777390228813,
+          "tune_distance_p95_m": 0.05844223853200673,
+          "tune_distance_rmse_m": 0.03251975402235985
+        },
+        {
+          "epoch": 40,
+          "train_normalized_mse": 0.0007735319872664517,
+          "tune_distance_p95_m": 0.05401913821697233,
+          "tune_distance_rmse_m": 0.029374906793236732
+        },
+        {
+          "epoch": 45,
+          "train_normalized_mse": 0.0006192947560186056,
+          "tune_distance_p95_m": 0.04996946975588799,
+          "tune_distance_rmse_m": 0.027128923684358597
+        },
+        {
+          "epoch": 50,
+          "train_normalized_mse": 0.0005146765901723452,
+          "tune_distance_p95_m": 0.04788112100213766,
+          "tune_distance_rmse_m": 0.026131263002753258
+        },
+        {
+          "epoch": 55,
+          "train_normalized_mse": 0.00044145621052992185,
+          "tune_distance_p95_m": 0.04697381556034088,
+          "tune_distance_rmse_m": 0.02491886541247368
+        },
+        {
+          "epoch": 60,
+          "train_normalized_mse": 0.00038308498149394597,
+          "tune_distance_p95_m": 0.046265141107141965,
+          "tune_distance_rmse_m": 0.02391316182911396
+        },
+        {
+          "epoch": 65,
+          "train_normalized_mse": 0.00033406390585903926,
+          "tune_distance_p95_m": 0.046778948046267026,
+          "tune_distance_rmse_m": 0.023381290957331657
+        },
+        {
+          "epoch": 70,
+          "train_normalized_mse": 0.0002908784030168726,
+          "tune_distance_p95_m": 0.0456393664702773,
+          "tune_distance_rmse_m": 0.022346900776028633
+        },
+        {
+          "epoch": 75,
+          "train_normalized_mse": 0.00025594568752128176,
+          "tune_distance_p95_m": 0.044162542559206486,
+          "tune_distance_rmse_m": 0.021829329431056976
+        },
+        {
+          "epoch": 80,
+          "train_normalized_mse": 0.0002272425956203063,
+          "tune_distance_p95_m": 0.043815584480762476,
+          "tune_distance_rmse_m": 0.02108711563050747
+        },
+        {
+          "epoch": 85,
+          "train_normalized_mse": 0.00020221376096168044,
+          "tune_distance_p95_m": 0.04290232025086878,
+          "tune_distance_rmse_m": 0.020069630816578865
+        },
+        {
+          "epoch": 90,
+          "train_normalized_mse": 0.00018180516730226053,
+          "tune_distance_p95_m": 0.04103553611785171,
+          "tune_distance_rmse_m": 0.01938522420823574
+        },
+        {
+          "epoch": 95,
+          "train_normalized_mse": 0.00016210954370826744,
+          "tune_distance_p95_m": 0.03960020244121549,
+          "tune_distance_rmse_m": 0.01864139921963215
+        },
+        {
+          "epoch": 100,
+          "train_normalized_mse": 0.00014707354753147484,
+          "tune_distance_p95_m": 0.03861512541770932,
+          "tune_distance_rmse_m": 0.017763815820217133
+        },
+        {
+          "epoch": 105,
+          "train_normalized_mse": 0.00013386149555771496,
+          "tune_distance_p95_m": 0.03810016475617882,
+          "tune_distance_rmse_m": 0.01718018762767315
+        },
+        {
+          "epoch": 110,
+          "train_normalized_mse": 0.00012252021712667651,
+          "tune_distance_p95_m": 0.03688625283539293,
+          "tune_distance_rmse_m": 0.0169540848582983
+        },
+        {
+          "epoch": 115,
+          "train_normalized_mse": 0.00011050518527586144,
+          "tune_distance_p95_m": 0.03522767312824724,
+          "tune_distance_rmse_m": 0.016010932624340057
+        },
+        {
+          "epoch": 120,
+          "train_normalized_mse": 0.00010314222252641789,
+          "tune_distance_p95_m": 0.03372534178197383,
+          "tune_distance_rmse_m": 0.015637056902050972
+        },
+        {
+          "epoch": 125,
+          "train_normalized_mse": 9.88397126396497e-05,
+          "tune_distance_p95_m": 0.0330216011032462,
+          "tune_distance_rmse_m": 0.015091963112354279
+        },
+        {
+          "epoch": 130,
+          "train_normalized_mse": 8.950786031435423e-05,
+          "tune_distance_p95_m": 0.032369872555136646,
+          "tune_distance_rmse_m": 0.014551871456205845
+        },
+        {
+          "epoch": 135,
+          "train_normalized_mse": 8.276469554658162e-05,
+          "tune_distance_p95_m": 0.03125726282596584,
+          "tune_distance_rmse_m": 0.014145299792289734
+        },
+        {
+          "epoch": 140,
+          "train_normalized_mse": 7.844559341289201e-05,
+          "tune_distance_p95_m": 0.03035461576655503,
+          "tune_distance_rmse_m": 0.013721674680709839
+        },
+        {
+          "epoch": 145,
+          "train_normalized_mse": 7.363943267703514e-05,
+          "tune_distance_p95_m": 0.030359619669616186,
+          "tune_distance_rmse_m": 0.013654423877596855
+        },
+        {
+          "epoch": 150,
+          "train_normalized_mse": 6.886878703912851e-05,
+          "tune_distance_p95_m": 0.028870791848748897,
+          "tune_distance_rmse_m": 0.01317669078707695
+        },
+        {
+          "epoch": 155,
+          "train_normalized_mse": 6.585320411352114e-05,
+          "tune_distance_p95_m": 0.027406693063676348,
+          "tune_distance_rmse_m": 0.012722673825919628
+        },
+        {
+          "epoch": 160,
+          "train_normalized_mse": 6.469976710433369e-05,
+          "tune_distance_p95_m": 0.026553103514015675,
+          "tune_distance_rmse_m": 0.012265032157301903
+        },
+        {
+          "epoch": 165,
+          "train_normalized_mse": 6.0390099270877905e-05,
+          "tune_distance_p95_m": 0.026486240606755012,
+          "tune_distance_rmse_m": 0.012219257652759552
+        },
+        {
+          "epoch": 170,
+          "train_normalized_mse": 5.9455017515319286e-05,
+          "tune_distance_p95_m": 0.025119946524500832,
+          "tune_distance_rmse_m": 0.012094282545149326
+        },
+        {
+          "epoch": 175,
+          "train_normalized_mse": 5.5901245216598016e-05,
+          "tune_distance_p95_m": 0.024754863325506447,
+          "tune_distance_rmse_m": 0.011813745833933353
+        },
+        {
+          "epoch": 180,
+          "train_normalized_mse": 5.3278103382980223e-05,
+          "tune_distance_p95_m": 0.024409631546586735,
+          "tune_distance_rmse_m": 0.01164689939469099
+        },
+        {
+          "epoch": 185,
+          "train_normalized_mse": 5.1317193234960236e-05,
+          "tune_distance_p95_m": 0.024088810943067064,
+          "tune_distance_rmse_m": 0.01133553683757782
+        },
+        {
+          "epoch": 190,
+          "train_normalized_mse": 4.975516180581364e-05,
+          "tune_distance_p95_m": 0.023340264428406945,
+          "tune_distance_rmse_m": 0.011033182963728905
+        },
+        {
+          "epoch": 195,
+          "train_normalized_mse": 4.675059608416632e-05,
+          "tune_distance_p95_m": 0.022358874697238205,
+          "tune_distance_rmse_m": 0.010793210938572884
+        },
+        {
+          "epoch": 200,
+          "train_normalized_mse": 4.617145372832423e-05,
+          "tune_distance_p95_m": 0.021901287231594315,
+          "tune_distance_rmse_m": 0.010744386352598667
+        },
+        {
+          "epoch": 205,
+          "train_normalized_mse": 4.5654898840758395e-05,
+          "tune_distance_p95_m": 0.021820559538900847,
+          "tune_distance_rmse_m": 0.01060117594897747
+        },
+        {
+          "epoch": 210,
+          "train_normalized_mse": 4.318050534429698e-05,
+          "tune_distance_p95_m": 0.02099110903218386,
+          "tune_distance_rmse_m": 0.010234944522380829
+        },
+        {
+          "epoch": 215,
+          "train_normalized_mse": 4.364792013738974e-05,
+          "tune_distance_p95_m": 0.020372685510665154,
+          "tune_distance_rmse_m": 0.009926648810505867
+        },
+        {
+          "epoch": 220,
+          "train_normalized_mse": 4.1662335430022756e-05,
+          "tune_distance_p95_m": 0.020434078108519316,
+          "tune_distance_rmse_m": 0.009974164888262749
+        },
+        {
+          "epoch": 225,
+          "train_normalized_mse": 3.939124572002982e-05,
+          "tune_distance_p95_m": 0.019770115148276087,
+          "tune_distance_rmse_m": 0.009851984679698944
+        },
+        {
+          "epoch": 230,
+          "train_normalized_mse": 3.796313531143313e-05,
+          "tune_distance_p95_m": 0.019527283031493425,
+          "tune_distance_rmse_m": 0.009634062647819519
+        },
+        {
+          "epoch": 235,
+          "train_normalized_mse": 3.714138757347603e-05,
+          "tune_distance_p95_m": 0.019358130544424052,
+          "tune_distance_rmse_m": 0.009584803134202957
+        },
+        {
+          "epoch": 240,
+          "train_normalized_mse": 3.731875499636915e-05,
+          "tune_distance_p95_m": 0.019449618738144634,
+          "tune_distance_rmse_m": 0.009647505357861519
+        },
+        {
+          "epoch": 245,
+          "train_normalized_mse": 3.510932558065019e-05,
+          "tune_distance_p95_m": 0.01899848682805894,
+          "tune_distance_rmse_m": 0.009190547280013561
+        },
+        {
+          "epoch": 250,
+          "train_normalized_mse": 3.375577047368177e-05,
+          "tune_distance_p95_m": 0.018404534086585038,
+          "tune_distance_rmse_m": 0.009287485852837563
+        },
+        {
+          "epoch": 255,
+          "train_normalized_mse": 3.4056241323317714e-05,
+          "tune_distance_p95_m": 0.018931846413761343,
+          "tune_distance_rmse_m": 0.009074348956346512
+        },
+        {
+          "epoch": 260,
+          "train_normalized_mse": 3.336491863592528e-05,
+          "tune_distance_p95_m": 0.017872206587344393,
+          "tune_distance_rmse_m": 0.008889028802514076
+        },
+        {
+          "epoch": 265,
+          "train_normalized_mse": 3.195330595062523e-05,
+          "tune_distance_p95_m": 0.018279056251049006,
+          "tune_distance_rmse_m": 0.008930305950343609
+        },
+        {
+          "epoch": 270,
+          "train_normalized_mse": 3.315020761587412e-05,
+          "tune_distance_p95_m": 0.018096318375319238,
+          "tune_distance_rmse_m": 0.009024697355926037
+        },
+        {
+          "epoch": 275,
+          "train_normalized_mse": 3.135049362818041e-05,
+          "tune_distance_p95_m": 0.017399753257632253,
+          "tune_distance_rmse_m": 0.008753905072808266
+        },
+        {
+          "epoch": 280,
+          "train_normalized_mse": 3.1440190293340076e-05,
+          "tune_distance_p95_m": 0.017720123473554818,
+          "tune_distance_rmse_m": 0.008424214087426662
+        },
+        {
+          "epoch": 285,
+          "train_normalized_mse": 2.9266452066510457e-05,
+          "tune_distance_p95_m": 0.016943194251507518,
+          "tune_distance_rmse_m": 0.008717555552721024
+        },
+        {
+          "epoch": 290,
+          "train_normalized_mse": 2.8348290933328762e-05,
+          "tune_distance_p95_m": 0.01647010305896401,
+          "tune_distance_rmse_m": 0.008494334295392036
+        },
+        {
+          "epoch": 295,
+          "train_normalized_mse": 2.831685560522601e-05,
+          "tune_distance_p95_m": 0.016461696475744247,
+          "tune_distance_rmse_m": 0.008204089477658272
+        },
+        {
+          "epoch": 300,
+          "train_normalized_mse": 2.657745764672495e-05,
+          "tune_distance_p95_m": 0.016145247407257545,
+          "tune_distance_rmse_m": 0.00831399206072092
+        },
+        {
+          "epoch": 305,
+          "train_normalized_mse": 2.775076255171658e-05,
+          "tune_distance_p95_m": 0.015982983587309697,
+          "tune_distance_rmse_m": 0.008156920783221722
+        },
+        {
+          "epoch": 310,
+          "train_normalized_mse": 2.8445766714101313e-05,
+          "tune_distance_p95_m": 0.015617481386288995,
+          "tune_distance_rmse_m": 0.007924501784145832
+        },
+        {
+          "epoch": 315,
+          "train_normalized_mse": 2.6949112412822024e-05,
+          "tune_distance_p95_m": 0.015217470983043309,
+          "tune_distance_rmse_m": 0.007826373912394047
+        },
+        {
+          "epoch": 320,
+          "train_normalized_mse": 2.569180472627315e-05,
+          "tune_distance_p95_m": 0.015460166847333296,
+          "tune_distance_rmse_m": 0.007963649928569794
+        },
+        {
+          "epoch": 325,
+          "train_normalized_mse": 2.476161758399062e-05,
+          "tune_distance_p95_m": 0.015410363906994459,
+          "tune_distance_rmse_m": 0.007889633066952229
+        },
+        {
+          "epoch": 330,
+          "train_normalized_mse": 2.4196751359053642e-05,
+          "tune_distance_p95_m": 0.015222680568695064,
+          "tune_distance_rmse_m": 0.007890883833169937
+        },
+        {
+          "epoch": 335,
+          "train_normalized_mse": 2.3213198163144273e-05,
+          "tune_distance_p95_m": 0.01482331547886133,
+          "tune_distance_rmse_m": 0.00782284326851368
+        },
+        {
+          "epoch": 340,
+          "train_normalized_mse": 2.3015197624325784e-05,
+          "tune_distance_p95_m": 0.014800889045000072,
+          "tune_distance_rmse_m": 0.007499712519347668
+        },
+        {
+          "epoch": 345,
+          "train_normalized_mse": 2.2877936460549552e-05,
+          "tune_distance_p95_m": 0.015039218217134472,
+          "tune_distance_rmse_m": 0.007604784332215786
+        },
+        {
+          "epoch": 350,
+          "train_normalized_mse": 2.2220026470389903e-05,
+          "tune_distance_p95_m": 0.014568051695823649,
+          "tune_distance_rmse_m": 0.007513534277677536
+        },
+        {
+          "epoch": 355,
+          "train_normalized_mse": 2.1743440492284943e-05,
+          "tune_distance_p95_m": 0.015102595649659597,
+          "tune_distance_rmse_m": 0.00731985317543149
+        },
+        {
+          "epoch": 360,
+          "train_normalized_mse": 2.2023450040713916e-05,
+          "tune_distance_p95_m": 0.015064649935811723,
+          "tune_distance_rmse_m": 0.007406661752611399
+        },
+        {
+          "epoch": 365,
+          "train_normalized_mse": 2.2099477160066416e-05,
+          "tune_distance_p95_m": 0.014751398563385004,
+          "tune_distance_rmse_m": 0.007457193452864885
+        },
+        {
+          "epoch": 370,
+          "train_normalized_mse": 2.111761393296132e-05,
+          "tune_distance_p95_m": 0.014303436595946515,
+          "tune_distance_rmse_m": 0.007297722157090902
+        },
+        {
+          "epoch": 375,
+          "train_normalized_mse": 2.0749802340440893e-05,
+          "tune_distance_p95_m": 0.014166892645880558,
+          "tune_distance_rmse_m": 0.007265158928930759
+        },
+        {
+          "epoch": 380,
+          "train_normalized_mse": 2.222059830321661e-05,
+          "tune_distance_p95_m": 0.01388745419681071,
+          "tune_distance_rmse_m": 0.006990489549934864
+        },
+        {
+          "epoch": 385,
+          "train_normalized_mse": 1.962907695167559e-05,
+          "tune_distance_p95_m": 0.013951047230511904,
+          "tune_distance_rmse_m": 0.007402357645332813
+        },
+        {
+          "epoch": 390,
+          "train_normalized_mse": 2.4780665466606845e-05,
+          "tune_distance_p95_m": 0.01326454016380012,
+          "tune_distance_rmse_m": 0.0071302796714007854
+        },
+        {
+          "epoch": 395,
+          "train_normalized_mse": 2.0053617494372782e-05,
+          "tune_distance_p95_m": 0.01359240277670323,
+          "tune_distance_rmse_m": 0.007179501466453075
+        },
+        {
+          "epoch": 400,
+          "train_normalized_mse": 1.914384222146238e-05,
+          "tune_distance_p95_m": 0.01373086269013582,
+          "tune_distance_rmse_m": 0.006818267051130533
+        },
+        {
+          "epoch": 405,
+          "train_normalized_mse": 1.9618009805287185e-05,
+          "tune_distance_p95_m": 0.013529760437086216,
+          "tune_distance_rmse_m": 0.006865399423986673
+        },
+        {
+          "epoch": 410,
+          "train_normalized_mse": 1.8704293229108627e-05,
+          "tune_distance_p95_m": 0.01333119301125407,
+          "tune_distance_rmse_m": 0.006922613363713026
+        },
+        {
+          "epoch": 415,
+          "train_normalized_mse": 1.8921423728451165e-05,
+          "tune_distance_p95_m": 0.013588207121938466,
+          "tune_distance_rmse_m": 0.00691576860845089
+        },
+        {
+          "epoch": 420,
+          "train_normalized_mse": 1.8750297098641138e-05,
+          "tune_distance_p95_m": 0.0139025195967406,
+          "tune_distance_rmse_m": 0.0069983117282390594
+        },
+        {
+          "epoch": 425,
+          "train_normalized_mse": 1.8241530453547295e-05,
+          "tune_distance_p95_m": 0.012909153522923584,
+          "tune_distance_rmse_m": 0.0066025350242853165
+        },
+        {
+          "epoch": 430,
+          "train_normalized_mse": 1.7161961806235476e-05,
+          "tune_distance_p95_m": 0.01258388119749724,
+          "tune_distance_rmse_m": 0.006565455347299576
+        },
+        {
+          "epoch": 435,
+          "train_normalized_mse": 1.768168904323319e-05,
+          "tune_distance_p95_m": 0.013441290101036426,
+          "tune_distance_rmse_m": 0.00648735323920846
+        },
+        {
+          "epoch": 440,
+          "train_normalized_mse": 1.6460237291763053e-05,
+          "tune_distance_p95_m": 0.01256714439950883,
+          "tune_distance_rmse_m": 0.006435786839574575
+        },
+        {
+          "epoch": 445,
+          "train_normalized_mse": 1.8341488676174267e-05,
+          "tune_distance_p95_m": 0.015737233450636236,
+          "tune_distance_rmse_m": 0.007079389877617359
+        },
+        {
+          "epoch": 450,
+          "train_normalized_mse": 2.067936963469133e-05,
+          "tune_distance_p95_m": 0.01298669097013771,
+          "tune_distance_rmse_m": 0.006361636333167553
+        },
+        {
+          "epoch": 455,
+          "train_normalized_mse": 1.8099320425933814e-05,
+          "tune_distance_p95_m": 0.012448824616149068,
+          "tune_distance_rmse_m": 0.006353406701236963
+        },
+        {
+          "epoch": 460,
+          "train_normalized_mse": 1.4955268533524583e-05,
+          "tune_distance_p95_m": 0.012557551823556423,
+          "tune_distance_rmse_m": 0.006105924490839243
+        },
+        {
+          "epoch": 465,
+          "train_normalized_mse": 1.6692979746342946e-05,
+          "tune_distance_p95_m": 0.01301401373930275,
+          "tune_distance_rmse_m": 0.0062334355898201466
+        },
+        {
+          "epoch": 470,
+          "train_normalized_mse": 1.5517157631269617e-05,
+          "tune_distance_p95_m": 0.01246080133132636,
+          "tune_distance_rmse_m": 0.005991450510919094
+        },
+        {
+          "epoch": 475,
+          "train_normalized_mse": 1.6487081315094737e-05,
+          "tune_distance_p95_m": 0.013598125195130694,
+          "tune_distance_rmse_m": 0.006577227730304003
+        },
+        {
+          "epoch": 480,
+          "train_normalized_mse": 1.4454081138593897e-05,
+          "tune_distance_p95_m": 0.01309175016358494,
+          "tune_distance_rmse_m": 0.006310620345175266
+        },
+        {
+          "epoch": 485,
+          "train_normalized_mse": 1.4666856562447114e-05,
+          "tune_distance_p95_m": 0.012413140852004286,
+          "tune_distance_rmse_m": 0.006078166887164116
+        },
+        {
+          "epoch": 490,
+          "train_normalized_mse": 2.2882380921816404e-05,
+          "tune_distance_p95_m": 0.014139922894537447,
+          "tune_distance_rmse_m": 0.00647447444498539
+        },
+        {
+          "epoch": 495,
+          "train_normalized_mse": 3.374994083602807e-05,
+          "tune_distance_p95_m": 0.016563125606626268,
+          "tune_distance_rmse_m": 0.0075013600289821625
+        },
+        {
+          "epoch": 500,
+          "train_normalized_mse": 2.789149329417565e-05,
+          "tune_distance_p95_m": 0.012232371373102069,
+          "tune_distance_rmse_m": 0.005895312409847975
+        },
+        {
+          "epoch": 505,
+          "train_normalized_mse": 2.183063885527908e-05,
+          "tune_distance_p95_m": 0.014200733276084029,
+          "tune_distance_rmse_m": 0.006338825915008783
+        },
+        {
+          "epoch": 510,
+          "train_normalized_mse": 1.674745777691306e-05,
+          "tune_distance_p95_m": 0.013787870015948974,
+          "tune_distance_rmse_m": 0.006256418768316507
+        },
+        {
+          "epoch": 515,
+          "train_normalized_mse": 2.3137862674622356e-05,
+          "tune_distance_p95_m": 0.013002480519935468,
+          "tune_distance_rmse_m": 0.006085376255214214
+        },
+        {
+          "epoch": 520,
+          "train_normalized_mse": 2.3117463697736528e-05,
+          "tune_distance_p95_m": 0.013391580292955037,
+          "tune_distance_rmse_m": 0.006281937472522259
+        },
+        {
+          "epoch": 525,
+          "train_normalized_mse": 1.932946792007179e-05,
+          "tune_distance_p95_m": 0.012709022546187033,
+          "tune_distance_rmse_m": 0.006183225195854902
+        },
+        {
+          "epoch": 530,
+          "train_normalized_mse": 1.386722499119698e-05,
+          "tune_distance_p95_m": 0.011995160859078167,
+          "tune_distance_rmse_m": 0.005744598805904388
+        },
+        {
+          "epoch": 535,
+          "train_normalized_mse": 1.4199351505994217e-05,
+          "tune_distance_p95_m": 0.013057796517387015,
+          "tune_distance_rmse_m": 0.0060116322711110115
+        },
+        {
+          "epoch": 540,
+          "train_normalized_mse": 1.5804776124065955e-05,
+          "tune_distance_p95_m": 0.013154347380623217,
+          "tune_distance_rmse_m": 0.006080404855310917
+        },
+        {
+          "epoch": 545,
+          "train_normalized_mse": 1.477846070516981e-05,
+          "tune_distance_p95_m": 0.012779114162549374,
+          "tune_distance_rmse_m": 0.005788461305201054
+        },
+        {
+          "epoch": 550,
+          "train_normalized_mse": 1.7660152655464533e-05,
+          "tune_distance_p95_m": 0.012892957124859071,
+          "tune_distance_rmse_m": 0.005749487783759832
+        },
+        {
+          "epoch": 555,
+          "train_normalized_mse": 3.037791745890373e-05,
+          "tune_distance_p95_m": 0.0134211506228894,
+          "tune_distance_rmse_m": 0.006028892006725073
+        },
+        {
+          "epoch": 560,
+          "train_normalized_mse": 2.164469231246856e-05,
+          "tune_distance_p95_m": 0.012088768742978572,
+          "tune_distance_rmse_m": 0.005724499002099037
+        },
+        {
+          "epoch": 565,
+          "train_normalized_mse": 1.258929513457125e-05,
+          "tune_distance_p95_m": 0.012018618267029522,
+          "tune_distance_rmse_m": 0.005521248560398817
+        },
+        {
+          "epoch": 570,
+          "train_normalized_mse": 1.3810243089800791e-05,
+          "tune_distance_p95_m": 0.01301105911843478,
+          "tune_distance_rmse_m": 0.005900134332478046
+        },
+        {
+          "epoch": 575,
+          "train_normalized_mse": 1.4292584829059993e-05,
+          "tune_distance_p95_m": 0.01341974013485013,
+          "tune_distance_rmse_m": 0.006010214798152447
+        },
+        {
+          "epoch": 580,
+          "train_normalized_mse": 1.2797662907758964e-05,
+          "tune_distance_p95_m": 0.012046318920329207,
+          "tune_distance_rmse_m": 0.0055152480490505695
+        },
+        {
+          "epoch": 585,
+          "train_normalized_mse": 1.1204963046015779e-05,
+          "tune_distance_p95_m": 0.012069129617884753,
+          "tune_distance_rmse_m": 0.005623153410851955
+        },
+        {
+          "epoch": 590,
+          "train_normalized_mse": 1.2678890000148513e-05,
+          "tune_distance_p95_m": 0.011714546754956244,
+          "tune_distance_rmse_m": 0.005477230995893478
+        },
+        {
+          "epoch": 595,
+          "train_normalized_mse": 1.0876453128922118e-05,
+          "tune_distance_p95_m": 0.012486732797697178,
+          "tune_distance_rmse_m": 0.005713955499231815
+        },
+        {
+          "epoch": 600,
+          "train_normalized_mse": 1.1741445536915163e-05,
+          "tune_distance_p95_m": 0.012895609159022554,
+          "tune_distance_rmse_m": 0.005726907402276993
+        },
+        {
+          "epoch": 605,
+          "train_normalized_mse": 1.1673819467991084e-05,
+          "tune_distance_p95_m": 0.012419927213340995,
+          "tune_distance_rmse_m": 0.005572439171373844
+        },
+        {
+          "epoch": 610,
+          "train_normalized_mse": 1.1061218908269024e-05,
+          "tune_distance_p95_m": 0.011520309373736382,
+          "tune_distance_rmse_m": 0.005233356263488531
+        },
+        {
+          "epoch": 615,
+          "train_normalized_mse": 1.1191281341700488e-05,
+          "tune_distance_p95_m": 0.012185140931978814,
+          "tune_distance_rmse_m": 0.005610317923128605
+        },
+        {
+          "epoch": 620,
+          "train_normalized_mse": 1.3395622980233543e-05,
+          "tune_distance_p95_m": 0.012024079216644168,
+          "tune_distance_rmse_m": 0.00545996380969882
+        },
+        {
+          "epoch": 625,
+          "train_normalized_mse": 1.0913174200890863e-05,
+          "tune_distance_p95_m": 0.013572212401777488,
+          "tune_distance_rmse_m": 0.005794669035822153
+        },
+        {
+          "epoch": 630,
+          "train_normalized_mse": 1.298455843648857e-05,
+          "tune_distance_p95_m": 0.013448927085846638,
+          "tune_distance_rmse_m": 0.005585912149399519
+        },
+        {
+          "epoch": 635,
+          "train_normalized_mse": 1.6595608350032482e-05,
+          "tune_distance_p95_m": 0.014496254408732052,
+          "tune_distance_rmse_m": 0.006004251539707184
+        },
+        {
+          "epoch": 640,
+          "train_normalized_mse": 2.3489813062489e-05,
+          "tune_distance_p95_m": 0.013309169979766005,
+          "tune_distance_rmse_m": 0.005667463876307011
+        },
+        {
+          "epoch": 645,
+          "train_normalized_mse": 1.206148726053295e-05,
+          "tune_distance_p95_m": 0.01096290932036936,
+          "tune_distance_rmse_m": 0.005233651492744684
+        },
+        {
+          "epoch": 650,
+          "train_normalized_mse": 1.2640753339566577e-05,
+          "tune_distance_p95_m": 0.013347552670165876,
+          "tune_distance_rmse_m": 0.005704370327293873
+        },
+        {
+          "epoch": 655,
+          "train_normalized_mse": 9.044757283398914e-05,
+          "tune_distance_p95_m": 0.013515260210260746,
+          "tune_distance_rmse_m": 0.006195091176778078
+        },
+        {
+          "epoch": 660,
+          "train_normalized_mse": 0.00025630133837183707,
+          "tune_distance_p95_m": 0.013988842908292998,
+          "tune_distance_rmse_m": 0.006219957955181599
+        },
+        {
+          "epoch": 665,
+          "train_normalized_mse": 3.6068501542199794e-05,
+          "tune_distance_p95_m": 0.011676346277818057,
+          "tune_distance_rmse_m": 0.005525329150259495
+        },
+        {
+          "epoch": 670,
+          "train_normalized_mse": 2.058150519651622e-05,
+          "tune_distance_p95_m": 0.011446556914597745,
+          "tune_distance_rmse_m": 0.005589619278907776
+        },
+        {
+          "epoch": 675,
+          "train_normalized_mse": 2.52715000993033e-05,
+          "tune_distance_p95_m": 0.013140141358599061,
+          "tune_distance_rmse_m": 0.00618679728358984
+        },
+        {
+          "epoch": 680,
+          "train_normalized_mse": 5.492569292536038e-05,
+          "tune_distance_p95_m": 0.013715186715126008,
+          "tune_distance_rmse_m": 0.005898588337004185
+        },
+        {
+          "epoch": 685,
+          "train_normalized_mse": 3.0139793619909733e-05,
+          "tune_distance_p95_m": 0.012727596238255498,
+          "tune_distance_rmse_m": 0.006246115081012249
+        },
+        {
+          "epoch": 690,
+          "train_normalized_mse": 2.806459477206022e-05,
+          "tune_distance_p95_m": 0.014033210696652518,
+          "tune_distance_rmse_m": 0.006176249589771032
+        },
+        {
+          "epoch": 695,
+          "train_normalized_mse": 1.3048605835233742e-05,
+          "tune_distance_p95_m": 0.012814080202952011,
+          "tune_distance_rmse_m": 0.005741091910749674
+        },
+        {
+          "epoch": 700,
+          "train_normalized_mse": 1.2535893084101477e-05,
+          "tune_distance_p95_m": 0.011910287477076053,
+          "tune_distance_rmse_m": 0.005462378729134798
+        },
+        {
+          "epoch": 705,
+          "train_normalized_mse": 9.442263944947626e-06,
+          "tune_distance_p95_m": 0.011024122871458522,
+          "tune_distance_rmse_m": 0.005115156061947346
+        },
+        {
+          "epoch": 710,
+          "train_normalized_mse": 1.4368493075859365e-05,
+          "tune_distance_p95_m": 0.011760846292600035,
+          "tune_distance_rmse_m": 0.005280944053083658
+        },
+        {
+          "epoch": 715,
+          "train_normalized_mse": 1.2679226162155127e-05,
+          "tune_distance_p95_m": 0.011120480718091129,
+          "tune_distance_rmse_m": 0.005112476646900177
+        },
+        {
+          "epoch": 720,
+          "train_normalized_mse": 9.538903612880395e-06,
+          "tune_distance_p95_m": 0.010473406640812755,
+          "tune_distance_rmse_m": 0.005038475152105093
+        },
+        {
+          "epoch": 725,
+          "train_normalized_mse": 9.320079299326161e-06,
+          "tune_distance_p95_m": 0.012065399251878259,
+          "tune_distance_rmse_m": 0.005399134010076523
+        },
+        {
+          "epoch": 730,
+          "train_normalized_mse": 1.4722860374093758e-05,
+          "tune_distance_p95_m": 0.01240186728537082,
+          "tune_distance_rmse_m": 0.005452959798276424
+        },
+        {
+          "epoch": 735,
+          "train_normalized_mse": 1.2073970410391779e-05,
+          "tune_distance_p95_m": 0.01080019790679216,
+          "tune_distance_rmse_m": 0.005055364221334457
+        },
+        {
+          "epoch": 740,
+          "train_normalized_mse": 1.275546198660761e-05,
+          "tune_distance_p95_m": 0.010647279024124138,
+          "tune_distance_rmse_m": 0.005098102614283562
+        },
+        {
+          "epoch": 745,
+          "train_normalized_mse": 8.248142605002054e-06,
+          "tune_distance_p95_m": 0.012451210897415846,
+          "tune_distance_rmse_m": 0.00538721913471818
+        },
+        {
+          "epoch": 750,
+          "train_normalized_mse": 1.158101679864462e-05,
+          "tune_distance_p95_m": 0.011838145600631823,
+          "tune_distance_rmse_m": 0.005245566368103027
+        },
+        {
+          "epoch": 755,
+          "train_normalized_mse": 1.0934016420817403e-05,
+          "tune_distance_p95_m": 0.012079225433990358,
+          "tune_distance_rmse_m": 0.005370113532990217
+        },
+        {
+          "epoch": 760,
+          "train_normalized_mse": 1.5403783149131894e-05,
+          "tune_distance_p95_m": 0.012507596332579841,
+          "tune_distance_rmse_m": 0.005422442220151424
+        },
+        {
+          "epoch": 765,
+          "train_normalized_mse": 9.936197178224878e-06,
+          "tune_distance_p95_m": 0.01090471809729933,
+          "tune_distance_rmse_m": 0.00519249401986599
+        },
+        {
+          "epoch": 770,
+          "train_normalized_mse": 8.407505423460143e-06,
+          "tune_distance_p95_m": 0.011263132654130458,
+          "tune_distance_rmse_m": 0.0052057974971830845
+        },
+        {
+          "epoch": 775,
+          "train_normalized_mse": 1.0491520968794807e-05,
+          "tune_distance_p95_m": 0.010638027731329188,
+          "tune_distance_rmse_m": 0.00517237139865756
+        },
+        {
+          "epoch": 780,
+          "train_normalized_mse": 9.030270009309772e-06,
+          "tune_distance_p95_m": 0.011544235842302434,
+          "tune_distance_rmse_m": 0.005134540610015392
+        },
+        {
+          "epoch": 785,
+          "train_normalized_mse": 9.660642414625423e-06,
+          "tune_distance_p95_m": 0.012711598817259058,
+          "tune_distance_rmse_m": 0.00557307992130518
+        },
+        {
+          "epoch": 790,
+          "train_normalized_mse": 1.9523208034674132e-05,
+          "tune_distance_p95_m": 0.012720261886715871,
+          "tune_distance_rmse_m": 0.005532446317374706
+        },
+        {
+          "epoch": 795,
+          "train_normalized_mse": 4.231680686005571e-05,
+          "tune_distance_p95_m": 0.011974081769585608,
+          "tune_distance_rmse_m": 0.006181848235428333
+        },
+        {
+          "epoch": 800,
+          "train_normalized_mse": 0.00021286580554340362,
+          "tune_distance_p95_m": 0.012486924929544322,
+          "tune_distance_rmse_m": 0.006249138154089451
+        },
+        {
+          "epoch": 805,
+          "train_normalized_mse": 7.757828216039853e-05,
+          "tune_distance_p95_m": 0.01387913539074361,
+          "tune_distance_rmse_m": 0.006391808856278658
+        },
+        {
+          "epoch": 810,
+          "train_normalized_mse": 2.7901586611079166e-05,
+          "tune_distance_p95_m": 0.012232285132631655,
+          "tune_distance_rmse_m": 0.005683776922523975
+        },
+        {
+          "epoch": 815,
+          "train_normalized_mse": 2.18176406122981e-05,
+          "tune_distance_p95_m": 0.0113998036365956,
+          "tune_distance_rmse_m": 0.005272992420941591
+        },
+        {
+          "epoch": 820,
+          "train_normalized_mse": 1.02372771499703e-05,
+          "tune_distance_p95_m": 0.012097373604774468,
+          "tune_distance_rmse_m": 0.005224535707384348
+        },
+        {
+          "epoch": 825,
+          "train_normalized_mse": 8.709639363938518e-06,
+          "tune_distance_p95_m": 0.012111675273627031,
+          "tune_distance_rmse_m": 0.005108788143843412
+        },
+        {
+          "epoch": 830,
+          "train_normalized_mse": 8.071713573212547e-06,
+          "tune_distance_p95_m": 0.01232284517027437,
+          "tune_distance_rmse_m": 0.005336789879947901
+        },
+        {
+          "epoch": 835,
+          "train_normalized_mse": 1.0324404779806317e-05,
+          "tune_distance_p95_m": 0.010942265810444945,
+          "tune_distance_rmse_m": 0.004916919860988855
+        },
+        {
+          "epoch": 840,
+          "train_normalized_mse": 1.0966923119875055e-05,
+          "tune_distance_p95_m": 0.01055245003663003,
+          "tune_distance_rmse_m": 0.00514391902834177
+        },
+        {
+          "epoch": 845,
+          "train_normalized_mse": 7.927853690297956e-06,
+          "tune_distance_p95_m": 0.010452924808487295,
+          "tune_distance_rmse_m": 0.004898171406239271
+        },
+        {
+          "epoch": 850,
+          "train_normalized_mse": 1.2002020507919186e-05,
+          "tune_distance_p95_m": 0.011141303228214371,
+          "tune_distance_rmse_m": 0.00500717107206583
+        },
+        {
+          "epoch": 855,
+          "train_normalized_mse": 1.473635425977511e-05,
+          "tune_distance_p95_m": 0.011000704020261763,
+          "tune_distance_rmse_m": 0.0049169473350048065
+        },
+        {
+          "epoch": 860,
+          "train_normalized_mse": 8.05407890175845e-06,
+          "tune_distance_p95_m": 0.011152862384915325,
+          "tune_distance_rmse_m": 0.005233420990407467
+        },
+        {
+          "epoch": 865,
+          "train_normalized_mse": 1.1578781819129322e-05,
+          "tune_distance_p95_m": 0.012036087922751902,
+          "tune_distance_rmse_m": 0.005178190767765045
+        },
+        {
+          "epoch": 870,
+          "train_normalized_mse": 1.3449653411762005e-05,
+          "tune_distance_p95_m": 0.010878886701539142,
+          "tune_distance_rmse_m": 0.005025239195674658
+        },
+        {
+          "epoch": 875,
+          "train_normalized_mse": 3.3193386148093595e-05,
+          "tune_distance_p95_m": 0.011757033551111797,
+          "tune_distance_rmse_m": 0.005317325703799725
+        },
+        {
+          "epoch": 880,
+          "train_normalized_mse": 2.5454876170745894e-05,
+          "tune_distance_p95_m": 0.011154609033837897,
+          "tune_distance_rmse_m": 0.005242323502898216
+        },
+        {
+          "epoch": 885,
+          "train_normalized_mse": 0.00011064035788876936,
+          "tune_distance_p95_m": 0.011796727078035465,
+          "tune_distance_rmse_m": 0.0057838535867631435
+        },
+        {
+          "epoch": 890,
+          "train_normalized_mse": 7.946816070838587e-05,
+          "tune_distance_p95_m": 0.011136241955682625,
+          "tune_distance_rmse_m": 0.00606855284422636
+        },
+        {
+          "epoch": 895,
+          "train_normalized_mse": 5.0787188995041344e-05,
+          "tune_distance_p95_m": 0.012960476288571953,
+          "tune_distance_rmse_m": 0.005828769877552986
+        },
+        {
+          "epoch": 900,
+          "train_normalized_mse": 0.0001309621196317797,
+          "tune_distance_p95_m": 0.014275999460369343,
+          "tune_distance_rmse_m": 0.006975833792239428
+        },
+        {
+          "epoch": 905,
+          "train_normalized_mse": 0.000620022414072433,
+          "tune_distance_p95_m": 0.029421537276357386,
+          "tune_distance_rmse_m": 0.01263344008475542
+        },
+        {
+          "epoch": 910,
+          "train_normalized_mse": 0.0003677658065785899,
+          "tune_distance_p95_m": 0.020146893616765724,
+          "tune_distance_rmse_m": 0.009728805162012577
+        },
+        {
+          "epoch": 915,
+          "train_normalized_mse": 8.71551469971197e-05,
+          "tune_distance_p95_m": 0.01767236553132534,
+          "tune_distance_rmse_m": 0.007404181640595198
+        },
+        {
+          "epoch": 920,
+          "train_normalized_mse": 2.49278818636524e-05,
+          "tune_distance_p95_m": 0.014391626697033637,
+          "tune_distance_rmse_m": 0.006001058965921402
+        },
+        {
+          "epoch": 925,
+          "train_normalized_mse": 1.0492729695231487e-05,
+          "tune_distance_p95_m": 0.014865925675258023,
+          "tune_distance_rmse_m": 0.006131771951913834
+        },
+        {
+          "epoch": 930,
+          "train_normalized_mse": 8.478274091765725e-06,
+          "tune_distance_p95_m": 0.015624878555536247,
+          "tune_distance_rmse_m": 0.0059140934608876705
+        },
+        {
+          "epoch": 935,
+          "train_normalized_mse": 6.271545891267076e-06,
+          "tune_distance_p95_m": 0.013392353290691963,
+          "tune_distance_rmse_m": 0.005390245001763105
+        },
+        {
+          "epoch": 940,
+          "train_normalized_mse": 6.8579162408448676e-06,
+          "tune_distance_p95_m": 0.013614858174696548,
+          "tune_distance_rmse_m": 0.005484416615217924
+        },
+        {
+          "epoch": 945,
+          "train_normalized_mse": 8.400456927279664e-06,
+          "tune_distance_p95_m": 0.014142654091119753,
+          "tune_distance_rmse_m": 0.005728155840188265
+        },
+        {
+          "epoch": 950,
+          "train_normalized_mse": 5.893027280348051e-06,
+          "tune_distance_p95_m": 0.012955177295953028,
+          "tune_distance_rmse_m": 0.005386096425354481
+        },
+        {
+          "epoch": 955,
+          "train_normalized_mse": 5.579376432395197e-06,
+          "tune_distance_p95_m": 0.013236210774630297,
+          "tune_distance_rmse_m": 0.00539185618981719
+        },
+        {
+          "epoch": 960,
+          "train_normalized_mse": 7.459794496274921e-06,
+          "tune_distance_p95_m": 0.012162931682541962,
+          "tune_distance_rmse_m": 0.005241198930889368
+        },
+        {
+          "epoch": 965,
+          "train_normalized_mse": 5.9549883461154985e-06,
+          "tune_distance_p95_m": 0.010869943071156726,
+          "tune_distance_rmse_m": 0.005204125307500362
+        },
+        {
+          "epoch": 970,
+          "train_normalized_mse": 6.431010708758167e-06,
+          "tune_distance_p95_m": 0.011962460959330193,
+          "tune_distance_rmse_m": 0.005124942399561405
+        },
+        {
+          "epoch": 975,
+          "train_normalized_mse": 9.781310310293185e-06,
+          "tune_distance_p95_m": 0.01441950881853697,
+          "tune_distance_rmse_m": 0.005699827801436186
+        },
+        {
+          "epoch": 980,
+          "train_normalized_mse": 1.0494274200729642e-05,
+          "tune_distance_p95_m": 0.01273642410524189,
+          "tune_distance_rmse_m": 0.005484895780682564
+        },
+        {
+          "epoch": 985,
+          "train_normalized_mse": 9.530006600630658e-06,
+          "tune_distance_p95_m": 0.013334741629660122,
+          "tune_distance_rmse_m": 0.005847316700965166
+        },
+        {
+          "epoch": 990,
+          "train_normalized_mse": 5.86208461914283e-06,
+          "tune_distance_p95_m": 0.013526987237855784,
+          "tune_distance_rmse_m": 0.005451725330203772
+        },
+        {
+          "epoch": 995,
+          "train_normalized_mse": 5.92791303987676e-06,
+          "tune_distance_p95_m": 0.012739096116274577,
+          "tune_distance_rmse_m": 0.005361472722142935
+        },
+        {
+          "epoch": 1000,
+          "train_normalized_mse": 5.308241629551814e-06,
+          "tune_distance_p95_m": 0.011151022184640157,
+          "tune_distance_rmse_m": 0.0050736661069095135
+        },
+        {
+          "epoch": 1005,
+          "train_normalized_mse": 6.112739125104813e-06,
+          "tune_distance_p95_m": 0.012473731534555527,
+          "tune_distance_rmse_m": 0.0052049667574465275
+        },
+        {
+          "epoch": 1010,
+          "train_normalized_mse": 6.104175466597346e-06,
+          "tune_distance_p95_m": 0.01141554242931304,
+          "tune_distance_rmse_m": 0.0048486003652215
+        },
+        {
+          "epoch": 1015,
+          "train_normalized_mse": 6.450759708075151e-06,
+          "tune_distance_p95_m": 0.01407586378045379,
+          "tune_distance_rmse_m": 0.005711175035685301
+        },
+        {
+          "epoch": 1020,
+          "train_normalized_mse": 7.4431292823487235e-06,
+          "tune_distance_p95_m": 0.011565241450443855,
+          "tune_distance_rmse_m": 0.004999833181500435
+        },
+        {
+          "epoch": 1025,
+          "train_normalized_mse": 6.649726521190084e-06,
+          "tune_distance_p95_m": 0.01194569887593386,
+          "tune_distance_rmse_m": 0.005079226102679968
+        },
+        {
+          "epoch": 1030,
+          "train_normalized_mse": 5.482686845968138e-06,
+          "tune_distance_p95_m": 0.012589523615315557,
+          "tune_distance_rmse_m": 0.005263214465230703
+        },
+        {
+          "epoch": 1035,
+          "train_normalized_mse": 5.681465066580833e-06,
+          "tune_distance_p95_m": 0.012259643524885152,
+          "tune_distance_rmse_m": 0.00529503496363759
+        },
+        {
+          "epoch": 1040,
+          "train_normalized_mse": 6.992392858943244e-06,
+          "tune_distance_p95_m": 0.012000678339973083,
+          "tune_distance_rmse_m": 0.00512962881475687
+        },
+        {
+          "epoch": 1045,
+          "train_normalized_mse": 1.4948934046531162e-05,
+          "tune_distance_p95_m": 0.011652815481647845,
+          "tune_distance_rmse_m": 0.005193635355681181
+        },
+        {
+          "epoch": 1050,
+          "train_normalized_mse": 6.551491599550405e-06,
+          "tune_distance_p95_m": 0.012927389191463577,
+          "tune_distance_rmse_m": 0.005588156636804342
+        },
+        {
+          "epoch": 1055,
+          "train_normalized_mse": 5.768704851474021e-06,
+          "tune_distance_p95_m": 0.012528566084802144,
+          "tune_distance_rmse_m": 0.005219552665948868
+        },
+        {
+          "epoch": 1060,
+          "train_normalized_mse": 1.1466027803850776e-05,
+          "tune_distance_p95_m": 0.010586216673254963,
+          "tune_distance_rmse_m": 0.0049774060025811195
+        },
+        {
+          "epoch": 1065,
+          "train_normalized_mse": 8.212652254881328e-06,
+          "tune_distance_p95_m": 0.013340630382299401,
+          "tune_distance_rmse_m": 0.005399293266236782
+        },
+        {
+          "epoch": 1070,
+          "train_normalized_mse": 9.881310752621575e-06,
+          "tune_distance_p95_m": 0.014338519517332308,
+          "tune_distance_rmse_m": 0.005664377938956022
+        },
+        {
+          "epoch": 1075,
+          "train_normalized_mse": 1.2794914319033923e-05,
+          "tune_distance_p95_m": 0.013381540682166801,
+          "tune_distance_rmse_m": 0.005637694615870714
+        },
+        {
+          "epoch": 1080,
+          "train_normalized_mse": 1.6241684231014613e-05,
+          "tune_distance_p95_m": 0.013471605442464327,
+          "tune_distance_rmse_m": 0.005425156559795141
+        },
+        {
+          "epoch": 1085,
+          "train_normalized_mse": 7.172687943685767e-05,
+          "tune_distance_p95_m": 0.02124347100034356,
+          "tune_distance_rmse_m": 0.010307052172720432
+        },
+        {
+          "epoch": 1090,
+          "train_normalized_mse": 7.707412416429929e-05,
+          "tune_distance_p95_m": 0.012997479550540444,
+          "tune_distance_rmse_m": 0.006190333981066942
+        },
+        {
+          "epoch": 1095,
+          "train_normalized_mse": 0.00014932929428923352,
+          "tune_distance_p95_m": 0.018544585164636338,
+          "tune_distance_rmse_m": 0.0071476963348686695
+        },
+        {
+          "epoch": 1100,
+          "train_normalized_mse": 3.823777265017525e-05,
+          "tune_distance_p95_m": 0.014876910392194981,
+          "tune_distance_rmse_m": 0.007223488762974739
+        },
+        {
+          "epoch": 1105,
+          "train_normalized_mse": 1.8019584514835867e-05,
+          "tune_distance_p95_m": 0.013773874472826714,
+          "tune_distance_rmse_m": 0.006014970596879721
+        },
+        {
+          "epoch": 1110,
+          "train_normalized_mse": 1.2915460358367694e-05,
+          "tune_distance_p95_m": 0.01275657243095337,
+          "tune_distance_rmse_m": 0.005314736161381006
+        },
+        {
+          "epoch": 1115,
+          "train_normalized_mse": 1.78821358036785e-05,
+          "tune_distance_p95_m": 0.01214463054202497,
+          "tune_distance_rmse_m": 0.005424465984106064
+        },
+        {
+          "epoch": 1120,
+          "train_normalized_mse": 6.0979616232783114e-06,
+          "tune_distance_p95_m": 0.012286009406670897,
+          "tune_distance_rmse_m": 0.0051656970754265785
+        },
+        {
+          "epoch": 1125,
+          "train_normalized_mse": 8.257059307014283e-06,
+          "tune_distance_p95_m": 0.012030264968052503,
+          "tune_distance_rmse_m": 0.005359344184398651
+        },
+        {
+          "epoch": 1130,
+          "train_normalized_mse": 1.0112663810440081e-05,
+          "tune_distance_p95_m": 0.013053186237812013,
+          "tune_distance_rmse_m": 0.005247891880571842
+        },
+        {
+          "epoch": 1135,
+          "train_normalized_mse": 5.959984176578266e-06,
+          "tune_distance_p95_m": 0.011736541567370268,
+          "tune_distance_rmse_m": 0.005073676351457834
+        },
+        {
+          "epoch": 1140,
+          "train_normalized_mse": 7.962343699961039e-06,
+          "tune_distance_p95_m": 0.011093875253573034,
+          "tune_distance_rmse_m": 0.005079669412225485
+        },
+        {
+          "epoch": 1145,
+          "train_normalized_mse": 5.411971263432254e-06,
+          "tune_distance_p95_m": 0.009979252377524965,
+          "tune_distance_rmse_m": 0.004914499819278717
+        },
+        {
+          "epoch": 1150,
+          "train_normalized_mse": 8.06711595782473e-06,
+          "tune_distance_p95_m": 0.014224316785112018,
+          "tune_distance_rmse_m": 0.0055712261237204075
+        },
+        {
+          "epoch": 1155,
+          "train_normalized_mse": 1.0896780670583739e-05,
+          "tune_distance_p95_m": 0.013744003511965266,
+          "tune_distance_rmse_m": 0.005571209825575352
+        },
+        {
+          "epoch": 1160,
+          "train_normalized_mse": 8.58653411820629e-06,
+          "tune_distance_p95_m": 0.013630655035376542,
+          "tune_distance_rmse_m": 0.005467723589390516
+        },
+        {
+          "epoch": 1165,
+          "train_normalized_mse": 1.0997770196378329e-05,
+          "tune_distance_p95_m": 0.011853247135877605,
+          "tune_distance_rmse_m": 0.005193024408072233
+        },
+        {
+          "epoch": 1170,
+          "train_normalized_mse": 1.3835466553134387e-05,
+          "tune_distance_p95_m": 0.012174757663160535,
+          "tune_distance_rmse_m": 0.005548363551497459
+        },
+        {
+          "epoch": 1175,
+          "train_normalized_mse": 2.3770616520012384e-05,
+          "tune_distance_p95_m": 0.011229414958506816,
+          "tune_distance_rmse_m": 0.005239466670900583
+        },
+        {
+          "epoch": 1180,
+          "train_normalized_mse": 4.559877899673506e-05,
+          "tune_distance_p95_m": 0.013556591607630246,
+          "tune_distance_rmse_m": 0.0064017134718596935
+        },
+        {
+          "epoch": 1185,
+          "train_normalized_mse": 5.656921507978583e-05,
+          "tune_distance_p95_m": 0.010357876354828472,
+          "tune_distance_rmse_m": 0.004870460368692875
+        },
+        {
+          "epoch": 1190,
+          "train_normalized_mse": 1.953301688716461e-05,
+          "tune_distance_p95_m": 0.01269704466685651,
+          "tune_distance_rmse_m": 0.005925571080297232
+        },
+        {
+          "epoch": 1195,
+          "train_normalized_mse": 2.8255130082630275e-05,
+          "tune_distance_p95_m": 0.012934961030259725,
+          "tune_distance_rmse_m": 0.005636532325297594
+        },
+        {
+          "epoch": 1200,
+          "train_normalized_mse": 0.00011522097951168881,
+          "tune_distance_p95_m": 0.016894540935754772,
+          "tune_distance_rmse_m": 0.00822768546640873
+        }
+      ],
+      "seed": 20260723
+    },
+    {
+      "best_epoch": 940,
+      "best_tune_distance_p95_m": 0.009898135950788853,
+      "history": [
+        {
+          "epoch": 5,
+          "train_normalized_mse": 0.15964903146551365,
+          "tune_distance_p95_m": 0.39259425103664397,
+          "tune_distance_rmse_m": 0.21017210185527802
+        },
+        {
+          "epoch": 10,
+          "train_normalized_mse": 0.03517088764592221,
+          "tune_distance_p95_m": 0.1712898857891559,
+          "tune_distance_rmse_m": 0.10680393874645233
+        },
+        {
+          "epoch": 15,
+          "train_normalized_mse": 0.008069367973101243,
+          "tune_distance_p95_m": 0.17042393907904602,
+          "tune_distance_rmse_m": 0.07657076418399811
+        },
+        {
+          "epoch": 20,
+          "train_normalized_mse": 0.003548550599238329,
+          "tune_distance_p95_m": 0.1626886188983915,
+          "tune_distance_rmse_m": 0.06648700684309006
+        },
+        {
+          "epoch": 25,
+          "train_normalized_mse": 0.0021044339804926464,
+          "tune_distance_p95_m": 0.13097629249095902,
+          "tune_distance_rmse_m": 0.05301140621304512
+        },
+        {
+          "epoch": 30,
+          "train_normalized_mse": 0.0013928922432425775,
+          "tune_distance_p95_m": 0.09796825535595415,
+          "tune_distance_rmse_m": 0.04257993772625923
+        },
+        {
+          "epoch": 35,
+          "train_normalized_mse": 0.0010107875721970278,
+          "tune_distance_p95_m": 0.08544984906911844,
+          "tune_distance_rmse_m": 0.03716108202934265
+        },
+        {
+          "epoch": 40,
+          "train_normalized_mse": 0.0007828325268060884,
+          "tune_distance_p95_m": 0.07365717701613901,
+          "tune_distance_rmse_m": 0.03294099494814873
+        },
+        {
+          "epoch": 45,
+          "train_normalized_mse": 0.0006483235956055292,
+          "tune_distance_p95_m": 0.0663062386214733,
+          "tune_distance_rmse_m": 0.03046027384698391
+        },
+        {
+          "epoch": 50,
+          "train_normalized_mse": 0.0005532231696538235,
+          "tune_distance_p95_m": 0.06245092414319515,
+          "tune_distance_rmse_m": 0.028753796592354774
+        },
+        {
+          "epoch": 55,
+          "train_normalized_mse": 0.00048233524144610814,
+          "tune_distance_p95_m": 0.057855406403541546,
+          "tune_distance_rmse_m": 0.026820410043001175
+        },
+        {
+          "epoch": 60,
+          "train_normalized_mse": 0.00042600071071973887,
+          "tune_distance_p95_m": 0.05491404253989458,
+          "tune_distance_rmse_m": 0.02580217644572258
+        },
+        {
+          "epoch": 65,
+          "train_normalized_mse": 0.00037984878310868354,
+          "tune_distance_p95_m": 0.052286024577915646,
+          "tune_distance_rmse_m": 0.024647243320941925
+        },
+        {
+          "epoch": 70,
+          "train_normalized_mse": 0.0003381282853967461,
+          "tune_distance_p95_m": 0.0485273502767086,
+          "tune_distance_rmse_m": 0.023064477369189262
+        },
+        {
+          "epoch": 75,
+          "train_normalized_mse": 0.00030314923864544223,
+          "tune_distance_p95_m": 0.04714445341378449,
+          "tune_distance_rmse_m": 0.02218497358262539
+        },
+        {
+          "epoch": 80,
+          "train_normalized_mse": 0.00027490053999874934,
+          "tune_distance_p95_m": 0.046110573969781396,
+          "tune_distance_rmse_m": 0.021492870524525642
+        },
+        {
+          "epoch": 85,
+          "train_normalized_mse": 0.0002486876422935574,
+          "tune_distance_p95_m": 0.045410419628024085,
+          "tune_distance_rmse_m": 0.02061394229531288
+        },
+        {
+          "epoch": 90,
+          "train_normalized_mse": 0.00022568062520708496,
+          "tune_distance_p95_m": 0.04345469865947962,
+          "tune_distance_rmse_m": 0.019677195698022842
+        },
+        {
+          "epoch": 95,
+          "train_normalized_mse": 0.00020789057516754328,
+          "tune_distance_p95_m": 0.041459120810031884,
+          "tune_distance_rmse_m": 0.018985671922564507
+        },
+        {
+          "epoch": 100,
+          "train_normalized_mse": 0.0001900344231807251,
+          "tune_distance_p95_m": 0.04066720698028803,
+          "tune_distance_rmse_m": 0.018055468797683716
+        },
+        {
+          "epoch": 105,
+          "train_normalized_mse": 0.00017364676980497805,
+          "tune_distance_p95_m": 0.04053231067955494,
+          "tune_distance_rmse_m": 0.01772395148873329
+        },
+        {
+          "epoch": 110,
+          "train_normalized_mse": 0.0001618987852564539,
+          "tune_distance_p95_m": 0.04122776594012976,
+          "tune_distance_rmse_m": 0.017319874837994576
+        },
+        {
+          "epoch": 115,
+          "train_normalized_mse": 0.00014849284228770748,
+          "tune_distance_p95_m": 0.040365723520517344,
+          "tune_distance_rmse_m": 0.016599353402853012
+        },
+        {
+          "epoch": 120,
+          "train_normalized_mse": 0.00014073579095246825,
+          "tune_distance_p95_m": 0.04000904634594917,
+          "tune_distance_rmse_m": 0.01630047895014286
+        },
+        {
+          "epoch": 125,
+          "train_normalized_mse": 0.00013029191483694471,
+          "tune_distance_p95_m": 0.040441551618278025,
+          "tune_distance_rmse_m": 0.015968656167387962
+        },
+        {
+          "epoch": 130,
+          "train_normalized_mse": 0.00012389136368016663,
+          "tune_distance_p95_m": 0.03957225866615772,
+          "tune_distance_rmse_m": 0.01554855890572071
+        },
+        {
+          "epoch": 135,
+          "train_normalized_mse": 0.00011427721811311418,
+          "tune_distance_p95_m": 0.03986130710691213,
+          "tune_distance_rmse_m": 0.015270909294486046
+        },
+        {
+          "epoch": 140,
+          "train_normalized_mse": 0.00010649141525694479,
+          "tune_distance_p95_m": 0.03982171937823295,
+          "tune_distance_rmse_m": 0.014941742643713951
+        },
+        {
+          "epoch": 145,
+          "train_normalized_mse": 0.0001021213985248387,
+          "tune_distance_p95_m": 0.03957405183464288,
+          "tune_distance_rmse_m": 0.01464470662176609
+        },
+        {
+          "epoch": 150,
+          "train_normalized_mse": 9.66162582412117e-05,
+          "tune_distance_p95_m": 0.039462041854858396,
+          "tune_distance_rmse_m": 0.014379346743226051
+        },
+        {
+          "epoch": 155,
+          "train_normalized_mse": 9.072205910087449e-05,
+          "tune_distance_p95_m": 0.03891658000648021,
+          "tune_distance_rmse_m": 0.014058887958526611
+        },
+        {
+          "epoch": 160,
+          "train_normalized_mse": 8.467769810905386e-05,
+          "tune_distance_p95_m": 0.0381434602662921,
+          "tune_distance_rmse_m": 0.013830974698066711
+        },
+        {
+          "epoch": 165,
+          "train_normalized_mse": 8.25060107449086e-05,
+          "tune_distance_p95_m": 0.03804726861417294,
+          "tune_distance_rmse_m": 0.013769591227173805
+        },
+        {
+          "epoch": 170,
+          "train_normalized_mse": 7.808126923791541e-05,
+          "tune_distance_p95_m": 0.03757277373224496,
+          "tune_distance_rmse_m": 0.013270655646920204
+        },
+        {
+          "epoch": 175,
+          "train_normalized_mse": 7.445832983521221e-05,
+          "tune_distance_p95_m": 0.03759040236473083,
+          "tune_distance_rmse_m": 0.013435862958431244
+        },
+        {
+          "epoch": 180,
+          "train_normalized_mse": 7.154949503673012e-05,
+          "tune_distance_p95_m": 0.03724283799529075,
+          "tune_distance_rmse_m": 0.01319186668843031
+        },
+        {
+          "epoch": 185,
+          "train_normalized_mse": 6.933674689080043e-05,
+          "tune_distance_p95_m": 0.03607710525393486,
+          "tune_distance_rmse_m": 0.012647547759115696
+        },
+        {
+          "epoch": 190,
+          "train_normalized_mse": 6.528276099472127e-05,
+          "tune_distance_p95_m": 0.03603011798113585,
+          "tune_distance_rmse_m": 0.012638723477721214
+        },
+        {
+          "epoch": 195,
+          "train_normalized_mse": 6.329520271576352e-05,
+          "tune_distance_p95_m": 0.03583837803453207,
+          "tune_distance_rmse_m": 0.012505178339779377
+        },
+        {
+          "epoch": 200,
+          "train_normalized_mse": 6.080171914889657e-05,
+          "tune_distance_p95_m": 0.035371683537960046,
+          "tune_distance_rmse_m": 0.012480644509196281
+        },
+        {
+          "epoch": 205,
+          "train_normalized_mse": 5.8266158208553274e-05,
+          "tune_distance_p95_m": 0.035684303566813465,
+          "tune_distance_rmse_m": 0.012402943335473537
+        },
+        {
+          "epoch": 210,
+          "train_normalized_mse": 5.663379073539226e-05,
+          "tune_distance_p95_m": 0.03532259259372949,
+          "tune_distance_rmse_m": 0.012246147729456425
+        },
+        {
+          "epoch": 215,
+          "train_normalized_mse": 5.654653381370417e-05,
+          "tune_distance_p95_m": 0.03448146060109138,
+          "tune_distance_rmse_m": 0.012089262716472149
+        },
+        {
+          "epoch": 220,
+          "train_normalized_mse": 5.312436961072595e-05,
+          "tune_distance_p95_m": 0.03369018081575632,
+          "tune_distance_rmse_m": 0.011806455440819263
+        },
+        {
+          "epoch": 225,
+          "train_normalized_mse": 5.011131105946557e-05,
+          "tune_distance_p95_m": 0.03345025479793549,
+          "tune_distance_rmse_m": 0.011651982553303242
+        },
+        {
+          "epoch": 230,
+          "train_normalized_mse": 4.959901458565391e-05,
+          "tune_distance_p95_m": 0.032942036911845204,
+          "tune_distance_rmse_m": 0.011523585766553879
+        },
+        {
+          "epoch": 235,
+          "train_normalized_mse": 4.8752871391530916e-05,
+          "tune_distance_p95_m": 0.03346387259662151,
+          "tune_distance_rmse_m": 0.011397600173950195
+        },
+        {
+          "epoch": 240,
+          "train_normalized_mse": 4.5852560058272885e-05,
+          "tune_distance_p95_m": 0.032448170706629746,
+          "tune_distance_rmse_m": 0.011181283742189407
+        },
+        {
+          "epoch": 245,
+          "train_normalized_mse": 4.683729422507448e-05,
+          "tune_distance_p95_m": 0.03284855652600526,
+          "tune_distance_rmse_m": 0.011236474849283695
+        },
+        {
+          "epoch": 250,
+          "train_normalized_mse": 4.3773600370051304e-05,
+          "tune_distance_p95_m": 0.031668434664607045,
+          "tune_distance_rmse_m": 0.011003187857568264
+        },
+        {
+          "epoch": 255,
+          "train_normalized_mse": 4.1702008035683414e-05,
+          "tune_distance_p95_m": 0.03153981044888496,
+          "tune_distance_rmse_m": 0.01085848268121481
+        },
+        {
+          "epoch": 260,
+          "train_normalized_mse": 4.0564837770050456e-05,
+          "tune_distance_p95_m": 0.03086910508573055,
+          "tune_distance_rmse_m": 0.010837268084287643
+        },
+        {
+          "epoch": 265,
+          "train_normalized_mse": 4.264934084443539e-05,
+          "tune_distance_p95_m": 0.02984378915280103,
+          "tune_distance_rmse_m": 0.010408936999738216
+        },
+        {
+          "epoch": 270,
+          "train_normalized_mse": 3.992113845908949e-05,
+          "tune_distance_p95_m": 0.03068251367658376,
+          "tune_distance_rmse_m": 0.01057312823832035
+        },
+        {
+          "epoch": 275,
+          "train_normalized_mse": 3.714132298339616e-05,
+          "tune_distance_p95_m": 0.030571334064006805,
+          "tune_distance_rmse_m": 0.010281756520271301
+        },
+        {
+          "epoch": 280,
+          "train_normalized_mse": 3.8156885957026755e-05,
+          "tune_distance_p95_m": 0.029996472224593156,
+          "tune_distance_rmse_m": 0.010328042320907116
+        },
+        {
+          "epoch": 285,
+          "train_normalized_mse": 3.695631752826126e-05,
+          "tune_distance_p95_m": 0.029233707766979925,
+          "tune_distance_rmse_m": 0.010155485942959785
+        },
+        {
+          "epoch": 290,
+          "train_normalized_mse": 3.5684905461701486e-05,
+          "tune_distance_p95_m": 0.029017021041363472,
+          "tune_distance_rmse_m": 0.009954292327165604
+        },
+        {
+          "epoch": 295,
+          "train_normalized_mse": 3.3602718822453825e-05,
+          "tune_distance_p95_m": 0.028951127734035246,
+          "tune_distance_rmse_m": 0.009993896819651127
+        },
+        {
+          "epoch": 300,
+          "train_normalized_mse": 3.3668274307018963e-05,
+          "tune_distance_p95_m": 0.028048676997423166,
+          "tune_distance_rmse_m": 0.009537279605865479
+        },
+        {
+          "epoch": 305,
+          "train_normalized_mse": 3.3044946400893916e-05,
+          "tune_distance_p95_m": 0.027823532931506627,
+          "tune_distance_rmse_m": 0.009541848674416542
+        },
+        {
+          "epoch": 310,
+          "train_normalized_mse": 3.0503181557849114e-05,
+          "tune_distance_p95_m": 0.02777803167700767,
+          "tune_distance_rmse_m": 0.009479945525527
+        },
+        {
+          "epoch": 315,
+          "train_normalized_mse": 3.300904312422254e-05,
+          "tune_distance_p95_m": 0.027573798876255745,
+          "tune_distance_rmse_m": 0.009655517525970936
+        },
+        {
+          "epoch": 320,
+          "train_normalized_mse": 3.2012240760530786e-05,
+          "tune_distance_p95_m": 0.026994508877396576,
+          "tune_distance_rmse_m": 0.009189920499920845
+        },
+        {
+          "epoch": 325,
+          "train_normalized_mse": 2.986976579178876e-05,
+          "tune_distance_p95_m": 0.02638200419023632,
+          "tune_distance_rmse_m": 0.009115581400692463
+        },
+        {
+          "epoch": 330,
+          "train_normalized_mse": 2.8412299351450138e-05,
+          "tune_distance_p95_m": 0.026077452581375827,
+          "tune_distance_rmse_m": 0.008903678506612778
+        },
+        {
+          "epoch": 335,
+          "train_normalized_mse": 2.751162518459176e-05,
+          "tune_distance_p95_m": 0.02565910713747143,
+          "tune_distance_rmse_m": 0.008925266563892365
+        },
+        {
+          "epoch": 340,
+          "train_normalized_mse": 2.8806270436912757e-05,
+          "tune_distance_p95_m": 0.025527440104633557,
+          "tune_distance_rmse_m": 0.008774638175964355
+        },
+        {
+          "epoch": 345,
+          "train_normalized_mse": 2.685390666700091e-05,
+          "tune_distance_p95_m": 0.025371287669986475,
+          "tune_distance_rmse_m": 0.008883155882358551
+        },
+        {
+          "epoch": 350,
+          "train_normalized_mse": 2.762291370074085e-05,
+          "tune_distance_p95_m": 0.025151300989091383,
+          "tune_distance_rmse_m": 0.008784721605479717
+        },
+        {
+          "epoch": 355,
+          "train_normalized_mse": 2.4552088673277595e-05,
+          "tune_distance_p95_m": 0.024367047194391474,
+          "tune_distance_rmse_m": 0.008387820795178413
+        },
+        {
+          "epoch": 360,
+          "train_normalized_mse": 2.580467748645644e-05,
+          "tune_distance_p95_m": 0.0238340325653553,
+          "tune_distance_rmse_m": 0.008214768022298813
+        },
+        {
+          "epoch": 365,
+          "train_normalized_mse": 2.3877737444229097e-05,
+          "tune_distance_p95_m": 0.024175313767045722,
+          "tune_distance_rmse_m": 0.008209671825170517
+        },
+        {
+          "epoch": 370,
+          "train_normalized_mse": 2.261259304073623e-05,
+          "tune_distance_p95_m": 0.023656317312270386,
+          "tune_distance_rmse_m": 0.00812460109591484
+        },
+        {
+          "epoch": 375,
+          "train_normalized_mse": 2.4051264182688963e-05,
+          "tune_distance_p95_m": 0.022535015176981688,
+          "tune_distance_rmse_m": 0.007852123118937016
+        },
+        {
+          "epoch": 380,
+          "train_normalized_mse": 2.1864254290050123e-05,
+          "tune_distance_p95_m": 0.023042616248130785,
+          "tune_distance_rmse_m": 0.00783831998705864
+        },
+        {
+          "epoch": 385,
+          "train_normalized_mse": 2.1748630866855628e-05,
+          "tune_distance_p95_m": 0.022295988630503402,
+          "tune_distance_rmse_m": 0.0076277111656963825
+        },
+        {
+          "epoch": 390,
+          "train_normalized_mse": 2.3084440359972385e-05,
+          "tune_distance_p95_m": 0.022215656470507366,
+          "tune_distance_rmse_m": 0.007692263461649418
+        },
+        {
+          "epoch": 395,
+          "train_normalized_mse": 2.1616316492630478e-05,
+          "tune_distance_p95_m": 0.02214509211480616,
+          "tune_distance_rmse_m": 0.00761240953579545
+        },
+        {
+          "epoch": 400,
+          "train_normalized_mse": 2.0083947068390746e-05,
+          "tune_distance_p95_m": 0.021625559218227848,
+          "tune_distance_rmse_m": 0.007559145800769329
+        },
+        {
+          "epoch": 405,
+          "train_normalized_mse": 2.1587774474602683e-05,
+          "tune_distance_p95_m": 0.022065898124128566,
+          "tune_distance_rmse_m": 0.007749107200652361
+        },
+        {
+          "epoch": 410,
+          "train_normalized_mse": 2.0171423513378966e-05,
+          "tune_distance_p95_m": 0.020971833076328023,
+          "tune_distance_rmse_m": 0.007374093402177095
+        },
+        {
+          "epoch": 415,
+          "train_normalized_mse": 2.2416843453436486e-05,
+          "tune_distance_p95_m": 0.020013340376317485,
+          "tune_distance_rmse_m": 0.007296422962099314
+        },
+        {
+          "epoch": 420,
+          "train_normalized_mse": 1.9946881015162115e-05,
+          "tune_distance_p95_m": 0.020934259798377736,
+          "tune_distance_rmse_m": 0.007248297333717346
+        },
+        {
+          "epoch": 425,
+          "train_normalized_mse": 1.8619494719467567e-05,
+          "tune_distance_p95_m": 0.020775428134948,
+          "tune_distance_rmse_m": 0.007081070449203253
+        },
+        {
+          "epoch": 430,
+          "train_normalized_mse": 1.8292977281880828e-05,
+          "tune_distance_p95_m": 0.020740755740553125,
+          "tune_distance_rmse_m": 0.0072420681826770306
+        },
+        {
+          "epoch": 435,
+          "train_normalized_mse": 1.7807341640020657e-05,
+          "tune_distance_p95_m": 0.020317954756319517,
+          "tune_distance_rmse_m": 0.0070899068377912045
+        },
+        {
+          "epoch": 440,
+          "train_normalized_mse": 1.8467340755466322e-05,
+          "tune_distance_p95_m": 0.018840191513299926,
+          "tune_distance_rmse_m": 0.006699399556964636
+        },
+        {
+          "epoch": 445,
+          "train_normalized_mse": 1.7439901823404636e-05,
+          "tune_distance_p95_m": 0.019415508117526754,
+          "tune_distance_rmse_m": 0.006815036293119192
+        },
+        {
+          "epoch": 450,
+          "train_normalized_mse": 1.751411959080622e-05,
+          "tune_distance_p95_m": 0.019661987200379347,
+          "tune_distance_rmse_m": 0.006644988898187876
+        },
+        {
+          "epoch": 455,
+          "train_normalized_mse": 1.6853741838355762e-05,
+          "tune_distance_p95_m": 0.01921666134148835,
+          "tune_distance_rmse_m": 0.006710502319037914
+        },
+        {
+          "epoch": 460,
+          "train_normalized_mse": 1.8037635846555706e-05,
+          "tune_distance_p95_m": 0.018521063029766065,
+          "tune_distance_rmse_m": 0.006468287669122219
+        },
+        {
+          "epoch": 465,
+          "train_normalized_mse": 1.5145866998130242e-05,
+          "tune_distance_p95_m": 0.018445811141282305,
+          "tune_distance_rmse_m": 0.0064612459391355515
+        },
+        {
+          "epoch": 470,
+          "train_normalized_mse": 1.5026787175948062e-05,
+          "tune_distance_p95_m": 0.01809313800185917,
+          "tune_distance_rmse_m": 0.006413213908672333
+        },
+        {
+          "epoch": 475,
+          "train_normalized_mse": 1.5250081368752657e-05,
+          "tune_distance_p95_m": 0.01797613957896828,
+          "tune_distance_rmse_m": 0.006426767911761999
+        },
+        {
+          "epoch": 480,
+          "train_normalized_mse": 1.6991952514600645e-05,
+          "tune_distance_p95_m": 0.018007728829979888,
+          "tune_distance_rmse_m": 0.006622113287448883
+        },
+        {
+          "epoch": 485,
+          "train_normalized_mse": 1.5588487944465635e-05,
+          "tune_distance_p95_m": 0.016714598145335904,
+          "tune_distance_rmse_m": 0.006601373665034771
+        },
+        {
+          "epoch": 490,
+          "train_normalized_mse": 1.4268330089276118e-05,
+          "tune_distance_p95_m": 0.017374790273606774,
+          "tune_distance_rmse_m": 0.006561236456036568
+        },
+        {
+          "epoch": 495,
+          "train_normalized_mse": 1.4246398422345233e-05,
+          "tune_distance_p95_m": 0.01774080311879514,
+          "tune_distance_rmse_m": 0.006256300490349531
+        },
+        {
+          "epoch": 500,
+          "train_normalized_mse": 1.4997951215615071e-05,
+          "tune_distance_p95_m": 0.017208049818873403,
+          "tune_distance_rmse_m": 0.006177075207233429
+        },
+        {
+          "epoch": 505,
+          "train_normalized_mse": 1.3315901844435485e-05,
+          "tune_distance_p95_m": 0.01674632970243691,
+          "tune_distance_rmse_m": 0.005937968846410513
+        },
+        {
+          "epoch": 510,
+          "train_normalized_mse": 1.3345991216115899e-05,
+          "tune_distance_p95_m": 0.016919780429452642,
+          "tune_distance_rmse_m": 0.00630885548889637
+        },
+        {
+          "epoch": 515,
+          "train_normalized_mse": 1.2822402089097937e-05,
+          "tune_distance_p95_m": 0.016481283586472273,
+          "tune_distance_rmse_m": 0.005975669249892235
+        },
+        {
+          "epoch": 520,
+          "train_normalized_mse": 1.322640726261613e-05,
+          "tune_distance_p95_m": 0.015253012022003512,
+          "tune_distance_rmse_m": 0.0057553257793188095
+        },
+        {
+          "epoch": 525,
+          "train_normalized_mse": 1.2695762307613909e-05,
+          "tune_distance_p95_m": 0.01630394198000431,
+          "tune_distance_rmse_m": 0.006002300884574652
+        },
+        {
+          "epoch": 530,
+          "train_normalized_mse": 1.150192552781766e-05,
+          "tune_distance_p95_m": 0.016102362656965827,
+          "tune_distance_rmse_m": 0.005738335195928812
+        },
+        {
+          "epoch": 535,
+          "train_normalized_mse": 1.2592625464828433e-05,
+          "tune_distance_p95_m": 0.015962901525199396,
+          "tune_distance_rmse_m": 0.005891162436455488
+        },
+        {
+          "epoch": 540,
+          "train_normalized_mse": 1.3491318927742868e-05,
+          "tune_distance_p95_m": 0.015466469060629597,
+          "tune_distance_rmse_m": 0.005709318909794092
+        },
+        {
+          "epoch": 545,
+          "train_normalized_mse": 2.3473054681202038e-05,
+          "tune_distance_p95_m": 0.01408842937089502,
+          "tune_distance_rmse_m": 0.005340642295777798
+        },
+        {
+          "epoch": 550,
+          "train_normalized_mse": 1.620625810398467e-05,
+          "tune_distance_p95_m": 0.015974782733246658,
+          "tune_distance_rmse_m": 0.005922091193497181
+        },
+        {
+          "epoch": 555,
+          "train_normalized_mse": 1.3368492833059894e-05,
+          "tune_distance_p95_m": 0.015667698159813864,
+          "tune_distance_rmse_m": 0.005695382598787546
+        },
+        {
+          "epoch": 560,
+          "train_normalized_mse": 1.2196101300089554e-05,
+          "tune_distance_p95_m": 0.01466257208958268,
+          "tune_distance_rmse_m": 0.005346144549548626
+        },
+        {
+          "epoch": 565,
+          "train_normalized_mse": 1.2420485370711775e-05,
+          "tune_distance_p95_m": 0.015154303843155487,
+          "tune_distance_rmse_m": 0.005458488594740629
+        },
+        {
+          "epoch": 570,
+          "train_normalized_mse": 1.2072403303152482e-05,
+          "tune_distance_p95_m": 0.01525010159239171,
+          "tune_distance_rmse_m": 0.005616879090666771
+        },
+        {
+          "epoch": 575,
+          "train_normalized_mse": 1.2659581651014537e-05,
+          "tune_distance_p95_m": 0.014954117825254784,
+          "tune_distance_rmse_m": 0.005394476465880871
+        },
+        {
+          "epoch": 580,
+          "train_normalized_mse": 1.0654162443850573e-05,
+          "tune_distance_p95_m": 0.014265140937641262,
+          "tune_distance_rmse_m": 0.005320022348314524
+        },
+        {
+          "epoch": 585,
+          "train_normalized_mse": 1.1147522184872191e-05,
+          "tune_distance_p95_m": 0.015228103054687352,
+          "tune_distance_rmse_m": 0.0055959634482860565
+        },
+        {
+          "epoch": 590,
+          "train_normalized_mse": 1.1618751654040943e-05,
+          "tune_distance_p95_m": 0.014804631797596795,
+          "tune_distance_rmse_m": 0.0054276189766824245
+        },
+        {
+          "epoch": 595,
+          "train_normalized_mse": 1.9990929279613245e-05,
+          "tune_distance_p95_m": 0.013295800285413849,
+          "tune_distance_rmse_m": 0.005090881139039993
+        },
+        {
+          "epoch": 600,
+          "train_normalized_mse": 1.3622742459885653e-05,
+          "tune_distance_p95_m": 0.01497701718471942,
+          "tune_distance_rmse_m": 0.005781771615147591
+        },
+        {
+          "epoch": 605,
+          "train_normalized_mse": 2.876609965154019e-05,
+          "tune_distance_p95_m": 0.01612120708450675,
+          "tune_distance_rmse_m": 0.005628866143524647
+        },
+        {
+          "epoch": 610,
+          "train_normalized_mse": 1.3445216912562804e-05,
+          "tune_distance_p95_m": 0.012759465072303994,
+          "tune_distance_rmse_m": 0.004957315977662802
+        },
+        {
+          "epoch": 615,
+          "train_normalized_mse": 1.3506871175450852e-05,
+          "tune_distance_p95_m": 0.013520469795912501,
+          "tune_distance_rmse_m": 0.005071738734841347
+        },
+        {
+          "epoch": 620,
+          "train_normalized_mse": 1.852628740475905e-05,
+          "tune_distance_p95_m": 0.013983436347916706,
+          "tune_distance_rmse_m": 0.0054766028188169
+        },
+        {
+          "epoch": 625,
+          "train_normalized_mse": 1.3059507788663419e-05,
+          "tune_distance_p95_m": 0.014354998571798193,
+          "tune_distance_rmse_m": 0.005405452102422714
+        },
+        {
+          "epoch": 630,
+          "train_normalized_mse": 1.1749018963121016e-05,
+          "tune_distance_p95_m": 0.014307743869721883,
+          "tune_distance_rmse_m": 0.005655887071043253
+        },
+        {
+          "epoch": 635,
+          "train_normalized_mse": 9.54944167269308e-06,
+          "tune_distance_p95_m": 0.012640634970739471,
+          "tune_distance_rmse_m": 0.004993889480829239
+        },
+        {
+          "epoch": 640,
+          "train_normalized_mse": 1.1303835970210729e-05,
+          "tune_distance_p95_m": 0.013442772673442951,
+          "tune_distance_rmse_m": 0.005438382737338543
+        },
+        {
+          "epoch": 645,
+          "train_normalized_mse": 1.1528551096904394e-05,
+          "tune_distance_p95_m": 0.01358239944092928,
+          "tune_distance_rmse_m": 0.005165303125977516
+        },
+        {
+          "epoch": 650,
+          "train_normalized_mse": 1.2969081038598935e-05,
+          "tune_distance_p95_m": 0.013009868143126362,
+          "tune_distance_rmse_m": 0.004775787238031626
+        },
+        {
+          "epoch": 655,
+          "train_normalized_mse": 1.1015608259568629e-05,
+          "tune_distance_p95_m": 0.013653875375166519,
+          "tune_distance_rmse_m": 0.00521132443100214
+        },
+        {
+          "epoch": 660,
+          "train_normalized_mse": 2.8767161430758342e-05,
+          "tune_distance_p95_m": 0.012398904189467416,
+          "tune_distance_rmse_m": 0.004948679823428392
+        },
+        {
+          "epoch": 665,
+          "train_normalized_mse": 2.6229902766971735e-05,
+          "tune_distance_p95_m": 0.0121623259037733,
+          "tune_distance_rmse_m": 0.0057732281275093555
+        },
+        {
+          "epoch": 670,
+          "train_normalized_mse": 9.337288346407085e-05,
+          "tune_distance_p95_m": 0.011419853288680306,
+          "tune_distance_rmse_m": 0.005253415089100599
+        },
+        {
+          "epoch": 675,
+          "train_normalized_mse": 2.6486686916190626e-05,
+          "tune_distance_p95_m": 0.011028363648802034,
+          "tune_distance_rmse_m": 0.005010948516428471
+        },
+        {
+          "epoch": 680,
+          "train_normalized_mse": 2.0091725258552878e-05,
+          "tune_distance_p95_m": 0.014094590116292226,
+          "tune_distance_rmse_m": 0.005510126706212759
+        },
+        {
+          "epoch": 685,
+          "train_normalized_mse": 1.962950910526336e-05,
+          "tune_distance_p95_m": 0.011900559160858387,
+          "tune_distance_rmse_m": 0.004979318007826805
+        },
+        {
+          "epoch": 690,
+          "train_normalized_mse": 9.7306157617264e-06,
+          "tune_distance_p95_m": 0.013202853268012389,
+          "tune_distance_rmse_m": 0.004923026077449322
+        },
+        {
+          "epoch": 695,
+          "train_normalized_mse": 8.607947612497874e-06,
+          "tune_distance_p95_m": 0.013264714833348975,
+          "tune_distance_rmse_m": 0.0050123026594519615
+        },
+        {
+          "epoch": 700,
+          "train_normalized_mse": 1.0347444562317004e-05,
+          "tune_distance_p95_m": 0.012563837505877007,
+          "tune_distance_rmse_m": 0.00493182148784399
+        },
+        {
+          "epoch": 705,
+          "train_normalized_mse": 1.1807437914014149e-05,
+          "tune_distance_p95_m": 0.012852008687332262,
+          "tune_distance_rmse_m": 0.0049823978915810585
+        },
+        {
+          "epoch": 710,
+          "train_normalized_mse": 8.669666226125086e-06,
+          "tune_distance_p95_m": 0.012594108795747145,
+          "tune_distance_rmse_m": 0.004832779988646507
+        },
+        {
+          "epoch": 715,
+          "train_normalized_mse": 8.963952447964785e-06,
+          "tune_distance_p95_m": 0.01224105441942811,
+          "tune_distance_rmse_m": 0.005113332066684961
+        },
+        {
+          "epoch": 720,
+          "train_normalized_mse": 1.4970892599401914e-05,
+          "tune_distance_p95_m": 0.0122045169584453,
+          "tune_distance_rmse_m": 0.005134287290275097
+        },
+        {
+          "epoch": 725,
+          "train_normalized_mse": 3.350971612809716e-05,
+          "tune_distance_p95_m": 0.01320120417512952,
+          "tune_distance_rmse_m": 0.005853879731148481
+        },
+        {
+          "epoch": 730,
+          "train_normalized_mse": 1.8641638873081672e-05,
+          "tune_distance_p95_m": 0.011217028042301532,
+          "tune_distance_rmse_m": 0.005111971870064735
+        },
+        {
+          "epoch": 735,
+          "train_normalized_mse": 9.243832146080022e-06,
+          "tune_distance_p95_m": 0.014065557997673728,
+          "tune_distance_rmse_m": 0.004969457630068064
+        },
+        {
+          "epoch": 740,
+          "train_normalized_mse": 1.3939924859809444e-05,
+          "tune_distance_p95_m": 0.012135510938242076,
+          "tune_distance_rmse_m": 0.00533808721229434
+        },
+        {
+          "epoch": 745,
+          "train_normalized_mse": 8.995396567849656e-06,
+          "tune_distance_p95_m": 0.01307307193055748,
+          "tune_distance_rmse_m": 0.005196502432227135
+        },
+        {
+          "epoch": 750,
+          "train_normalized_mse": 1.2197875644472477e-05,
+          "tune_distance_p95_m": 0.0129055876750499,
+          "tune_distance_rmse_m": 0.005328950006514788
+        },
+        {
+          "epoch": 755,
+          "train_normalized_mse": 1.331670235933352e-05,
+          "tune_distance_p95_m": 0.012985764490440484,
+          "tune_distance_rmse_m": 0.005143461748957634
+        },
+        {
+          "epoch": 760,
+          "train_normalized_mse": 1.2660338270826175e-05,
+          "tune_distance_p95_m": 0.010938457399606699,
+          "tune_distance_rmse_m": 0.004494101740419865
+        },
+        {
+          "epoch": 765,
+          "train_normalized_mse": 1.1061357821617684e-05,
+          "tune_distance_p95_m": 0.011739782756194472,
+          "tune_distance_rmse_m": 0.004603359382599592
+        },
+        {
+          "epoch": 770,
+          "train_normalized_mse": 2.7563931788583368e-05,
+          "tune_distance_p95_m": 0.011724737985059618,
+          "tune_distance_rmse_m": 0.005685415584594011
+        },
+        {
+          "epoch": 775,
+          "train_normalized_mse": 7.221765758514633e-05,
+          "tune_distance_p95_m": 0.014778575813397754,
+          "tune_distance_rmse_m": 0.006994853261858225
+        },
+        {
+          "epoch": 780,
+          "train_normalized_mse": 1.6075969222328512e-05,
+          "tune_distance_p95_m": 0.012581266555935142,
+          "tune_distance_rmse_m": 0.004933532327413559
+        },
+        {
+          "epoch": 785,
+          "train_normalized_mse": 1.0409285973685001e-05,
+          "tune_distance_p95_m": 0.011565893748775119,
+          "tune_distance_rmse_m": 0.0047417632304131985
+        },
+        {
+          "epoch": 790,
+          "train_normalized_mse": 7.279593327231787e-06,
+          "tune_distance_p95_m": 0.011464238585904238,
+          "tune_distance_rmse_m": 0.0046080308966338634
+        },
+        {
+          "epoch": 795,
+          "train_normalized_mse": 6.812957540285169e-06,
+          "tune_distance_p95_m": 0.010848836041986939,
+          "tune_distance_rmse_m": 0.004594474099576473
+        },
+        {
+          "epoch": 800,
+          "train_normalized_mse": 6.632567531421062e-06,
+          "tune_distance_p95_m": 0.012175250286236403,
+          "tune_distance_rmse_m": 0.004686232656240463
+        },
+        {
+          "epoch": 805,
+          "train_normalized_mse": 1.2123549711025572e-05,
+          "tune_distance_p95_m": 0.013025257596746085,
+          "tune_distance_rmse_m": 0.005005252547562122
+        },
+        {
+          "epoch": 810,
+          "train_normalized_mse": 6.366037994890225e-06,
+          "tune_distance_p95_m": 0.011383854458108545,
+          "tune_distance_rmse_m": 0.0049250004813075066
+        },
+        {
+          "epoch": 815,
+          "train_normalized_mse": 1.2505263049732954e-05,
+          "tune_distance_p95_m": 0.010651545831933618,
+          "tune_distance_rmse_m": 0.004734181798994541
+        },
+        {
+          "epoch": 820,
+          "train_normalized_mse": 3.149197124130615e-05,
+          "tune_distance_p95_m": 0.013015711959451436,
+          "tune_distance_rmse_m": 0.005713243503123522
+        },
+        {
+          "epoch": 825,
+          "train_normalized_mse": 5.9635713050579e-05,
+          "tune_distance_p95_m": 0.011599406972527503,
+          "tune_distance_rmse_m": 0.005373168271034956
+        },
+        {
+          "epoch": 830,
+          "train_normalized_mse": 3.7498941980486146e-05,
+          "tune_distance_p95_m": 0.015287664113566279,
+          "tune_distance_rmse_m": 0.006000932306051254
+        },
+        {
+          "epoch": 835,
+          "train_normalized_mse": 2.2372965631483677e-05,
+          "tune_distance_p95_m": 0.012552372692152853,
+          "tune_distance_rmse_m": 0.005528715904802084
+        },
+        {
+          "epoch": 840,
+          "train_normalized_mse": 1.6329422434960417e-05,
+          "tune_distance_p95_m": 0.01184539091773331,
+          "tune_distance_rmse_m": 0.004899611696600914
+        },
+        {
+          "epoch": 845,
+          "train_normalized_mse": 1.2122422033331659e-05,
+          "tune_distance_p95_m": 0.012152348132804035,
+          "tune_distance_rmse_m": 0.004824739880859852
+        },
+        {
+          "epoch": 850,
+          "train_normalized_mse": 8.787735200792412e-06,
+          "tune_distance_p95_m": 0.01275365347974002,
+          "tune_distance_rmse_m": 0.004752331878989935
+        },
+        {
+          "epoch": 855,
+          "train_normalized_mse": 6.976489426610019e-06,
+          "tune_distance_p95_m": 0.012330700038000937,
+          "tune_distance_rmse_m": 0.004720096010714769
+        },
+        {
+          "epoch": 860,
+          "train_normalized_mse": 9.034951098759561e-06,
+          "tune_distance_p95_m": 0.011134832492098212,
+          "tune_distance_rmse_m": 0.004570262506604195
+        },
+        {
+          "epoch": 865,
+          "train_normalized_mse": 1.4947512969037665e-05,
+          "tune_distance_p95_m": 0.011491459235548972,
+          "tune_distance_rmse_m": 0.0046639712527394295
+        },
+        {
+          "epoch": 870,
+          "train_normalized_mse": 5.2731144183270406e-05,
+          "tune_distance_p95_m": 0.013480437314137814,
+          "tune_distance_rmse_m": 0.0062850527465343475
+        },
+        {
+          "epoch": 875,
+          "train_normalized_mse": 2.1065466921355803e-05,
+          "tune_distance_p95_m": 0.011877788370475172,
+          "tune_distance_rmse_m": 0.004874310921877623
+        },
+        {
+          "epoch": 880,
+          "train_normalized_mse": 9.82891388526983e-06,
+          "tune_distance_p95_m": 0.01294354302808642,
+          "tune_distance_rmse_m": 0.005025811493396759
+        },
+        {
+          "epoch": 885,
+          "train_normalized_mse": 1.1258833438388824e-05,
+          "tune_distance_p95_m": 0.01160158882848918,
+          "tune_distance_rmse_m": 0.004986966494470835
+        },
+        {
+          "epoch": 890,
+          "train_normalized_mse": 1.707929215243846e-05,
+          "tune_distance_p95_m": 0.012634414667263626,
+          "tune_distance_rmse_m": 0.0051307943649590015
+        },
+        {
+          "epoch": 895,
+          "train_normalized_mse": 2.302288473736936e-05,
+          "tune_distance_p95_m": 0.014310056529939174,
+          "tune_distance_rmse_m": 0.005262493621557951
+        },
+        {
+          "epoch": 900,
+          "train_normalized_mse": 1.3248061709179493e-05,
+          "tune_distance_p95_m": 0.012822822062298655,
+          "tune_distance_rmse_m": 0.004786642733961344
+        },
+        {
+          "epoch": 905,
+          "train_normalized_mse": 1.6061619741473503e-05,
+          "tune_distance_p95_m": 0.012226687977090473,
+          "tune_distance_rmse_m": 0.005041826982051134
+        },
+        {
+          "epoch": 910,
+          "train_normalized_mse": 5.963625766238884e-05,
+          "tune_distance_p95_m": 0.012260024482384323,
+          "tune_distance_rmse_m": 0.005825529340654612
+        },
+        {
+          "epoch": 915,
+          "train_normalized_mse": 0.00013807063422925574,
+          "tune_distance_p95_m": 0.010938178701326242,
+          "tune_distance_rmse_m": 0.006270003505051136
+        },
+        {
+          "epoch": 920,
+          "train_normalized_mse": 7.245901475758536e-05,
+          "tune_distance_p95_m": 0.013276377692818635,
+          "tune_distance_rmse_m": 0.005795968230813742
+        },
+        {
+          "epoch": 925,
+          "train_normalized_mse": 5.369997087288076e-05,
+          "tune_distance_p95_m": 0.013887397851794952,
+          "tune_distance_rmse_m": 0.0061735366471111774
+        },
+        {
+          "epoch": 930,
+          "train_normalized_mse": 5.182828394218201e-05,
+          "tune_distance_p95_m": 0.013136769086122506,
+          "tune_distance_rmse_m": 0.005756118334829807
+        },
+        {
+          "epoch": 935,
+          "train_normalized_mse": 6.37636826069323e-05,
+          "tune_distance_p95_m": 0.01116056912578642,
+          "tune_distance_rmse_m": 0.005218145437538624
+        },
+        {
+          "epoch": 940,
+          "train_normalized_mse": 2.8300737093351863e-05,
+          "tune_distance_p95_m": 0.009898135950788853,
+          "tune_distance_rmse_m": 0.004811297636479139
+        },
+        {
+          "epoch": 945,
+          "train_normalized_mse": 1.5335309287541333e-05,
+          "tune_distance_p95_m": 0.011227969173341979,
+          "tune_distance_rmse_m": 0.004814417567104101
+        },
+        {
+          "epoch": 950,
+          "train_normalized_mse": 1.4805422165010354e-05,
+          "tune_distance_p95_m": 0.012337458971887826,
+          "tune_distance_rmse_m": 0.004874103236943483
+        },
+        {
+          "epoch": 955,
+          "train_normalized_mse": 1.2793033436122514e-05,
+          "tune_distance_p95_m": 0.01118039358407259,
+          "tune_distance_rmse_m": 0.004742373712360859
+        },
+        {
+          "epoch": 960,
+          "train_normalized_mse": 6.234527885234249e-06,
+          "tune_distance_p95_m": 0.011604171339422459,
+          "tune_distance_rmse_m": 0.004762457218021154
+        },
+        {
+          "epoch": 965,
+          "train_normalized_mse": 8.25040687982038e-06,
+          "tune_distance_p95_m": 0.011596644762903448,
+          "tune_distance_rmse_m": 0.004824042320251465
+        },
+        {
+          "epoch": 970,
+          "train_normalized_mse": 6.766898175619804e-06,
+          "tune_distance_p95_m": 0.011151176085695623,
+          "tune_distance_rmse_m": 0.004578607156872749
+        },
+        {
+          "epoch": 975,
+          "train_normalized_mse": 7.453181879419278e-06,
+          "tune_distance_p95_m": 0.011097836168482898,
+          "tune_distance_rmse_m": 0.004547934513539076
+        },
+        {
+          "epoch": 980,
+          "train_normalized_mse": 3.302939370641661e-05,
+          "tune_distance_p95_m": 0.01313260341994464,
+          "tune_distance_rmse_m": 0.006411625072360039
+        },
+        {
+          "epoch": 985,
+          "train_normalized_mse": 4.212868094455508e-05,
+          "tune_distance_p95_m": 0.010905300080776212,
+          "tune_distance_rmse_m": 0.005501479376107454
+        },
+        {
+          "epoch": 990,
+          "train_normalized_mse": 1.7463834107426617e-05,
+          "tune_distance_p95_m": 0.011069367313757537,
+          "tune_distance_rmse_m": 0.004888506140559912
+        },
+        {
+          "epoch": 995,
+          "train_normalized_mse": 8.7346208538133e-06,
+          "tune_distance_p95_m": 0.012991763511672614,
+          "tune_distance_rmse_m": 0.005008231848478317
+        },
+        {
+          "epoch": 1000,
+          "train_normalized_mse": 6.224859868796142e-06,
+          "tune_distance_p95_m": 0.012842814950272438,
+          "tune_distance_rmse_m": 0.004956482909619808
+        },
+        {
+          "epoch": 1005,
+          "train_normalized_mse": 6.432687426065074e-06,
+          "tune_distance_p95_m": 0.01028153654187917,
+          "tune_distance_rmse_m": 0.004439080134034157
+        },
+        {
+          "epoch": 1010,
+          "train_normalized_mse": 1.710868635104577e-05,
+          "tune_distance_p95_m": 0.010738961258903144,
+          "tune_distance_rmse_m": 0.004793532658368349
+        },
+        {
+          "epoch": 1015,
+          "train_normalized_mse": 2.1181431165722753e-05,
+          "tune_distance_p95_m": 0.012678356282413003,
+          "tune_distance_rmse_m": 0.005386597476899624
+        },
+        {
+          "epoch": 1020,
+          "train_normalized_mse": 2.2584520002853598e-05,
+          "tune_distance_p95_m": 0.01057772221975028,
+          "tune_distance_rmse_m": 0.00474080815911293
+        },
+        {
+          "epoch": 1025,
+          "train_normalized_mse": 8.154203456605931e-05,
+          "tune_distance_p95_m": 0.011384040070697661,
+          "tune_distance_rmse_m": 0.0052554854191839695
+        },
+        {
+          "epoch": 1030,
+          "train_normalized_mse": 5.164941728907523e-05,
+          "tune_distance_p95_m": 0.011810219567269086,
+          "tune_distance_rmse_m": 0.004978486802428961
+        },
+        {
+          "epoch": 1035,
+          "train_normalized_mse": 2.0815969739423802e-05,
+          "tune_distance_p95_m": 0.012994496058672667,
+          "tune_distance_rmse_m": 0.006302880123257637
+        },
+        {
+          "epoch": 1040,
+          "train_normalized_mse": 5.600540591107698e-05,
+          "tune_distance_p95_m": 0.012073828233405935,
+          "tune_distance_rmse_m": 0.005559470970183611
+        },
+        {
+          "epoch": 1045,
+          "train_normalized_mse": 2.3721881070901362e-05,
+          "tune_distance_p95_m": 0.010866742162033914,
+          "tune_distance_rmse_m": 0.005050694569945335
+        },
+        {
+          "epoch": 1050,
+          "train_normalized_mse": 3.604302937195538e-05,
+          "tune_distance_p95_m": 0.011319322651252137,
+          "tune_distance_rmse_m": 0.005705670919269323
+        },
+        {
+          "epoch": 1055,
+          "train_normalized_mse": 2.5230295553531807e-05,
+          "tune_distance_p95_m": 0.012357271369546651,
+          "tune_distance_rmse_m": 0.005557345692068338
+        },
+        {
+          "epoch": 1060,
+          "train_normalized_mse": 1.2032234352725362e-05,
+          "tune_distance_p95_m": 0.010658530844375489,
+          "tune_distance_rmse_m": 0.0047436729073524475
+        },
+        {
+          "epoch": 1065,
+          "train_normalized_mse": 1.2985615684189261e-05,
+          "tune_distance_p95_m": 0.013803458586335178,
+          "tune_distance_rmse_m": 0.005865827668458223
+        },
+        {
+          "epoch": 1070,
+          "train_normalized_mse": 1.675057507798141e-05,
+          "tune_distance_p95_m": 0.011573864379897696,
+          "tune_distance_rmse_m": 0.004813426174223423
+        },
+        {
+          "epoch": 1075,
+          "train_normalized_mse": 7.6088536971247664e-06,
+          "tune_distance_p95_m": 0.012128668138757341,
+          "tune_distance_rmse_m": 0.00530308997258544
+        },
+        {
+          "epoch": 1080,
+          "train_normalized_mse": 1.0008358913182747e-05,
+          "tune_distance_p95_m": 0.012231956096366044,
+          "tune_distance_rmse_m": 0.004989368841052055
+        },
+        {
+          "epoch": 1085,
+          "train_normalized_mse": 1.3238801585159085e-05,
+          "tune_distance_p95_m": 0.011458241241052734,
+          "tune_distance_rmse_m": 0.005080122034996748
+        },
+        {
+          "epoch": 1090,
+          "train_normalized_mse": 1.64457635452109e-05,
+          "tune_distance_p95_m": 0.015653477516025294,
+          "tune_distance_rmse_m": 0.005635080859065056
+        },
+        {
+          "epoch": 1095,
+          "train_normalized_mse": 2.3065148030709998e-05,
+          "tune_distance_p95_m": 0.011286020837724207,
+          "tune_distance_rmse_m": 0.004829887300729752
+        },
+        {
+          "epoch": 1100,
+          "train_normalized_mse": 3.1784983468497286e-05,
+          "tune_distance_p95_m": 0.010595478536561122,
+          "tune_distance_rmse_m": 0.00500491913408041
+        },
+        {
+          "epoch": 1105,
+          "train_normalized_mse": 0.00013199934351417286,
+          "tune_distance_p95_m": 0.013280587317422033,
+          "tune_distance_rmse_m": 0.006231892853975296
+        },
+        {
+          "epoch": 1110,
+          "train_normalized_mse": 0.00020092803593765813,
+          "tune_distance_p95_m": 0.021411878708749985,
+          "tune_distance_rmse_m": 0.010101010091602802
+        },
+        {
+          "epoch": 1115,
+          "train_normalized_mse": 0.00013835411115443303,
+          "tune_distance_p95_m": 0.01900846371427178,
+          "tune_distance_rmse_m": 0.008068880997598171
+        },
+        {
+          "epoch": 1120,
+          "train_normalized_mse": 0.00021096585694242988,
+          "tune_distance_p95_m": 0.029180584847927092,
+          "tune_distance_rmse_m": 0.012423040345311165
+        },
+        {
+          "epoch": 1125,
+          "train_normalized_mse": 0.0001401460425480955,
+          "tune_distance_p95_m": 0.023053313139826045,
+          "tune_distance_rmse_m": 0.010517014190554619
+        },
+        {
+          "epoch": 1130,
+          "train_normalized_mse": 6.12141762088102e-05,
+          "tune_distance_p95_m": 0.015501400409266324,
+          "tune_distance_rmse_m": 0.007414831314235926
+        },
+        {
+          "epoch": 1135,
+          "train_normalized_mse": 1.8581559647588475e-05,
+          "tune_distance_p95_m": 0.013424802152439946,
+          "tune_distance_rmse_m": 0.005767701659351587
+        },
+        {
+          "epoch": 1140,
+          "train_normalized_mse": 7.0064375314247805e-06,
+          "tune_distance_p95_m": 0.013015991356223798,
+          "tune_distance_rmse_m": 0.005508859176188707
+        },
+        {
+          "epoch": 1145,
+          "train_normalized_mse": 5.4724664072349885e-06,
+          "tune_distance_p95_m": 0.014183828374370926,
+          "tune_distance_rmse_m": 0.005609650630503893
+        },
+        {
+          "epoch": 1150,
+          "train_normalized_mse": 4.38787687048796e-06,
+          "tune_distance_p95_m": 0.012656455300748326,
+          "tune_distance_rmse_m": 0.00525415875017643
+        },
+        {
+          "epoch": 1155,
+          "train_normalized_mse": 3.796110552668739e-06,
+          "tune_distance_p95_m": 0.012337097665294982,
+          "tune_distance_rmse_m": 0.005161786451935768
+        },
+        {
+          "epoch": 1160,
+          "train_normalized_mse": 4.579618446274381e-06,
+          "tune_distance_p95_m": 0.013200703822076299,
+          "tune_distance_rmse_m": 0.005468444433063269
+        },
+        {
+          "epoch": 1165,
+          "train_normalized_mse": 6.5267053797836984e-06,
+          "tune_distance_p95_m": 0.01285811574198304,
+          "tune_distance_rmse_m": 0.005357248242944479
+        },
+        {
+          "epoch": 1170,
+          "train_normalized_mse": 5.809264366051362e-06,
+          "tune_distance_p95_m": 0.01409918447025118,
+          "tune_distance_rmse_m": 0.005570785608142614
+        },
+        {
+          "epoch": 1175,
+          "train_normalized_mse": 7.819579981546748e-06,
+          "tune_distance_p95_m": 0.011966230068355777,
+          "tune_distance_rmse_m": 0.0052015758119523525
+        },
+        {
+          "epoch": 1180,
+          "train_normalized_mse": 8.081454867798337e-06,
+          "tune_distance_p95_m": 0.013002399262040849,
+          "tune_distance_rmse_m": 0.0055338190868496895
+        },
+        {
+          "epoch": 1185,
+          "train_normalized_mse": 9.658145133646923e-06,
+          "tune_distance_p95_m": 0.015247675683349358,
+          "tune_distance_rmse_m": 0.005822730716317892
+        },
+        {
+          "epoch": 1190,
+          "train_normalized_mse": 1.5027778397524616e-05,
+          "tune_distance_p95_m": 0.010864709876477719,
+          "tune_distance_rmse_m": 0.004813747946172953
+        },
+        {
+          "epoch": 1195,
+          "train_normalized_mse": 8.89213761343343e-06,
+          "tune_distance_p95_m": 0.013295061141252494,
+          "tune_distance_rmse_m": 0.0056139156222343445
+        },
+        {
+          "epoch": 1200,
+          "train_normalized_mse": 5.2368462316384495e-06,
+          "tune_distance_p95_m": 0.01287107206881046,
+          "tune_distance_rmse_m": 0.005480682011693716
+        }
+      ],
+      "seed": 20260724
+    },
+    {
+      "best_epoch": 1100,
+      "best_tune_distance_p95_m": 0.0059863948030397275,
+      "history": [
+        {
+          "epoch": 5,
+          "train_normalized_mse": 0.19151800191193297,
+          "tune_distance_p95_m": 0.422019030153751,
+          "tune_distance_rmse_m": 0.23605746030807495
+        },
+        {
+          "epoch": 10,
+          "train_normalized_mse": 0.03986051342074286,
+          "tune_distance_p95_m": 0.16480991393327712,
+          "tune_distance_rmse_m": 0.09711575508117676
+        },
+        {
+          "epoch": 15,
+          "train_normalized_mse": 0.008195506849963414,
+          "tune_distance_p95_m": 0.2048468619585036,
+          "tune_distance_rmse_m": 0.08453023433685303
+        },
+        {
+          "epoch": 20,
+          "train_normalized_mse": 0.003417123921967128,
+          "tune_distance_p95_m": 0.14902986660599707,
+          "tune_distance_rmse_m": 0.06303327530622482
+        },
+        {
+          "epoch": 25,
+          "train_normalized_mse": 0.001966205562399537,
+          "tune_distance_p95_m": 0.10529109686613082,
+          "tune_distance_rmse_m": 0.04723357409238815
+        },
+        {
+          "epoch": 30,
+          "train_normalized_mse": 0.0012515553624548933,
+          "tune_distance_p95_m": 0.08180493786931037,
+          "tune_distance_rmse_m": 0.03897666931152344
+        },
+        {
+          "epoch": 35,
+          "train_normalized_mse": 0.0008893526371633797,
+          "tune_distance_p95_m": 0.06382769867777822,
+          "tune_distance_rmse_m": 0.03214195370674133
+        },
+        {
+          "epoch": 40,
+          "train_normalized_mse": 0.0006751049434553767,
+          "tune_distance_p95_m": 0.056298178806900946,
+          "tune_distance_rmse_m": 0.02854141965508461
+        },
+        {
+          "epoch": 45,
+          "train_normalized_mse": 0.0005533466689501023,
+          "tune_distance_p95_m": 0.05245189853012557,
+          "tune_distance_rmse_m": 0.02662588842213154
+        },
+        {
+          "epoch": 50,
+          "train_normalized_mse": 0.00046767879240704993,
+          "tune_distance_p95_m": 0.04804497584700583,
+          "tune_distance_rmse_m": 0.024960042908787727
+        },
+        {
+          "epoch": 55,
+          "train_normalized_mse": 0.00040777235112169334,
+          "tune_distance_p95_m": 0.047434005886316286,
+          "tune_distance_rmse_m": 0.023700956255197525
+        },
+        {
+          "epoch": 60,
+          "train_normalized_mse": 0.00035975296040098267,
+          "tune_distance_p95_m": 0.04790161922574043,
+          "tune_distance_rmse_m": 0.02310638502240181
+        },
+        {
+          "epoch": 65,
+          "train_normalized_mse": 0.0003226644833359802,
+          "tune_distance_p95_m": 0.04615362435579297,
+          "tune_distance_rmse_m": 0.022335316985845566
+        },
+        {
+          "epoch": 70,
+          "train_normalized_mse": 0.00028897677813738323,
+          "tune_distance_p95_m": 0.04414215795695779,
+          "tune_distance_rmse_m": 0.021262377500534058
+        },
+        {
+          "epoch": 75,
+          "train_normalized_mse": 0.0002609773328642181,
+          "tune_distance_p95_m": 0.04307108949869871,
+          "tune_distance_rmse_m": 0.020975643768906593
+        },
+        {
+          "epoch": 80,
+          "train_normalized_mse": 0.00023924010466751561,
+          "tune_distance_p95_m": 0.04303301591426133,
+          "tune_distance_rmse_m": 0.019762640818953514
+        },
+        {
+          "epoch": 85,
+          "train_normalized_mse": 0.0002156494207284005,
+          "tune_distance_p95_m": 0.042075200565159294,
+          "tune_distance_rmse_m": 0.019263017922639847
+        },
+        {
+          "epoch": 90,
+          "train_normalized_mse": 0.00020165418876179805,
+          "tune_distance_p95_m": 0.03927801735699175,
+          "tune_distance_rmse_m": 0.018330395221710205
+        },
+        {
+          "epoch": 95,
+          "train_normalized_mse": 0.00018131402688787172,
+          "tune_distance_p95_m": 0.038196292892098416,
+          "tune_distance_rmse_m": 0.017319031059741974
+        },
+        {
+          "epoch": 100,
+          "train_normalized_mse": 0.0001692281535054606,
+          "tune_distance_p95_m": 0.038516991771757575,
+          "tune_distance_rmse_m": 0.01689864695072174
+        },
+        {
+          "epoch": 105,
+          "train_normalized_mse": 0.0001532362866942493,
+          "tune_distance_p95_m": 0.036678034625947445,
+          "tune_distance_rmse_m": 0.016194188967347145
+        },
+        {
+          "epoch": 110,
+          "train_normalized_mse": 0.00014340769772197266,
+          "tune_distance_p95_m": 0.0359419103711843,
+          "tune_distance_rmse_m": 0.015591032803058624
+        },
+        {
+          "epoch": 115,
+          "train_normalized_mse": 0.00013309131042517133,
+          "tune_distance_p95_m": 0.035073182173073196,
+          "tune_distance_rmse_m": 0.015260666608810425
+        },
+        {
+          "epoch": 120,
+          "train_normalized_mse": 0.00012376898105190905,
+          "tune_distance_p95_m": 0.03405189923942083,
+          "tune_distance_rmse_m": 0.014549747109413147
+        },
+        {
+          "epoch": 125,
+          "train_normalized_mse": 0.00011507091799183144,
+          "tune_distance_p95_m": 0.03357395678758613,
+          "tune_distance_rmse_m": 0.014024755917489529
+        },
+        {
+          "epoch": 130,
+          "train_normalized_mse": 0.0001101064160792974,
+          "tune_distance_p95_m": 0.03318772353231901,
+          "tune_distance_rmse_m": 0.013527516275644302
+        },
+        {
+          "epoch": 135,
+          "train_normalized_mse": 0.00010362646188648221,
+          "tune_distance_p95_m": 0.03074213434010742,
+          "tune_distance_rmse_m": 0.01285255141556263
+        },
+        {
+          "epoch": 140,
+          "train_normalized_mse": 9.750138946273772e-05,
+          "tune_distance_p95_m": 0.029997166898101568,
+          "tune_distance_rmse_m": 0.01244198065251112
+        },
+        {
+          "epoch": 145,
+          "train_normalized_mse": 9.093053137021662e-05,
+          "tune_distance_p95_m": 0.03017662977799771,
+          "tune_distance_rmse_m": 0.012274634093046188
+        },
+        {
+          "epoch": 150,
+          "train_normalized_mse": 8.614139816225425e-05,
+          "tune_distance_p95_m": 0.028730901889502978,
+          "tune_distance_rmse_m": 0.011777288280427456
+        },
+        {
+          "epoch": 155,
+          "train_normalized_mse": 8.230158518448374e-05,
+          "tune_distance_p95_m": 0.028590189479291428,
+          "tune_distance_rmse_m": 0.011394467204809189
+        },
+        {
+          "epoch": 160,
+          "train_normalized_mse": 7.642037733029084e-05,
+          "tune_distance_p95_m": 0.027447399683296674,
+          "tune_distance_rmse_m": 0.01116982102394104
+        },
+        {
+          "epoch": 165,
+          "train_normalized_mse": 7.344245756955883e-05,
+          "tune_distance_p95_m": 0.02732641631737349,
+          "tune_distance_rmse_m": 0.01085488498210907
+        },
+        {
+          "epoch": 170,
+          "train_normalized_mse": 6.997533101208606e-05,
+          "tune_distance_p95_m": 0.026813570037484157,
+          "tune_distance_rmse_m": 0.01072665024548769
+        },
+        {
+          "epoch": 175,
+          "train_normalized_mse": 6.70502936771842e-05,
+          "tune_distance_p95_m": 0.025323218293488003,
+          "tune_distance_rmse_m": 0.010400860570371151
+        },
+        {
+          "epoch": 180,
+          "train_normalized_mse": 6.319441525735321e-05,
+          "tune_distance_p95_m": 0.024926208890974508,
+          "tune_distance_rmse_m": 0.010318982414901257
+        },
+        {
+          "epoch": 185,
+          "train_normalized_mse": 6.108644645377226e-05,
+          "tune_distance_p95_m": 0.024787680525332676,
+          "tune_distance_rmse_m": 0.010233413428068161
+        },
+        {
+          "epoch": 190,
+          "train_normalized_mse": 5.8219973748476294e-05,
+          "tune_distance_p95_m": 0.024318192712962625,
+          "tune_distance_rmse_m": 0.009885280393064022
+        },
+        {
+          "epoch": 195,
+          "train_normalized_mse": 5.560999827075488e-05,
+          "tune_distance_p95_m": 0.02328201886266469,
+          "tune_distance_rmse_m": 0.009832627139985561
+        },
+        {
+          "epoch": 200,
+          "train_normalized_mse": 5.493262793415373e-05,
+          "tune_distance_p95_m": 0.023800836689770212,
+          "tune_distance_rmse_m": 0.00996810756623745
+        },
+        {
+          "epoch": 205,
+          "train_normalized_mse": 5.0904561105294544e-05,
+          "tune_distance_p95_m": 0.02315607927739617,
+          "tune_distance_rmse_m": 0.009434453211724758
+        },
+        {
+          "epoch": 210,
+          "train_normalized_mse": 5.147765822537047e-05,
+          "tune_distance_p95_m": 0.022521648649126282,
+          "tune_distance_rmse_m": 0.009243614971637726
+        },
+        {
+          "epoch": 215,
+          "train_normalized_mse": 4.7719511999993734e-05,
+          "tune_distance_p95_m": 0.021877942979335777,
+          "tune_distance_rmse_m": 0.008879434317350388
+        },
+        {
+          "epoch": 220,
+          "train_normalized_mse": 4.5810571145123326e-05,
+          "tune_distance_p95_m": 0.022441469132900217,
+          "tune_distance_rmse_m": 0.009258597157895565
+        },
+        {
+          "epoch": 225,
+          "train_normalized_mse": 4.34883246239144e-05,
+          "tune_distance_p95_m": 0.021430687513202408,
+          "tune_distance_rmse_m": 0.008892745710909367
+        },
+        {
+          "epoch": 230,
+          "train_normalized_mse": 4.364207977727219e-05,
+          "tune_distance_p95_m": 0.020952223613858217,
+          "tune_distance_rmse_m": 0.008570059202611446
+        },
+        {
+          "epoch": 235,
+          "train_normalized_mse": 4.13394762354233e-05,
+          "tune_distance_p95_m": 0.02036870308220385,
+          "tune_distance_rmse_m": 0.008624589070677757
+        },
+        {
+          "epoch": 240,
+          "train_normalized_mse": 4.1523999307333214e-05,
+          "tune_distance_p95_m": 0.021406225673854324,
+          "tune_distance_rmse_m": 0.009164652787148952
+        },
+        {
+          "epoch": 245,
+          "train_normalized_mse": 3.875711908014573e-05,
+          "tune_distance_p95_m": 0.020203380752354838,
+          "tune_distance_rmse_m": 0.008562981151044369
+        },
+        {
+          "epoch": 250,
+          "train_normalized_mse": 3.9003369014959356e-05,
+          "tune_distance_p95_m": 0.019830262009054404,
+          "tune_distance_rmse_m": 0.008524400182068348
+        },
+        {
+          "epoch": 255,
+          "train_normalized_mse": 3.652308212047884e-05,
+          "tune_distance_p95_m": 0.02006128858774898,
+          "tune_distance_rmse_m": 0.008435083553195
+        },
+        {
+          "epoch": 260,
+          "train_normalized_mse": 3.736669749374861e-05,
+          "tune_distance_p95_m": 0.01913766479119657,
+          "tune_distance_rmse_m": 0.008455852046608925
+        },
+        {
+          "epoch": 265,
+          "train_normalized_mse": 3.36944562660759e-05,
+          "tune_distance_p95_m": 0.018566446565091606,
+          "tune_distance_rmse_m": 0.008194107562303543
+        },
+        {
+          "epoch": 270,
+          "train_normalized_mse": 3.352658964822216e-05,
+          "tune_distance_p95_m": 0.018840768747031663,
+          "tune_distance_rmse_m": 0.008031466975808144
+        },
+        {
+          "epoch": 275,
+          "train_normalized_mse": 3.2335260345318696e-05,
+          "tune_distance_p95_m": 0.01788588650524616,
+          "tune_distance_rmse_m": 0.007908587343990803
+        },
+        {
+          "epoch": 280,
+          "train_normalized_mse": 3.184163104283231e-05,
+          "tune_distance_p95_m": 0.01759944697842,
+          "tune_distance_rmse_m": 0.00810759887099266
+        },
+        {
+          "epoch": 285,
+          "train_normalized_mse": 3.036244194382769e-05,
+          "tune_distance_p95_m": 0.0171922699548304,
+          "tune_distance_rmse_m": 0.007789218798279762
+        },
+        {
+          "epoch": 290,
+          "train_normalized_mse": 2.953794568096974e-05,
+          "tune_distance_p95_m": 0.01745731234550475,
+          "tune_distance_rmse_m": 0.007870594970881939
+        },
+        {
+          "epoch": 295,
+          "train_normalized_mse": 2.887475797283594e-05,
+          "tune_distance_p95_m": 0.016826543491333723,
+          "tune_distance_rmse_m": 0.0076067568734288216
+        },
+        {
+          "epoch": 300,
+          "train_normalized_mse": 2.812263811759757e-05,
+          "tune_distance_p95_m": 0.015931729460135085,
+          "tune_distance_rmse_m": 0.007638867013156414
+        },
+        {
+          "epoch": 305,
+          "train_normalized_mse": 2.8704946025595346e-05,
+          "tune_distance_p95_m": 0.015958293806761503,
+          "tune_distance_rmse_m": 0.007549640256911516
+        },
+        {
+          "epoch": 310,
+          "train_normalized_mse": 2.640859814786573e-05,
+          "tune_distance_p95_m": 0.016317341942340136,
+          "tune_distance_rmse_m": 0.007316838018596172
+        },
+        {
+          "epoch": 315,
+          "train_normalized_mse": 2.712835620306514e-05,
+          "tune_distance_p95_m": 0.016177845560014247,
+          "tune_distance_rmse_m": 0.007273203227669001
+        },
+        {
+          "epoch": 320,
+          "train_normalized_mse": 2.6067033136394202e-05,
+          "tune_distance_p95_m": 0.015213902061805125,
+          "tune_distance_rmse_m": 0.007277404889464378
+        },
+        {
+          "epoch": 325,
+          "train_normalized_mse": 2.4760131341999542e-05,
+          "tune_distance_p95_m": 0.015062994230538602,
+          "tune_distance_rmse_m": 0.0072296783328056335
+        },
+        {
+          "epoch": 330,
+          "train_normalized_mse": 2.656201200136964e-05,
+          "tune_distance_p95_m": 0.0149430023971945,
+          "tune_distance_rmse_m": 0.0072092050686478615
+        },
+        {
+          "epoch": 335,
+          "train_normalized_mse": 2.5828878310756154e-05,
+          "tune_distance_p95_m": 0.014802043605595823,
+          "tune_distance_rmse_m": 0.006930156145244837
+        },
+        {
+          "epoch": 340,
+          "train_normalized_mse": 2.5204602679239767e-05,
+          "tune_distance_p95_m": 0.014478986570611595,
+          "tune_distance_rmse_m": 0.00693528214469552
+        },
+        {
+          "epoch": 345,
+          "train_normalized_mse": 2.38808795729072e-05,
+          "tune_distance_p95_m": 0.014344465360045433,
+          "tune_distance_rmse_m": 0.006775566842406988
+        },
+        {
+          "epoch": 350,
+          "train_normalized_mse": 2.5166738053309944e-05,
+          "tune_distance_p95_m": 0.013393743569031358,
+          "tune_distance_rmse_m": 0.006859959103167057
+        },
+        {
+          "epoch": 355,
+          "train_normalized_mse": 2.2753977789666113e-05,
+          "tune_distance_p95_m": 0.01445074579678475,
+          "tune_distance_rmse_m": 0.0067483969032764435
+        },
+        {
+          "epoch": 360,
+          "train_normalized_mse": 2.1879532811764972e-05,
+          "tune_distance_p95_m": 0.013498249603435396,
+          "tune_distance_rmse_m": 0.00655321916565299
+        },
+        {
+          "epoch": 365,
+          "train_normalized_mse": 2.280749596824886e-05,
+          "tune_distance_p95_m": 0.013358252635225653,
+          "tune_distance_rmse_m": 0.006836519110947847
+        },
+        {
+          "epoch": 370,
+          "train_normalized_mse": 2.3698636492522302e-05,
+          "tune_distance_p95_m": 0.013524409662932148,
+          "tune_distance_rmse_m": 0.006432625465095043
+        },
+        {
+          "epoch": 375,
+          "train_normalized_mse": 2.109664452738096e-05,
+          "tune_distance_p95_m": 0.012593801086768506,
+          "tune_distance_rmse_m": 0.006505384109914303
+        },
+        {
+          "epoch": 380,
+          "train_normalized_mse": 2.0126568830292263e-05,
+          "tune_distance_p95_m": 0.013376157777383914,
+          "tune_distance_rmse_m": 0.00681266887113452
+        },
+        {
+          "epoch": 385,
+          "train_normalized_mse": 2.2129877642759022e-05,
+          "tune_distance_p95_m": 0.012537445547059173,
+          "tune_distance_rmse_m": 0.00669612642377615
+        },
+        {
+          "epoch": 390,
+          "train_normalized_mse": 2.0549496695278785e-05,
+          "tune_distance_p95_m": 0.011839182581752532,
+          "tune_distance_rmse_m": 0.00625653238967061
+        },
+        {
+          "epoch": 395,
+          "train_normalized_mse": 1.903815284190626e-05,
+          "tune_distance_p95_m": 0.011251818388700482,
+          "tune_distance_rmse_m": 0.00644106836989522
+        },
+        {
+          "epoch": 400,
+          "train_normalized_mse": 2.0447951611825837e-05,
+          "tune_distance_p95_m": 0.011745969112962476,
+          "tune_distance_rmse_m": 0.006490995176136494
+        },
+        {
+          "epoch": 405,
+          "train_normalized_mse": 2.029957511439805e-05,
+          "tune_distance_p95_m": 0.011638774210587134,
+          "tune_distance_rmse_m": 0.0060215117409825325
+        },
+        {
+          "epoch": 410,
+          "train_normalized_mse": 1.7626170869845193e-05,
+          "tune_distance_p95_m": 0.010896776011213652,
+          "tune_distance_rmse_m": 0.006336092948913574
+        },
+        {
+          "epoch": 415,
+          "train_normalized_mse": 1.747401119357898e-05,
+          "tune_distance_p95_m": 0.010601277416571969,
+          "tune_distance_rmse_m": 0.006040595006197691
+        },
+        {
+          "epoch": 420,
+          "train_normalized_mse": 1.7956131175691425e-05,
+          "tune_distance_p95_m": 0.010332733020186424,
+          "tune_distance_rmse_m": 0.0059030670672655106
+        },
+        {
+          "epoch": 425,
+          "train_normalized_mse": 1.8055231345913437e-05,
+          "tune_distance_p95_m": 0.010751362238079308,
+          "tune_distance_rmse_m": 0.00616071280092001
+        },
+        {
+          "epoch": 430,
+          "train_normalized_mse": 1.696474062459617e-05,
+          "tune_distance_p95_m": 0.010546944290399544,
+          "tune_distance_rmse_m": 0.00608430290594697
+        },
+        {
+          "epoch": 435,
+          "train_normalized_mse": 1.710920010385994e-05,
+          "tune_distance_p95_m": 0.01089598271064459,
+          "tune_distance_rmse_m": 0.005964698735624552
+        },
+        {
+          "epoch": 440,
+          "train_normalized_mse": 1.7738848040799465e-05,
+          "tune_distance_p95_m": 0.011870387941598887,
+          "tune_distance_rmse_m": 0.0060830130241811275
+        },
+        {
+          "epoch": 445,
+          "train_normalized_mse": 1.717453016138742e-05,
+          "tune_distance_p95_m": 0.010039071040228002,
+          "tune_distance_rmse_m": 0.005690427962690592
+        },
+        {
+          "epoch": 450,
+          "train_normalized_mse": 1.6783131573710736e-05,
+          "tune_distance_p95_m": 0.01013983930461105,
+          "tune_distance_rmse_m": 0.005447950679808855
+        },
+        {
+          "epoch": 455,
+          "train_normalized_mse": 2.2514987186265277e-05,
+          "tune_distance_p95_m": 0.010240390105172935,
+          "tune_distance_rmse_m": 0.005520278587937355
+        },
+        {
+          "epoch": 460,
+          "train_normalized_mse": 1.842945943951092e-05,
+          "tune_distance_p95_m": 0.009728104760870337,
+          "tune_distance_rmse_m": 0.005308825056999922
+        },
+        {
+          "epoch": 465,
+          "train_normalized_mse": 1.5679938306882896e-05,
+          "tune_distance_p95_m": 0.010987505456432695,
+          "tune_distance_rmse_m": 0.0056967963464558125
+        },
+        {
+          "epoch": 470,
+          "train_normalized_mse": 1.6986853951126696e-05,
+          "tune_distance_p95_m": 0.009384661819785802,
+          "tune_distance_rmse_m": 0.005643546115607023
+        },
+        {
+          "epoch": 475,
+          "train_normalized_mse": 1.5551421344290455e-05,
+          "tune_distance_p95_m": 0.009277928574010705,
+          "tune_distance_rmse_m": 0.005498237907886505
+        },
+        {
+          "epoch": 480,
+          "train_normalized_mse": 1.533600541797728e-05,
+          "tune_distance_p95_m": 0.009326521027833216,
+          "tune_distance_rmse_m": 0.005281123332679272
+        },
+        {
+          "epoch": 485,
+          "train_normalized_mse": 1.6073859928598578e-05,
+          "tune_distance_p95_m": 0.009687276510521765,
+          "tune_distance_rmse_m": 0.005725578870624304
+        },
+        {
+          "epoch": 490,
+          "train_normalized_mse": 1.4979152215426183e-05,
+          "tune_distance_p95_m": 0.009901097742840646,
+          "tune_distance_rmse_m": 0.005316329188644886
+        },
+        {
+          "epoch": 495,
+          "train_normalized_mse": 1.3512329085068287e-05,
+          "tune_distance_p95_m": 0.008870762959122636,
+          "tune_distance_rmse_m": 0.005228751339018345
+        },
+        {
+          "epoch": 500,
+          "train_normalized_mse": 1.4409142319269258e-05,
+          "tune_distance_p95_m": 0.00882598580792546,
+          "tune_distance_rmse_m": 0.005265568848699331
+        },
+        {
+          "epoch": 505,
+          "train_normalized_mse": 1.467288300198944e-05,
+          "tune_distance_p95_m": 0.010301757603883735,
+          "tune_distance_rmse_m": 0.005410841200500727
+        },
+        {
+          "epoch": 510,
+          "train_normalized_mse": 1.4906644234239744e-05,
+          "tune_distance_p95_m": 0.008681354159489273,
+          "tune_distance_rmse_m": 0.004863312467932701
+        },
+        {
+          "epoch": 515,
+          "train_normalized_mse": 1.5399167208223636e-05,
+          "tune_distance_p95_m": 0.00854885005392134,
+          "tune_distance_rmse_m": 0.005311321932822466
+        },
+        {
+          "epoch": 520,
+          "train_normalized_mse": 1.4824598078950913e-05,
+          "tune_distance_p95_m": 0.010913234250619994,
+          "tune_distance_rmse_m": 0.00552471075206995
+        },
+        {
+          "epoch": 525,
+          "train_normalized_mse": 1.3021129378007332e-05,
+          "tune_distance_p95_m": 0.008657805202528835,
+          "tune_distance_rmse_m": 0.005264527164399624
+        },
+        {
+          "epoch": 530,
+          "train_normalized_mse": 1.3854873957410618e-05,
+          "tune_distance_p95_m": 0.009189025592058891,
+          "tune_distance_rmse_m": 0.005102050490677357
+        },
+        {
+          "epoch": 535,
+          "train_normalized_mse": 1.2603311197859799e-05,
+          "tune_distance_p95_m": 0.010304810106754294,
+          "tune_distance_rmse_m": 0.005205604713410139
+        },
+        {
+          "epoch": 540,
+          "train_normalized_mse": 1.2773158360097001e-05,
+          "tune_distance_p95_m": 0.0082665947265923,
+          "tune_distance_rmse_m": 0.0048189349472522736
+        },
+        {
+          "epoch": 545,
+          "train_normalized_mse": 1.525661323205241e-05,
+          "tune_distance_p95_m": 0.008886382030323147,
+          "tune_distance_rmse_m": 0.004856106825172901
+        },
+        {
+          "epoch": 550,
+          "train_normalized_mse": 1.4938779793482626e-05,
+          "tune_distance_p95_m": 0.011410477245226492,
+          "tune_distance_rmse_m": 0.005344768054783344
+        },
+        {
+          "epoch": 555,
+          "train_normalized_mse": 1.7709792397605877e-05,
+          "tune_distance_p95_m": 0.008246975252404807,
+          "tune_distance_rmse_m": 0.0048171342350542545
+        },
+        {
+          "epoch": 560,
+          "train_normalized_mse": 2.9234222542104443e-05,
+          "tune_distance_p95_m": 0.011003582365810862,
+          "tune_distance_rmse_m": 0.0056511578150093555
+        },
+        {
+          "epoch": 565,
+          "train_normalized_mse": 2.8617560051395885e-05,
+          "tune_distance_p95_m": 0.012182325404137367,
+          "tune_distance_rmse_m": 0.005598634481430054
+        },
+        {
+          "epoch": 570,
+          "train_normalized_mse": 1.7910521931123202e-05,
+          "tune_distance_p95_m": 0.0093849454075098,
+          "tune_distance_rmse_m": 0.00538654113188386
+        },
+        {
+          "epoch": 575,
+          "train_normalized_mse": 1.4009407015947273e-05,
+          "tune_distance_p95_m": 0.008421256579458705,
+          "tune_distance_rmse_m": 0.005065409932285547
+        },
+        {
+          "epoch": 580,
+          "train_normalized_mse": 1.3718060536280463e-05,
+          "tune_distance_p95_m": 0.01015580403618513,
+          "tune_distance_rmse_m": 0.0051157125271856785
+        },
+        {
+          "epoch": 585,
+          "train_normalized_mse": 1.1764847282361108e-05,
+          "tune_distance_p95_m": 0.008789995405822988,
+          "tune_distance_rmse_m": 0.004778151400387287
+        },
+        {
+          "epoch": 590,
+          "train_normalized_mse": 1.2666116753391913e-05,
+          "tune_distance_p95_m": 0.008795935893431299,
+          "tune_distance_rmse_m": 0.00479491613805294
+        },
+        {
+          "epoch": 595,
+          "train_normalized_mse": 1.4154286968972118e-05,
+          "tune_distance_p95_m": 0.007688408670946953,
+          "tune_distance_rmse_m": 0.0045576272532343864
+        },
+        {
+          "epoch": 600,
+          "train_normalized_mse": 2.6730910528720797e-05,
+          "tune_distance_p95_m": 0.009938792278990147,
+          "tune_distance_rmse_m": 0.005419294815510511
+        },
+        {
+          "epoch": 605,
+          "train_normalized_mse": 2.4078248475633334e-05,
+          "tune_distance_p95_m": 0.007131160004064437,
+          "tune_distance_rmse_m": 0.004453882575035095
+        },
+        {
+          "epoch": 610,
+          "train_normalized_mse": 1.7657094678980412e-05,
+          "tune_distance_p95_m": 0.00780330803245306,
+          "tune_distance_rmse_m": 0.004381989128887653
+        },
+        {
+          "epoch": 615,
+          "train_normalized_mse": 1.3729712854751197e-05,
+          "tune_distance_p95_m": 0.009588479949161408,
+          "tune_distance_rmse_m": 0.004890720825642347
+        },
+        {
+          "epoch": 620,
+          "train_normalized_mse": 1.1539260716138719e-05,
+          "tune_distance_p95_m": 0.008055879082530732,
+          "tune_distance_rmse_m": 0.004740019328892231
+        },
+        {
+          "epoch": 625,
+          "train_normalized_mse": 1.176442757449031e-05,
+          "tune_distance_p95_m": 0.009688930213451383,
+          "tune_distance_rmse_m": 0.004934343975037336
+        },
+        {
+          "epoch": 630,
+          "train_normalized_mse": 1.1629526086739803e-05,
+          "tune_distance_p95_m": 0.008399788569658994,
+          "tune_distance_rmse_m": 0.004683809820562601
+        },
+        {
+          "epoch": 635,
+          "train_normalized_mse": 1.1115129254584757e-05,
+          "tune_distance_p95_m": 0.008804338891059157,
+          "tune_distance_rmse_m": 0.004478113260120153
+        },
+        {
+          "epoch": 640,
+          "train_normalized_mse": 1.3549741117713621e-05,
+          "tune_distance_p95_m": 0.011009104270488016,
+          "tune_distance_rmse_m": 0.004927670117467642
+        },
+        {
+          "epoch": 645,
+          "train_normalized_mse": 1.8644513737965834e-05,
+          "tune_distance_p95_m": 0.0121295016258955,
+          "tune_distance_rmse_m": 0.00567053584381938
+        },
+        {
+          "epoch": 650,
+          "train_normalized_mse": 2.0961585681091e-05,
+          "tune_distance_p95_m": 0.01171955438330768,
+          "tune_distance_rmse_m": 0.005461534019559622
+        },
+        {
+          "epoch": 655,
+          "train_normalized_mse": 1.6786096717911086e-05,
+          "tune_distance_p95_m": 0.010533489752560854,
+          "tune_distance_rmse_m": 0.0049890438094735146
+        },
+        {
+          "epoch": 660,
+          "train_normalized_mse": 1.4083190683123304e-05,
+          "tune_distance_p95_m": 0.011032619234174484,
+          "tune_distance_rmse_m": 0.005271153058856726
+        },
+        {
+          "epoch": 665,
+          "train_normalized_mse": 1.1831992451972614e-05,
+          "tune_distance_p95_m": 0.00979280830360948,
+          "tune_distance_rmse_m": 0.004808136261999607
+        },
+        {
+          "epoch": 670,
+          "train_normalized_mse": 2.00319616277212e-05,
+          "tune_distance_p95_m": 0.008196907583624121,
+          "tune_distance_rmse_m": 0.00423036701977253
+        },
+        {
+          "epoch": 675,
+          "train_normalized_mse": 1.4888071363154603e-05,
+          "tune_distance_p95_m": 0.009020175179466598,
+          "tune_distance_rmse_m": 0.004515419714152813
+        },
+        {
+          "epoch": 680,
+          "train_normalized_mse": 1.3581194731446694e-05,
+          "tune_distance_p95_m": 0.009256759472191333,
+          "tune_distance_rmse_m": 0.004682148806750774
+        },
+        {
+          "epoch": 685,
+          "train_normalized_mse": 1.7836852541158644e-05,
+          "tune_distance_p95_m": 0.009798903623595832,
+          "tune_distance_rmse_m": 0.004892467055469751
+        },
+        {
+          "epoch": 690,
+          "train_normalized_mse": 1.3975559356862377e-05,
+          "tune_distance_p95_m": 0.00736211307812482,
+          "tune_distance_rmse_m": 0.0041322847828269005
+        },
+        {
+          "epoch": 695,
+          "train_normalized_mse": 1.1913102545740753e-05,
+          "tune_distance_p95_m": 0.007478906982578326,
+          "tune_distance_rmse_m": 0.004239201080054045
+        },
+        {
+          "epoch": 700,
+          "train_normalized_mse": 1.3802601627008826e-05,
+          "tune_distance_p95_m": 0.008235364919528363,
+          "tune_distance_rmse_m": 0.004616323858499527
+        },
+        {
+          "epoch": 705,
+          "train_normalized_mse": 1.882222876335155e-05,
+          "tune_distance_p95_m": 0.009322278946638105,
+          "tune_distance_rmse_m": 0.004788827151060104
+        },
+        {
+          "epoch": 710,
+          "train_normalized_mse": 5.6145316257402955e-05,
+          "tune_distance_p95_m": 0.01071796207688747,
+          "tune_distance_rmse_m": 0.004742674063891172
+        },
+        {
+          "epoch": 715,
+          "train_normalized_mse": 2.8370352993078995e-05,
+          "tune_distance_p95_m": 0.01015507210977375,
+          "tune_distance_rmse_m": 0.0048689027316868305
+        },
+        {
+          "epoch": 720,
+          "train_normalized_mse": 3.4684084599384256e-05,
+          "tune_distance_p95_m": 0.010832845279946917,
+          "tune_distance_rmse_m": 0.005486325826495886
+        },
+        {
+          "epoch": 725,
+          "train_normalized_mse": 3.328476151708808e-05,
+          "tune_distance_p95_m": 0.009469382604584095,
+          "tune_distance_rmse_m": 0.004733717534691095
+        },
+        {
+          "epoch": 730,
+          "train_normalized_mse": 3.374117394534487e-05,
+          "tune_distance_p95_m": 0.009287296840921045,
+          "tune_distance_rmse_m": 0.004667071159929037
+        },
+        {
+          "epoch": 735,
+          "train_normalized_mse": 1.4211071015380552e-05,
+          "tune_distance_p95_m": 0.008536685258150089,
+          "tune_distance_rmse_m": 0.004228374920785427
+        },
+        {
+          "epoch": 740,
+          "train_normalized_mse": 1.317835004125587e-05,
+          "tune_distance_p95_m": 0.008797466009855266,
+          "tune_distance_rmse_m": 0.004138750955462456
+        },
+        {
+          "epoch": 745,
+          "train_normalized_mse": 1.4863518676097636e-05,
+          "tune_distance_p95_m": 0.007867884146980938,
+          "tune_distance_rmse_m": 0.003935112152248621
+        },
+        {
+          "epoch": 750,
+          "train_normalized_mse": 1.1221468747336124e-05,
+          "tune_distance_p95_m": 0.009641357883810977,
+          "tune_distance_rmse_m": 0.004721612203866243
+        },
+        {
+          "epoch": 755,
+          "train_normalized_mse": 1.5035041287135978e-05,
+          "tune_distance_p95_m": 0.006433043465949591,
+          "tune_distance_rmse_m": 0.004087479319423437
+        },
+        {
+          "epoch": 760,
+          "train_normalized_mse": 1.032574733759056e-05,
+          "tune_distance_p95_m": 0.007214604364708064,
+          "tune_distance_rmse_m": 0.003879932686686516
+        },
+        {
+          "epoch": 765,
+          "train_normalized_mse": 1.1534387308449623e-05,
+          "tune_distance_p95_m": 0.008693425776436923,
+          "tune_distance_rmse_m": 0.004206870216876268
+        },
+        {
+          "epoch": 770,
+          "train_normalized_mse": 1.7014415246657128e-05,
+          "tune_distance_p95_m": 0.00939346244558691,
+          "tune_distance_rmse_m": 0.004218758083879948
+        },
+        {
+          "epoch": 775,
+          "train_normalized_mse": 1.4637878337995508e-05,
+          "tune_distance_p95_m": 0.008747903537005167,
+          "tune_distance_rmse_m": 0.004361026920378208
+        },
+        {
+          "epoch": 780,
+          "train_normalized_mse": 1.1430135441115821e-05,
+          "tune_distance_p95_m": 0.007937319343909616,
+          "tune_distance_rmse_m": 0.004034708254039288
+        },
+        {
+          "epoch": 785,
+          "train_normalized_mse": 1.4110741623178974e-05,
+          "tune_distance_p95_m": 0.009124915953725575,
+          "tune_distance_rmse_m": 0.004384906962513924
+        },
+        {
+          "epoch": 790,
+          "train_normalized_mse": 1.1823161753055869e-05,
+          "tune_distance_p95_m": 0.008957693772390467,
+          "tune_distance_rmse_m": 0.004351501353085041
+        },
+        {
+          "epoch": 795,
+          "train_normalized_mse": 3.823114457190968e-05,
+          "tune_distance_p95_m": 0.00804141806438565,
+          "tune_distance_rmse_m": 0.004302603658288717
+        },
+        {
+          "epoch": 800,
+          "train_normalized_mse": 4.539350834021574e-05,
+          "tune_distance_p95_m": 0.009112485917285074,
+          "tune_distance_rmse_m": 0.00429247273132205
+        },
+        {
+          "epoch": 805,
+          "train_normalized_mse": 2.2579969242398972e-05,
+          "tune_distance_p95_m": 0.007251355494372543,
+          "tune_distance_rmse_m": 0.004095879383385181
+        },
+        {
+          "epoch": 810,
+          "train_normalized_mse": 1.3667508219920197e-05,
+          "tune_distance_p95_m": 0.0078490809071809,
+          "tune_distance_rmse_m": 0.003722261404618621
+        },
+        {
+          "epoch": 815,
+          "train_normalized_mse": 8.783647883734502e-06,
+          "tune_distance_p95_m": 0.007776464894413947,
+          "tune_distance_rmse_m": 0.004140774253755808
+        },
+        {
+          "epoch": 820,
+          "train_normalized_mse": 6.595359967545128e-06,
+          "tune_distance_p95_m": 0.00753004215657711,
+          "tune_distance_rmse_m": 0.0039139678701758385
+        },
+        {
+          "epoch": 825,
+          "train_normalized_mse": 9.962026636282661e-06,
+          "tune_distance_p95_m": 0.007326993229798972,
+          "tune_distance_rmse_m": 0.003719234373420477
+        },
+        {
+          "epoch": 830,
+          "train_normalized_mse": 8.521206454085922e-06,
+          "tune_distance_p95_m": 0.00804051146842539,
+          "tune_distance_rmse_m": 0.004006330855190754
+        },
+        {
+          "epoch": 835,
+          "train_normalized_mse": 1.9062766640624767e-05,
+          "tune_distance_p95_m": 0.006536192353814839,
+          "tune_distance_rmse_m": 0.0035912522580474615
+        },
+        {
+          "epoch": 840,
+          "train_normalized_mse": 1.408830571323817e-05,
+          "tune_distance_p95_m": 0.007633448927663264,
+          "tune_distance_rmse_m": 0.004019776824861765
+        },
+        {
+          "epoch": 845,
+          "train_normalized_mse": 2.4506752053735237e-05,
+          "tune_distance_p95_m": 0.00825174837373197,
+          "tune_distance_rmse_m": 0.004475847352296114
+        },
+        {
+          "epoch": 850,
+          "train_normalized_mse": 2.27681061994844e-05,
+          "tune_distance_p95_m": 0.00788276894018054,
+          "tune_distance_rmse_m": 0.0040448815561831
+        },
+        {
+          "epoch": 855,
+          "train_normalized_mse": 2.1281147494671148e-05,
+          "tune_distance_p95_m": 0.010515795508399602,
+          "tune_distance_rmse_m": 0.004814606159925461
+        },
+        {
+          "epoch": 860,
+          "train_normalized_mse": 1.5552287534279585e-05,
+          "tune_distance_p95_m": 0.007813467714004216,
+          "tune_distance_rmse_m": 0.004127731546759605
+        },
+        {
+          "epoch": 865,
+          "train_normalized_mse": 1.41907461224228e-05,
+          "tune_distance_p95_m": 0.008091974258422847,
+          "tune_distance_rmse_m": 0.00398675911128521
+        },
+        {
+          "epoch": 870,
+          "train_normalized_mse": 1.1041124963141333e-05,
+          "tune_distance_p95_m": 0.008355642203241583,
+          "tune_distance_rmse_m": 0.004042507149279118
+        },
+        {
+          "epoch": 875,
+          "train_normalized_mse": 1.299781020510668e-05,
+          "tune_distance_p95_m": 0.008248510817065829,
+          "tune_distance_rmse_m": 0.004126447252929211
+        },
+        {
+          "epoch": 880,
+          "train_normalized_mse": 1.0201087143127152e-05,
+          "tune_distance_p95_m": 0.008604360604658709,
+          "tune_distance_rmse_m": 0.00419062003493309
+        },
+        {
+          "epoch": 885,
+          "train_normalized_mse": 8.749345445386625e-06,
+          "tune_distance_p95_m": 0.007493757293559609,
+          "tune_distance_rmse_m": 0.0037128650583326817
+        },
+        {
+          "epoch": 890,
+          "train_normalized_mse": 3.839131606678405e-05,
+          "tune_distance_p95_m": 0.007978478493168949,
+          "tune_distance_rmse_m": 0.004088777583092451
+        },
+        {
+          "epoch": 895,
+          "train_normalized_mse": 2.2761728280129956e-05,
+          "tune_distance_p95_m": 0.008644226798787713,
+          "tune_distance_rmse_m": 0.004227606579661369
+        },
+        {
+          "epoch": 900,
+          "train_normalized_mse": 3.754324633949804e-05,
+          "tune_distance_p95_m": 0.009736203588545317,
+          "tune_distance_rmse_m": 0.00485197501257062
+        },
+        {
+          "epoch": 905,
+          "train_normalized_mse": 5.590370723471176e-05,
+          "tune_distance_p95_m": 0.013463822426274419,
+          "tune_distance_rmse_m": 0.006719811353832483
+        },
+        {
+          "epoch": 910,
+          "train_normalized_mse": 0.0002827351247042156,
+          "tune_distance_p95_m": 0.01781943943351506,
+          "tune_distance_rmse_m": 0.0091017484664917
+        },
+        {
+          "epoch": 915,
+          "train_normalized_mse": 6.845680808621917e-05,
+          "tune_distance_p95_m": 0.009129373217001555,
+          "tune_distance_rmse_m": 0.005131904501467943
+        },
+        {
+          "epoch": 920,
+          "train_normalized_mse": 2.9617976619384106e-05,
+          "tune_distance_p95_m": 0.009533359995111818,
+          "tune_distance_rmse_m": 0.004734565503895283
+        },
+        {
+          "epoch": 925,
+          "train_normalized_mse": 1.6463354592831404e-05,
+          "tune_distance_p95_m": 0.008381640771403904,
+          "tune_distance_rmse_m": 0.004368416965007782
+        },
+        {
+          "epoch": 930,
+          "train_normalized_mse": 1.2279214547960324e-05,
+          "tune_distance_p95_m": 0.00667013695929199,
+          "tune_distance_rmse_m": 0.0034647672437131405
+        },
+        {
+          "epoch": 935,
+          "train_normalized_mse": 8.733267541653109e-06,
+          "tune_distance_p95_m": 0.007257039682008325,
+          "tune_distance_rmse_m": 0.0036540336441248655
+        },
+        {
+          "epoch": 940,
+          "train_normalized_mse": 7.573976402279202e-06,
+          "tune_distance_p95_m": 0.007949588820338247,
+          "tune_distance_rmse_m": 0.0037647727876901627
+        },
+        {
+          "epoch": 945,
+          "train_normalized_mse": 7.579916974352448e-06,
+          "tune_distance_p95_m": 0.00758632107172161,
+          "tune_distance_rmse_m": 0.0036275244783610106
+        },
+        {
+          "epoch": 950,
+          "train_normalized_mse": 1.0676958433913042e-05,
+          "tune_distance_p95_m": 0.006659094686619937,
+          "tune_distance_rmse_m": 0.003382511902600527
+        },
+        {
+          "epoch": 955,
+          "train_normalized_mse": 9.982922452572415e-06,
+          "tune_distance_p95_m": 0.008047013683244583,
+          "tune_distance_rmse_m": 0.003709192154929042
+        },
+        {
+          "epoch": 960,
+          "train_normalized_mse": 8.595537349863566e-06,
+          "tune_distance_p95_m": 0.006877888762392103,
+          "tune_distance_rmse_m": 0.003651001024991274
+        },
+        {
+          "epoch": 965,
+          "train_normalized_mse": 6.519256394791515e-06,
+          "tune_distance_p95_m": 0.007266656542196867,
+          "tune_distance_rmse_m": 0.0035590685438364744
+        },
+        {
+          "epoch": 970,
+          "train_normalized_mse": 5.8218586737144e-06,
+          "tune_distance_p95_m": 0.007163284393027421,
+          "tune_distance_rmse_m": 0.003373456420376897
+        },
+        {
+          "epoch": 975,
+          "train_normalized_mse": 1.746350869979595e-05,
+          "tune_distance_p95_m": 0.008542399341240525,
+          "tune_distance_rmse_m": 0.004358571022748947
+        },
+        {
+          "epoch": 980,
+          "train_normalized_mse": 2.2946107779525366e-05,
+          "tune_distance_p95_m": 0.009638528991490602,
+          "tune_distance_rmse_m": 0.004623668733984232
+        },
+        {
+          "epoch": 985,
+          "train_normalized_mse": 4.1513929062874234e-05,
+          "tune_distance_p95_m": 0.008063996303826567,
+          "tune_distance_rmse_m": 0.004058060701936483
+        },
+        {
+          "epoch": 990,
+          "train_normalized_mse": 1.7195740279898847e-05,
+          "tune_distance_p95_m": 0.0069762342376634475,
+          "tune_distance_rmse_m": 0.00360584887675941
+        },
+        {
+          "epoch": 995,
+          "train_normalized_mse": 1.2623054125900748e-05,
+          "tune_distance_p95_m": 0.00731967915780842,
+          "tune_distance_rmse_m": 0.00339319696649909
+        },
+        {
+          "epoch": 1000,
+          "train_normalized_mse": 9.382009569922128e-06,
+          "tune_distance_p95_m": 0.007668720395304262,
+          "tune_distance_rmse_m": 0.003790611866861582
+        },
+        {
+          "epoch": 1005,
+          "train_normalized_mse": 7.75001289136861e-06,
+          "tune_distance_p95_m": 0.007705018646083767,
+          "tune_distance_rmse_m": 0.003535214811563492
+        },
+        {
+          "epoch": 1010,
+          "train_normalized_mse": 1.599731433344188e-05,
+          "tune_distance_p95_m": 0.008057283097878096,
+          "tune_distance_rmse_m": 0.0039824917912483215
+        },
+        {
+          "epoch": 1015,
+          "train_normalized_mse": 9.458625642940189e-06,
+          "tune_distance_p95_m": 0.007941549317911268,
+          "tune_distance_rmse_m": 0.0038960478268563747
+        },
+        {
+          "epoch": 1020,
+          "train_normalized_mse": 1.051282015396282e-05,
+          "tune_distance_p95_m": 0.006926160096190857,
+          "tune_distance_rmse_m": 0.0034334228839725256
+        },
+        {
+          "epoch": 1025,
+          "train_normalized_mse": 2.824756299097524e-05,
+          "tune_distance_p95_m": 0.007230897294357416,
+          "tune_distance_rmse_m": 0.003596140304580331
+        },
+        {
+          "epoch": 1030,
+          "train_normalized_mse": 3.244933880826769e-05,
+          "tune_distance_p95_m": 0.01029771147295832,
+          "tune_distance_rmse_m": 0.005503208842128515
+        },
+        {
+          "epoch": 1035,
+          "train_normalized_mse": 2.9755124527135896e-05,
+          "tune_distance_p95_m": 0.007937221927568308,
+          "tune_distance_rmse_m": 0.003999239299446344
+        },
+        {
+          "epoch": 1040,
+          "train_normalized_mse": 1.514815795145982e-05,
+          "tune_distance_p95_m": 0.009720931295305487,
+          "tune_distance_rmse_m": 0.00487368693575263
+        },
+        {
+          "epoch": 1045,
+          "train_normalized_mse": 1.8336302609736377e-05,
+          "tune_distance_p95_m": 0.007925942027941344,
+          "tune_distance_rmse_m": 0.0038118662778288126
+        },
+        {
+          "epoch": 1050,
+          "train_normalized_mse": 1.5070376576388075e-05,
+          "tune_distance_p95_m": 0.008089337218552827,
+          "tune_distance_rmse_m": 0.003934809938073158
+        },
+        {
+          "epoch": 1055,
+          "train_normalized_mse": 2.9673848825551797e-05,
+          "tune_distance_p95_m": 0.007672898122109472,
+          "tune_distance_rmse_m": 0.003912762273102999
+        },
+        {
+          "epoch": 1060,
+          "train_normalized_mse": 6.379862584014375e-05,
+          "tune_distance_p95_m": 0.00646146973595023,
+          "tune_distance_rmse_m": 0.003584803082048893
+        },
+        {
+          "epoch": 1065,
+          "train_normalized_mse": 2.077862151501202e-05,
+          "tune_distance_p95_m": 0.009319694619625802,
+          "tune_distance_rmse_m": 0.004004398360848427
+        },
+        {
+          "epoch": 1070,
+          "train_normalized_mse": 9.453314209837882e-06,
+          "tune_distance_p95_m": 0.006511052744463086,
+          "tune_distance_rmse_m": 0.0033876863308250904
+        },
+        {
+          "epoch": 1075,
+          "train_normalized_mse": 7.780428412635892e-06,
+          "tune_distance_p95_m": 0.007713684486225246,
+          "tune_distance_rmse_m": 0.003584550693631172
+        },
+        {
+          "epoch": 1080,
+          "train_normalized_mse": 7.306794327233914e-06,
+          "tune_distance_p95_m": 0.006226817634887993,
+          "tune_distance_rmse_m": 0.003075547982007265
+        },
+        {
+          "epoch": 1085,
+          "train_normalized_mse": 1.0343283815528961e-05,
+          "tune_distance_p95_m": 0.006471871770918366,
+          "tune_distance_rmse_m": 0.002984595950692892
+        },
+        {
+          "epoch": 1090,
+          "train_normalized_mse": 9.920350924387508e-06,
+          "tune_distance_p95_m": 0.007135607278905807,
+          "tune_distance_rmse_m": 0.0034037248697131872
+        },
+        {
+          "epoch": 1095,
+          "train_normalized_mse": 1.4533244036117634e-05,
+          "tune_distance_p95_m": 0.007632530131377274,
+          "tune_distance_rmse_m": 0.003142810193821788
+        },
+        {
+          "epoch": 1100,
+          "train_normalized_mse": 7.070429650443737e-06,
+          "tune_distance_p95_m": 0.0059863948030397275,
+          "tune_distance_rmse_m": 0.003013747511431575
+        },
+        {
+          "epoch": 1105,
+          "train_normalized_mse": 1.1837573638012258e-05,
+          "tune_distance_p95_m": 0.006369045726023612,
+          "tune_distance_rmse_m": 0.0030562905594706535
+        },
+        {
+          "epoch": 1110,
+          "train_normalized_mse": 1.619183358183874e-05,
+          "tune_distance_p95_m": 0.00625716526992619,
+          "tune_distance_rmse_m": 0.0032434007152915
+        },
+        {
+          "epoch": 1115,
+          "train_normalized_mse": 2.4407853950897495e-05,
+          "tune_distance_p95_m": 0.008750449400395141,
+          "tune_distance_rmse_m": 0.004432802088558674
+        },
+        {
+          "epoch": 1120,
+          "train_normalized_mse": 4.393852788397405e-05,
+          "tune_distance_p95_m": 0.014172387588769195,
+          "tune_distance_rmse_m": 0.007513655349612236
+        },
+        {
+          "epoch": 1125,
+          "train_normalized_mse": 6.544629420539805e-05,
+          "tune_distance_p95_m": 0.008152189664542675,
+          "tune_distance_rmse_m": 0.004478116054087877
+        },
+        {
+          "epoch": 1130,
+          "train_normalized_mse": 2.227161572240252e-05,
+          "tune_distance_p95_m": 0.010337270935997355,
+          "tune_distance_rmse_m": 0.004625242669135332
+        },
+        {
+          "epoch": 1135,
+          "train_normalized_mse": 8.452228485111846e-06,
+          "tune_distance_p95_m": 0.007699236250482492,
+          "tune_distance_rmse_m": 0.0035529318265616894
+        },
+        {
+          "epoch": 1140,
+          "train_normalized_mse": 8.036673734112124e-06,
+          "tune_distance_p95_m": 0.0064850038848817335,
+          "tune_distance_rmse_m": 0.0033131104428321123
+        },
+        {
+          "epoch": 1145,
+          "train_normalized_mse": 1.1321225780161432e-05,
+          "tune_distance_p95_m": 0.006926351925358175,
+          "tune_distance_rmse_m": 0.003505327273160219
+        },
+        {
+          "epoch": 1150,
+          "train_normalized_mse": 1.2095038727509969e-05,
+          "tune_distance_p95_m": 0.006893637799657881,
+          "tune_distance_rmse_m": 0.0033742478117346764
+        },
+        {
+          "epoch": 1155,
+          "train_normalized_mse": 9.368962900337289e-06,
+          "tune_distance_p95_m": 0.008372431108728047,
+          "tune_distance_rmse_m": 0.004004273097962141
+        },
+        {
+          "epoch": 1160,
+          "train_normalized_mse": 3.770018311275124e-05,
+          "tune_distance_p95_m": 0.008496715920045961,
+          "tune_distance_rmse_m": 0.004516571760177612
+        },
+        {
+          "epoch": 1165,
+          "train_normalized_mse": 1.618163714100088e-05,
+          "tune_distance_p95_m": 0.006688687950372694,
+          "tune_distance_rmse_m": 0.0034978101029992104
+        },
+        {
+          "epoch": 1170,
+          "train_normalized_mse": 7.290974667340746e-05,
+          "tune_distance_p95_m": 0.01205307189375162,
+          "tune_distance_rmse_m": 0.005930093117058277
+        },
+        {
+          "epoch": 1175,
+          "train_normalized_mse": 5.0822820380665035e-05,
+          "tune_distance_p95_m": 0.008922937884926794,
+          "tune_distance_rmse_m": 0.004381404258310795
+        },
+        {
+          "epoch": 1180,
+          "train_normalized_mse": 0.00015710374843860207,
+          "tune_distance_p95_m": 0.010258360393345347,
+          "tune_distance_rmse_m": 0.005966013763099909
+        },
+        {
+          "epoch": 1185,
+          "train_normalized_mse": 0.00011483837953531755,
+          "tune_distance_p95_m": 0.010947998333722349,
+          "tune_distance_rmse_m": 0.005628164857625961
+        },
+        {
+          "epoch": 1190,
+          "train_normalized_mse": 8.899522365761201e-05,
+          "tune_distance_p95_m": 0.010388610744848847,
+          "tune_distance_rmse_m": 0.005373807158321142
+        },
+        {
+          "epoch": 1195,
+          "train_normalized_mse": 7.665215730013555e-05,
+          "tune_distance_p95_m": 0.006804674817249177,
+          "tune_distance_rmse_m": 0.0038378217723220587
+        },
+        {
+          "epoch": 1200,
+          "train_normalized_mse": 4.297808679933823e-05,
+          "tune_distance_p95_m": 0.01310815466567873,
+          "tune_distance_rmse_m": 0.006044200621545315
+        }
+      ],
+      "seed": 20260725
+    }
+  ],
+  "model_class_selection": {
+    "mlp": {
+      "axis_mae_m": [
+        0.005545957945287228,
+        0.004914864432066679,
+        0.004331175237894058
+      ],
+      "axis_p95_abs_m": [
+        0.025866127014160155,
+        0.018404281139373778,
+        0.016616250574588775
+      ],
+      "count": 304,
+      "distance_max_m": 0.08236367255449295,
+      "distance_mean_m": 0.009649889543652534,
+      "distance_p50_m": 0.0049913302063941956,
+      "distance_p90_m": 0.026297194883227345,
+      "distance_p95_m": 0.03677574917674063,
+      "distance_p99_m": 0.04933943469077338,
+      "distance_rmse_m": 0.015082340687513351
+    },
+    "polynomial": {
+      "axis_mae_m": [
+        0.0036812596954405308,
+        0.0006095659919083118,
+        0.00141405058093369
+      ],
+      "axis_p95_abs_m": [
+        0.017278885841369593,
+        0.002970338612794875,
+        0.0035116881132125806
+      ],
+      "count": 304,
+      "distance_max_m": 0.06792993098497391,
+      "distance_mean_m": 0.0045238700695335865,
+      "distance_p50_m": 0.00157859647879377,
+      "distance_p90_m": 0.007645422872155903,
+      "distance_p95_m": 0.022710110526531876,
+      "distance_p99_m": 0.04721907410770648,
+      "distance_rmse_m": 0.01024698093533516
+    }
+  },
+  "models": {
+    "mlp": {
+      "untouched_final_test_grid_cells": {
+        "boundary_margin_0.02_count": 267,
+        "boundary_margin_0.05_count": 237,
+        "boundary_margin_0.10_count": 184,
+        "cell_accuracy_boundary_margin_0.02": 1.0,
+        "cell_accuracy_boundary_margin_0.05": 1.0,
+        "cell_accuracy_boundary_margin_0.10": 1.0,
+        "cell_accuracy_true_in_bounds": 0.9966666666666667,
+        "confusion_rows_truth_cols_prediction_D00_to_D21_outside": [
+          [
+            4,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            14,
+            0,
+            1,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            185,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            96,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            4
+          ]
+        ],
+        "count": 304,
+        "in_bounds_agreement": 1.0,
+        "true_in_bounds_count": 300,
+        "true_in_bounds_fraction": 0.9868421052631579
+      },
+      "untouched_final_test_grid_tip": {
+        "axis_mae_m": [
+          0.003916571382433176,
+          0.0027177631855010986,
+          0.003920836374163628
+        ],
+        "axis_p95_abs_m": [
+          0.01174779534339904,
+          0.00733121335506439,
+          0.00946250483393669
+        ],
+        "count": 304,
+        "distance_max_m": 0.019528314471244812,
+        "distance_mean_m": 0.006801746319979429,
+        "distance_p50_m": 0.005523492349311709,
+        "distance_p90_m": 0.013426236156374215,
+        "distance_p95_m": 0.014298634370788932,
+        "distance_p99_m": 0.016593281012028442,
+        "distance_rmse_m": 0.008150341920554638
+      },
+      "untouched_final_test_machine_tip": {
+        "axis_mae_m": [
+          0.003916560672223568,
+          0.0039208331145346165,
+          0.002717767609283328
+        ],
+        "axis_p95_abs_m": [
+          0.011747694015502923,
+          0.00946245640516281,
+          0.00733121335506439
+        ],
+        "count": 304,
+        "distance_max_m": 0.01952807791531086,
+        "distance_mean_m": 0.006801741663366556,
+        "distance_p50_m": 0.005523497238755226,
+        "distance_p90_m": 0.013426202442497015,
+        "distance_p95_m": 0.014298648666590452,
+        "distance_p99_m": 0.016593052372336374,
+        "distance_rmse_m": 0.00815032422542572
+      }
+    },
+    "polynomial": {
+      "untouched_final_test_grid_cells": {
+        "boundary_margin_0.02_count": 267,
+        "boundary_margin_0.05_count": 237,
+        "boundary_margin_0.10_count": 184,
+        "cell_accuracy_boundary_margin_0.02": 1.0,
+        "cell_accuracy_boundary_margin_0.05": 1.0,
+        "cell_accuracy_boundary_margin_0.10": 1.0,
+        "cell_accuracy_true_in_bounds": 1.0,
+        "confusion_rows_truth_cols_prediction_D00_to_D21_outside": [
+          [
+            4,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            15,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            185,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            96,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            3,
+            0,
+            0,
+            0,
+            1
+          ]
+        ],
+        "count": 304,
+        "in_bounds_agreement": 0.9901315789473685,
+        "true_in_bounds_count": 300,
+        "true_in_bounds_fraction": 0.9868421052631579
+      },
+      "untouched_final_test_grid_tip": {
+        "axis_mae_m": [
+          0.002539612352848053,
+          0.000654612435027957,
+          0.0006404800224117935
+        ],
+        "axis_p95_abs_m": [
+          0.007482141256332363,
+          0.002577850222587578,
+          0.0016877152025699615
+        ],
+        "count": 304,
+        "distance_max_m": 0.01992596499621868,
+        "distance_mean_m": 0.0028279442340135574,
+        "distance_p50_m": 0.0015839894185774028,
+        "distance_p90_m": 0.005950327217578888,
+        "distance_p95_m": 0.007793220062740111,
+        "distance_p99_m": 0.01845680339261887,
+        "distance_rmse_m": 0.004452492576092482
+      },
+      "untouched_final_test_machine_tip": {
+        "axis_mae_m": [
+          0.002539620269089937,
+          0.0006404852028936148,
+          0.0006546069053001702
+        ],
+        "axis_p95_abs_m": [
+          0.007482039928436244,
+          0.0016877025365829466,
+          0.0025778412818908618
+        ],
+        "count": 304,
+        "distance_max_m": 0.019926084205508232,
+        "distance_mean_m": 0.0028279561083763838,
+        "distance_p50_m": 0.0015840920968912542,
+        "distance_p90_m": 0.005950406705960631,
+        "distance_p95_m": 0.007793122087605261,
+        "distance_p99_m": 0.018456924408674212,
+        "distance_rmse_m": 0.0044525014236569405
+      }
+    }
+  },
+  "nearest_neighbor_reference": {
+    "normalized_qpos_neighbor_distance": {
+      "max": 1.2766969203948975,
+      "p50": 0.5479587018489838,
+      "p95": 1.0990245282649993
+    },
+    "untouched_final_test_machine_tip": {
+      "axis_mae_m": [
+        0.07965285331010818,
+        0.08520811796188354,
+        0.07444850355386734
+      ],
+      "axis_p95_abs_m": [
+        0.20806541442871038,
+        0.22102280706167213,
+        0.21386561393737766
+      ],
+      "count": 304,
+      "distance_max_m": 0.548714280128479,
+      "distance_mean_m": 0.15992502868175507,
+      "distance_p50_m": 0.14812882989645004,
+      "distance_p90_m": 0.25920130014419557,
+      "distance_p95_m": 0.29404993355274184,
+      "distance_p99_m": 0.4196262463927265,
+      "distance_rmse_m": 0.18212562799453735
+    }
+  },
+  "observed_grid_cell_coverage": {
+    "all_samples": {
+      "D00": 138,
+      "D01": 210,
+      "D10": 845,
+      "D11": 614,
+      "D20": 0,
+      "D21": 8,
+      "outside": 9
+    },
+    "all_train": {
+      "D00": 106,
+      "D01": 150,
+      "D10": 521,
+      "D11": 431,
+      "D20": 0,
+      "D21": 8,
+      "outside": 0
+    },
+    "model_class_selection": {
+      "D00": 28,
+      "D01": 45,
+      "D10": 139,
+      "D11": 87,
+      "D20": 0,
+      "D21": 0,
+      "outside": 5
+    },
+    "untouched_final_test": {
+      "D00": 4,
+      "D01": 15,
+      "D10": 185,
+      "D11": 96,
+      "D20": 0,
+      "D21": 0,
+      "outside": 4
+    }
+  },
+  "polynomial_tuning": [
+    {
+      "degree": 2,
+      "ridge": 1e-08,
+      "tune": {
+        "axis_mae_m": [
+          0.03224998712539673,
+          0.006306295283138752,
+          0.008801874704658985
+        ],
+        "axis_p95_abs_m": [
+          0.06774007081985468,
+          0.019770620763301796,
+          0.021653534471988676
+        ],
+        "count": 304,
+        "distance_max_m": 0.08229470252990723,
+        "distance_mean_m": 0.03625553473830223,
+        "distance_p50_m": 0.035301610827445984,
+        "distance_p90_m": 0.06206276230514049,
+        "distance_p95_m": 0.0687405675649643,
+        "distance_p99_m": 0.08102005422115321,
+        "distance_rmse_m": 0.04054460674524307
+      }
+    },
+    {
+      "degree": 2,
+      "ridge": 1e-06,
+      "tune": {
+        "axis_mae_m": [
+          0.032249994575977325,
+          0.006306296214461327,
+          0.008801872842013836
+        ],
+        "axis_p95_abs_m": [
+          0.06773986816406245,
+          0.019770620763301796,
+          0.021653534471988676
+        ],
+        "count": 304,
+        "distance_max_m": 0.08229470252990723,
+        "distance_mean_m": 0.03625554218888283,
+        "distance_p50_m": 0.035301610827445984,
+        "distance_p90_m": 0.06206276230514049,
+        "distance_p95_m": 0.06874077022075653,
+        "distance_p99_m": 0.08102005422115321,
+        "distance_rmse_m": 0.04054461792111397
+      }
+    },
+    {
+      "degree": 2,
+      "ridge": 0.0001,
+      "tune": {
+        "axis_mae_m": [
+          0.03225002437829971,
+          0.006306308321654797,
+          0.008801829069852829
+        ],
+        "axis_p95_abs_m": [
+          0.06773990392684931,
+          0.0197705134749412,
+          0.02165311574935913
+        ],
+        "count": 304,
+        "distance_max_m": 0.08229468017816544,
+        "distance_mean_m": 0.036255549639463425,
+        "distance_p50_m": 0.03530159033834934,
+        "distance_p90_m": 0.06206276230514049,
+        "distance_p95_m": 0.0687405675649643,
+        "distance_p99_m": 0.08102003939449783,
+        "distance_rmse_m": 0.04054461792111397
+      }
+    },
+    {
+      "degree": 2,
+      "ridge": 0.01,
+      "tune": {
+        "axis_mae_m": [
+          0.03225364163517952,
+          0.006307472009211779,
+          0.00879708956927061
+        ],
+        "axis_p95_abs_m": [
+          0.06774157285690302,
+          0.019760710000991766,
+          0.021634331345558165
+        ],
+        "count": 304,
+        "distance_max_m": 0.08229415863752365,
+        "distance_mean_m": 0.0362560860812664,
+        "distance_p50_m": 0.03529832139611244,
+        "distance_p90_m": 0.06206837855279445,
+        "distance_p95_m": 0.06874720267951488,
+        "distance_p99_m": 0.08101944409310813,
+        "distance_rmse_m": 0.04054548591375351
+      }
+    },
+    {
+      "degree": 3,
+      "ridge": 1e-08,
+      "tune": {
+        "axis_mae_m": [
+          0.0017921760445460677,
+          0.00457340944558382,
+          0.006731819827109575
+        ],
+        "axis_p95_abs_m": [
+          0.004299676418304443,
+          0.01576052010059356,
+          0.015749369561672184
+        ],
+        "count": 304,
+        "distance_max_m": 0.02604622393846512,
+        "distance_mean_m": 0.009272528812289238,
+        "distance_p50_m": 0.008143287152051926,
+        "distance_p90_m": 0.01712393593043089,
+        "distance_p95_m": 0.020717636402696367,
+        "distance_p99_m": 0.025648434441536652,
+        "distance_rmse_m": 0.01074597705155611
+      }
+    },
+    {
+      "degree": 3,
+      "ridge": 1e-06,
+      "tune": {
+        "axis_mae_m": [
+          0.0017921790713444352,
+          0.004573410842567682,
+          0.006731814239174128
+        ],
+        "axis_p95_abs_m": [
+          0.004299676418304443,
+          0.015760469436645504,
+          0.015749344229698155
+        ],
+        "count": 304,
+        "distance_max_m": 0.026046136394143105,
+        "distance_mean_m": 0.00927252508699894,
+        "distance_p50_m": 0.008143287152051926,
+        "distance_p90_m": 0.01712395865470171,
+        "distance_p95_m": 0.020717609487473962,
+        "distance_p99_m": 0.025648433547466983,
+        "distance_rmse_m": 0.010745971463620663
+      }
+    },
+    {
+      "degree": 3,
+      "ridge": 0.0001,
+      "tune": {
+        "axis_mae_m": [
+          0.0017924621934071183,
+          0.004573488142341375,
+          0.006731625646352768
+        ],
+        "axis_p95_abs_m": [
+          0.004299473762512206,
+          0.015758652985095975,
+          0.015748995542526217
+        ],
+        "count": 304,
+        "distance_max_m": 0.026045003905892372,
+        "distance_mean_m": 0.009272459894418716,
+        "distance_p50_m": 0.008143125101923943,
+        "distance_p90_m": 0.017124325037002563,
+        "distance_p95_m": 0.020717228576540944,
+        "distance_p99_m": 0.025648693963885295,
+        "distance_rmse_m": 0.010745819658041
+      }
+    },
+    {
+      "degree": 3,
+      "ridge": 0.01,
+      "tune": {
+        "axis_mae_m": [
+          0.0018222645157948136,
+          0.004581796005368233,
+          0.006712691392749548
+        ],
+        "axis_p95_abs_m": [
+          0.004388475418090816,
+          0.015712751448154445,
+          0.015709678828716253
+        ],
+        "count": 304,
+        "distance_max_m": 0.02594182826578617,
+        "distance_mean_m": 0.009266450069844723,
+        "distance_p50_m": 0.0081559126265347,
+        "distance_p90_m": 0.017114126682281492,
+        "distance_p95_m": 0.020675943233072754,
+        "distance_p99_m": 0.0256683544255793,
+        "distance_rmse_m": 0.010731160640716553
+      }
+    },
+    {
+      "degree": 4,
+      "ridge": 1e-08,
+      "tune": {
+        "axis_mae_m": [
+          0.0018595731817185879,
+          0.00043544051004573703,
+          0.00048583882744424045
+        ],
+        "axis_p95_abs_m": [
+          0.009105098247528054,
+          0.0017056792974472022,
+          0.0020266950130462635
+        ],
+        "count": 304,
+        "distance_max_m": 0.015898099169135094,
+        "distance_mean_m": 0.002078538527712226,
+        "distance_p50_m": 0.0011451244936324656,
+        "distance_p90_m": 0.0032895802753046153,
+        "distance_p95_m": 0.009556086827069495,
+        "distance_p99_m": 0.015393832474946972,
+        "distance_rmse_m": 0.003642573021352291
+      }
+    },
+    {
+      "degree": 4,
+      "ridge": 1e-06,
+      "tune": {
+        "axis_mae_m": [
+          0.0018595904111862183,
+          0.00043542476487345994,
+          0.00048584461910650134
+        ],
+        "axis_p95_abs_m": [
+          0.00910530090332029,
+          0.0017054796218872047,
+          0.0020268976688385
+        ],
+        "count": 304,
+        "distance_max_m": 0.015898337587714195,
+        "distance_mean_m": 0.002078547142446041,
+        "distance_p50_m": 0.001145117508713156,
+        "distance_p90_m": 0.003289567958563566,
+        "distance_p95_m": 0.009556082496419522,
+        "distance_p99_m": 0.015394047750160093,
+        "distance_rmse_m": 0.0036426058504730463
+      }
+    },
+    {
+      "degree": 4,
+      "ridge": 0.0001,
+      "tune": {
+        "axis_mae_m": [
+          0.0018608970567584038,
+          0.00043436457053758204,
+          0.00048665027134120464
+        ],
+        "axis_p95_abs_m": [
+          0.009125411510467507,
+          0.0016949191689491247,
+          0.0020468890666961647
+        ],
+        "count": 304,
+        "distance_max_m": 0.015917979180812836,
+        "distance_mean_m": 0.002079675206914544,
+        "distance_p50_m": 0.001145874965004623,
+        "distance_p90_m": 0.003288236632943153,
+        "distance_p95_m": 0.009559784177690718,
+        "distance_p99_m": 0.015409409590065475,
+        "distance_rmse_m": 0.00364609993994236
+      }
+    },
+    {
+      "degree": 4,
+      "ridge": 0.01,
+      "tune": {
+        "axis_mae_m": [
+          0.001997615210711956,
+          0.00033545339829288423,
+          0.000606460205744952
+        ],
+        "axis_p95_abs_m": [
+          0.009894263744354223,
+          0.0010946616530418383,
+          0.002587711811065655
+        ],
+        "count": 304,
+        "distance_max_m": 0.01819702424108982,
+        "distance_mean_m": 0.0022470708936452866,
+        "distance_p50_m": 0.0011799248750321567,
+        "distance_p90_m": 0.0033020243514329185,
+        "distance_p95_m": 0.011012472119182324,
+        "distance_p99_m": 0.017774362359195932,
+        "distance_rmse_m": 0.004098083823919296
+      }
+    },
+    {
+      "degree": 5,
+      "ridge": 1e-08,
+      "tune": {
+        "axis_mae_m": [
+          0.0008928430615924299,
+          0.001109751290641725,
+          0.0016945537645369768
+        ],
+        "axis_p95_abs_m": [
+          0.0038495063781738264,
+          0.007189176976680754,
+          0.008663409948348948
+        ],
+        "count": 304,
+        "distance_max_m": 0.0354715995490551,
+        "distance_mean_m": 0.0025307671166956425,
+        "distance_p50_m": 0.0006426410400308669,
+        "distance_p90_m": 0.0040800719056278455,
+        "distance_p95_m": 0.012897452432662172,
+        "distance_p99_m": 0.033117747679352744,
+        "distance_rmse_m": 0.006513354834169149
+      }
+    },
+    {
+      "degree": 5,
+      "ridge": 1e-06,
+      "tune": {
+        "axis_mae_m": [
+          0.0008928854367695749,
+          0.0011097906390205026,
+          0.0016944961389526725
+        ],
+        "axis_p95_abs_m": [
+          0.003849709033966063,
+          0.0071889750659465766,
+          0.008663403987884472
+        ],
+        "count": 304,
+        "distance_max_m": 0.03547056019306183,
+        "distance_mean_m": 0.0025307433679699898,
+        "distance_p50_m": 0.0006425936589948833,
+        "distance_p90_m": 0.004080622177571058,
+        "distance_p95_m": 0.012897533131763263,
+        "distance_p99_m": 0.033116894997656326,
+        "distance_rmse_m": 0.006513228174299002
+      }
+    },
+    {
+      "degree": 5,
+      "ridge": 0.0001,
+      "tune": {
+        "axis_mae_m": [
+          0.0008967722533270717,
+          0.0011136081302538514,
+          0.001689043827354908
+        ],
+        "axis_p95_abs_m": [
+          0.003856039047241209,
+          0.007166680693626403,
+          0.00869948863983149
+        ],
+        "count": 304,
+        "distance_max_m": 0.035373445600271225,
+        "distance_mean_m": 0.0025285042356699705,
+        "distance_p50_m": 0.0006402624130714685,
+        "distance_p90_m": 0.004108045948669313,
+        "distance_p95_m": 0.012915581138804477,
+        "distance_p99_m": 0.033033540211617925,
+        "distance_rmse_m": 0.0065009440295398235
+      }
+    },
+    {
+      "degree": 5,
+      "ridge": 0.01,
+      "tune": {
+        "axis_mae_m": [
+          0.0013539493083953857,
+          0.0016131550073623657,
+          0.0014245578786358237
+        ],
+        "axis_p95_abs_m": [
+          0.007756495475768994,
+          0.006766184419393453,
+          0.008221882581710794
+        ],
+        "count": 304,
+        "distance_max_m": 0.03379609063267708,
+        "distance_mean_m": 0.002882798435166478,
+        "distance_p50_m": 0.0007703212613705546,
+        "distance_p90_m": 0.005208363384008407,
+        "distance_p95_m": 0.0169255720451474,
+        "distance_p99_m": 0.031645875200629205,
+        "distance_rmse_m": 0.006615094840526581
+      }
+    },
+    {
+      "degree": 6,
+      "ridge": 1e-08,
+      "tune": {
+        "axis_mae_m": [
+          0.003370031015947461,
+          0.0008654214325360954,
+          0.0041357725858688354
+        ],
+        "axis_p95_abs_m": [
+          0.01714959144592283,
+          0.005255472660064697,
+          0.023151457309722782
+        ],
+        "count": 304,
+        "distance_max_m": 0.08971323817968369,
+        "distance_mean_m": 0.006462126970291138,
+        "distance_p50_m": 0.0012246135738678277,
+        "distance_p90_m": 0.016726034134626387,
+        "distance_p95_m": 0.023816610872745485,
+        "distance_p99_m": 0.08481686763465389,
+        "distance_rmse_m": 0.016369331628084183
+      }
+    },
+    {
+      "degree": 6,
+      "ridge": 1e-06,
+      "tune": {
+        "axis_mae_m": [
+          0.0033712168224155903,
+          0.0008657812140882015,
+          0.004135545808821917
+        ],
+        "axis_p95_abs_m": [
+          0.017189347743988014,
+          0.005255018174648285,
+          0.023153257369995
+        ],
+        "count": 304,
+        "distance_max_m": 0.08971340954303741,
+        "distance_mean_m": 0.006462241057306528,
+        "distance_p50_m": 0.0012244487879797816,
+        "distance_p90_m": 0.016725547797977924,
+        "distance_p95_m": 0.02381869275122878,
+        "distance_p99_m": 0.08481717944145187,
+        "distance_rmse_m": 0.01636982150375843
+      }
+    },
+    {
+      "degree": 6,
+      "ridge": 0.0001,
+      "tune": {
+        "axis_mae_m": [
+          0.003481323830783367,
+          0.000907778914552182,
+          0.004114845301955938
+        ],
+        "axis_p95_abs_m": [
+          0.017952954769134513,
+          0.005325479805469506,
+          0.023334974050521748
+        ],
+        "count": 304,
+        "distance_max_m": 0.08983737975358963,
+        "distance_mean_m": 0.006477701477706432,
+        "distance_p50_m": 0.0011885246494784951,
+        "distance_p90_m": 0.01674752179533243,
+        "distance_p95_m": 0.024028042890131454,
+        "distance_p99_m": 0.08494646221399292,
+        "distance_rmse_m": 0.016429677605628967
+      }
+    },
+    {
+      "degree": 6,
+      "ridge": 0.01,
+      "tune": {
+        "axis_mae_m": [
+          0.008098498918116093,
+          0.003369021462276578,
+          0.0053334166295826435
+        ],
+        "axis_p95_abs_m": [
+          0.04620716571807851,
+          0.01823639273643477,
+          0.030073007941245938
+        ],
+        "count": 304,
+        "distance_max_m": 0.14099721610546112,
+        "distance_mean_m": 0.01110754068940878,
+        "distance_p50_m": 0.0023884569527581334,
+        "distance_p90_m": 0.025208134576678257,
+        "distance_p95_m": 0.055887893401086325,
+        "distance_p99_m": 0.13195355117320973,
+        "distance_rmse_m": 0.025434909388422966
+      }
+    }
+  ],
+  "sample_counts": {
+    "all_train": 1216,
+    "core_train": 912,
+    "model_class_selection": 304,
+    "tuning_trajectory": 304,
+    "untouched_final_test": 304
+  },
+  "selected_mlp_epoch": 1100,
+  "selected_mlp_seed": 20260725,
+  "selected_model_type": "polynomial",
+  "selected_polynomial_degree": 4,
+  "selected_polynomial_ridge": 1e-06,
+  "split_contract": {
+    "hyperparameter_selection_metric": "tuning distance p95",
+    "model_class_selection_metric": "model-class-selection trajectory distance p95",
+    "model_class_selection_split": "validation",
+    "model_class_selection_trajectory_index": 0,
+    "tuning_trajectory_index": 3,
+    "untouched_final_test_trajectory_indices": [
+      1
+    ]
+  }
+}

@@ -1,0 +1,416 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "dig_sector_annotation_v0_1.schema.json",
+  "title": "Automatic hindsight 3x1 achieved-dig-sector annotation v0.1",
+  "type": "object",
+  "required": [
+    "contract_id",
+    "annotation_id",
+    "generated_at",
+    "source",
+    "semantics",
+    "command",
+    "dig_entry",
+    "qpos_evidence",
+    "vision_evidence",
+    "outcome",
+    "verification",
+    "quality"
+  ],
+  "properties": {
+    "contract_id": {"const": "dig_sector_annotation_v0_1"},
+    "annotation_id": {"type": "string", "minLength": 1},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "source": {
+      "type": "object",
+      "required": [
+        "domain",
+        "dataset_path",
+        "episode_name",
+        "episode_id",
+        "step_count",
+        "camera_names",
+        "source_size_bytes",
+        "source_mtime_ns"
+      ],
+      "properties": {
+        "domain": {"const": "real"},
+        "dataset_path": {"type": "string", "minLength": 1},
+        "episode_name": {"type": "string", "pattern": "^episode_[0-9]+$"},
+        "episode_id": {"type": "integer", "minimum": 0},
+        "step_count": {"type": "integer", "minimum": 1},
+        "camera_names": {
+          "type": "array",
+          "minItems": 2,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "source_size_bytes": {"type": "integer", "minimum": 1},
+        "source_mtime_ns": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": false
+    },
+    "semantics": {
+      "type": "object",
+      "required": [
+        "label_kind",
+        "coordinate_frame",
+        "positive_relative_swing",
+        "negative_relative_swing",
+        "metric_equal_width_grid_claimed"
+      ],
+      "properties": {
+        "label_kind": {"const": "hindsight_achieved_sector"},
+        "coordinate_frame": {"type": "string", "minLength": 1},
+        "positive_relative_swing": {"const": "L"},
+        "negative_relative_swing": {"const": "R"},
+        "metric_equal_width_grid_claimed": {"const": false}
+      },
+      "additionalProperties": false
+    },
+    "command": {
+      "type": "object",
+      "required": ["source", "dig_sector"],
+      "properties": {
+        "source": {"const": "unknown_not_recorded"},
+        "dig_sector": {"type": "null"}
+      },
+      "additionalProperties": false
+    },
+    "dig_entry": {
+      "type": "object",
+      "required": [
+        "representative_step",
+        "window_start_step",
+        "window_end_step",
+        "method",
+        "parameters",
+        "semantic_limit"
+      ],
+      "properties": {
+        "representative_step": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "window_start_step": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "window_end_step": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "method": {"const": "sustained_bucket_qpos_rise_v0_1"},
+        "parameters": {
+          "type": "object",
+          "required": [
+            "moving_median_window_steps",
+            "bucket_rise_rad",
+            "bucket_rise_hold_rad",
+            "bucket_rise_hold_steps",
+            "bucket_rise_lookahead_steps"
+          ],
+          "properties": {
+            "moving_median_window_steps": {
+              "const": 5
+            },
+            "bucket_rise_rad": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "bucket_rise_hold_rad": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "bucket_rise_hold_steps": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "bucket_rise_lookahead_steps": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        "semantic_limit": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "qpos_evidence": {
+      "type": "object",
+      "required": [
+        "initial_qpos_rad",
+        "initial_home_score",
+        "initial_home_score_threshold",
+        "relative_swing_rad",
+        "entry_window_swing_span_rad",
+        "cumulative_swing_action_to_entry",
+        "sector_thresholds_rad",
+        "sector_label",
+        "candidate_sector_labels",
+        "boundary_flag"
+      ],
+      "properties": {
+        "initial_qpos_rad": {
+          "type": "array",
+          "prefixItems": [
+            {"type": "number"},
+            {"type": "number"},
+            {"type": "number"},
+            {"type": "number"}
+          ],
+          "items": false
+        },
+        "initial_home_score": {"type": "number", "minimum": 0},
+        "initial_home_score_threshold": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "relative_swing_rad": {"type": ["number", "null"]},
+        "entry_window_swing_span_rad": {
+          "type": ["number", "null"],
+          "minimum": 0
+        },
+        "cumulative_swing_action_to_entry": {
+          "type": ["number", "null"]
+        },
+        "sector_thresholds_rad": {
+          "type": "object",
+          "required": [
+            "center_accept_abs_max",
+            "side_accept_abs_min",
+            "boundary_band_abs"
+          ],
+          "properties": {
+            "center_accept_abs_max": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "side_accept_abs_min": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "boundary_band_abs": {
+              "type": "array",
+              "prefixItems": [
+                {"type": "number", "exclusiveMinimum": 0},
+                {"type": "number", "exclusiveMinimum": 0}
+              ],
+              "items": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "sector_label": {"$ref": "#/$defs/nullableSector"},
+        "candidate_sector_labels": {"$ref": "#/$defs/sectorList"},
+        "boundary_flag": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "vision_evidence": {
+      "type": "object",
+      "required": [
+        "method",
+        "status",
+        "calibration_id",
+        "reference_step",
+        "image_resolution",
+        "static_background_mask",
+        "sector_thresholds_px",
+        "cameras",
+        "median_horizontal_displacement_px",
+        "sector_label",
+        "candidate_sector_labels",
+        "boundary_flag"
+      ],
+      "properties": {
+        "method": {
+          "const": "eye_static_background_sift_median_v0_1"
+        },
+        "status": {"enum": ["not_run", "ok", "partial", "failed"]},
+        "calibration_id": {"type": "string", "minLength": 1},
+        "reference_step": {"type": "integer", "minimum": 0},
+        "image_resolution": {
+          "type": "array",
+          "prefixItems": [
+            {"type": "integer", "minimum": 1},
+            {"type": "integer", "minimum": 1}
+          ],
+          "items": false
+        },
+        "static_background_mask": {
+          "type": "object",
+          "required": [
+            "top_rows",
+            "left_end_col",
+            "right_start_col"
+          ],
+          "properties": {
+            "top_rows": {"type": "integer", "minimum": 1},
+            "left_end_col": {"type": "integer", "minimum": 1},
+            "right_start_col": {"type": "integer", "minimum": 1}
+          },
+          "additionalProperties": false
+        },
+        "sector_thresholds_px": {
+          "type": "object",
+          "required": [
+            "center_accept_abs_max",
+            "side_accept_abs_min",
+            "boundary_band_abs"
+          ],
+          "properties": {
+            "center_accept_abs_max": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "side_accept_abs_min": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "boundary_band_abs": {
+              "type": "array",
+              "prefixItems": [
+                {"type": "number", "exclusiveMinimum": 0},
+                {"type": "number", "exclusiveMinimum": 0}
+              ],
+              "items": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "cameras": {
+          "type": "array",
+          "maxItems": 2,
+          "items": {"$ref": "#/$defs/cameraEvidence"}
+        },
+        "median_horizontal_displacement_px": {
+          "type": ["number", "null"]
+        },
+        "sector_label": {"$ref": "#/$defs/nullableSector"},
+        "candidate_sector_labels": {"$ref": "#/$defs/sectorList"},
+        "boundary_flag": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "outcome": {
+      "type": "object",
+      "required": [
+        "actual_dig_sector",
+        "candidate_sector_labels",
+        "boundary_flag",
+        "method"
+      ],
+      "properties": {
+        "actual_dig_sector": {"$ref": "#/$defs/nullableSector"},
+        "candidate_sector_labels": {"$ref": "#/$defs/sectorList"},
+        "boundary_flag": {"type": "boolean"},
+        "method": {
+          "const": "swing_qpos_plus_eye_background_displacement_v0_1"
+        }
+      },
+      "additionalProperties": false
+    },
+    "verification": {
+      "type": "object",
+      "required": [
+        "privilege_used_for_annotation",
+        "metric_ground_truth_available",
+        "manual_review_performed"
+      ],
+      "properties": {
+        "privilege_used_for_annotation": {"const": false},
+        "metric_ground_truth_available": {"const": false},
+        "manual_review_performed": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "quality": {
+      "type": "object",
+      "required": [
+        "status",
+        "confidence",
+        "auto_usable",
+        "review_required",
+        "reason_codes"
+      ],
+      "properties": {
+        "status": {"enum": ["accepted", "provisional", "rejected"]},
+        "confidence": {"enum": ["high", "medium", "low"]},
+        "auto_usable": {"type": "boolean"},
+        "review_required": {"type": "boolean"},
+        "reason_codes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "sector": {
+      "type": "string",
+      "enum": ["L", "C", "R"]
+    },
+    "nullableSector": {
+      "anyOf": [
+        {"$ref": "#/$defs/sector"},
+        {"type": "null"}
+      ]
+    },
+    "sectorList": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/sector"}
+    },
+    "cameraEvidence": {
+      "type": "object",
+      "required": [
+        "camera",
+        "status",
+        "reference_step",
+        "target_step",
+        "good_match_count",
+        "robust_match_count",
+        "horizontal_displacement_px",
+        "vertical_displacement_px",
+        "horizontal_mad_px",
+        "vertical_mad_px",
+        "sector_label",
+        "candidate_sector_labels",
+        "boundary_flag",
+        "reason_codes"
+      ],
+      "properties": {
+        "camera": {"enum": ["video4", "video5"]},
+        "status": {"enum": ["ok", "failed"]},
+        "reference_step": {"type": "integer", "minimum": 0},
+        "target_step": {"type": "integer", "minimum": 0},
+        "good_match_count": {"type": "integer", "minimum": 0},
+        "robust_match_count": {"type": "integer", "minimum": 0},
+        "horizontal_displacement_px": {"type": ["number", "null"]},
+        "vertical_displacement_px": {"type": ["number", "null"]},
+        "horizontal_mad_px": {
+          "type": ["number", "null"],
+          "minimum": 0
+        },
+        "vertical_mad_px": {
+          "type": ["number", "null"],
+          "minimum": 0
+        },
+        "sector_label": {"$ref": "#/$defs/nullableSector"},
+        "candidate_sector_labels": {"$ref": "#/$defs/sectorList"},
+        "boundary_flag": {"type": "boolean"},
+        "reason_codes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,0 +1,113 @@
+{
+  "contract_id": "dig_sector_annotation_v0_1",
+  "generated_at": "2026-07-23T10:25:42.899058+00:00",
+  "dataset_dir": "/data/pingfan/Excavator_real_stack_data/pro_real_teleop_20260713_20hz_v1",
+  "manifest": "/data/pingfan/Excavator_real_stack_data/pro_real_teleop_20260713_20hz_v1/qc_full/train_ready_manifest.json",
+  "source_hdf5_modified": false,
+  "record_count": 160,
+  "status_counts": {
+    "accepted": 158,
+    "rejected": 2
+  },
+  "accepted_label_counts": {
+    "L": 6,
+    "C": 151,
+    "R": 1
+  },
+  "automatic_coverage": 0.9875,
+  "entry_proxy_found_count": 158,
+  "eye_registration": {
+    "attempted_camera_count": 316,
+    "successful_camera_count": 316,
+    "good_match_count_quantiles": {
+      "min": 14.0,
+      "p05": 66.75,
+      "p50": 97.0,
+      "p95": 130.0,
+      "max": 147.0
+    },
+    "robust_match_count_quantiles": {
+      "min": 9.0,
+      "p05": 56.0,
+      "p50": 87.0,
+      "p95": 118.0,
+      "max": 135.0
+    }
+  },
+  "cross_sensor_checks": {
+    "paired_episode_count": 158,
+    "qpos_vs_eye_displacement_pearson": -0.9969252792626118,
+    "three_sensor_clear_agreement_count": 158,
+    "three_sensor_clear_agreement_rate_among_entry_records": 1.0,
+    "accepted_center_max_abs_eye_displacement_px": 8.169353485107422,
+    "accepted_side_min_abs_eye_displacement_px": 17.32311248779297
+  },
+  "initial_pose_gate": {
+    "robust_center_qpos_rad": [
+      0.0038849490229040384,
+      -0.15238408744335175,
+      -0.5101915895938873,
+      0.24562174081802368
+    ],
+    "robust_scale_qpos_rad": [
+      0.02,
+      0.03,
+      0.03,
+      0.08
+    ],
+    "outlier_score_threshold": 8.0
+  },
+  "config": {
+    "calibration_id": "real_eye_pair_static_mount_640x360_v0_1",
+    "initial_window_steps": 10,
+    "entry_window_radius_steps": 10,
+    "bucket_rise_rad": 0.1,
+    "bucket_rise_hold_rad": 0.08,
+    "bucket_rise_hold_steps": 4,
+    "bucket_rise_lookahead_steps": 6,
+    "home_outlier_score": 8.0,
+    "qpos_center_max_abs_rad": 0.03,
+    "qpos_side_min_abs_rad": 0.05,
+    "image_width": 640,
+    "image_height": 360,
+    "static_mask_top_rows": 244,
+    "static_mask_left_end_col": 249,
+    "static_mask_right_start_col": 390,
+    "sift_ratio": 0.75,
+    "robust_mad_multiplier": 3.0,
+    "robust_min_residual_px": 2.0,
+    "min_good_matches": 12,
+    "min_robust_matches": 8,
+    "vision_center_max_abs_px": 10.0,
+    "vision_side_min_abs_px": 15.0
+  },
+  "reason_counts": {
+    "initial_pose_outside_home_cluster": 1,
+    "no_sustained_bucket_rise": 1,
+    "qpos_and_both_eye_cameras_agree": 158
+  },
+  "review_queue": [
+    {
+      "annotation_id": "real:episode_9:actual_dig_sector_3x1:v0_1",
+      "episode_id": 9,
+      "status": "rejected",
+      "reason_codes": [
+        "initial_pose_outside_home_cluster"
+      ]
+    },
+    {
+      "annotation_id": "real:episode_140:actual_dig_sector_3x1:v0_1",
+      "episode_id": 140,
+      "status": "rejected",
+      "reason_codes": [
+        "no_sustained_bucket_rise"
+      ]
+    }
+  ],
+  "capability_boundary": [
+    "Labels are achieved sectors relative to the initial pose, not physical equal-width sandbox thirds.",
+    "The entry step is a sustained bucket-motion proxy, not measured soil contact.",
+    "Historical command remains unknown; hindsight outcomes do not prove instruction following.",
+    "The visual calibration is valid only while the eye-camera mounting and image preprocessing remain unchanged."
+  ]
+}

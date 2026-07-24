@@ -1,0 +1,92 @@
+{
+  "completed_unix_sec": 1784797694.2710528,
+  "dataset": "/data/pingfan/excavator_testbed_data/yulong_v2_2_pro_full_task_four_camera_jpeg_20260717",
+  "elapsed_sec": 147.96209168434143,
+  "parameters": {
+    "capture_stride": 3,
+    "dataset": "/data/pingfan/excavator_testbed_data/yulong_v2_2_pro_full_task_four_camera_jpeg_20260717",
+    "host": "127.0.0.1",
+    "max_command": 0.85,
+    "max_steps_per_target": 55,
+    "output_dir": "docs/evidence/sim_fixed_tip_fk_v0_2",
+    "overwrite": true,
+    "pact_root": "/home/pingfan/PACT/excavator_testbed",
+    "pool_stride": 20,
+    "port": 5057,
+    "probe_timeout_sec": 3.0,
+    "seed": 20260723,
+    "settled_ticks": 4,
+    "socket_timeout_sec": 20.0,
+    "target_tolerance": 0.025,
+    "targets_per_trajectory": 16,
+    "tracking_deadband": 0.008,
+    "tracking_gain": 4.0,
+    "train_episodes": "0,18,19,20,21,22,23,27,28,29",
+    "train_trajectories": 4,
+    "unity_project": "/home/pingfan/AGXUnityE85ExcavatorSim",
+    "validation_episodes": "30,32,33,34",
+    "validation_trajectories": 2
+  },
+  "probe_candidate_id": "bucket_center_tooth_leading_edge_midpoint_v0_1",
+  "runtime": {
+    "action_order": [
+      "swing_speed_cmd",
+      "boom_speed_cmd",
+      "stick_speed_cmd",
+      "bucket_speed_cmd"
+    ],
+    "camera_names": [
+      "stick_up",
+      "stick_down",
+      "eye_left",
+      "eye_right"
+    ],
+    "control_hz": 50.0,
+    "dt": 0.019999999552965164,
+    "env_state_contract_version": "agx_env_state_v2_4_107",
+    "protocol_version": "agx-sim/v2",
+    "qpos_order": [
+      "swing_position_norm",
+      "boom_position_norm",
+      "stick_position_norm",
+      "bucket_position_norm"
+    ],
+    "qvel_order": [
+      "swing_speed",
+      "boom_speed",
+      "stick_speed",
+      "bucket_speed"
+    ],
+    "runtime_build_id": "editor:2022.3.62f3:0.1:agx_env_state_v2_4_107"
+  },
+  "sample_count": 1824,
+  "sample_schema_version": "fixed_tip_fk_sample/v1",
+  "schema_version": "fixed_tip_fk_collection/v1",
+  "split_counts": {
+    "train": 1216,
+    "validation": 608
+  },
+  "started_unix_sec": 1784797546.3089616,
+  "status": "completed",
+  "train_candidate_count": 2306,
+  "train_episode_ids": [
+    0,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    27,
+    28,
+    29
+  ],
+  "unity_project": "/home/pingfan/AGXUnityE85ExcavatorSim",
+  "validation_candidate_count": 2355,
+  "validation_episode_ids": [
+    30,
+    32,
+    33,
+    34
+  ]
+}
