@@ -17,6 +17,7 @@ from testbed.simverify.contracts import (
     CONDITION_SCHEMA_VERSION,
     EXPORT_EPISODE_SCHEMA,
     FROZEN_ACTION_LABEL_OFFSET_S,
+    FROZEN_OUTPUT_JPEG_QUALITY,
     FROZEN_SOURCE_DT_S,
     FROZEN_SOURCE_HZ,
     FROZEN_TARGET_HZ,
@@ -262,8 +263,11 @@ def materialize_sim_episode(
         raise FileExistsError(f"SimVerify output already exists: {dst}")
     if int(chunk_size) <= 0:
         raise ValueError("chunk_size must be positive")
-    if not 1 <= int(jpeg_quality) <= 100:
-        raise ValueError("jpeg_quality must be in 1..100")
+    if int(jpeg_quality) != FROZEN_OUTPUT_JPEG_QUALITY:
+        raise ValueError(
+            "jpeg_quality is frozen by the camera transform contract at "
+            f"{FROZEN_OUTPUT_JPEG_QUALITY}"
+        )
     materialized_from_sha256 = _validate_optional_sha256(
         condition_materialized_from_sha256,
         name="condition_materialized_from_sha256",
@@ -524,6 +528,7 @@ def _write_materialized_episode(
         metadata.attrs["image_color_space"] = "RGB"
         metadata.attrs["image_resize_filter"] = "linear"
         metadata.attrs["image_crop_policy"] = "none"
+        metadata.attrs["image_jpeg_quality"] = FROZEN_OUTPUT_JPEG_QUALITY
         metadata.attrs["geometric_equivalence"] = False
         metadata.attrs["qpos_order"] = ",".join(SOURCE_QPOS_ORDER)
         metadata.attrs["qvel_order"] = ",".join(SOURCE_QVEL_ORDER)
@@ -624,6 +629,7 @@ def _write_materialized_episode(
             dataset.attrs["color_space"] = "RGB"
             dataset.attrs["width"] = 384
             dataset.attrs["height"] = 216
+            dataset.attrs["jpeg_quality"] = FROZEN_OUTPUT_JPEG_QUALITY
             dataset.attrs["transform_id"] = IMAGE_TRANSFORM_ID
             dataset.attrs["source_camera"] = source_camera
             dataset.attrs["policy_camera"] = policy_camera

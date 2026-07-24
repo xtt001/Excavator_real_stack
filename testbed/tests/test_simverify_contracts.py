@@ -37,6 +37,10 @@ def test_frozen_camera_and_source_domain_contracts_are_explicit() -> None:
         "height": 216,
         "filter": "linear",
     }
+    assert camera["transform"]["output_jpeg"] == {
+        "encoder": "opencv_imencode",
+        "quality": 95,
+    }
     assert len(camera["contract_sha256"]) == 64
 
     assert state["qpos"]["representation"] == "sim_source_representation"

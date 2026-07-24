@@ -127,6 +127,7 @@ def test_materializer_uses_same_row_and_strips_all_privilege(
             source_h5["action"][source_index],
         )
         assert out["metadata"].attrs["action_label_offset_s"] == 0.0
+        assert out["metadata"].attrs["image_jpeg_quality"] == 95
         assert bool(out["metadata"].attrs["action_prealigned"]) is True
         assert out["metadata"].attrs["command_source"] == "unknown_not_recorded"
         assert (
@@ -166,6 +167,12 @@ def test_materializer_uses_same_row_and_strips_all_privilege(
             decoded = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
             assert decoded is not None
             assert decoded.shape == (216, 384, 3)
+            assert (
+                out[f"observations/encoded_images/{camera}"].attrs[
+                    "jpeg_quality"
+                ]
+                == 95
+            )
 
     assert scan_export_for_privilege(output)["ok"] is True
 
@@ -272,6 +279,22 @@ def test_materializer_never_overwrites_an_existing_destination(
 
     assert sha256_file(output) == output_sha
     assert sha256_file(source) == source_sha
+
+
+def test_materializer_rejects_non_frozen_jpeg_quality(tmp_path: Path) -> None:
+    source = tmp_path / "episode_non_frozen_jpeg.hdf5"
+    output = tmp_path / "must_not_exist.hdf5"
+    _write_source_episode(source, n_steps=11)
+
+    with pytest.raises(ValueError, match="frozen.*95"):
+        materialize_sim_episode(
+            source,
+            output,
+            repo_root=REPO_ROOT,
+            jpeg_quality=90,
+        )
+
+    assert not output.exists()
 
 
 def _write_source_episode(path: Path, *, n_steps: int) -> None:

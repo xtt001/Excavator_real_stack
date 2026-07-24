@@ -77,6 +77,7 @@ FROZEN_SOURCE_DT_S = 0.02
 FROZEN_SOURCE_HZ = 50.0
 FROZEN_TARGET_HZ = 20.0
 FROZEN_ACTION_LABEL_OFFSET_S = 0.0
+FROZEN_OUTPUT_JPEG_QUALITY = 95
 
 ALLOWED_EXPORT_GROUPS = frozenset(
     {
@@ -156,6 +157,7 @@ ALLOWED_METADATA_ATTRIBUTES = frozenset(
         "image_color_space",
         "image_resize_filter",
         "image_crop_policy",
+        "image_jpeg_quality",
         "geometric_equivalence",
         "qpos_order",
         "qvel_order",
@@ -184,6 +186,7 @@ ALLOWED_DATASET_ATTRIBUTES = frozenset(
         "color_space",
         "width",
         "height",
+        "jpeg_quality",
         "transform_id",
         "source_camera",
         "policy_camera",
@@ -253,6 +256,10 @@ def camera_transform_contract() -> dict[str, Any]:
                 "filter": "linear",
             },
             "output_storage": "jpeg",
+            "output_jpeg": {
+                "encoder": "opencv_imencode",
+                "quality": FROZEN_OUTPUT_JPEG_QUALITY,
+            },
             "output_color_space": "RGB",
             "output_layout": "HWC",
         },
