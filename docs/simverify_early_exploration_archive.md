@@ -6,12 +6,13 @@ This branch is a **historical, non-mainline research archive** based on
 `db720c1fb3dcaf5edd7b43d65b58f2219aa48163`.
 
 It exists to preserve the smallest reproducible parts of early SimVerify
-exploration without mixing them into `fs/perf_optimize` or presenting them as the
-current V2 design. Nothing in this branch is a deployment default, a production
-data contract, or evidence of closed-loop task success.
+exploration without mixing them into the validated deployment line or presenting
+them as the current V2 design. Nothing in this branch is a deployment default, a
+production data contract, or evidence of closed-loop task success.
 
 The current SimVerify design source of truth is maintained separately in the
-PACT repository on branch `v2.0.0-simVerify`.
+`Excavator_real_stack` repository on branch `v2.0.0-simVerify`. PACT is only the
+versioned simulator-data and independent oracle-audit provider.
 
 ## Disposition
 
