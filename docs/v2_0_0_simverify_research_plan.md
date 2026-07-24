@@ -4,7 +4,7 @@
 
 | 项目 | 当前值 |
 | --- | --- |
-| 状态 | `draft_for_semantic_review` |
+| 状态 | `m0_contract_audit_ready` |
 | 策略代码仓库 | `Excavator_real_stack` |
 | Git 分支 | `v2.0.0-simVerify` |
 | 基线标签 | `g49-n5-live-frozen-20260723` |
@@ -197,12 +197,12 @@ sim_observable_cycle_export_v1/
 
 ### 5.2 相机契约
 
-仿真源相机目前使用：
+仿真录制配置的源顺序为：
 
-- `eye_left`
-- `eye_right`
 - `stick_up`
 - `stick_down`
+- `eye_left`
+- `eye_right`
 
 真实部署模型使用：
 
@@ -211,12 +211,27 @@ sim_observable_cycle_export_v1/
 - `video6`
 - `video7`
 
-不得只按列表位置猜测映射。`camera_mapping.json` 必须记录：
+语义映射已通过三类证据交叉确认：
+
+- 仿真录制配置将 `stick_up/stick_down` 绑定到 stick，将
+  `eye_left/eye_right` 绑定到上车体；
+- 真机 `camera_mount_mapping.json` 明确记录
+  `video4=eye_left`、`video5=eye_right`、`video6=stick_bottom`、
+  `video7=stick_top`；
+- 人工检查当前源数据 `episode_28.hdf5` 第 200、900、1500 帧，四路视角与上述
+  安装语义一致。
+
+因此第一版冻结以下**物理角色映射**，不按源数组位置直接传入模型：
 
 ```json
 {
-  "mapping_id": "pending",
-  "source_to_policy": {},
+  "mapping_id": "sim_yulong_to_real_g49_semantic_roles_v1",
+  "source_to_policy": {
+    "eye_left": "video4",
+    "eye_right": "video5",
+    "stick_down": "video6",
+    "stick_up": "video7"
+  },
   "policy_order": ["video4", "video5", "video6", "video7"],
   "roles": {
     "video4": "eye",
@@ -227,49 +242,48 @@ sim_observable_cycle_export_v1/
   "source_resolution": {},
   "policy_resolution": {},
   "transform_id": "pending",
-  "verification": {}
+  "verification": {
+    "status": "semantic_mapping_confirmed",
+    "geometric_equivalence": false
+  }
 }
 ```
 
-映射冻结前不得训练。需要用同步画面、机构位置和相机安装语义逐路确认。
+该结论只说明相机的物理角色对应，不说明仿真与真机的内参、外参、视场和像素分布相同。
+M0 仍需冻结 resize/crop/颜色处理，但不再把“相机名称如何对应”保留为开放问题。
 
 ### 5.3 qpos/qvel 契约
 
-仿真数据中的归一化 qpos 不能直接当作真机弧度制 qpos。导出契约必须明确：
+第一轮是 source-domain 技术验证，不迁移 checkpoint，因此不建立仿真到真机的数值映射。
+直接使用当前仿真记录中的：
 
-- 轴顺序；
-- 单位；
-- 正负方向；
-- 零点；
-- 有效范围；
-- 是否做 unwrap；
-- qvel 的时间单位；
-- 越界处理；
-- 模型最终消费的 canonical representation。
+- `qpos_order = swing_position_norm, boom_position_norm, stick_position_norm,
+  bucket_position_norm`；
+- `qvel_order = swing_speed, boom_speed, stick_speed, bucket_speed`。
 
-第一轮允许在仿真 source representation 上验证 condition 是否可学，但由此得到的
-checkpoint 必须标记：
+导出 manifest 仍须记录 dtype、shape、有限值范围、逐轴分布和来源 metadata，但不得把
+归一化 qpos 解释为真机弧度，也不得据此修改真机 normalization。第一轮 checkpoint 必须
+标记：
 
 ```text
 sim_state_domain_only_not_real_deployable
 ```
 
-只有 canonical qpos/qvel 映射完成并通过真实数据覆盖审计后，checkpoint 才能进入迁移评审。
+未来如果进入真实数据训练，应在真机数据域重新统计 normalization 并重新训练；本阶段不以
+“把 sim checkpoint 数值映射到真机”为目标。
 
 ### 5.4 Action 契约
 
-仿真直接控制液压缸速度，不包含真机机械死区。第一轮不得用 raw action MAE 声称真实控制
-可迁移。
+当前仿真数据和真机 ACT 都使用四轴语义顺序：
 
-必须记录：
+```text
+swing, boom, stick, bucket
+```
 
-- 四轴顺序；
-- 正负方向；
-- 数值范围；
-- 单位或归一化方式；
-- 动作是否经过平滑、裁剪或控制器变换；
-- source action 与 real policy command 的关系；
-- 哪些指标只比较方向和阶段，哪些指标允许比较幅值。
+但仿真标签是 `actuator_speed_cmd`，直接控制简化的执行器速度，不包含真机液压和机械死区。
+第一轮直接学习 source-domain action，不建立幅值映射，不迁移 checkpoint。导出 manifest
+必须保留四轴顺序、正负方向、数值范围和源端平滑/裁剪配置；所有跨域结论只讨论模型结构、
+condition 响应和任务序列，不能讨论真机控制量等价。
 
 第一轮 checkpoint 的主要价值是验证：
 
@@ -282,16 +296,29 @@ sim_state_domain_only_not_real_deployable
 
 ### 5.5 时间契约
 
-仿真源数据为 50 Hz，当前真实部署目标为 20 Hz。第一轮默认导出因果 20 Hz 数据：
+仿真源的控制时间是固定 `dt=0.02 s`，真实部署目标为 20 Hz。Real Stack 已有
+`testbed/data/resample_20hz.py`，可以复用其“目标时间网格、索引 provenance、gap/QC
+记录、不可变派生数据”结构，但不能原样复用真实录制的时间戳假设和
+`action_label_offset_s=-0.02`。
 
-- 使用时间戳选择或聚合，不使用未来信息；
-- 图像、qpos、qvel、action 和 condition 必须落在同一目标 tick；
-- 不允许仅按固定帧号假设源数据严格无抖动；
-- resample manifest 必须记录每个目标 tick 对应的源时间；
+原因是仿真 recorder 保存的是“当前 observation 与基于该 observation 产生的同 tick
+action”，而 `timestamps/step_ns` 是完成 Unity step 后写入的墙钟时间，不是仿真时间。
+以 `episode_28` 为例，墙钟帧间隔中位数约 `35.0 ms`，而 `step_id` 连续且仿真时间严格为
+`20 ms/tick`。因此第一轮冻结：
+
+- 使用 `step_id` 与 metadata `dt` 构造 source time，不使用墙钟 `step_ns` 决定训练时基；
+- 在每个 20 Hz 目标时刻选择第一个不早于目标时刻的完整 source row；
+- 四路图像、qpos、qvel、action 和 condition 使用同一个 source row；
+- sim action label offset 固定为 `0`；
+- 不插值图像，不用未来 qpos/action 生成当前标签；
+- manifest 记录 source step、source sim time、target tick 和选择误差；
 - action chunk 和 temporal aggregation 全部按 20 Hz 解释。
 
-如果数据审计证明 20 Hz 转换破坏关键动作转折，必须先报告，再决定是否增加 50 Hz
-研究对照；不能静默改变部署目标频率。
+对当前 24 条 clean episode 的动作符号段做了先验审计。使用数据 metadata 中的
+`deadzone=0.05`，上述 20 Hz 选择保留了 `11292` 个有效符号段中的 `11237` 个
+（`99.51%`）；漏掉的 `55` 段全部短于 `50 ms`，持续至少 `50 ms` 的有效段没有漏掉，
+被保留段的 onset 到首个 20 Hz 样本最大延迟为 `40 ms`。这支持第一轮采用 20 Hz，但
+正式 exporter 仍必须把该审计变成可复算 QC，不能只依赖本文数字。
 
 ## 6. 标注契约
 
@@ -303,12 +330,16 @@ sim_state_domain_only_not_real_deployable
 - `outcome`：轨迹实际进入的扇区；
 - `condition_source`：recorded command 或 hindsight outcome。
 
-历史数据没有明确 command 时：
+第一轮仿真历史数据没有同步记录 operator command，因此冻结为：
 
 - command 保持 `unknown_not_recorded`；
-- 可以用 outcome 做 hindsight relabel；
+- policy condition 一律由 outcome 做 hindsight relabel；
 - 不得把 hindsight outcome 伪装成当时真实指令；
-- 评测报告必须单独统计 recorded-command 和 hindsight-condition 数据。
+- 本轮结果必须标记为 `hindsight_condition_only`；
+- 本轮不再把 recorded-command 与 hindsight-condition 的选择留作实验变量。
+
+这里的 hindsight condition 仍只能由四路图像、qpos、qvel 和 action 推断。已有
+`env_state`、planner goal 和精确铲尖坐标只能在规则冻结后做独立 oracle audit。
 
 ### 6.2 可观察 cycle 边界
 
@@ -323,7 +354,47 @@ sim_state_domain_only_not_real_deployable
 
 这些是可观察任务阶段，不声称等于真实接触、真实载荷或土体移除事件。
 
-### 6.3 标注 sidecar 草案
+第一版标注器采用“多信号候选 + 视觉特征确认”，而不是为每个事件手写一个固定 qpos
+阈值：
+
+1. 用 action、qvel 和 swing qpos 的变化生成宽松候选区间；
+2. 用冻结视觉特征提取器对四路图像编码；
+3. eye pair 负责区分挖掘朝向、卸载朝向和 left/center/right 全局区域；
+4. stick pair 负责区分铲斗近土、抬升、运送和返回准备等局部构型；
+5. 对候选区间做 change-point/相似度匹配，输出事件区间、代表帧和置信度；
+6. `ready_end(i)` 必须与下一次实际下铲的可观察准备区间一致，
+   `ready_start(i+1)` 与其共享同一边界；
+7. 证据冲突时标记 `ambiguous`，不强行分配一个精确帧。
+
+`ready` 不等于“所有 qvel 都为零”。专家连续操作时允许非零缓慢运动；它表示四路画面和
+本体状态已经进入下一次下铲的经验准备包络。
+
+### 6.3 3x1 sector 的观测标注
+
+sector 使用两条独立证据：
+
+- 在 `dig_entry_proxy` 附近的 swing qpos 分布；
+- 同一窗口的 eye-pair 视觉特征。
+
+数值边界由当前数据的训练分组拟合，不复用真机阈值，也不直接继承仿真 planner 的 3x2
+cell。优先使用三个稳定簇之间的分界；若视觉簇和 swing qpos 不一致，则进入人工 review
+或标为 unknown。
+
+当前数据已经完成一个只用于可行性判断的 audit：在 `583` 个 replay-candidate cycle 的
+start frame 上，以 qpos-derived 3x1 sector 作为核对标签，使用冻结 ImageNet ResNet-18
+特征、按 source episode 隔离的 train/test 划分和 cosine nearest-centroid：
+
+| 输入 | test accuracy | balanced accuracy |
+| --- | ---: | ---: |
+| eye pair | 96.77% | 97.33% |
+| stick pair | 88.48% | 86.96% |
+| four cameras | 95.85% | 94.76% |
+
+这只证明当前仿真画面中存在稳定的横向区域信息，不证明真实域泛化，也不说明四相机训练
+不如双相机。它支持 eye pair 作为 sector 标注的主要视觉证据，stick pair 继续用于局部
+阶段和边界确认。
+
+### 6.4 标注 sidecar 草案
 
 ```json
 {
@@ -335,6 +406,10 @@ sim_state_domain_only_not_real_deployable
   "command": {
     "current_sector": "unknown_not_recorded",
     "next_ready_sector": "unknown_not_recorded"
+  },
+  "policy_condition": {
+    "current_sector": "center",
+    "next_ready_sector": "left"
   },
   "outcome": {
     "actual_current_sector": "center",
@@ -357,7 +432,7 @@ sim_state_domain_only_not_real_deployable
 }
 ```
 
-### 6.4 Privilege oracle
+### 6.5 Privilege oracle
 
 Privilege oracle 只能在正式规则冻结后运行，并输出：
 
@@ -397,6 +472,21 @@ Oracle 不得：
 - 继续使用当前四相机共享 backbone 批处理；
 - 继续保留死区相关训练目标；
 - 继续使用当前 temporal aggregation 和 latest-wins runtime 语义。
+
+仿真仓库参考提交 `9bcb292` 中的 `GoalTokenProvider` 已使用“本 cycle sector + 下一
+cycle sector”的 lookahead 语义，conditioned ACT 配置则把 goal token 与 qpos/qvel 一起
+组装为 low-dimensional observation。第一轮沿用这条最小路径：
+
+- condition 是独立、带 schema 的 6 维字段，不从图像或 qpos 在线推断；
+- qpos/qvel 按 source-domain stats 处理，condition one-hot 保持原始 0/1；
+- 两者在进入现有 `input_proj_robot_state` 前按固定字段顺序拼接；
+- condition 在整个 cycle 内保持不变，只能在确认的 ready boundary 原子更新；
+- runtime state 同时记录 cycle id、token source 和 token schema；
+- condition 缺失、越界或 cycle id 倒退时 fail closed，不复用上一次 token。
+
+第一轮不同时增加单独 Transformer source token。若 B1 相对 B2 出现
+`condition_ignored`，下一轮才把“独立 condition projection/source token”作为单因素结构
+实验；不能在第一轮同时改变 condition 语义和注入结构。
 
 ### 7.3 Eval 层
 
@@ -523,6 +613,10 @@ B0 与 B1 必须使用完全相同的：
 - 相同 token 重跑的一致性。
 
 如果 token swap 几乎不改变输出，B1 不得被称为 conditioned policy。
+
+反事实 anchor 必须先通过 support 检查：替换后的 sector 在相近任务阶段、相近
+qpos/visual state 中必须有训练或验证证据。没有相似条件支持的 token swap 只能报告为
+`unsupported_counterfactual`，不能把其动作与某条专家轨迹做精确正确性比较。
 
 ### E04：相机反事实
 
@@ -692,7 +786,67 @@ ready_i -> cycle_i -> ready_i+1 -> cycle_i+1 -> ready_i+2
 
 MAE 只作为辅助指标。模型可以采用与某条专家不同但任务合理的动作细节。
 
+### 10.5 数值门槛生成规则
+
+G3/G4/G5 不预填主观百分比。数值门槛按以下顺序生成：
+
+1. 先冻结 source episode split，held-out test 在门槛冻结前不可读取；
+2. 用 train/validation 的专家轨迹分布确定事件时序、动作持续时间和 ready-boundary
+   discontinuity 的任务兼容包络；
+3. 用 B0 和同一 checkpoint 重复 replay 的波动确定模型自身噪声底；
+4. 用 B2 shuffled condition 建立“condition 没有被利用”时的 null distribution；
+5. 用 source-episode 级 paired bootstrap 计算 B1 相对 B0/B2 的差值和置信区间；
+6. 把计算方法、输入 manifest、样本数、分位数和最终门槛写入
+   `gate_thresholds_v1.json`；
+7. 冻结该文件及 SHA 后，才运行 held-out test；
+8. test 结果不得反向修改门槛，只能触发 pass、reject 或重新开始一个带新版本的实验。
+
+sector 分界、ready dwell、event matching tolerance 等标注参数也遵守同一原则：从训练分组
+的簇间谷值、稳健分位数和 bootstrap 稳定性产生。若不同 episode bootstrap 得到的边界
+不稳定，结论应是“标注不可识别”，而不是挑一个看起来合适的常数。
+
 ## 11. 数据分组
+
+### 11.1 当前数据量审计
+
+当前审计数据根为：
+
+```text
+/data/pingfan/excavator_testbed_data/
+  yulong_v2_2_pro_full_task_four_camera_jpeg_20260717_cycle_clean_v1/
+```
+
+其中已经包含：
+
+| 项目 | 数量 |
+| --- | ---: |
+| clean source episodes | 24 |
+| replay-candidate complete cycles | 583 |
+| 相邻 replay-candidate two-cycle pairs | 558 |
+| 有样本的 current→next 转移 | 9 / 9 |
+| 有样本的两-cycle `A→B→C` 组合 | 26 / 27 |
+| 单 cycle 时长 p50 / p95 | 13.64 s / 21.17 s |
+| 双 cycle 时长 p50 / p95 | 27.88 s / 40.47 s |
+
+current→next 的现有计数为：
+
+| current \ next | left | center | right |
+| --- | ---: | ---: | ---: |
+| left | 66 | 40 | 18 |
+| center | 41 | 95 | 88 |
+| right | 21 | 78 | 136 |
+
+唯一完全缺失的三段组合是 `left→right→left`；其余组合的最小样本数仍只有 `4`。因此当前
+总量足以做第一轮单周期和双周期技术验证，但不能直接声称组合均衡或任意路线泛化。正式
+split 必须先输出 train/validation/test 各自的 transition matrix；缺少覆盖的组合要么明确
+作为 compositional holdout，要么不进入该 split 的成功口径。
+
+ACT 不一次预测完整的 14 至 40 秒任务。第一轮继续按 20 Hz、20-tick（约 1 秒）action
+chunk 做逐 tick/receding-horizon 推理，在完整 recorded path 上反复调用。若 B0 失败，应先
+检查相同局部 observation 是否对应不同任务阶段；不能仅因为完整 cycle 很长就把 chunk
+扩大到数百 tick。
+
+### 11.2 分组规则
 
 数据至少按完整 source episode 分成：
 
@@ -715,6 +869,8 @@ MAE 只作为辅助指标。模型可以采用与某条专家不同但任务合�
 - 不同 camera/terrain/起始姿态覆盖；
 - recorded command 与 hindsight condition 比例。
 
+第一轮该比例固定为 `recorded command = 0`、`hindsight condition = 100%`。
+
 ## 12. Gate 与终止条件
 
 ### G0：仓库和输入边界
@@ -727,14 +883,18 @@ MAE 只作为辅助指标。模型可以采用与某条专家不同但任务合�
 ### G1：数据契约
 
 - 相机映射冻结；
-- qpos/qvel/action/time contract 冻结；
+- source-domain qpos/qvel/action/time contract 冻结；
 - 20 Hz 导出可复现；
 - source SHA 和 export SHA 完整；
 - episode split 无泄漏。
 
+G1 不要求仿真数值映射到真机单位；它要求仿真字段自身可追溯，且 checkpoint 保持
+sim-domain 禁用标记。
+
 ### G2：标注可用
 
 - cycle 边界规则可复算；
+- sector 由 eye visual 与 swing qpos 交叉确认；
 - 不确定样本进入 review 或排除；
 - command/outcome 不混写；
 - held-out oracle audit 达到评审后冻结的门槛。
@@ -773,7 +933,7 @@ B1 相对 B0/B2 必须：
 
 - condition 在 held-out counterfactual 上不可辨识；
 - 自动标注无法稳定复算；
-- qpos/action 域差异无法建立明确契约；
+- source qpos/qvel/action 的字段语义或对齐关系无法追溯；
 - 两 cycle 数据覆盖不足；
 - 模型只在训练来源或固定背景上响应；
 - 性能优化改变任务事件或有效方向；
@@ -808,7 +968,8 @@ Privilege oracle 必须独立运行。删除 oracle 产物后训练和主评测�
 
 ### HR-07：Canonical Input Contract
 
-相机、qpos、qvel、action、频率和 condition 必须有唯一版本化定义。
+相机、source-domain qpos/qvel/action、频率和 condition 必须有唯一版本化定义。第一轮
+不要求跨域数值映射，但禁止把 source-domain 数值误写成真机单位。
 
 ### HR-08：Runtime-Equivalent 20 Hz
 
@@ -938,12 +1099,14 @@ decision.json
 
 只做审计和文档：
 
-- 相机映射；
-- qpos/qvel/action；
-- 50 Hz 到 20 Hz；
-- condition schema；
-- cycle 标注；
-- export manifest。
+- 写出已确认的相机语义映射和待冻结的像素 transform；
+- 写出 source-domain qpos/qvel/action contract，不做 sim-to-real 数值映射；
+- 把现有 20 Hz resampler 约束适配为 sim-time/zero-offset 设计和 QC；
+- 用 visual + qpos/qvel/action 形成可观察 cycle/sector 标注规范；
+- 输出完整 episode、sector transition 和 two-cycle coverage inventory；
+- 冻结 hindsight-only `cycle_condition_v1` 和首轮 low-dim 注入方式；
+- 定义 `gate_thresholds_v1.json` 的数据生成方法；
+- 定义 export manifest 和禁止 privilege 扫描规则。
 
 ### M1：Real stack 导入 smoke
 
@@ -988,17 +1151,38 @@ decision.json
 
 本阶段不产生 `control_candidate`。
 
-## 16. 实施前待确认
+## 16. 语义评审后的冻结决策
 
-1. 四路仿真相机到 `video4` 至 `video7` 的准确映射是什么？
-2. V2 模型使用哪一种 canonical qpos/qvel representation？
-3. 仿真 action 如何映射到真实 policy command 的方向和幅值语义？
-4. 50 Hz 转 20 Hz 是否保留所有关键动作转折？
-5. `ready_start` 和 `ready_end` 的可观察规则是什么？
-6. 两 cycle pair 的实际数量和 3x1 transition 覆盖是多少？
-7. 第一轮是否只用 hindsight condition，还是存在 recorded command？
-8. condition one-hot 是否需要单独 embedding，而不是直接拼接到 proprio？
-9. B0 的完整 cycle 数据长度是否超过当前 ACT 可稳定建模范围？
-10. 哪些指标作为 G3/G4/G5 的冻结数值门槛？
+1. 相机按物理角色映射：
+   `eye_left→video4`、`eye_right→video5`、`stick_down→video6`、
+   `stick_up→video7`；不声称几何视角等价。
+2. qpos/qvel 第一轮保持仿真 source representation，不映射到真机单位。
+3. action 第一轮保持 `actuator_speed_cmd` source domain，只对齐
+   swing/boom/stick/bucket 轴语义，不迁移 checkpoint。
+4. 复用现有 Real Stack 20 Hz builder 的结构，但用 sim `step_id × dt`，同 row 对齐，
+   action offset 为 0。
+5. cycle 边界由 action/qpos/qvel 生成候选，用 eye/stick 冻结视觉特征确认；ready 是经验
+   准备包络，不要求静止。
+6. left/center/right 由 dig-entry 附近的 swing qpos 与 eye-pair 视觉簇共同决定，边界从
+   数据产生。
+7. 第一轮 condition 全部是显式标源的 hindsight condition。
+8. 现有 583 个 cycle、558 个相邻 pair 足以启动技术验证，但 split 必须保留 transition
+   inventory，不能把总量等同于组合均衡。
+9. 第一轮参考 PACT 的 current+next lookahead token 和 low-dim 注入路径；独立
+   Transformer condition token 只在 condition-ignored 后作为单因素实验。
+10. annotation 和 model gate 的数值阈值从 train/validation 分布、null control 和
+    episode-level bootstrap 产生，冻结后才读取 held-out test。
 
-这些问题确认前不修改训练代码，不启动正式训练。
+## 17. M0 仍需用数据产出的结果
+
+以下不再是方向选择题，而是 M0 必须生成的可审计产物：
+
+- 四路 sim 图像到当前 Real Stack resize/crop/color pipeline 的 transform manifest；
+- observable event labeler 的候选规则、置信度和复算误差；
+- visual/qpos sector disagreement 与人工 review 数量；
+- train/validation/test 的逐 split transition matrix；
+- 20 Hz exporter 在全数据上的 transition-preservation QC；
+- condition support index，用于过滤无证据的 token counterfactual；
+- `gate_thresholds_v1.json` 及其输入 manifest、计算方法和 SHA。
+
+这些产物冻结前不启动正式训练；它们完成后进入 M1 导入 smoke，而不是直接进入 M3。
