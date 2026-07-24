@@ -104,6 +104,7 @@ def test_injected_model_is_deterministic_512d_and_records_provenance(
     assert provenance["checkpoint"]["loaded_into_model"] is False
     assert provenance["model_source"] == "injected_test_model"
     assert provenance["network_download_allowed"] is False
+    assert provenance["configured_default_batch_size"] == 1
     assert provenance["torch_version"]
     assert provenance["torchvision_version"]
     assert provenance["preprocess"]["policy_transform"]["crop"] == "none"

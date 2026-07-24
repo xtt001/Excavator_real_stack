@@ -247,6 +247,7 @@ class FrozenResNet18FeatureExtractor:
             },
             "model_source": model_source,
             "network_download_allowed": False,
+            "configured_default_batch_size": self._batch_size,
             "torch_version": str(torch.__version__),
             "torchvision_version": str(torchvision.__version__),
             "device": str(resolved_device),

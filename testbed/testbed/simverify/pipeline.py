@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 from collections import Counter, defaultdict
@@ -36,6 +37,7 @@ from testbed.simverify.artifacts import (
 )
 from testbed.simverify.contracts import (
     DATASET_MANIFEST_SCHEMA,
+    FROZEN_OUTPUT_JPEG_QUALITY,
     SOURCE_ACTION_GENERATION,
     assert_source_provenance_unchanged,
     camera_transform_contract,
@@ -45,6 +47,21 @@ from testbed.simverify.contracts import (
     git_ref_provenance,
     sha256_file,
     state_action_time_contract,
+)
+from testbed.simverify.event_selector import (
+    apply_event_selections,
+    assess_point_selection_stability,
+    bootstrap_event_selected_sector,
+    event_selector_gate_report,
+    fit_event_null_control,
+    fit_event_selector,
+    public_selector,
+    refit_outer_sector_with_stability_mask,
+    select_event_corpus,
+    selected_sector_records,
+)
+from testbed.simverify.event_selector import (
+    prototype_arrays as event_prototype_arrays,
 )
 from testbed.simverify.export import (
     materialize_sim_episode,
@@ -115,6 +132,11 @@ def run_m0_pipeline(
 ) -> dict[str, Any]:
     """Build the immutable M0 package and a physically isolated oracle audit."""
 
+    if int(jpeg_quality) != FROZEN_OUTPUT_JPEG_QUALITY:
+        raise ValueError(
+            "jpeg_quality is frozen by the camera transform contract at "
+            f"{FROZEN_OUTPUT_JPEG_QUALITY}"
+        )
     source = Path(source_root).resolve(strict=True)
     clean_dir = source / "clean_all_vds"
     if not clean_dir.is_dir():
@@ -146,9 +168,7 @@ def run_m0_pipeline(
     }
     source_inventory_rows = _source_inventory_files(source)
     source_snapshot_records = [
-        row
-        for episode_id in sorted(source_chains)
-        for row in source_chains[episode_id]
+        row for episode_id in sorted(source_chains) for row in source_chains[episode_id]
     ] + source_inventory_rows
     episode_metadata = {
         episode_id: _read_episode_metadata(path)
@@ -268,19 +288,241 @@ def run_m0_pipeline(
             )
             for episode_id in calibration_ids
         }
-        sector_thresholds = fit_sector_thresholds(
-            [
-                record
-                for episode_id in train_ids
-                for record in calibration_cycles[episode_id]
-            ]
+        resolved_device = (
+            feature_device
+            if feature_device is not None
+            else ("cuda" if torch.cuda.is_available() else "cpu")
         )
-        sector_bootstrap = _bootstrap_sector_thresholds(
+        extractor = FrozenResNet18FeatureExtractor(
+            weights,
+            expected_checkpoint_sha256=expected_weights_sha256,
+            device=resolved_device,
+            batch_size=int(feature_batch_size),
+        )
+        calibration_features = _extract_cycle_features(
+            extractor,
+            episode_paths,
             calibration_cycles,
+            episode_ids=calibration_ids,
+            episode_lengths={
+                episode_id: int(calibration_signals[episode_id].step_id.size)
+                for episode_id in calibration_ids
+            },
+            chunk_rows=int(feature_batch_size),
+        )
+        feature_input_identity = write_json(
+            temporary / "annotation_feature_input_manifest_v1.json",
+            _feature_input_manifest(
+                calibration_features,
+                episode_ids=calibration_ids,
+                chunk_rows=int(feature_batch_size),
+                extractor_provenance=extractor.provenance,
+                common_provenance=common_provenance,
+            ),
+        )
+        artifact_ids.append(feature_input_identity)
+        fitted_event_selector = fit_event_selector(
+            calibration_cycles,
+            calibration_features,
+            train_draw=train_ids,
+            validation_draw=validation_ids,
+        )
+        event_null_control = fit_event_null_control(
+            fitted_event_selector,
+            calibration_cycles,
+            calibration_features,
+            validation_ids=validation_ids,
+            replicates=int(bootstrap_samples),
+            seed=int(bootstrap_seed),
+        )
+        point_event_selections = select_event_corpus(
+            fitted_event_selector,
+            calibration_cycles,
+            calibration_features,
+            episode_ids=calibration_ids,
+        )
+        outer_bootstrap = bootstrap_event_selected_sector(
+            calibration_cycles,
+            calibration_signals,
+            calibration_features,
             train_ids=train_ids,
+            validation_ids=validation_ids,
+            point_selector=fitted_event_selector,
+            point_selections=point_event_selections,
             samples=int(bootstrap_samples),
             seed=int(bootstrap_seed),
         )
+        point_stability_assessment = assess_point_selection_stability(
+            fitted_event_selector,
+            point_event_selections,
+            event_null_control,
+            outer_bootstrap,
+        )
+
+        event_selector_prototype_path = (
+            temporary / "annotation_event_selector_prototypes_v1.npz"
+        )
+        _write_prototypes(
+            event_selector_prototype_path,
+            event_prototype_arrays(fitted_event_selector),
+        )
+        event_selector_prototype_identity = artifact_identity(
+            event_selector_prototype_path
+        )
+        artifact_ids.append(event_selector_prototype_identity)
+        event_selector_payload = public_selector(fitted_event_selector)
+        event_selector_payload.update(
+            {
+                "status": ("core_frozen_before_point_stability_mask_and_sector_gate"),
+                "fit_episode_ids": {
+                    "train": train_ids,
+                    "validation": validation_ids,
+                },
+                "bootstrap_scope": (
+                    "conditional_on_frozen_numeric_candidate_intervals;"
+                    "numeric_threshold_bootstrap_is_independent_preceding_gate"
+                ),
+                "permutation_null": event_null_control,
+                "source_episode_outer_bootstrap": {
+                    key: value
+                    for key, value in outer_bootstrap.items()
+                    if key != "selection_stability" and not key.startswith("_")
+                },
+                "prototype_artifact": _relative_identity(
+                    event_selector_prototype_identity,
+                    temporary,
+                ),
+                "feature_extractor": extractor.provenance,
+                "feature_input_manifest": _relative_identity(
+                    feature_input_identity,
+                    temporary,
+                ),
+                "held_out_observation_access_count": 0,
+                "provenance": common_provenance,
+            }
+        )
+        event_selector_identity = write_json(
+            temporary / "annotation_event_selector_v1.json",
+            event_selector_payload,
+        )
+        artifact_ids.append(event_selector_identity)
+        event_selection_pre_gate_identity = write_json(
+            temporary / "annotation_event_selections_pre_gate_v1.json",
+            {
+                **point_event_selections,
+                "status": "point_selection_before_event_selector_gate",
+                "selector": _relative_identity(
+                    event_selector_identity,
+                    temporary,
+                ),
+                "selection_stability": outer_bootstrap.get(
+                    "selection_stability",
+                    {},
+                ),
+                "point_stability_assessment": point_stability_assessment,
+                "held_out_observation_access_count": 0,
+                "provenance": common_provenance,
+            },
+        )
+        artifact_ids.append(event_selection_pre_gate_identity)
+        refit_outer_sector_with_stability_mask(
+            outer_bootstrap,
+            point_stability_assessment,
+        )
+        sector_outer_identity = write_json(
+            temporary / "annotation_event_selected_sector_bootstrap_v1.json",
+            {
+                "schema": ("observable_event_selected_sector_bootstrap_artifact_v1"),
+                "status": "frozen_point_stability_mask_applied",
+                "selector": _relative_identity(
+                    event_selector_identity,
+                    temporary,
+                ),
+                "point_selection_and_stability_mask": _relative_identity(
+                    event_selection_pre_gate_identity,
+                    temporary,
+                ),
+                "source_episode_outer_bootstrap": {
+                    key: value
+                    for key, value in outer_bootstrap.items()
+                    if key != "selection_stability" and not key.startswith("_")
+                },
+                "held_out_observation_access_count": 0,
+                "provenance": common_provenance,
+            },
+        )
+        artifact_ids.append(sector_outer_identity)
+        selector_gate_report = event_selector_gate_report(
+            fitted_event_selector,
+            event_null_control,
+            outer_bootstrap,
+            point_event_selections,
+            point_stability_assessment,
+        )
+        selector_gate_identity = write_json(
+            temporary / "annotation_event_selector_gate_report.json",
+            {
+                **selector_gate_report,
+                "selector_sha256": event_selector_identity["sha256"],
+                "point_selection_sha256": event_selection_pre_gate_identity["sha256"],
+                "sector_outer_bootstrap_sha256": sector_outer_identity["sha256"],
+                "provenance": common_provenance,
+            },
+        )
+        artifact_ids.append(selector_gate_identity)
+        if not selector_gate_report["passed"]:
+            raise RuntimeError(
+                "observable visual event selector is unstable: "
+                + ",".join(selector_gate_report["failure_reasons"])
+            )
+
+        apply_event_selections(
+            calibration_cycles,
+            point_event_selections,
+            stability=outer_bootstrap["selection_stability"],
+            stability_assessment=point_stability_assessment,
+            selector=fitted_event_selector,
+            selector_sha256=event_selector_identity["sha256"],
+            episode_ids=calibration_ids,
+        )
+        _rebuild_sector_evidence_after_visual_selection(
+            calibration_cycles,
+            calibration_signals,
+            episode_ids=calibration_ids,
+        )
+        event_selection_identity = write_json(
+            temporary / "annotation_event_selections_v1.json",
+            {
+                **point_event_selections,
+                "status": "event_selector_gate_passed_applied",
+                "selector": _relative_identity(
+                    event_selector_identity,
+                    temporary,
+                ),
+                "sector_outer_bootstrap": _relative_identity(
+                    sector_outer_identity,
+                    temporary,
+                ),
+                "selection_stability": outer_bootstrap["selection_stability"],
+                "held_out_observation_access_count": 0,
+                "provenance": common_provenance,
+            },
+        )
+        artifact_ids.append(event_selection_identity)
+
+        sector_thresholds = fit_sector_thresholds(
+            selected_sector_records(
+                point_event_selections,
+                calibration_cycles,
+                calibration_signals,
+                episode_draw=train_ids,
+            )
+        )
+        sector_bootstrap = outer_bootstrap.get("sector")
+        if sector_bootstrap is None:
+            raise RuntimeError(
+                "event-selected sector outer bootstrap has no successful sample"
+            )
         sector_boundary_low = np.asarray(
             sector_bootstrap["boundaries"]["p02_5"],
             dtype=np.float64,
@@ -293,7 +535,8 @@ def run_m0_pipeline(
             np.max((sector_boundary_high - sector_boundary_low) / 2.0)
         )
         sector_thresholds["boundary_review_margin_source"] = (
-            "maximum_source_episode_bootstrap_boundary_ci95_half_width"
+            "maximum_full_selector_source_episode_outer_bootstrap_"
+            "boundary_ci95_half_width"
         )
         assert_source_provenance_unchanged(source_snapshot_records)
         annotation_gate_report = _annotation_bootstrap_gate_report(
@@ -329,6 +572,18 @@ def run_m0_pipeline(
                 "numeric_episode_bootstrap": numeric_bootstrap,
                 "sector_thresholds": sector_thresholds,
                 "sector_episode_bootstrap": sector_bootstrap,
+                "sector_bootstrap_scope": (
+                    "full_event_prototype_refit_interval_reselection_"
+                    "point_stability_mask_reapplication_"
+                    "local_event_order_recheck_then_sector_refit"
+                ),
+                "event_selector_sha256": event_selector_identity["sha256"],
+                "event_selections_sha256": event_selection_identity["sha256"],
+                "event_selector_gate_sha256": selector_gate_identity["sha256"],
+                "sector_outer_bootstrap": _relative_identity(
+                    sector_outer_identity,
+                    temporary,
+                ),
                 "provenance": common_provenance,
             },
         )
@@ -336,24 +591,7 @@ def run_m0_pipeline(
         if not annotation_gate_report["passed"]:
             raise RuntimeError(str(annotation_gate_report["failure_reason"]))
 
-        resolved_device = (
-            feature_device
-            if feature_device is not None
-            else ("cuda" if torch.cuda.is_available() else "cpu")
-        )
-        extractor = FrozenResNet18FeatureExtractor(
-            weights,
-            expected_checkpoint_sha256=expected_weights_sha256,
-            device=resolved_device,
-            batch_size=int(feature_batch_size),
-        )
-        calibration_features = _extract_cycle_features(
-            extractor,
-            episode_paths,
-            calibration_cycles,
-            episode_ids=calibration_ids,
-        )
-        visual_calibration = _fit_visual_calibration(
+        sector_visual_calibration = _fit_sector_visual_calibration(
             calibration_cycles,
             calibration_features,
             sector_thresholds=sector_thresholds,
@@ -362,7 +600,20 @@ def run_m0_pipeline(
             seed=int(bootstrap_seed),
             null_replicates=int(bootstrap_samples),
         )
-        _require_visual_identifiability(visual_calibration)
+        _require_sector_visual_identifiability(sector_visual_calibration)
+        visual_calibration = {
+            "prototype_arrays": {
+                **sector_visual_calibration["prototype_arrays"],
+                **event_prototype_arrays(fitted_event_selector),
+            },
+            "sector_centroids": sector_visual_calibration["sector_centroids"],
+            "sector": sector_visual_calibration["sector"],
+            "events": {
+                **public_selector(fitted_event_selector),
+                "selector_artifact_sha256": event_selector_identity["sha256"],
+                "selection_artifact_sha256": event_selection_identity["sha256"],
+            },
+        }
         prototype_path = temporary / "annotation_feature_prototypes_v1.npz"
         _write_prototypes(
             prototype_path,
@@ -383,6 +634,24 @@ def run_m0_pipeline(
             "sector_episode_bootstrap": sector_bootstrap,
             "visual_sector": visual_calibration["sector"],
             "visual_events": visual_calibration["events"],
+            "visual_event_interval_selector": {
+                "artifact": _relative_identity(
+                    event_selector_identity,
+                    temporary,
+                ),
+                "selections": _relative_identity(
+                    event_selection_identity,
+                    temporary,
+                ),
+                "gate_report": _relative_identity(
+                    selector_gate_identity,
+                    temporary,
+                ),
+                "sector_outer_bootstrap": _relative_identity(
+                    sector_outer_identity,
+                    temporary,
+                ),
+            },
             "feature_extractor": extractor.provenance,
             "prototype_artifact": _relative_identity(
                 prototype_identity,
@@ -538,9 +807,7 @@ def run_m0_pipeline(
                 )
             output_identity = result["output"]
             artifact_ids.append(output_identity)
-            output_field_contract = _export_episode_field_contract(
-                output_path
-            )
+            output_field_contract = _export_episode_field_contract(output_path)
             materialization_rows.append(
                 {
                     "episode_id": episode_id,
@@ -549,9 +816,7 @@ def run_m0_pipeline(
                     "source_steps": result["source_steps"],
                     "output_steps": result["output_steps"],
                     "selection": result["selection"],
-                    "transition_preservation_qc": result[
-                        "transition_preservation_qc"
-                    ],
+                    "transition_preservation_qc": result["transition_preservation_qc"],
                     "condition_status": result["condition_status"],
                     "output_field_contract": output_field_contract,
                 }
@@ -591,11 +856,7 @@ def run_m0_pipeline(
                 "real_unit_mapping": None,
                 "source_action_generation": SOURCE_ACTION_GENERATION,
                 "global": _aggregate_export_field_contract(
-                    [
-                        temporary
-                        / str(row["path"])
-                        for row in episode_manifest_rows
-                    ]
+                    [temporary / str(row["path"]) for row in episode_manifest_rows]
                 ),
                 "episodes": [
                     {
@@ -674,9 +935,7 @@ def run_m0_pipeline(
             "held_out_parameter_free_export_qc_only": True,
             "real_deployable": False,
             "control_candidate": False,
-            "checkpoint_restriction": (
-                "sim_state_domain_only_not_real_deployable"
-            ),
+            "checkpoint_restriction": ("sim_state_domain_only_not_real_deployable"),
             "source_episode_count": len(episode_manifest_rows),
             "episodes": episode_manifest_rows,
             "oracle_dependency": False,
@@ -731,8 +990,7 @@ def run_m0_pipeline(
             "cycle_annotations_sha256": annotation_identity["sha256"],
             "episode_count": len(episode_manifest_rows),
             "accepted_cycle_count": sum(
-                record["quality"]["status"] == "accepted"
-                for record in fused_records
+                record["quality"]["status"] == "accepted" for record in fused_records
             ),
             "review_cycle_count": len(review_records),
             "evidence_scope": "recorded-observation/offline",
@@ -775,9 +1033,7 @@ def _require_target_repo(snapshot: Mapping[str, Any]) -> None:
             f"M0 builder requires v2.0.0-simVerify, got {snapshot.get('branch')!r}"
         )
     if bool(snapshot.get("dirty")):
-        raise ValueError(
-            "M0 artifact generation requires a clean committed worktree"
-        )
+        raise ValueError("M0 artifact generation requires a clean committed worktree")
 
 
 def _discover_episode_paths(clean_dir: Path) -> dict[int, Path]:
@@ -812,9 +1068,7 @@ def _discover_episode_paths(clean_dir: Path) -> dict[int, Path]:
         34,
     }
     if set(result) != expected:
-        raise ValueError(
-            f"clean source episode inventory changed: {sorted(result)}"
-        )
+        raise ValueError(f"clean source episode inventory changed: {sorted(result)}")
     return result
 
 
@@ -823,9 +1077,7 @@ def _read_episode_metadata(path: Path) -> dict[str, Any]:
         metadata = handle["metadata"].attrs
         action_generation = _read_source_action_generation(metadata)
         if action_generation != SOURCE_ACTION_GENERATION:
-            raise ValueError(
-                f"{path}: source action-generation contract changed"
-            )
+            raise ValueError(f"{path}: source action-generation contract changed")
         return {
             "episode_id": str(metadata["episode_id"]),
             "controller_epoch": str(metadata["controller_epoch"]),
@@ -847,9 +1099,7 @@ def _read_source_action_generation(
     try:
         record_config = yaml.safe_load(str(metadata["record_config_yaml"]))
         use_measured_dt = bool(
-            record_config["teleop"]["joystick"]["response_profile"][
-                "use_measured_dt"
-            ]
+            record_config["teleop"]["joystick"]["response_profile"]["use_measured_dt"]
         )
     except (KeyError, TypeError, yaml.YAMLError) as exc:
         raise ValueError(
@@ -859,9 +1109,7 @@ def _read_source_action_generation(
     def values(name: str, dtype: Any) -> list[Any]:
         array = np.asarray(metadata[name], dtype=dtype).reshape(-1)
         if array.shape != (4,):
-            raise ValueError(
-                f"source metadata {name} must have four axis values"
-            )
+            raise ValueError(f"source metadata {name} must have four axis values")
         if np.issubdtype(array.dtype, np.floating):
             array = np.round(array, decimals=8)
         return array.tolist()
@@ -922,11 +1170,7 @@ def _bootstrap_sector_thresholds(
     ids = list(map(int, train_ids))
     for _ in range(samples):
         draw = rng.choice(ids, size=len(ids), replace=True)
-        records = [
-            record
-            for episode_id in draw
-            for record in cycles[int(episode_id)]
-        ]
+        records = [record for episode_id in draw for record in cycles[int(episode_id)]]
         try:
             fitted = fit_sector_thresholds(records)
         except ValueError:
@@ -964,9 +1208,9 @@ def _require_bootstrap_stability(
     sector_bootstrap: Mapping[str, Any],
 ) -> None:
     if numeric_bootstrap["failed_samples"] > 0:
-        failure_rate = numeric_bootstrap["failed_samples"] / numeric_bootstrap[
-            "requested_samples"
-        ]
+        failure_rate = (
+            numeric_bootstrap["failed_samples"] / numeric_bootstrap["requested_samples"]
+        )
         if failure_rate > 0.01:
             raise RuntimeError("numeric observable labeler bootstrap is unstable")
     dump_centers = np.asarray(
@@ -977,6 +1221,11 @@ def _require_bootstrap_stability(
     dump_ci = numeric_bootstrap["dump_swing_threshold"]
     if float(dump_ci["p97_5"]) - float(dump_ci["p02_5"]) >= 0.25 * dump_gap:
         raise RuntimeError("dump-cluster threshold bootstrap is unstable")
+    sector_failure_rate = int(sector_bootstrap["failed_samples"]) / int(
+        sector_bootstrap["requested_samples"]
+    )
+    if sector_failure_rate > 0.01:
+        raise RuntimeError("event-selected sector outer bootstrap is unstable")
     centers = np.asarray(
         sector["cluster_centers_low_to_high"],
         dtype=np.float64,
@@ -1060,6 +1309,10 @@ def _annotation_bootstrap_gate_report(
             "ci95_width_to_minimum_cluster_gap": (
                 sector_widths / minimum_sector_gap
             ).tolist(),
+            "outer_bootstrap_failed_sample_rate": (
+                int(sector_bootstrap["failed_samples"])
+                / int(sector_bootstrap["requested_samples"])
+            ),
         },
     }
 
@@ -1070,36 +1323,538 @@ def _extract_cycle_features(
     cycles: Mapping[int, Sequence[Mapping[str, Any]]],
     *,
     episode_ids: Sequence[int],
+    episode_lengths: Mapping[int, int],
+    chunk_rows: int,
 ) -> dict[tuple[int, int], dict[str, np.ndarray]]:
+    """Extract deduplicated eye/stick interval features with a one-row halo.
+
+    JPEG decoding in the extractor precedes model batching, so source indices
+    are explicitly chunked here as well.  This bounds decoded-image memory and
+    keeps extraction count independent of bootstrap replicate count.
+    """
+
+    if int(chunk_rows) <= 0:
+        raise ValueError("feature extraction chunk_rows must be positive")
     cache: dict[tuple[int, int], dict[str, np.ndarray]] = {}
     for episode_id in episode_ids:
+        count = int(episode_lengths[int(episode_id)])
         indices = sorted(
             {
-                int(event["representative_step"])
+                int(index)
                 for cycle in cycles[episode_id]
                 for event in cycle["observable_events"].values()
                 if event is not None
+                for index in range(
+                    max(0, int(event["interval"][0]) - 1),
+                    min(count, int(event["interval"][1]) + 1),
+                )
             }
         )
         if not indices:
             continue
-        eye = extractor.extract_hdf5_eye_pair(
-            episode_paths[episode_id],
-            indices,
-        )
-        stick = extractor.extract_hdf5_stick_pair(
-            episode_paths[episode_id],
-            indices,
-        )
-        for row, index in enumerate(indices):
-            cache[(episode_id, index)] = {
-                "eye": eye[row],
-                "stick": stick[row],
-                "four": unit_normalize(
-                    np.concatenate((eye[row], stick[row])).reshape(1, -1)
-                )[0].astype(np.float32),
-            }
+        for begin in range(0, len(indices), int(chunk_rows)):
+            chunk = indices[begin : begin + int(chunk_rows)]
+            eye = extractor.extract_hdf5_eye_pair(
+                episode_paths[episode_id],
+                chunk,
+            )
+            stick = extractor.extract_hdf5_stick_pair(
+                episode_paths[episode_id],
+                chunk,
+            )
+            for row, index in enumerate(chunk):
+                cache[(episode_id, index)] = {
+                    "eye": np.asarray(eye[row], dtype=np.float32),
+                    "stick": np.asarray(stick[row], dtype=np.float32),
+                }
     return cache
+
+
+def _feature_input_manifest(
+    features: Mapping[tuple[int, int], Mapping[str, np.ndarray]],
+    *,
+    episode_ids: Sequence[int],
+    chunk_rows: int,
+    extractor_provenance: Mapping[str, Any],
+    common_provenance: Mapping[str, Any],
+) -> dict[str, Any]:
+    episodes: list[dict[str, Any]] = []
+    total = 0
+    for episode_id in map(int, episode_ids):
+        steps = sorted(
+            int(step)
+            for feature_episode_id, step in features
+            if int(feature_episode_id) == episode_id
+        )
+        if not steps:
+            raise ValueError(f"episode_{episode_id}: no extracted event feature rows")
+        ranges: list[list[int]] = []
+        start = previous = steps[0]
+        for step in steps[1:]:
+            if step != previous + 1:
+                ranges.append([int(start), int(previous + 1)])
+                start = step
+            previous = step
+        ranges.append([int(start), int(previous + 1)])
+        encoded = np.asarray(steps, dtype="<i8").tobytes()
+        episodes.append(
+            {
+                "episode_id": episode_id,
+                "source_row_count": len(steps),
+                "source_row_minimum": int(steps[0]),
+                "source_row_maximum": int(steps[-1]),
+                "source_row_ranges_half_open": ranges,
+                "source_row_int64_le_sha256": hashlib.sha256(encoded).hexdigest(),
+            }
+        )
+        total += len(steps)
+    sample = next(iter(features.values()))
+    return {
+        "schema": "observable_annotation_feature_input_manifest_v1",
+        "selection_rule": (
+            "deduplicated_union_of_numeric_event_half_open_intervals_"
+            "plus_one_source_row_halo_clipped_to_episode"
+        ),
+        "feature_key": ["episode_id", "source_row"],
+        "feature_roles": {
+            role: {
+                "dimension": int(np.asarray(sample[role]).size),
+                "dtype": str(np.asarray(sample[role]).dtype),
+                "normalization": "l2",
+            }
+            for role in ("eye", "stick")
+        },
+        "decode_chunk_rows": int(chunk_rows),
+        "inference_batch_size": int(
+            extractor_provenance["configured_default_batch_size"]
+        ),
+        "episode_count": len(episodes),
+        "total_unique_source_rows": total,
+        "episodes": episodes,
+        "feature_extractor": copy.deepcopy(dict(extractor_provenance)),
+        "provenance": copy.deepcopy(dict(common_provenance)),
+    }
+
+
+def _rebuild_sector_evidence_after_visual_selection(
+    cycles: Mapping[int, Sequence[dict[str, Any]]],
+    signals: Mapping[int, EpisodeSignals],
+    *,
+    episode_ids: Sequence[int],
+) -> None:
+    """Rebuild current/next qpos evidence from final visual dig representatives."""
+
+    for episode_id in episode_ids:
+        episode_cycles = cycles[int(episode_id)]
+        qpos = signals[int(episode_id)].qpos
+        for cycle in episode_cycles:
+            validity = cycle["sector_validity"]["current"]
+            event = cycle["observable_events"]["dig_entry_proxy"]
+            confirmed = bool(
+                event is not None
+                and event.get("visual_interval_selection", {}).get("status")
+                == "confirmed"
+                and cycle["verification"].get(
+                    "visual_current_sector_order_valid",
+                    False,
+                )
+            )
+            if not bool(validity["valid"]) or not confirmed:
+                validity["valid"] = False
+                validity["reason_codes"] = sorted(
+                    set(
+                        list(validity["reason_codes"])
+                        + [
+                            (
+                                "dig_entry_visual_interval_not_confirmed"
+                                if event is None
+                                or event.get(
+                                    "visual_interval_selection",
+                                    {},
+                                ).get("status")
+                                != "confirmed"
+                                else "visual_current_sector_order_invalid"
+                            )
+                        ]
+                    )
+                )
+                cycle["sector_observations"]["current"] = None
+                cycle["numeric_sector_evidence"]["current_swing_qpos"] = None
+                continue
+            representative = int(event["representative_step"])
+            start, end = map(int, event["interval"])
+            cycle["sector_observations"]["current"] = {
+                "source": "dig_entry_proxy_visual_selected",
+                "interval": [start, end],
+                "numeric_representative_step": int(
+                    event["numeric_representative_step"]
+                ),
+                "representative_step": representative,
+                "swing_qpos_at_representative": float(qpos[representative, 0]),
+            }
+            cycle["numeric_sector_evidence"]["current_swing_qpos"] = float(
+                qpos[representative, 0]
+            )
+        for index, cycle in enumerate(episode_cycles):
+            next_cycle = (
+                episode_cycles[index + 1] if index + 1 < len(episode_cycles) else None
+            )
+            if next_cycle is not None and bool(
+                next_cycle["sector_validity"]["current"]["valid"]
+            ):
+                cycle["sector_validity"]["next"] = copy.deepcopy(
+                    next_cycle["sector_validity"]["current"]
+                )
+                cycle["sector_observations"]["next"] = copy.deepcopy(
+                    next_cycle["sector_observations"]["current"]
+                )
+                cycle["numeric_sector_evidence"]["next_swing_qpos"] = float(
+                    next_cycle["numeric_sector_evidence"]["current_swing_qpos"]
+                )
+            else:
+                cycle["sector_validity"]["next"] = {
+                    "valid": False,
+                    "source_cycle_id": (
+                        None if next_cycle is None else int(next_cycle["cycle_id"])
+                    ),
+                    "reason_codes": [
+                        (
+                            "next_cycle_not_available"
+                            if next_cycle is None
+                            else "next_dig_entry_visual_interval_not_confirmed"
+                        )
+                    ],
+                }
+                cycle["sector_observations"]["next"] = None
+                cycle["numeric_sector_evidence"]["next_swing_qpos"] = None
+
+
+def _fit_sector_visual_calibration(
+    cycles: Mapping[int, Sequence[Mapping[str, Any]]],
+    features: Mapping[tuple[int, int], Mapping[str, np.ndarray]],
+    *,
+    sector_thresholds: Mapping[str, Any],
+    train_ids: Sequence[int],
+    validation_ids: Sequence[int],
+    seed: int,
+    null_replicates: int,
+) -> dict[str, Any]:
+    """Fit eye-only sector confirmation after the event/sector Gate passes."""
+
+    train_rows: list[tuple[int, str, np.ndarray]] = []
+    train_seen: set[tuple[int, int]] = set()
+    for episode_id in map(int, train_ids):
+        for cycle in cycles[episode_id]:
+            for role, numeric_key in (
+                ("current", "current_swing_qpos"),
+                ("next", "next_swing_qpos"),
+            ):
+                numeric = cycle["numeric_sector_evidence"].get(numeric_key)
+                observation = cycle["sector_observations"].get(role)
+                validity = cycle["sector_validity"].get(role)
+                if (
+                    numeric is None
+                    or observation is None
+                    or validity is None
+                    or not bool(validity["valid"])
+                ):
+                    continue
+                label, _confidence, boundary = classify_sector(
+                    float(numeric),
+                    sector_thresholds,
+                )
+                if boundary or label is None:
+                    continue
+                step = int(observation["representative_step"])
+                if (episode_id, step) in train_seen:
+                    continue
+                feature = features.get((episode_id, step))
+                if feature is not None:
+                    train_rows.append((episode_id, label, feature["eye"]))
+                    train_seen.add((episode_id, step))
+    centroids = {
+        label: np.asarray(value, dtype=np.float32)
+        for label, value in fit_visual_sector_centroids(train_rows).items()
+    }
+
+    validation_rows: list[dict[str, Any]] = []
+    validation_seen: set[tuple[int, int]] = set()
+    for episode_id in map(int, validation_ids):
+        for cycle in cycles[episode_id]:
+            for role, numeric_key in (
+                ("current", "current_swing_qpos"),
+                ("next", "next_swing_qpos"),
+            ):
+                numeric = cycle["numeric_sector_evidence"].get(numeric_key)
+                observation = cycle["sector_observations"].get(role)
+                validity = cycle["sector_validity"].get(role)
+                if (
+                    numeric is None
+                    or observation is None
+                    or validity is None
+                    or not bool(validity["valid"])
+                ):
+                    continue
+                step = int(observation["representative_step"])
+                if (episode_id, step) in validation_seen:
+                    continue
+                qpos_label, _confidence, boundary = classify_sector(
+                    float(numeric),
+                    sector_thresholds,
+                )
+                feature = features.get((episode_id, step))
+                if boundary or qpos_label is None or feature is None:
+                    continue
+                normalized = unit_normalize(feature["eye"].reshape(1, -1))[0]
+                scores = {
+                    label: float(np.dot(normalized, centroids[label]))
+                    for label in centroids
+                }
+                ranked = sorted(
+                    scores.items(),
+                    key=lambda item: (-item[1], item[0]),
+                )
+                validation_rows.append(
+                    {
+                        "episode_id": episode_id,
+                        "role": role,
+                        "representative_step": step,
+                        "label": qpos_label,
+                        "prediction": ranked[0][0],
+                        "feature": normalized,
+                        "true_similarity": scores[qpos_label],
+                        "true_margin": scores[qpos_label]
+                        - max(
+                            value
+                            for label, value in scores.items()
+                            if label != qpos_label
+                        ),
+                    }
+                )
+                validation_seen.add((episode_id, step))
+    if not validation_rows:
+        raise ValueError("no validation visual-sector rows")
+    correct_rows = [row for row in validation_rows if row["prediction"] == row["label"]]
+    if not correct_rows:
+        raise RuntimeError("visual sector validation has zero correct rows")
+    minimum_similarity = float(
+        np.quantile(
+            [row["true_similarity"] for row in correct_rows],
+            0.01,
+        )
+    )
+    minimum_margin = max(
+        0.0,
+        float(
+            np.quantile(
+                [row["true_margin"] for row in correct_rows],
+                0.01,
+            )
+        ),
+    )
+    observed_accuracy = float(
+        np.mean([row["prediction"] == row["label"] for row in validation_rows])
+    )
+    balanced_accuracy = float(
+        np.mean(
+            [
+                np.mean(
+                    [
+                        row["prediction"] == label
+                        for row in validation_rows
+                        if row["label"] == label
+                    ]
+                )
+                for label in ("left", "center", "right")
+                if any(row["label"] == label for row in validation_rows)
+            ]
+        )
+    )
+    rng = np.random.default_rng(int(seed))
+    null_accuracy = [
+        _episode_block_null_accuracy(
+            validation_rows,
+            rng,
+            labels=("left", "center", "right"),
+        )
+        for _ in range(int(null_replicates))
+    ]
+    bootstrap = _bootstrap_sector_visual_labeler(
+        train_rows=train_rows,
+        validation_rows=validation_rows,
+        train_ids=train_ids,
+        validation_ids=validation_ids,
+        samples=int(null_replicates),
+        seed=int(seed),
+    )
+    return {
+        "prototype_arrays": {
+            f"sector_{key}": value for key, value in centroids.items()
+        },
+        "sector_centroids": centroids,
+        "sector": {
+            "method": "eye_pair_cosine_nearest_centroid",
+            "fit_split": "train",
+            "calibration_split": "validation",
+            "event_selector_dependency": (
+                "frozen_event_selector_gate_passed_selected_dig_rows"
+            ),
+            "validation_count": len(validation_rows),
+            "validation_accuracy": observed_accuracy,
+            "validation_balanced_accuracy": balanced_accuracy,
+            "permutation_null_replicates": int(null_replicates),
+            "permutation_unit": "source_episode_sector_mapping",
+            "permutation_null_p95_accuracy": float(np.quantile(null_accuracy, 0.95)),
+            "minimum_similarity": minimum_similarity,
+            "minimum_margin": minimum_margin,
+            "source_episode_bootstrap": bootstrap,
+        },
+    }
+
+
+def _bootstrap_sector_visual_labeler(
+    *,
+    train_rows: Sequence[tuple[int, str, np.ndarray]],
+    validation_rows: Sequence[Mapping[str, Any]],
+    train_ids: Sequence[int],
+    validation_ids: Sequence[int],
+    samples: int,
+    seed: int,
+) -> dict[str, Any]:
+    rng = np.random.default_rng(int(seed) + 41)
+    accuracy: list[float] = []
+    balanced_accuracy: list[float] = []
+    similarity_thresholds: list[float] = []
+    margin_thresholds: list[float] = []
+    failures = 0
+    train_episode_ids = list(map(int, train_ids))
+    validation_episode_ids = list(map(int, validation_ids))
+    for _ in range(int(samples)):
+        train_draw = rng.choice(
+            train_episode_ids,
+            size=len(train_episode_ids),
+            replace=True,
+        ).tolist()
+        validation_draw = rng.choice(
+            validation_episode_ids,
+            size=len(validation_episode_ids),
+            replace=True,
+        ).tolist()
+        try:
+            fitted_centroids = fit_visual_sector_centroids(
+                _resample_episode_rows(
+                    train_rows,
+                    train_draw,
+                    episode_id_at=0,
+                )
+            )
+            sampled_validation = _resample_episode_rows(
+                validation_rows,
+                validation_draw,
+                episode_id_at="episode_id",
+            )
+            evaluated: list[dict[str, Any]] = []
+            for row in sampled_validation:
+                feature = np.asarray(row["feature"], dtype=np.float64)
+                scores = {
+                    label: float(np.dot(feature, fitted_centroids[label]))
+                    for label in fitted_centroids
+                }
+                true_label = str(row["label"])
+                prediction = max(scores, key=scores.get)
+                evaluated.append(
+                    {
+                        "label": true_label,
+                        "prediction": prediction,
+                        "true_similarity": scores[true_label],
+                        "true_margin": scores[true_label]
+                        - max(
+                            value
+                            for label, value in scores.items()
+                            if label != true_label
+                        ),
+                    }
+                )
+            correct = [row for row in evaluated if row["prediction"] == row["label"]]
+            if not correct:
+                raise ValueError("bootstrap sector sample has no correct rows")
+            accuracy.append(
+                float(np.mean([row["prediction"] == row["label"] for row in evaluated]))
+            )
+            balanced_accuracy.append(
+                float(
+                    np.mean(
+                        [
+                            np.mean(
+                                [
+                                    row["prediction"] == label
+                                    for row in evaluated
+                                    if row["label"] == label
+                                ]
+                            )
+                            for label in ("left", "center", "right")
+                            if any(row["label"] == label for row in evaluated)
+                        ]
+                    )
+                )
+            )
+            similarity_thresholds.append(
+                float(
+                    np.quantile(
+                        [row["true_similarity"] for row in correct],
+                        0.01,
+                    )
+                )
+            )
+            margin_thresholds.append(
+                max(
+                    0.0,
+                    float(
+                        np.quantile(
+                            [row["true_margin"] for row in correct],
+                            0.01,
+                        )
+                    ),
+                )
+            )
+        except (KeyError, ValueError):
+            failures += 1
+    if not accuracy:
+        raise RuntimeError("all visual-sector source-episode bootstrap samples failed")
+    return {
+        "unit": "source_episode",
+        "seed": int(seed) + 41,
+        "requested_samples": int(samples),
+        "successful_samples": len(accuracy),
+        "failed_samples": int(failures),
+        "validation_accuracy": _bootstrap_summary(accuracy),
+        "validation_balanced_accuracy": _bootstrap_summary(balanced_accuracy),
+        "minimum_similarity": _bootstrap_summary(similarity_thresholds),
+        "minimum_margin": _bootstrap_summary(margin_thresholds),
+    }
+
+
+def _require_sector_visual_identifiability(
+    calibration: Mapping[str, Any],
+) -> None:
+    sector = calibration["sector"]
+    null = float(sector["permutation_null_p95_accuracy"])
+    if float(sector["validation_accuracy"]) <= null:
+        raise RuntimeError(
+            "observable eye-pair sector labeler is not above its null control"
+        )
+    bootstrap = sector["source_episode_bootstrap"]
+    failure_rate = int(bootstrap["failed_samples"]) / int(
+        bootstrap["requested_samples"]
+    )
+    if failure_rate > 0.01:
+        raise RuntimeError(
+            "observable visual-sector source-episode bootstrap is unstable"
+        )
+    if float(bootstrap["validation_accuracy"]["p02_5"]) <= null:
+        raise RuntimeError(
+            "visual-sector bootstrap lower bound is not above null control"
+        )
 
 
 def _fit_visual_calibration(
@@ -1122,7 +1877,13 @@ def _fit_visual_calibration(
             ):
                 numeric = cycle["numeric_sector_evidence"].get(numeric_key)
                 observation = cycle["sector_observations"].get(role)
-                if numeric is None or observation is None:
+                validity = cycle["sector_validity"].get(role)
+                if (
+                    numeric is None
+                    or observation is None
+                    or validity is None
+                    or not bool(validity["valid"])
+                ):
                     continue
                 label, _confidence, boundary = classify_sector(
                     float(numeric),
@@ -1133,9 +1894,7 @@ def _fit_visual_calibration(
                 step = int(observation["representative_step"])
                 if (episode_id, step) in train_seen:
                     continue
-                feature = features.get(
-                    (episode_id, step)
-                )
+                feature = features.get((episode_id, step))
                 if feature is not None:
                     train_rows.append((episode_id, label, feature["eye"]))
                     train_seen.add((episode_id, step))
@@ -1151,7 +1910,13 @@ def _fit_visual_calibration(
             ):
                 numeric = cycle["numeric_sector_evidence"].get(numeric_key)
                 observation = cycle["sector_observations"].get(role)
-                if numeric is None or observation is None:
+                validity = cycle["sector_validity"].get(role)
+                if (
+                    numeric is None
+                    or observation is None
+                    or validity is None
+                    or not bool(validity["valid"])
+                ):
                     continue
                 step = int(observation["representative_step"])
                 if (episode_id, step) in validation_seen:
@@ -1189,9 +1954,7 @@ def _fit_visual_calibration(
                 validation_seen.add((episode_id, step))
     if not validation_rows:
         raise ValueError("no validation visual-sector rows")
-    correct_rows = [
-        row for row in validation_rows if row["prediction"] == row["label"]
-    ]
+    correct_rows = [row for row in validation_rows if row["prediction"] == row["label"]]
     if not correct_rows:
         raise RuntimeError("visual sector validation has zero correct rows")
     minimum_similarity = float(
@@ -1210,12 +1973,7 @@ def _fit_visual_calibration(
         ),
     )
     observed_accuracy = float(
-        np.mean(
-            [
-                row["prediction"] == row["label"]
-                for row in validation_rows
-            ]
-        )
+        np.mean([row["prediction"] == row["label"] for row in validation_rows])
     )
     balanced_accuracy = float(
         np.mean(
@@ -1250,8 +2008,6 @@ def _fit_visual_calibration(
     ):
         for episode_id in split_ids:
             for cycle in cycles[episode_id]:
-                if cycle["quality"]["reason_codes"]:
-                    continue
                 for event_name, event in cycle["observable_events"].items():
                     if event is None:
                         continue
@@ -1265,9 +2021,7 @@ def _fit_visual_calibration(
                         int(event["representative_step"]),
                     )
                     if feature is not None and key not in seen:
-                        target[prototype_name].append(
-                            (episode_id, feature["four"])
-                        )
+                        target[prototype_name].append((episode_id, feature["four"]))
                         seen.add(key)
     event_centroids = {
         name: unit_normalize(
@@ -1288,13 +2042,9 @@ def _fit_visual_calibration(
     for name in sorted(event_centroids):
         rows: list[dict[str, Any]] = []
         for episode_id, feature in event_validation[name]:
-            normalized = unit_normalize(
-                np.asarray(feature).reshape(1, -1)
-            )[0]
+            normalized = unit_normalize(np.asarray(feature).reshape(1, -1))[0]
             scores = {
-                candidate: float(
-                    np.dot(normalized, event_centroids[candidate])
-                )
+                candidate: float(np.dot(normalized, event_centroids[candidate]))
                 for candidate in event_centroids
             }
             prediction = max(scores, key=scores.get)
@@ -1323,7 +2073,10 @@ def _fit_visual_calibration(
         similarities = [row["true_similarity"] for row in rows]
         margins = [row["true_margin"] for row in rows]
         event_thresholds[name] = float(np.quantile(similarities, 0.01))
-        event_margin_thresholds[name] = float(np.quantile(margins, 0.01))
+        event_margin_thresholds[name] = max(
+            0.0,
+            float(np.quantile(margins, 0.01)),
+        )
         event_validation_summary[name] = {
             "count": len(rows),
             "correct_count": len(correct),
@@ -1331,16 +2084,12 @@ def _fit_visual_calibration(
             "margin_p01": event_margin_thresholds[name],
             "similarity_p50": float(np.median(similarities)),
             "similarity_min": float(np.min(similarities)),
+            "margin_p50": float(np.median(margins)),
         }
         event_validation_rows.extend(rows)
 
     event_accuracy = float(
-        np.mean(
-            [
-                row["prediction"] == row["label"]
-                for row in event_validation_rows
-            ]
-        )
+        np.mean([row["prediction"] == row["label"] for row in event_validation_rows])
     )
     event_balanced_accuracy = float(
         np.mean(
@@ -1393,9 +2142,7 @@ def _fit_visual_calibration(
             "validation_balanced_accuracy": balanced_accuracy,
             "permutation_null_replicates": int(null_replicates),
             "permutation_unit": "source_episode_sector_mapping",
-            "permutation_null_p95_accuracy": float(
-                np.quantile(null_accuracy, 0.95)
-            ),
+            "permutation_null_p95_accuracy": float(np.quantile(null_accuracy, 0.95)),
             "minimum_similarity": minimum_similarity,
             "minimum_margin": minimum_margin,
             "source_episode_bootstrap": visual_bootstrap["sector"],
@@ -1433,9 +2180,7 @@ def _episode_block_null_accuracy(
                 episode_id,
                 _non_identity_permutation(ordered_labels, rng),
             )
-            for episode_id in sorted(
-                {int(row["episode_id"]) for row in rows}
-            )
+            for episode_id in sorted({int(row["episode_id"]) for row in rows})
         )
     }
     return float(
@@ -1563,19 +2308,11 @@ def _bootstrap_visual_labeler(
                         ),
                     }
                 )
-            correct = [
-                row for row in evaluated
-                if row["prediction"] == row["label"]
-            ]
+            correct = [row for row in evaluated if row["prediction"] == row["label"]]
             if not correct:
                 raise ValueError("bootstrap sector sample has no correct rows")
             sample_accuracy = float(
-                np.mean(
-                    [
-                        row["prediction"] == row["label"]
-                        for row in evaluated
-                    ]
-                )
+                np.mean([row["prediction"] == row["label"] for row in evaluated])
             )
             sample_balanced_accuracy = float(
                 np.mean(
@@ -1618,9 +2355,7 @@ def _bootstrap_visual_labeler(
                     episode_id_at=0,
                 )
                 if not sampled_train:
-                    raise ValueError(
-                        f"bootstrap event sample is empty for {name}"
-                    )
+                    raise ValueError(f"bootstrap event sample is empty for {name}")
                 centroid = unit_normalize(
                     np.mean(
                         np.stack(
@@ -1664,34 +2399,26 @@ def _bootstrap_visual_labeler(
             if not evaluated_events:
                 raise ValueError("bootstrap event validation sample is empty")
             for name in sorted(event_centroids):
-                labeled_name = [
-                    row
-                    for row in evaluated_events
-                    if row["label"] == name
-                ]
+                labeled_name = [row for row in evaluated_events if row["label"] == name]
                 if not labeled_name:
-                    raise ValueError(
-                        f"bootstrap event sample has no rows for {name}"
-                    )
+                    raise ValueError(f"bootstrap event sample has no rows for {name}")
                 sample_event_thresholds[name] = float(
                     np.quantile(
                         [row["true_similarity"] for row in labeled_name],
                         0.01,
                     )
                 )
-                sample_event_margin_thresholds[name] = float(
-                    np.quantile(
-                        [row["true_margin"] for row in labeled_name],
-                        0.01,
-                    )
+                sample_event_margin_thresholds[name] = max(
+                    0.0,
+                    float(
+                        np.quantile(
+                            [row["true_margin"] for row in labeled_name],
+                            0.01,
+                        )
+                    ),
                 )
             sample_event_accuracy = float(
-                np.mean(
-                    [
-                        row["prediction"] == row["label"]
-                        for row in evaluated_events
-                    ]
-                )
+                np.mean([row["prediction"] == row["label"] for row in evaluated_events])
             )
             sample_event_balanced_accuracy = float(
                 np.mean(
@@ -1731,12 +2458,8 @@ def _bootstrap_visual_labeler(
             "successful_samples": len(accuracy),
             "failed_samples": int(failures),
             "validation_accuracy": _bootstrap_summary(accuracy),
-            "validation_balanced_accuracy": _bootstrap_summary(
-                balanced_accuracy
-            ),
-            "minimum_similarity": _bootstrap_summary(
-                similarity_thresholds
-            ),
+            "validation_balanced_accuracy": _bootstrap_summary(balanced_accuracy),
+            "minimum_similarity": _bootstrap_summary(similarity_thresholds),
             "minimum_margin": _bootstrap_summary(margin_thresholds),
         },
         "events": {
@@ -1746,24 +2469,18 @@ def _bootstrap_visual_labeler(
             "successful_samples": len(accuracy),
             "failed_samples": int(failures),
             "validation_accuracy": _bootstrap_summary(event_accuracy),
-            "validation_balanced_accuracy": _bootstrap_summary(
-                event_balanced_accuracy
-            ),
+            "validation_balanced_accuracy": _bootstrap_summary(event_balanced_accuracy),
             "prototype_thresholds": {
                 name: _bootstrap_summary(values)
                 for name, values in sorted(event_thresholds.items())
             },
             "prototype_margin_thresholds": {
                 name: _bootstrap_summary(values)
-                for name, values in sorted(
-                    event_margin_thresholds.items()
-                )
+                for name, values in sorted(event_margin_thresholds.items())
             },
             "prototype_self_similarity": {
                 name: _bootstrap_summary(values)
-                for name, values in sorted(
-                    event_prototype_similarity.items()
-                )
+                for name, values in sorted(event_prototype_similarity.items())
             },
         },
     }
@@ -1771,17 +2488,15 @@ def _bootstrap_visual_labeler(
 
 def _require_visual_identifiability(calibration: Mapping[str, Any]) -> None:
     sector = calibration["sector"]
-    if (
-        float(sector["validation_accuracy"])
-        <= float(sector["permutation_null_p95_accuracy"])
+    if float(sector["validation_accuracy"]) <= float(
+        sector["permutation_null_p95_accuracy"]
     ):
         raise RuntimeError(
             "observable eye-pair sector labeler is not above its null control"
         )
     bootstrap = sector["source_episode_bootstrap"]
-    failure_rate = (
-        int(bootstrap["failed_samples"])
-        / int(bootstrap["requested_samples"])
+    failure_rate = int(bootstrap["failed_samples"]) / int(
+        bootstrap["requested_samples"]
     )
     if failure_rate > 0.01:
         raise RuntimeError(
@@ -1807,9 +2522,7 @@ def _require_visual_identifiability(calibration: Mapping[str, Any]) -> None:
         raise RuntimeError(
             "visual-event bootstrap lower bound is not above null control"
         )
-    for name, self_similarity in event_bootstrap[
-        "prototype_self_similarity"
-    ].items():
+    for name, self_similarity in event_bootstrap["prototype_self_similarity"].items():
         threshold = event_bootstrap["prototype_thresholds"][name]
         if float(self_similarity["p02_5"]) <= float(threshold["p97_5"]):
             raise RuntimeError(
@@ -1888,65 +2601,49 @@ def _fuse_all_annotations(
                 ),
             )
             event_reasons: list[str] = []
+            event_confidences: list[float] = []
+            evaluated_event_count = 0
             for event_name, event in record["observable_events"].items():
                 if event is None:
                     continue
+                evaluated_event_count += 1
                 prototype_name = EVENT_PROTOTYPE_NAME[event_name]
-                feature = features.get(
-                    (episode_id, int(event["representative_step"])),
-                    {},
-                ).get("four")
-                if feature is None:
+                selection = event.get("visual_interval_selection")
+                if selection is None:
                     event["visual_confirmation"] = {
                         "status": "missing",
                         "prototype": prototype_name,
-                        "similarity": None,
+                        "reason": "interval_selector_not_evaluated",
                     }
-                    event_reasons.append(f"{event_name}_visual_feature_missing")
+                    event_reasons.append(f"{event_name}_visual_interval_not_evaluated")
                     continue
-                normalized_feature = unit_normalize(
-                    feature.reshape(1, -1)
-                )[0]
-                scores = {
-                    name: float(np.dot(normalized_feature, centroid))
-                    for name, centroid in visual_calibration[
-                        "event_centroids"
-                    ].items()
-                }
-                prediction = max(scores, key=scores.get)
-                similarity = scores[prototype_name]
-                margin = similarity - max(
-                    value
-                    for name, value in scores.items()
-                    if name != prototype_name
-                )
-                threshold = float(
-                    visual_calibration["events"]["prototype_thresholds"][
-                        prototype_name
-                    ]
-                )
-                margin_threshold = float(
-                    visual_calibration["events"][
-                        "prototype_margin_thresholds"
-                    ][prototype_name]
-                )
-                confirmed = similarity >= threshold
                 event["visual_confirmation"] = {
-                    "status": "confirmed" if confirmed else "ambiguous",
+                    "status": selection["status"],
                     "prototype": prototype_name,
-                    "prediction": prediction,
-                    "similarity": similarity,
-                    "minimum_similarity": threshold,
-                    "margin": margin,
-                    "minimum_margin": margin_threshold,
-                    "scores": scores,
-                    "acceptance_rule": (
-                        "own_prototype_support_envelope; prediction_and_margin_"
-                        "are_identifiability_diagnostics"
+                    "numeric_representative_step": selection[
+                        "numeric_representative_step"
+                    ],
+                    "representative_step": selection["representative_step"],
+                    "absolute_offset_steps": selection["absolute_offset_steps"],
+                    "signed_offset_steps": selection["signed_offset_steps"],
+                    "signed_offset_bounds": selection["signed_offset_bounds"],
+                    "confidence": selection["confidence"],
+                    "acceptance_rule": selection["acceptance_rule"],
+                    "role_metrics": (
+                        None
+                        if selection["selected"] is None
+                        else selection["selected"]["role_metrics"]
+                    ),
+                    "role_change": (
+                        None
+                        if selection["selected"] is None
+                        else selection["selected"]["role_change"]
                     ),
                 }
-                if not confirmed:
-                    event_reasons.append(f"{event_name}_visual_not_confirmed")
+                if selection["status"] == "confirmed":
+                    event_confidences.append(float(selection["confidence"]["joint"]))
+                else:
+                    event_reasons.append(f"{event_name}_visual_interval_not_confirmed")
             if event_reasons:
                 record["quality"]["status"] = "ambiguous"
                 record["quality"]["review_required"] = True
@@ -1956,6 +2653,20 @@ def _fuse_all_annotations(
                 record["policy_condition"]["vector"] = None
                 record["policy_condition"]["current_sector"] = None
                 record["policy_condition"]["next_ready_sector"] = None
+            event_confidence = min(event_confidences) if event_confidences else 0.0
+            record["quality"]["event_visual_confidence"] = event_confidence
+            record["quality"]["confidence"] = min(
+                float(record["quality"]["confidence"]),
+                event_confidence,
+            )
+            record["verification"]["event_visual_confirmation_complete"] = (
+                evaluated_event_count > 0
+                and evaluated_event_count == len(event_confidences)
+            )
+            record["verification"]["visual_confirmation_complete"] = bool(
+                record["verification"]["visual_confirmation_complete"]
+                and record["verification"]["event_visual_confirmation_complete"]
+            )
             record["annotation_id"] = (
                 f"episode_{episode_id}:cycle_{int(record['cycle_id'])}"
             )
@@ -2001,6 +2712,14 @@ def _attach_target_time_provenance(
                     side="left",
                 )
             )
+            if "numeric_representative_step" in event:
+                event["numeric_representative_target_tick"] = int(
+                    np.searchsorted(
+                        selection.source_indices,
+                        int(event["numeric_representative_step"]),
+                        side="left",
+                    )
+                )
         record["time_contract"] = {
             "source_time_basis": "step_id_times_metadata_dt",
             "source_dt_s": float(signals[int(record["episode_id"])].dt),
@@ -2019,9 +2738,7 @@ def _condition_support_entries(
     train_ids: Sequence[int],
 ) -> list[dict[str, Any]]:
     accepted = [
-        record
-        for record in records
-        if record["quality"]["status"] == "accepted"
+        record for record in records if record["quality"]["status"] == "accepted"
     ]
     train_states: list[np.ndarray] = []
     for record in accepted:
@@ -2029,9 +2746,7 @@ def _condition_support_entries(
             continue
         episode = all_signals[int(record["episode_id"])]
         for role in ("current", "next"):
-            step = int(
-                record["sector_observations"][role]["representative_step"]
-            )
+            step = int(record["sector_observations"][role]["representative_step"])
             train_states.append(
                 np.concatenate((episode.qpos[step], episode.qvel[step]))
             )
@@ -2050,13 +2765,11 @@ def _condition_support_entries(
         episode = all_signals[episode_id]
         role_features: dict[str, np.ndarray] = {}
         for role in ("current", "next"):
-            step = int(
-                record["sector_observations"][role]["representative_step"]
-            )
+            step = int(record["sector_observations"][role]["representative_step"])
             state = np.concatenate((episode.qpos[step], episode.qvel[step]))
-            state_z = unit_normalize(
-                ((state - state_mean) / state_std).reshape(1, -1)
-            )[0]
+            state_z = unit_normalize(((state - state_mean) / state_std).reshape(1, -1))[
+                0
+            ]
             eye = all_features[(episode_id, step)]["eye"]
             role_features[role] = unit_normalize(
                 np.concatenate((eye, state_z)).reshape(1, -1)
@@ -2115,15 +2828,11 @@ def _annotation_manifest(
 ) -> dict[str, Any]:
     quality = Counter(record["quality"]["status"] for record in records)
     reasons = Counter(
-        reason
-        for record in records
-        for reason in record["quality"]["reason_codes"]
+        reason for record in records for reason in record["quality"]["reason_codes"]
     )
     by_split = {
         split_name: {
-            "cycle_count": sum(
-                record["split"] == split_name for record in records
-            ),
+            "cycle_count": sum(record["split"] == split_name for record in records),
             "accepted_count": sum(
                 record["split"] == split_name
                 and record["quality"]["status"] == "accepted"
@@ -2232,16 +2941,10 @@ def _export_episode_field_contract(path: Path) -> dict[str, Any]:
             "qvel": _array_stats(
                 np.asarray(handle["observations/qvel"], dtype=np.float32)
             ),
-            "action": _array_stats(
-                np.asarray(handle["action"], dtype=np.float32)
-            ),
+            "action": _array_stats(np.asarray(handle["action"], dtype=np.float32)),
             "condition": {
-                "shape": list(
-                    handle["conditions/cycle_condition_v1"].shape
-                ),
-                "dtype": str(
-                    handle["conditions/cycle_condition_v1"].dtype
-                ),
+                "shape": list(handle["conditions/cycle_condition_v1"].shape),
+                "dtype": str(handle["conditions/cycle_condition_v1"].dtype),
                 "valid_row_count": int(
                     np.count_nonzero(
                         np.asarray(
@@ -2270,9 +2973,7 @@ def _aggregate_export_field_contract(
             fields["qvel"].append(
                 np.asarray(handle["observations/qvel"], dtype=np.float32)
             )
-            fields["action"].append(
-                np.asarray(handle["action"], dtype=np.float32)
-            )
+            fields["action"].append(np.asarray(handle["action"], dtype=np.float32))
     return {
         name: _array_stats(np.concatenate(values, axis=0))
         for name, values in fields.items()
@@ -2300,8 +3001,7 @@ def _aggregate_resample_qc(
     common_provenance: Mapping[str, Any],
 ) -> dict[str, Any]:
     valid = sum(
-        int(row["transition_preservation_qc"]["valid_segment_count"])
-        for row in rows
+        int(row["transition_preservation_qc"]["valid_segment_count"]) for row in rows
     )
     preserved = sum(
         int(row["transition_preservation_qc"]["preserved_segment_count"])
@@ -2312,15 +3012,9 @@ def _aggregate_resample_qc(
         for row in rows
         for segment in row["transition_preservation_qc"]["missing_segments"]
     ]
-    durable_missing = [
-        segment for segment in missing_rows if segment["durable"]
-    ]
+    durable_missing = [segment for segment in missing_rows if segment["durable"]]
     max_delay = max(
-        float(
-            row["transition_preservation_qc"][
-                "max_preserved_onset_delay_s"
-            ]
-        )
+        float(row["transition_preservation_qc"]["max_preserved_onset_delay_s"])
         for row in rows
     )
     return {
@@ -2447,18 +3141,12 @@ def _write_oracle_audit(
         episode_records = sorted(
             observable_by_episode[episode_id],
             key=lambda record: int(
-                record["observable_events"]["dump_end_proxy"][
-                    "representative_step"
-                ]
+                record["observable_events"]["dump_end_proxy"]["representative_step"]
             ),
         )
         candidates = np.flatnonzero(replay & (oracle_dump >= 0))
         observable_dump = [
-            int(
-                record["observable_events"]["dump_end_proxy"][
-                    "representative_step"
-                ]
-            )
+            int(record["observable_events"]["dump_end_proxy"]["representative_step"])
             for record in episode_records
         ]
         local_pairs = _monotonic_one_to_one_pairs(
@@ -2489,9 +3177,7 @@ def _write_oracle_audit(
                     )
                     if record["observable_events"]["ready_start"] is not None
                     else None,
-                    "dump_end_error_steps": int(
-                        dump - oracle_dump[oracle_index]
-                    ),
+                    "dump_end_error_steps": int(dump - oracle_dump[oracle_index]),
                     "current_sector_agrees": (
                         current == sector_map.get(int(oracle_current[oracle_index]))
                         if current is not None
@@ -2538,9 +3224,7 @@ def _write_oracle_audit(
         for row in matches
         if row["ready_start_error_steps"] is not None
     ]
-    dump_errors = [
-        abs(int(row["dump_end_error_steps"])) for row in matches
-    ]
+    dump_errors = [abs(int(row["dump_end_error_steps"])) for row in matches]
     current_agreement = [
         bool(row["current_sector_agrees"])
         for row in matches
@@ -2583,7 +3267,8 @@ def _write_oracle_audit(
         "boundary_near_observable_count": int(
             sum(
                 any(
-                    reason in {
+                    reason
+                    in {
                         "current_qpos_sector_boundary",
                         "next_qpos_sector_boundary",
                     }

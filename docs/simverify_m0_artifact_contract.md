@@ -188,10 +188,82 @@ representative source rows, and reason codes for:
 `ready` is an empirical observable envelope and may contain non-zero qvel.
 These proxies do not claim soil contact, payload, or removed-volume truth.
 
-The required interval-wide visual change-point/similarity selector and final
-per-event confidence remain an M0 blocker. A single-frame prototype check is
-not sufficient to satisfy the research plan and must not be described as a
-frozen annotation.
+The interval-wide selector is a separate, fail-closed stage:
+
+- it extracts one-row visual halos around every numeric half-open interval;
+- `annotation_feature_input_manifest_v1.json` freezes the deduplicated source
+  rows used for extraction, including per-episode half-open row ranges, the
+  SHA-256 of the ordered little-endian int64 row list, eye/stick
+  dimension/dtype/normalization, decode chunk size, configured inference batch
+  size, and complete extractor provenance;
+- train numeric representatives fit episode-balanced eye/stick prototypes;
+- validation numeric representatives freeze own-prototype support and
+  event-specific change/stability envelopes;
+- validation interval matches freeze signed p02.5/p97.5 offset bounds;
+- top-1 and cross-event margin are retained as identifiability diagnostics,
+  not Gate operands, while event acceptance remains an own-prototype
+  support-envelope check;
+- `ready` minimizes two-sided stick motion, dig/dump-start use entering
+  change, carry uses centered change, and dump-end uses exiting change;
+- offset eligibility is applied before candidate ranking;
+- a shared ready gap is selected once and becomes both `ready_end(i)` and
+  `ready_start(i+1)`;
+- confirmed ready boundaries rebuild `source_steps`, after which the complete
+  event order is checked again.
+
+Eye and stick metrics remain separate in the applied sidecar. Eye is required
+for dig/dump global-scene confirmation and later sector cross-checking; stick
+is required for every local phase. Evidence conflict or missing required halo,
+support, change, offset, or event order produces `ambiguous`.
+
+Per-event confidence is an empirical support score, not a probability. It is
+the minimum of required-role support percentile, event change/stability
+percentile, signed-offset centrality, and add-one-smoothed source-episode
+reselection support. An accepted event therefore cannot have zero confidence.
+
+Point-event stability is evaluated over the complete source-episode outer
+bootstrap. A point-confirmed event passes the stability mask only when:
+
+- its confirmation frequency is at least `0.99`;
+- its reselection-within-point-tolerance frequency is at least `0.99`; and
+- the p02.5-to-p97.5 width of its selected source-row distribution is no wider
+  than that phase's frozen signed-offset span.
+
+An event that fails this point rule becomes `ambiguous`; this does not by
+itself fail the complete labeler. For each event phase, the aggregate fraction
+of point events that pass must be no lower than the p02.5 lower bound of that
+phase's validation-coverage outer bootstrap. The selector Gate also requires
+the validation-coverage bootstrap lower bound to exceed the episode-mapping
+permutation-null p95, offset-endpoint stability, and an outer-bootstrap failure
+rate no greater than `0.01`. Cross-event top-1 accuracy and margin remain
+reported diagnostics only.
+
+Current-sector evidence has a role-local order rule. It requires a confirmed
+`dig_entry_proxy`, requires any available `ready_start` not to follow that dig,
+and requires any available carry/dump/ready-end event not to precede that dig.
+Missing unrelated ready or dump evidence can still make the complete cycle
+review-only, but it does not erase an otherwise valid current-sector
+observation. Complete six-event order remains required for accepted cycle
+`source_steps` and condition materialization.
+
+The sector bootstrap is an outer source-episode bootstrap conditional on the
+separately frozen numeric candidate intervals. Every replicate refits the
+episode-balanced event prototypes, validation support/change/offset
+envelopes, shared event representatives, event order, and then the train
+sector clusters. Resampling already-selected qpos rows is not sufficient.
+After point-event stability is assessed, the point-stability mask is frozen
+and reapplied to every retained event in each selector-successful replicate.
+The role-local current-sector order is recomputed after that complete mask, so
+an unstable non-dig event cannot irreversibly discard or incorrectly retain a
+dig row. Source-episode draw multiplicity is preserved. The sector clusters
+and boundary distribution are then recomputed from the resulting stable,
+order-valid dig rows. The pre-mask sector summary remains in the selector
+artifact as a diagnostic, while
+`annotation_event_selected_sector_bootstrap_v1.json` records the masked
+distribution and hashes both the selector core and the point-selection/
+stability-mask artifact. That stability-masked distribution is the operand
+used by the sector Gate.
+Numeric-candidate threshold bootstrap remains the independent preceding Gate.
 
 Repeated bucket-release pulses are merged only while every intervening swing
 sample remains inside the train-fitted dump cluster. No release-gap duration
@@ -286,7 +358,14 @@ sim_observable_cycle_v1/
   state_action_contract.json
   cycle_condition_v1.schema.json
   annotation_thresholds_v1.json
+  annotation_feature_input_manifest_v1.json
   annotation_feature_prototypes_v1.npz
+  annotation_event_selector_prototypes_v1.npz
+  annotation_event_selector_v1.json
+  annotation_event_selected_sector_bootstrap_v1.json
+  annotation_event_selector_gate_report.json
+  annotation_event_selections_pre_gate_v1.json
+  annotation_event_selections_v1.json
   annotation_manifest.json
   cycle_annotations.jsonl
   review_queue.jsonl
