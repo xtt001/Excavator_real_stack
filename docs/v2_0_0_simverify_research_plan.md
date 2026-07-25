@@ -4,7 +4,7 @@
 
 | 项目 | 当前值 |
 | --- | --- |
-| 状态 | `m0_gate_v3_predeclared_before_rerun` |
+| 状态 | `m1_import_smoke_passed_m2_pending` |
 | 策略代码仓库 | `Excavator_real_stack` |
 | Git 分支 | `v2.0.0-simVerify` |
 | 基线标签 | `g49-n5-live-frozen-20260723` |
@@ -23,6 +23,8 @@ M0 Gate 的逐项设计理由、v1 失败复盘和 v2 预注册规则见
 train/validation 的 3x3 transition support 生成，held-out 继续锁定。
 首次正式 v2 rerun 暴露的 condition 计数单位和 sector eye/qpos 融合问题，以及 v3
 预声明修正，见 `docs/simverify_m0_gate_design_audit_v3.md`。
+正式 M0 v3 与 bounded M1 import smoke 的 SHA、Gate operands 和能力边界见
+`docs/simverify_m0_m1_evidence_20260725.md`。
 
 ## 1. 研究目标
 

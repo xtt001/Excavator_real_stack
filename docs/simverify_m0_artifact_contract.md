@@ -9,10 +9,10 @@ materialization and the preconditions for a later M1 import smoke.
 Current execution status:
 
 ```text
-gate_v3_predeclared_before_rerun
+m1_import_smoke_passed_m2_pending
 ```
 
-The M0 package is not yet frozen. The formal v1 run completed visual
+The immutable M0 v3 package and bounded M1 smoke have passed. The formal v1 run completed visual
 extraction and 256/256 full event-selector refits, then failed its event Gate.
 The failure proved that `selector_v2 + Gate_v1` did not pass; it did not prove
 that the source data was unusable. `docs/simverify_m0_gate_design_audit_v2.md`
@@ -22,8 +22,9 @@ sector-visual refits, then exposed two coverage-implementation errors:
 single-cycle condition counts were conflated with accepted two-cycle pairs,
 and eye/qpos fusion used an unsupported 1% absolute-similarity cutoff.
 `docs/simverify_m0_gate_design_audit_v3.md` freezes the corrections before a
-new immutable `sim_observable_cycle_v3` rerun. M1 remains unauthorized until
-that complete package passes every M0 Gate.
+new immutable `sim_observable_cycle_v3` rerun. That package passed every M0
+Gate and its bounded M1 smoke; the frozen evidence is recorded in
+`docs/simverify_m0_m1_evidence_20260725.md`. Training remains unauthorized.
 
 The evidence scope is always:
 
