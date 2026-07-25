@@ -43,7 +43,7 @@ def build_train_run_metadata(
     task_name: str,
     device: str,
 ) -> dict[str, Any]:
-    repo_root = Path(__file__).resolve().parents[2]
+    repo_root = _find_git_root(Path(__file__).resolve())
     return {
         "run_type": "train",
         "generated_at": datetime.datetime.utcnow().isoformat(),
@@ -113,6 +113,13 @@ def _collect_repo_snapshot(repo_path: Path) -> dict[str, Any]:
     snapshot["dirty"] = bool(status)
     snapshot["status_short"] = status.splitlines()[:20] if status else []
     return snapshot
+
+
+def _find_git_root(start: Path) -> Path:
+    for candidate in (start, *start.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return start.parent
 
 
 def _run_git(repo_path: Path, *args: str) -> str:

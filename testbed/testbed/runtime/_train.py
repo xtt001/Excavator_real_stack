@@ -36,6 +36,15 @@ def train_policy(config: dict[str, Any]) -> None:
     deadzone_intent = copy.deepcopy(
         train_cfg.get("deadzone_intent", policy_cfg.get("deadzone_intent", {})) or {}
     )
+    sample_valid_mask_path = str(
+        train_cfg.get("sample_valid_mask_path", "")
+    ).strip()
+    norm_stats_train_only = bool(
+        train_cfg.get("norm_stats_train_only", False)
+    )
+    checkpoint_semantics = copy.deepcopy(
+        config.get("checkpoint_semantics", {}) or {}
+    )
 
     if policy_class != "ACT":
         raise NotImplementedError(f"Trainer for policy class {policy_class!r} not yet implemented.")
@@ -50,6 +59,9 @@ def train_policy(config: dict[str, Any]) -> None:
 
     # build policy_config dict for ACTAdapter / detr
     act_params = policy_cfg.get("act_params", {})
+    camera_role_encoding = copy.deepcopy(
+        act_params.get("camera_role_encoding", {}) or {}
+    )
     policy_config = {
         "lr":            float(train_cfg.get("lr", 1e-5)),
         "num_queries":   int(act_params.get("chunk_size", 100)),
@@ -88,6 +100,7 @@ def train_policy(config: dict[str, Any]) -> None:
             )
             or {}
         ),
+        "camera_role_encoding": camera_role_encoding,
     }
 
     full_config = {
@@ -109,6 +122,9 @@ def train_policy(config: dict[str, Any]) -> None:
         "reuse_split":    reuse_split,
         "split_path":     str(split_path),
         "image_transform": image_transform,
+        "sample_valid_mask_path": sample_valid_mask_path,
+        "norm_stats_train_only": norm_stats_train_only,
+        "checkpoint_semantics": checkpoint_semantics,
     }
 
     ckpt_dir.mkdir(parents=True, exist_ok=True)
@@ -138,6 +154,8 @@ def train_policy(config: dict[str, Any]) -> None:
         action_chunk_size  = action_chunk_size,
         image_transform    = image_transform,
         deadzone_intent    = deadzone_intent,
+        sample_valid_mask_path=sample_valid_mask_path or None,
+        norm_stats_train_only=norm_stats_train_only,
     )
 
     # save normalisation stats so trainer can load them
@@ -165,6 +183,10 @@ def train_policy(config: dict[str, Any]) -> None:
         device=device,
     )
     run_metadata["status"] = "started"
+    run_metadata["checkpoint_semantics"] = checkpoint_semantics
+    run_metadata["experiment_contract"] = copy.deepcopy(
+        config.get("experiment_contract", {}) or {}
+    )
     run_metadata_path = write_json(ckpt_dir / "run_metadata.json", run_metadata)
     print(f"Saved resolved config to {resolved_config_path}")
     print(f"Saved run metadata to {run_metadata_path}")
@@ -217,6 +239,12 @@ def _build_resolved_train_config(
     train_cfg["plot_every"] = int(full_config["plot_every"])
     train_cfg["amp"] = bool(full_config["amp"])
     train_cfg["amp_dtype"] = str(full_config["amp_dtype"])
+    train_cfg["sample_valid_mask_path"] = str(
+        full_config["sample_valid_mask_path"]
+    )
+    train_cfg["norm_stats_train_only"] = bool(
+        full_config["norm_stats_train_only"]
+    )
     return resolved
 
 

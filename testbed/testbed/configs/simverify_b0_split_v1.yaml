@@ -1,0 +1,53 @@
+schema_version: 1
+generated_at: "2026-07-25T00:00:00Z"
+dataset_dir: /data/pingfan/Excavator_real_stack_data/sim_observable_cycle_v3/episodes
+requested_num_episodes: 1000000
+available_episode_ids:
+  - 3
+  - 4
+  - 6
+  - 7
+  - 8
+  - 9
+  - 10
+  - 12
+  - 14
+  - 16
+  - 20
+  - 24
+  - 27
+  - 28
+  - 29
+  - 30
+  - 32
+  - 34
+split_seed: 0
+train_split_ratio: 0.8333333333333334
+train_ids:
+  - 3
+  - 4
+  - 6
+  - 7
+  - 8
+  - 9
+  - 10
+  - 14
+  - 16
+  - 24
+  - 27
+  - 28
+  - 29
+  - 30
+  - 32
+val_ids:
+  - 12
+  - 20
+  - 34
+assignment_method: sha256_rank_within_stratum
+source_split_manifest: /data/pingfan/Excavator_real_stack_data/sim_observable_cycle_v3/split_groups.json
+source_split_manifest_sha256: 20945e8ffe3591817e9c9801c4f259395cff5c26daf335842af29e60861c6c44
+held_out_test: locked_unread
+zero_valid_start_excluded_ids:
+  - 19
+  - 23
+zero_valid_start_exclusion_rule: no accepted-cycle window can contain one complete 20-tick action chunk

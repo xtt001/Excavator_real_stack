@@ -16,11 +16,10 @@ import torch
 import yaml
 from torch.utils.data import DataLoader, Dataset
 
-from testbed.data.hdf5_io import list_episodes
 from testbed.data.deadzone_intent_labels import compute_deadzone_intent_labels
+from testbed.data.hdf5_io import list_episodes
 from testbed.data.image_transforms import build_image_transform
 from testbed.data.schema import ATTR_IS_REAL, GRP_ENCODED_IMAGES
-
 
 SUPPORTED_LOW_DIM_KEYS = ("qpos", "qvel")
 
@@ -72,6 +71,7 @@ def get_norm_stats(
     episode_ids: list[int] | None = None,
     low_dim_keys: list[str] | tuple[str, ...] | None = None,
     deadzone_intent: dict[str, Any] | None = None,
+    valid_mask_path: str | None = None,
 ) -> dict[str, np.ndarray]:
     """
     Compute mean/std normalization statistics from a set of episodes.
@@ -116,6 +116,14 @@ def get_norm_stats(
             qpos   = f["/observations/qpos"][()]
             qvel   = f["/observations/qvel"][()]
             action = f["/action"][()]
+            valid_mask = np.ones(int(action.shape[0]), dtype=bool)
+            if valid_mask_path:
+                valid_mask = _read_required_valid_mask(
+                    f,
+                    valid_mask_path,
+                    int(action.shape[0]),
+                )
+            action_mask = valid_mask.copy()
             if deadzone_intent_cfg["use_action_loss_mask_for_stats"]:
                 mask = _read_optional_handoff_mask(
                     f,
@@ -128,7 +136,14 @@ def get_norm_stats(
                         "deadzone_intent.use_action_loss_mask_for_stats requires "
                         "handoff/action_loss_mask"
                     )
-                action = np.asarray(action, dtype=np.float32)[mask]
+                action_mask &= mask
+            qpos = np.asarray(qpos, dtype=np.float32)[valid_mask]
+            qvel = np.asarray(qvel, dtype=np.float32)[valid_mask]
+            action = np.asarray(action, dtype=np.float32)[action_mask]
+            if qpos.shape[0] == 0 or action.shape[0] == 0:
+                raise ValueError(
+                    f"Episode {ep_idx} has no rows for normalization after masks"
+                )
         proprio = _assemble_low_dim_observation(
             qpos=qpos,
             qvel=qvel,
@@ -213,6 +228,7 @@ class EpisodicDataset(Dataset):
         action_chunk_size: int | None = None,
         image_transform: str = "none",
         deadzone_intent: dict[str, Any] | None = None,
+        sample_valid_mask_path: str | None = None,
     ):
         super().__init__()
         self.episode_ids  = episode_ids
@@ -225,6 +241,9 @@ class EpisodicDataset(Dataset):
         self.image_transform_name = str(image_transform or "none")
         self.image_transform = build_image_transform(self.image_transform_name)
         self.deadzone_intent = _resolve_deadzone_intent_config(deadzone_intent)
+        self.sample_valid_mask_path = (
+            str(sample_valid_mask_path) if sample_valid_mask_path else None
+        )
         self.is_real: bool | None = None
         # Warm-up to populate self.is_real
         self.__getitem__(0)
@@ -246,7 +265,11 @@ class EpisodicDataset(Dataset):
             T = original_action_shape[0]
 
             # ── sample start timestep ─────────────────────────────────────
-            train_exclude_mask = _read_train_exclude_mask(f, T)
+            train_exclude_mask = _combined_training_exclude_mask(
+                f,
+                T,
+                sample_valid_mask_path=self.sample_valid_mask_path,
+            )
             action_loss_start_mask = _read_optional_handoff_mask(
                 f,
                 "handoff/action_loss_mask",
@@ -466,6 +489,43 @@ def _read_train_exclude_mask(h5_file: Any, total_steps: int) -> np.ndarray | Non
     return mask
 
 
+def _read_required_valid_mask(
+    h5_file: Any,
+    path: str,
+    total_steps: int,
+) -> np.ndarray:
+    normalized = str(path).strip().lstrip("/")
+    if not normalized:
+        raise ValueError("sample valid-mask path must not be empty")
+    if normalized not in h5_file:
+        raise KeyError(f"required sample valid-mask is missing: {normalized}")
+    mask = np.asarray(h5_file[normalized][()], dtype=bool).reshape(-1)
+    if mask.size != int(total_steps):
+        raise ValueError(
+            f"{normalized} length must be {total_steps}, got {mask.size}"
+        )
+    return mask
+
+
+def _combined_training_exclude_mask(
+    h5_file: Any,
+    total_steps: int,
+    *,
+    sample_valid_mask_path: str | None,
+) -> np.ndarray | None:
+    excluded = _read_train_exclude_mask(h5_file, total_steps)
+    if not sample_valid_mask_path:
+        return excluded
+    derived_exclude = ~_read_required_valid_mask(
+        h5_file,
+        sample_valid_mask_path,
+        total_steps,
+    )
+    if excluded is None:
+        return derived_exclude
+    return np.asarray(excluded, dtype=bool) | derived_exclude
+
+
 def _valid_start_indices(
     *,
     total_steps: int,
@@ -543,6 +603,8 @@ def load_data(
     action_chunk_size: int | None = None,
     image_transform: str = "none",
     deadzone_intent: dict[str, Any] | None = None,
+    sample_valid_mask_path: str | None = None,
+    norm_stats_train_only: bool = False,
 ) -> tuple[DataLoader, DataLoader, dict, bool, dict[str, Any]]:
     """
     Build train/val DataLoaders from an HDF5 dataset directory.
@@ -607,7 +669,11 @@ def load_data(
             valid_start_count[ep_id] = int(
                 _valid_start_indices(
                     total_steps=length_info[ep_id],
-                    train_exclude_mask=_read_train_exclude_mask(f, length_info[ep_id]),
+                    train_exclude_mask=_combined_training_exclude_mask(
+                        f,
+                        length_info[ep_id],
+                        sample_valid_mask_path=sample_valid_mask_path,
+                    ),
                     action_chunk_size=action_chunk_size,
                     action_loss_mask=action_loss_start_mask,
                     require_action_loss_in_chunk=bool(
@@ -665,12 +731,14 @@ def load_data(
     )
 
     selected_low_dim_keys = _normalize_low_dim_keys(low_dim_keys)
+    norm_stats_episode_ids = train_ids if norm_stats_train_only else available
     norm_stats = get_norm_stats(
         dataset_dir,
         num_episodes,
-        episode_ids=available,
+        episode_ids=norm_stats_episode_ids,
         low_dim_keys=selected_low_dim_keys,
         deadzone_intent=deadzone_intent,
+        valid_mask_path=sample_valid_mask_path,
     )
 
     train_ds = EpisodicDataset(
@@ -683,6 +751,7 @@ def load_data(
         action_chunk_size=action_chunk_size,
         image_transform=image_transform,
         deadzone_intent=deadzone_intent,
+        sample_valid_mask_path=sample_valid_mask_path,
     )
     val_ds = EpisodicDataset(
         val_ids,
@@ -694,6 +763,7 @@ def load_data(
         action_chunk_size=action_chunk_size,
         image_transform=image_transform,
         deadzone_intent=deadzone_intent,
+        sample_valid_mask_path=sample_valid_mask_path,
     )
 
     split_info["dataset_max_episode_len"] = int(max_episode_len)
@@ -705,6 +775,11 @@ def load_data(
     split_info["deadzone_intent_enabled"] = bool(
         deadzone_intent_cfg["enabled"]
     )
+    split_info["sample_valid_mask_path"] = str(sample_valid_mask_path or "")
+    split_info["norm_stats_train_only"] = bool(norm_stats_train_only)
+    split_info["norm_stats_episode_ids"] = [
+        int(ep_id) for ep_id in norm_stats_episode_ids
+    ]
     split_info["gap_mask_valid_start_count"] = {
         int(ep_id): int(valid_start_count.get(ep_id, 0)) for ep_id in available
     }
