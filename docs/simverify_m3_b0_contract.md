@@ -1,6 +1,6 @@
 # SimVerify M3/B0 Unconditioned Baseline Contract
 
-Status: `batch_preflight_passed_training_not_started`
+Status: `smoke2_passed_formal_B0_training_authorized`
 
 Evidence scope: `recorded-observation/offline`
 
@@ -110,3 +110,9 @@ handoff contract: `run_metadata.json` contained the sim-domain prohibition,
 while `policy_best.ckpt` did not embed it. That artifact is retained as failed
 evidence and is not promotable. The serializer must be fixed and a new
 versioned smoke must pass before formal B0 training.
+
+The versioned `smoke2` rerun passed the complete contract at clean Git commit
+`9b0690696962e5cbbd2868e64678d1ad5d587374`. Its evidence is recorded in
+`docs/simverify_m3_b0_smoke_evidence_20260725.md`. Formal B0 training is now
+authorized; G3 remains pending until the completed checkpoint has repeated
+recorded-observation replay artifacts.
