@@ -44,3 +44,13 @@ The correct label is therefore `revise_condition`, not `reject` and not
 - no checkpoint is authorized for real hardware;
 - no `control_candidate` exists;
 - offline replay is not claimed as closed-loop success.
+
+## Post-decision bounded follow-up
+
+The fixed-observation causal v2 and per-step transition-stitch calibration are
+recorded in
+`docs/simverify_transition_and_condition_causal_evidence_20260725.md`.
+They do not reopen G5 or held-out test. The additional evidence keeps the
+terminal decision at `revise_condition`: current-sector understanding passes,
+while next-sector semantic identifiability and response-phase specificity do
+not.
