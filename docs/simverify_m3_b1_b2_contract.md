@@ -1,6 +1,6 @@
 # SimVerify M3 B1/B2 Condition Ablation Contract
 
-Status: `implementation_frozen_one_epoch_smokes_pending`
+Status: `implementation_and_smokes_passed_formal_training_authorized`
 
 Evidence scope: `recorded-observation/offline`
 
