@@ -1,6 +1,6 @@
 # SimVerify Gate Design Audit — 2026-07-25
 
-Status: `G0_G2_passed_M2_contract_implementation_in_progress`
+Status: `G4_terminal_revise_condition`
 
 Evidence scope: `recorded-observation/offline`
 
@@ -15,9 +15,10 @@ The current data have not failed an arbitrary numerical requirement.
 
 - G0, G1, and G2 passed on the immutable M0 package.
 - M1 import smoke passed.
-- G3, G4, and G5 do not yet have finite final numerical thresholds because the
-  required B0 repeated-replay noise and B2 shuffled-condition null artifacts
-  do not yet exist.
+- G3 passed for the recorded-observation/offline B0 baseline.
+- G4 validation calibration completed with B1 repeated replay and the B2
+  shuffled-condition null. It returned `revise_condition`.
+- G5 and G6 remain locked because G4 did not pass.
 - M2 may freeze questions, trace schemas, intervention anchors, event
   extraction semantics, and runtime scheduling semantics. It may not fill in
   the missing model-derived distributions or inspect held-out test data.
@@ -231,9 +232,22 @@ finite thresholds cannot be generated before these artifacts exist.
 
 ### Current status
 
-B1/B2 are now authorized by the G3 recorded-observation baseline decision. G4
-itself remains pending because neither the B1 paired condition response nor the
-B2 shuffled-condition null exists yet.
+Terminal `revise_condition`.
+
+The supported-anchor action effect passed for both current and next sector,
+and current-sector direction, response latency, and phase preservation passed.
+Next-sector direction did not separate from B2 at the lower endpoint of the
+source-episode paired bootstrap: B1 was direction-correct on all supported
+next-sector swaps, but B2 was already direction-correct in all anchors from two
+of three source episodes. Both B1 and B2 also had zero `condition_ignored_rate`
+at the repeat-noise floor, so the shuffled-condition control did not represent
+an ignored-condition null for that metric.
+
+This is not a finding that the source data failed a chosen percentage. The
+support minimum passed, the response magnitude exceeded B2 plus measured
+repeat uncertainty under the paired contrast, and the failure is specifically
+that the current G4 design cannot identify a next-sector target-direction
+advantage over its null.
 
 ## G5 — Two-cycle continuity
 
@@ -267,7 +281,8 @@ cycles.
 
 ### Current status
 
-Pending B0/B1/B2. M2 freezes valid two-cycle anchors only.
+Not entered. G4 returned `revise_condition`, so the frozen dependency chain
+does not authorize G5.
 
 ## G6 — Runtime equivalence and bundle safety
 
@@ -299,7 +314,26 @@ change G3–G5 model evidence.
 
 ### Current status
 
-Pending. No checkpoint promotion or deployment is authorized.
+Not entered. G4 did not authorize G5. No checkpoint promotion or deployment is
+authorized.
+
+## G4 formula correction found by the audit
+
+The immutable M0 `gate_thresholds_contract_v1.json` is preserved and remains
+SHA-bound. Before any held-out read, the G4 implementation identified two
+result-independent mathematical defects in its deferred formulas:
+
+1. `CI(B1-B2)` already contains the B2 null. Comparing that paired difference
+   against an additional absolute B2 quantile counts the null twice. The
+   corrected same-unit test compares the paired CI endpoint against measured
+   B1 repeat noise.
+2. The old `condition_ignored_rate` formula subtracted action-magnitude noise
+   from a dimensionless rate. The corrected test uses repeat uncertainty of
+   the rate itself.
+
+The correction does not insert a fixed percentage or remove B2. B2 remains
+inside every paired contrast. The old contract SHA, the findings, and the
+corrected formulas are recorded in the immutable G4 package.
 
 ## Final threshold-generation contract
 
@@ -316,6 +350,10 @@ exist:
 The file, method, sample counts, quantiles, and SHA-256 are then frozen before
 held-out test is opened. Held-out results may select only pass, reject, or a
 new versioned experiment; they may not tune the frozen thresholds.
+
+All G4 model-derived inputs now exist, but the G4 validation decision failed.
+Consequently the global file is intentionally not generated: generating it
+would falsely imply that G5/G6 and held-out execution were authorized.
 
 ## M2 audit corrections applied
 
