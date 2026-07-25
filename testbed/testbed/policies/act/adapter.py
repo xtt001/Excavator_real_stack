@@ -919,6 +919,20 @@ class ACTAdapter(Policy):
             raise RuntimeError("no ACT inference has run since reset")
         return self._last_raw_action_chunk.cpu().numpy().copy()
 
+    def last_raw_action_chunk_direct(self) -> np.ndarray:
+        """Return the latest ACT chunk in frozen source-action units."""
+
+        normalized = self.last_raw_action_chunk()
+        action_mean = np.asarray(self.norm_stats["action_mean"], dtype=np.float32)
+        action_std = np.asarray(self.norm_stats["action_std"], dtype=np.float32)
+        if action_mean.shape != (4,) or action_std.shape != (4,):
+            raise ValueError("ACT action normalization stats must have shape (4,)")
+        if not np.isfinite(action_mean).all() or not np.isfinite(action_std).all():
+            raise ValueError("ACT action normalization stats must be finite")
+        return (
+            normalized.astype(np.float32, copy=False) * action_std + action_mean
+        ).astype(np.float32, copy=True)
+
     @property
     def factorized_diagnostics(self) -> dict[str, Any] | None:
         """Return JSON-safe diagnostics for the last opt-in factorized action."""
