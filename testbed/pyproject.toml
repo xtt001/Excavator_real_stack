@@ -59,6 +59,7 @@ tb-build-simverify-m2 = "testbed.cli.build_simverify_m2:main"
 tb-run-simverify-b0-replay = "testbed.cli.run_simverify_b0_replay:main"
 tb-build-simverify-g3 = "testbed.cli.build_simverify_g3:main"
 tb-run-simverify-condition-replay = "testbed.cli.run_simverify_condition_replay:main"
+tb-build-simverify-g4 = "testbed.cli.build_simverify_g4:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
