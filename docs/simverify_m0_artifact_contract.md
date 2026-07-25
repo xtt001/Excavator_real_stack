@@ -415,3 +415,11 @@ The smoke fails closed on:
 
 Passing M1 proves only that the recorded-observation package can be consumed by
 the Real Stack import boundary.
+
+The bounded implementation is
+`testbed/testbed/simverify/import_smoke.py`, exposed as
+`tb-run-simverify-m1`. It writes a new immutable report outside the M0 package,
+selects exactly one train and one validation episode, decodes every selected
+JPEG row, and verifies only those episode checksums plus the manifest, split,
+camera/state/condition contracts, annotation sidecar, privilege report, and
+M0 authorization report. The M0 package itself is never modified.

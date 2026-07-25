@@ -54,6 +54,7 @@ tb-build-20hz-dataset = "testbed.cli.build_20hz_dataset:main"
 tb-offline-policy-eval = "testbed.cli.offline_policy_eval:main"
 tb-build-online-qc-reference = "testbed.cli.build_online_qc_reference:main"
 tb-build-simverify-m0 = "testbed.cli.build_simverify_m0:main"
+tb-run-simverify-m1 = "testbed.cli.run_simverify_m1:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
