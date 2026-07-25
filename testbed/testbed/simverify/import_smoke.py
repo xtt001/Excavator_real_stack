@@ -201,7 +201,7 @@ def _require_camera_and_time_contracts(
     if camera.get("transform", {}).get("output_color_space") != "RGB":
         raise ValueError("camera output color space is not RGB")
     state = payloads["state_action_contract.json"]
-    if state.get("contract_id") != STATE_ACTION_TIME_CONTRACT_ID:
+    if state.get("schema_version") != STATE_ACTION_TIME_CONTRACT_ID:
         raise ValueError("state/action/time contract ID mismatch")
     if state.get("time", {}).get("source_time_basis") != (
         "timestamps/step_id * metadata.dt"
@@ -209,8 +209,10 @@ def _require_camera_and_time_contracts(
         raise ValueError("source time basis is not simulator step_id times dt")
     if bool(state.get("time", {}).get("wall_clock_step_ns_used")):
         raise ValueError("wall-clock time is enabled")
-    if float(state.get("action", {}).get("label_offset_s", float("nan"))) != 0.0:
+    if float(state.get("time", {}).get("action_label_offset_s", float("nan"))) != 0.0:
         raise ValueError("action label offset is non-zero")
+    if not bool(state.get("time", {}).get("same_source_row_for_all_fields")):
+        raise ValueError("state/action contract does not require one source row")
     condition = payloads["cycle_condition_v1.schema.json"]
     if condition.get("schema_id") != CONDITION_SCHEMA_VERSION:
         raise ValueError("condition schema mismatch")

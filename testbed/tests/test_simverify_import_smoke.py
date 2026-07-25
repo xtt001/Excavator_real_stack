@@ -15,6 +15,7 @@ from testbed.simverify.contracts import (
     STATE_ACTION_TIME_CONTRACT_ID,
 )
 from testbed.simverify.import_smoke import (
+    _require_camera_and_time_contracts,
     _validate_condition_sidecar,
     _validate_episode,
 )
@@ -171,3 +172,36 @@ def test_m1_condition_sidecar_mismatch_fails_closed() -> None:
             valid,
             annotations=[annotation],
         )
+
+
+def test_m1_reads_frozen_state_contract_schema_and_time_fields() -> None:
+    payloads = {
+        "camera_mapping.json": {
+            "mapping_id": CAMERA_MAPPING_ID,
+            "policy_order": list(POLICY_CAMERA_ORDER),
+            "transform": {
+                "transform_id": IMAGE_TRANSFORM_ID,
+                "output_color_space": "RGB",
+            },
+        },
+        "state_action_contract.json": {
+            "schema_version": STATE_ACTION_TIME_CONTRACT_ID,
+            "time": {
+                "source_time_basis": "timestamps/step_id * metadata.dt",
+                "wall_clock_step_ns_used": False,
+                "action_label_offset_s": 0.0,
+                "same_source_row_for_all_fields": True,
+            },
+        },
+        "cycle_condition_v1.schema.json": {
+            "schema_id": CONDITION_SCHEMA_VERSION,
+        },
+    }
+
+    _require_camera_and_time_contracts(payloads)
+
+    payloads["state_action_contract.json"]["time"][
+        "action_label_offset_s"
+    ] = 0.05
+    with pytest.raises(ValueError, match="offset"):
+        _require_camera_and_time_contracts(payloads)
