@@ -214,7 +214,12 @@ def _require_camera_and_time_contracts(
     if not bool(state.get("time", {}).get("same_source_row_for_all_fields")):
         raise ValueError("state/action contract does not require one source row")
     condition = payloads["cycle_condition_v1.schema.json"]
-    if condition.get("schema_id") != CONDITION_SCHEMA_VERSION:
+    if (
+        condition.get("$id") != CONDITION_SCHEMA_VERSION
+        or condition.get("schema_version") != CONDITION_SCHEMA_VERSION
+        or condition.get("shape") != [6]
+        or condition.get("dtype") != "float32"
+    ):
         raise ValueError("condition schema mismatch")
 
 

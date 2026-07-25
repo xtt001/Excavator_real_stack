@@ -194,7 +194,10 @@ def test_m1_reads_frozen_state_contract_schema_and_time_fields() -> None:
             },
         },
         "cycle_condition_v1.schema.json": {
-            "schema_id": CONDITION_SCHEMA_VERSION,
+            "$id": CONDITION_SCHEMA_VERSION,
+            "schema_version": CONDITION_SCHEMA_VERSION,
+            "shape": [6],
+            "dtype": "float32",
         },
     }
 
