@@ -11,9 +11,11 @@ from testbed.simverify.event_selector import (
     EVENT_PHASE,
     EVENT_PHASES,
     apply_event_selections,
+    assess_interval_confirmation_stability,
     assess_point_selection_stability,
     bootstrap_event_selected_sector,
     event_selector_gate_report,
+    event_selector_gate_report_v2,
     fit_event_null_control,
     fit_event_selector,
     match_event_interval,
@@ -334,6 +336,82 @@ def test_gate_report_fails_closed_when_outer_selector_summary_is_missing() -> No
         assert (
             f"{phase}_selector_coverage_bootstrap_missing" in report["failure_reasons"]
         )
+
+
+def test_v2_gate_uses_balanced_identifiability_and_calibrated_reliability() -> None:
+    outer = {
+        "requested_samples": 256,
+        "successful_samples": 256,
+        "failed_samples": 0,
+        "failure_reasons": {},
+        "event_selector": {
+            "validation_balanced_accuracy": {
+                "eye": {"p02_5": 0.81},
+                "stick": {"p02_5": 0.84},
+            },
+            "offset_bounds": {},
+        },
+    }
+    reliability = {
+        "passed": True,
+        "failure_reasons": [],
+        "minimum_interval_confirmation_frequency": 0.875,
+    }
+    stability = {
+        "summary": {
+            "representative_ownership": "numeric_observable_anchor",
+            "by_phase": {},
+        }
+    }
+
+    report = event_selector_gate_report_v2(
+        {
+            "balanced_accuracy_p95": {"eye": 0.35, "stick": 0.37},
+            "coverage_p95": {"ready": 0.99},
+        },
+        outer,
+        stability,
+        reliability,
+    )
+
+    assert report["passed"] is True
+    assert report["criteria"]["representative_ownership"] == (
+        "numeric_observable_anchor"
+    )
+    assert report["diagnostic_only_not_gate"][
+        "wrong_prototype_own_support_coverage"
+    ] == {"ready": 0.99}
+
+
+def test_interval_assessment_does_not_gate_exact_visual_point_reselection() -> None:
+    selections = {
+        "events": {
+            "event": {
+                "phase": "ready",
+                "status": "confirmed",
+            }
+        }
+    }
+    outer = {
+        "selection_stability": {
+            "event": {
+                "confirmation_frequency": 0.9,
+                "reselection_within_point_tolerance_frequency": 0.1,
+                "selected_step": {"p02_5": 1.0, "p97_5": 100.0},
+            }
+        }
+    }
+
+    assessment = assess_interval_confirmation_stability(
+        selections,
+        outer,
+        minimum_confirmation_frequency=0.875,
+    )
+
+    assert assessment["events"]["event"]["passed"] is True
+    assert assessment["events"]["event"]["exact_visual_point_reselection"] == (
+        "diagnostic_only_numeric_anchor_owns_representative"
+    )
 
 
 def _outer_sector_candidate(

@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 from testbed.simverify.pipeline import (
+    DEFAULT_BOOTSTRAP_SAMPLES,
     DEFAULT_BOOTSTRAP_SEED,
     DEFAULT_OUTPUT_ROOT,
     DEFAULT_RESNET18_SHA256,
@@ -43,7 +44,11 @@ def main() -> None:
         type=int,
         default=DEFAULT_BOOTSTRAP_SEED,
     )
-    parser.add_argument("--bootstrap-samples", type=int, default=256)
+    parser.add_argument(
+        "--bootstrap-samples",
+        type=int,
+        default=DEFAULT_BOOTSTRAP_SAMPLES,
+    )
     parser.add_argument("--feature-device", choices=("cpu", "cuda"), default=None)
     parser.add_argument("--feature-batch-size", type=int, default=64)
     parser.add_argument("--jpeg-quality", type=int, default=95)

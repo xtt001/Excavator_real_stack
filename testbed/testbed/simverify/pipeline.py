@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import os
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
@@ -18,6 +19,7 @@ import torch
 import yaml
 
 from testbed.simverify.annotations import (
+    SECTORS,
     EpisodeSignals,
     annotate_numeric_cycles,
     bootstrap_numeric_thresholds,
@@ -50,9 +52,10 @@ from testbed.simverify.contracts import (
 )
 from testbed.simverify.event_selector import (
     apply_event_selections,
+    assess_interval_confirmation_stability,
     assess_point_selection_stability,
     bootstrap_event_selected_sector,
-    event_selector_gate_report,
+    event_selector_gate_report_v2,
     fit_event_null_control,
     fit_event_selector,
     public_selector,
@@ -85,7 +88,7 @@ DEFAULT_SOURCE_ROOT = Path(
     "yulong_v2_2_pro_full_task_four_camera_jpeg_20260717_cycle_clean_v1"
 )
 DEFAULT_OUTPUT_ROOT = Path(
-    "/data/pingfan/Excavator_real_stack_data/sim_observable_cycle_v1"
+    "/data/pingfan/Excavator_real_stack_data/sim_observable_cycle_v2"
 )
 DEFAULT_RESNET18_WEIGHTS = Path(
     "/home/pingfan/.cache/torch/hub/checkpoints/resnet18-f37072fd.pth"
@@ -95,6 +98,7 @@ DEFAULT_RESNET18_SHA256 = (
 )
 DEFAULT_SPLIT_SEED = "simverify-m0-v1:20260724"
 DEFAULT_BOOTSTRAP_SEED = 20260724
+DEFAULT_BOOTSTRAP_SAMPLES = 1024
 BASELINE_LABEL = "refs/tags/g49-n5-live-frozen-20260723"
 BASELINE_TAG_OBJECT_SHA = "5a7424e020d0528e51a5dbe5c64bd58ad5cf6e60"
 BASELINE_COMMIT_SHA = "a8c9eef0c86d80e96bff1d0649c07e76ceaedfed"
@@ -125,7 +129,7 @@ def run_m0_pipeline(
     expected_weights_sha256: str = DEFAULT_RESNET18_SHA256,
     split_seed: str = DEFAULT_SPLIT_SEED,
     bootstrap_seed: int = DEFAULT_BOOTSTRAP_SEED,
-    bootstrap_samples: int = 256,
+    bootstrap_samples: int = DEFAULT_BOOTSTRAP_SAMPLES,
     feature_device: str | None = None,
     feature_batch_size: int = 64,
     jpeg_quality: int = 95,
@@ -358,9 +362,30 @@ def run_m0_pipeline(
             event_null_control,
             outer_bootstrap,
         )
+        interval_reliability_contract = (
+            _calibrate_interval_confirmation_reliability(
+                point_event_selections,
+                outer_bootstrap,
+                calibration_cycles,
+                train_ids=train_ids,
+                validation_ids=validation_ids,
+            )
+        )
+        selected_interval_frequency = interval_reliability_contract.get(
+            "minimum_interval_confirmation_frequency"
+        )
+        interval_stability_assessment = assess_interval_confirmation_stability(
+            point_event_selections,
+            outer_bootstrap,
+            minimum_confirmation_frequency=(
+                1.0
+                if selected_interval_frequency is None
+                else float(selected_interval_frequency)
+            ),
+        )
 
         event_selector_prototype_path = (
-            temporary / "annotation_event_selector_prototypes_v1.npz"
+            temporary / "annotation_event_selector_prototypes_v2.npz"
         )
         _write_prototypes(
             event_selector_prototype_path,
@@ -373,7 +398,9 @@ def run_m0_pipeline(
         event_selector_payload = public_selector(fitted_event_selector)
         event_selector_payload.update(
             {
-                "status": ("core_frozen_before_point_stability_mask_and_sector_gate"),
+                "status": (
+                    "core_frozen_before_interval_confirmation_mask_and_sector_gate"
+                ),
                 "fit_episode_ids": {
                     "train": train_ids,
                     "validation": validation_ids,
@@ -402,15 +429,15 @@ def run_m0_pipeline(
             }
         )
         event_selector_identity = write_json(
-            temporary / "annotation_event_selector_v1.json",
+            temporary / "annotation_event_selector_v2.json",
             event_selector_payload,
         )
         artifact_ids.append(event_selector_identity)
         event_selection_pre_gate_identity = write_json(
-            temporary / "annotation_event_selections_pre_gate_v1.json",
+            temporary / "annotation_event_selections_pre_gate_v2.json",
             {
                 **point_event_selections,
-                "status": "point_selection_before_event_selector_gate",
+                "status": "interval_selection_before_event_selector_gate_v2",
                 "selector": _relative_identity(
                     event_selector_identity,
                     temporary,
@@ -420,6 +447,11 @@ def run_m0_pipeline(
                     {},
                 ),
                 "point_stability_assessment": point_stability_assessment,
+                "interval_confirmation_reliability_contract": (
+                    interval_reliability_contract
+                ),
+                "interval_stability_assessment": interval_stability_assessment,
+                "representative_ownership": "numeric_observable_anchor",
                 "held_out_observation_access_count": 0,
                 "provenance": common_provenance,
             },
@@ -427,18 +459,19 @@ def run_m0_pipeline(
         artifact_ids.append(event_selection_pre_gate_identity)
         refit_outer_sector_with_stability_mask(
             outer_bootstrap,
-            point_stability_assessment,
+            interval_stability_assessment,
+            mask_name="interval_confirmation",
         )
         sector_outer_identity = write_json(
-            temporary / "annotation_event_selected_sector_bootstrap_v1.json",
+            temporary / "annotation_event_selected_sector_bootstrap_v2.json",
             {
-                "schema": ("observable_event_selected_sector_bootstrap_artifact_v1"),
-                "status": "frozen_point_stability_mask_applied",
+                "schema": ("observable_event_selected_sector_bootstrap_artifact_v2"),
+                "status": "frozen_interval_confirmation_mask_applied",
                 "selector": _relative_identity(
                     event_selector_identity,
                     temporary,
                 ),
-                "point_selection_and_stability_mask": _relative_identity(
+                "interval_selection_and_stability_mask": _relative_identity(
                     event_selection_pre_gate_identity,
                     temporary,
                 ),
@@ -452,15 +485,14 @@ def run_m0_pipeline(
             },
         )
         artifact_ids.append(sector_outer_identity)
-        selector_gate_report = event_selector_gate_report(
-            fitted_event_selector,
+        selector_gate_report = event_selector_gate_report_v2(
             event_null_control,
             outer_bootstrap,
-            point_event_selections,
-            point_stability_assessment,
+            interval_stability_assessment,
+            interval_reliability_contract,
         )
         selector_gate_identity = write_json(
-            temporary / "annotation_event_selector_gate_report.json",
+            temporary / "annotation_event_selector_gate_report_v2.json",
             {
                 **selector_gate_report,
                 "selector_sha256": event_selector_identity["sha256"],
@@ -480,10 +512,11 @@ def run_m0_pipeline(
             calibration_cycles,
             point_event_selections,
             stability=outer_bootstrap["selection_stability"],
-            stability_assessment=point_stability_assessment,
+            stability_assessment=interval_stability_assessment,
             selector=fitted_event_selector,
             selector_sha256=event_selector_identity["sha256"],
             episode_ids=calibration_ids,
+            representative_ownership="numeric_observable_anchor",
         )
         _rebuild_sector_evidence_after_visual_selection(
             calibration_cycles,
@@ -491,7 +524,7 @@ def run_m0_pipeline(
             episode_ids=calibration_ids,
         )
         event_selection_identity = write_json(
-            temporary / "annotation_event_selections_v1.json",
+            temporary / "annotation_event_selections_v2.json",
             {
                 **point_event_selections,
                 "status": "event_selector_gate_passed_applied",
@@ -539,7 +572,7 @@ def run_m0_pipeline(
             "boundary_ci95_half_width"
         )
         assert_source_provenance_unchanged(source_snapshot_records)
-        annotation_gate_report = _annotation_bootstrap_gate_report(
+        annotation_gate_report = _annotation_bootstrap_gate_report_v2(
             numeric_thresholds,
             numeric_bootstrap,
             sector_thresholds,
@@ -574,7 +607,7 @@ def run_m0_pipeline(
                 "sector_episode_bootstrap": sector_bootstrap,
                 "sector_bootstrap_scope": (
                     "full_event_prototype_refit_interval_reselection_"
-                    "point_stability_mask_reapplication_"
+                    "interval_confirmation_mask_reapplication_"
                     "local_event_order_recheck_then_sector_refit"
                 ),
                 "event_selector_sha256": event_selector_identity["sha256"],
@@ -589,7 +622,10 @@ def run_m0_pipeline(
         )
         artifact_ids.append(annotation_gate_identity)
         if not annotation_gate_report["passed"]:
-            raise RuntimeError(str(annotation_gate_report["failure_reason"]))
+            raise RuntimeError(
+                "observable annotation boundary Gate failed: "
+                + ",".join(annotation_gate_report["failure_reasons"])
+            )
 
         sector_visual_calibration = _fit_sector_visual_calibration(
             calibration_cycles,
@@ -600,6 +636,17 @@ def run_m0_pipeline(
             seed=int(bootstrap_seed),
             null_replicates=int(bootstrap_samples),
         )
+        sector_visual_gate_report = _sector_visual_gate_report_v2(
+            sector_visual_calibration,
+        )
+        sector_visual_gate_identity = write_json(
+            temporary / "sector_visual_gate_report_v2.json",
+            {
+                **sector_visual_gate_report,
+                "provenance": common_provenance,
+            },
+        )
+        artifact_ids.append(sector_visual_gate_identity)
         _require_sector_visual_identifiability(sector_visual_calibration)
         visual_calibration = {
             "prototype_arrays": {
@@ -614,7 +661,7 @@ def run_m0_pipeline(
                 "selection_artifact_sha256": event_selection_identity["sha256"],
             },
         }
-        prototype_path = temporary / "annotation_feature_prototypes_v1.npz"
+        prototype_path = temporary / "annotation_feature_prototypes_v2.npz"
         _write_prototypes(
             prototype_path,
             visual_calibration["prototype_arrays"],
@@ -623,7 +670,7 @@ def run_m0_pipeline(
         artifact_ids.append(prototype_identity)
 
         annotation_threshold_payload = {
-            "schema": "observable_annotation_thresholds_v1",
+            "schema": "observable_annotation_thresholds_v2",
             "status": "frozen",
             "fit_splits": ["train", "validation"],
             "held_out_observation_access_before_freeze": 0,
@@ -660,7 +707,7 @@ def run_m0_pipeline(
             "provenance": common_provenance,
         }
         thresholds_identity = write_json(
-            temporary / "annotation_thresholds_v1.json",
+            temporary / "annotation_thresholds_v2.json",
             annotation_threshold_payload,
         )
         artifact_ids.append(thresholds_identity)
@@ -728,6 +775,23 @@ def run_m0_pipeline(
             transition_payload,
         )
         artifact_ids.append(transition_identity)
+        transition_gate_report = _transition_support_gate_report_v2(
+            transition_payload,
+        )
+        transition_gate_identity = write_json(
+            temporary / "transition_support_gate_report_v2.json",
+            {
+                **transition_gate_report,
+                "transition_inventory_sha256": transition_identity["sha256"],
+                "provenance": common_provenance,
+            },
+        )
+        artifact_ids.append(transition_gate_identity)
+        if not transition_gate_report["passed"]:
+            raise RuntimeError(
+                "retained condition transition support Gate failed: "
+                + ",".join(transition_gate_report["failure_reasons"])
+            )
 
         support_entries = _condition_support_entries(
             fused_records,
@@ -879,6 +943,21 @@ def run_m0_pipeline(
             resample_payload,
         )
         artifact_ids.append(resample_identity)
+        resample_gate_report = _resample_gate_report_v2(resample_payload)
+        resample_gate_identity = write_json(
+            temporary / "resample_20hz_gate_report_v2.json",
+            {
+                **resample_gate_report,
+                "resample_20hz_qc_sha256": resample_identity["sha256"],
+                "provenance": common_provenance,
+            },
+        )
+        artifact_ids.append(resample_gate_identity)
+        if not resample_gate_report["passed"]:
+            raise RuntimeError(
+                "sim-time 20 Hz export integrity Gate failed: "
+                + ",".join(resample_gate_report["failure_reasons"])
+            )
         source_manifest_identity = write_json(
             temporary / "source_episode_manifest.json",
             {
@@ -922,6 +1001,66 @@ def run_m0_pipeline(
             privilege_report,
         )
         artifact_ids.append(privilege_report_identity)
+        m0_authorization_identity = write_json(
+            temporary / "m0_authorization_report_v2.json",
+            {
+                "schema": "simverify_m0_authorization_report_v2",
+                "stage": "M0-AUTH-01",
+                "status": (
+                    "gate_preconditions_passed_pending_manifest_checksums_"
+                    "and_immutable_rename"
+                ),
+                "evidence_scope": "recorded-observation/offline",
+                "gate_preconditions_passed": True,
+                "authorization_effective_when": (
+                    "dataset_manifest_and_checksums_exist_and_immutable_"
+                    "output_rename_succeeds"
+                ),
+                "m1_import_smoke_authorized_before_immutable_finalize": False,
+                "m1_import_smoke_authorized_after_immutable_finalize": True,
+                "training_authorized": False,
+                "held_out_test_authorized": False,
+                "control_candidate": False,
+                "gate_artifacts": {
+                    "M0-PROV-01": _relative_identity(
+                        source_snapshot_identity,
+                        temporary,
+                    ),
+                    "M0-SPLIT-01": _relative_identity(
+                        split_identity,
+                        temporary,
+                    ),
+                    "M0-NUM-01_M0-NUM-02_M0-SECTOR-01_M0-SECTOR-02": (
+                        _relative_identity(
+                            annotation_gate_identity,
+                            temporary,
+                        )
+                    ),
+                    "M0-EVT-01_M0-EVT-02_M0-EVT-03": _relative_identity(
+                        selector_gate_identity,
+                        temporary,
+                    ),
+                    "M0-SECTOR-03": _relative_identity(
+                        sector_visual_gate_identity,
+                        temporary,
+                    ),
+                    "M0-COV-01": _relative_identity(
+                        transition_gate_identity,
+                        temporary,
+                    ),
+                    "M0-EXPORT-01": _relative_identity(
+                        resample_gate_identity,
+                        temporary,
+                    ),
+                    "M0-PRIV-01": _relative_identity(
+                        privilege_report_identity,
+                        temporary,
+                    ),
+                },
+                "provenance": common_provenance,
+            },
+        )
+        artifact_ids.append(m0_authorization_identity)
 
         dataset_manifest = {
             "schema_version": DATASET_MANIFEST_SCHEMA,
@@ -1201,6 +1340,235 @@ def _bootstrap_sector_thresholds(
     }
 
 
+def _wilson_lower_bound(
+    successes: int,
+    trials: int,
+    *,
+    z: float = 1.6448536269514722,
+) -> float:
+    """Return the one-sided 95% Wilson lower bound for a binomial rate."""
+
+    if trials <= 0 or not 0 <= successes <= trials:
+        raise ValueError("invalid Wilson score operands")
+    proportion = float(successes / trials)
+    z2 = float(z * z)
+    denominator = 1.0 + z2 / trials
+    center = proportion + z2 / (2.0 * trials)
+    radius = z * math.sqrt(
+        proportion * (1.0 - proportion) / trials
+        + z2 / (4.0 * trials * trials)
+    )
+    return float((center - radius) / denominator)
+
+
+def _calibrate_interval_confirmation_reliability(
+    point_selections: Mapping[str, Any],
+    outer_bootstrap: Mapping[str, Any],
+    cycles: Mapping[int, Sequence[Mapping[str, Any]]],
+    *,
+    train_ids: Sequence[int],
+    validation_ids: Sequence[int],
+) -> dict[str, Any]:
+    """Choose the strongest interval consensus preserving 3x3 support.
+
+    The threshold is not a hand-written success percentage.  It is the maximum
+    cycle-minimum source-episode bootstrap confirmation frequency for which
+    both train and validation still contain every transition in the frozen
+    3x3 current/next condition space.  Held-out episodes are absent from every
+    operand.
+    """
+
+    train = set(map(int, train_ids))
+    validation = set(map(int, validation_ids))
+    if train & validation:
+        raise ValueError("train and validation episodes overlap")
+    calibration = train | validation
+    if set(map(int, cycles)) != calibration:
+        raise ValueError(
+            "reliability calibration must contain train/validation episodes only"
+        )
+
+    numeric_train_records = [
+        record
+        for episode_id in sorted(train)
+        for record in cycles[episode_id]
+        if bool(record["sector_validity"]["current"]["valid"])
+        and record["numeric_sector_evidence"].get("current_swing_qpos") is not None
+    ]
+    provisional_sector = fit_sector_thresholds(numeric_train_records)
+    provisional_sector["boundary_review_margin"] = 0.0
+    provisional_sector["boundary_review_margin_source"] = (
+        "disabled_for_pre_gate_transition_support_calibration"
+    )
+
+    cycle_labels: dict[tuple[int, int], str] = {}
+    for episode_id in sorted(calibration):
+        for record in cycles[episode_id]:
+            value = record["numeric_sector_evidence"].get("current_swing_qpos")
+            if value is None or not bool(record["sector_validity"]["current"]["valid"]):
+                continue
+            label, _confidence, boundary = classify_sector(
+                float(value),
+                provisional_sector,
+            )
+            if label is not None and not boundary:
+                cycle_labels[(episode_id, int(record["cycle_id"]))] = str(label)
+
+    outer_rows = outer_bootstrap.get("selection_stability", {})
+    eligible_cycles: list[dict[str, Any]] = []
+    for cycle in point_selections["cycles"].values():
+        episode_id = int(cycle["episode_id"])
+        cycle_id = int(cycle["cycle_id"])
+        label = cycle_labels.get((episode_id, cycle_id))
+        keys = list(cycle["event_keys"].values())
+        if label is None or any(key is None for key in keys):
+            continue
+        frequencies: list[float] = []
+        valid = True
+        for key in keys:
+            selection = point_selections["events"].get(str(key))
+            outer = outer_rows.get(str(key))
+            if (
+                selection is None
+                or selection["status"] != "confirmed"
+                or outer is None
+            ):
+                valid = False
+                break
+            frequencies.append(float(outer["confirmation_frequency"]))
+        if not valid:
+            continue
+        eligible_cycles.append(
+            {
+                "episode_id": episode_id,
+                "cycle_id": cycle_id,
+                "current_sector": label,
+                "minimum_interval_confirmation_frequency": min(frequencies),
+            }
+        )
+
+    expected_transitions = {
+        (current, following)
+        for current in SECTORS
+        for following in SECTORS
+    }
+
+    def inventory(
+        threshold: float,
+        episode_ids: set[int],
+    ) -> dict[str, Any]:
+        retained = {
+            (int(row["episode_id"]), int(row["cycle_id"])): str(
+                row["current_sector"]
+            )
+            for row in eligible_cycles
+            if int(row["episode_id"]) in episode_ids
+            and float(row["minimum_interval_confirmation_frequency"])
+            >= threshold
+        }
+        transitions: Counter[tuple[str, str]] = Counter()
+        for (episode_id, cycle_id), current in retained.items():
+            following = retained.get((episode_id, cycle_id + 1))
+            if following is not None:
+                transitions[(current, following)] += 1
+        matrix = {
+            current: {
+                following: int(transitions[(current, following)])
+                for following in SECTORS
+            }
+            for current in SECTORS
+        }
+        return {
+            "retained_cycle_count": len(retained),
+            "adjacent_pair_count": int(sum(transitions.values())),
+            "transition_matrix": matrix,
+            "nonzero_transition_count": int(
+                sum(transitions[pair] > 0 for pair in expected_transitions)
+            ),
+            "minimum_nonzero_transition_count": (
+                min(
+                    (
+                        int(transitions[pair])
+                        for pair in expected_transitions
+                        if transitions[pair] > 0
+                    ),
+                    default=0,
+                )
+            ),
+        }
+
+    candidates = sorted(
+        {
+            float(row["minimum_interval_confirmation_frequency"])
+            for row in eligible_cycles
+        },
+        reverse=True,
+    )
+    chosen: float | None = None
+    inventories: dict[str, Any] = {}
+    for threshold in candidates:
+        candidate_inventories = {
+            "train": inventory(threshold, train),
+            "validation": inventory(threshold, validation),
+        }
+        if all(
+            row["nonzero_transition_count"] == len(expected_transitions)
+            for row in candidate_inventories.values()
+        ):
+            chosen = threshold
+            inventories = candidate_inventories
+            break
+
+    failures: list[str] = []
+    successful_refits = int(outer_bootstrap.get("successful_samples", 0))
+    if chosen is None:
+        failures.append(
+            "no_interval_confirmation_threshold_preserves_all_3x3_"
+            "transitions_in_train_and_validation"
+        )
+        successes = 0
+        lower = 0.0
+    else:
+        successes = int(round(chosen * successful_refits))
+        lower = _wilson_lower_bound(successes, successful_refits)
+        if lower <= 0.5:
+            failures.append(
+                "calibrated_interval_confirmation_wilson_lower_bound_"
+                "not_above_majority"
+            )
+    return {
+        "schema": "observable_interval_confirmation_reliability_contract_v2",
+        "passed": not failures,
+        "failure_reasons": failures,
+        "held_out_episode_access_count": 0,
+        "threshold_method": (
+            "maximum_cycle_minimum_source_episode_bootstrap_confirmation_"
+            "frequency_preserving_all_3x3_transitions_in_train_and_validation"
+        ),
+        "minimum_interval_confirmation_frequency": chosen,
+        "confirmation_replicates": {
+            "successful": successes,
+            "attempted": successful_refits,
+            "one_sided_95pct_wilson_lower_bound": lower,
+            "minimum_required_lower_bound": (
+                "strictly_greater_than_majority_0.5"
+            ),
+        },
+        "required_transition_space": {
+            "sectors": list(SECTORS),
+            "required_nonzero_transition_count_per_split": len(
+                expected_transitions
+            ),
+            "splits": ["train", "validation"],
+        },
+        "transition_support_at_selected_threshold": inventories,
+        "eligible_cycle_count_before_reliability_threshold": len(
+            eligible_cycles
+        ),
+        "provisional_numeric_sector_thresholds": provisional_sector,
+    }
+
+
 def _require_bootstrap_stability(
     numeric: Mapping[str, Any],
     numeric_bootstrap: Mapping[str, Any],
@@ -1313,6 +1681,144 @@ def _annotation_bootstrap_gate_report(
                 int(sector_bootstrap["failed_samples"])
                 / int(sector_bootstrap["requested_samples"])
             ),
+        },
+    }
+
+
+def _annotation_bootstrap_gate_report_v2(
+    numeric: Mapping[str, Any],
+    numeric_bootstrap: Mapping[str, Any],
+    sector: Mapping[str, Any],
+    sector_bootstrap: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Evaluate boundary identifiability using decision-relevant separation.
+
+    A boundary CI is acceptable when it remains strictly between the adjacent
+    cluster-center CIs.  This directly checks whether source-episode
+    uncertainty can invert or consume a cluster.  The retired v1 ratio
+    ``CI width < 25% of cluster gap`` is retained as a diagnostic because its
+    constant was not derived from the research contract.
+    """
+
+    failures: list[str] = []
+    if int(numeric_bootstrap["failed_samples"]) != 0:
+        failures.append("numeric_threshold_bootstrap_not_fully_computable")
+    if int(sector_bootstrap["failed_samples"]) != 0:
+        failures.append("sector_threshold_bootstrap_not_fully_computable")
+
+    dump_center_ci = numeric_bootstrap.get("dump_swing_cluster_centers")
+    dump_boundary_ci = numeric_bootstrap.get("dump_swing_threshold")
+    dump_separation: dict[str, Any] | None
+    if dump_center_ci is None or dump_boundary_ci is None:
+        failures.append("dump_boundary_or_center_bootstrap_operand_missing")
+        dump_separation = None
+    else:
+        left_center_upper = float(dump_center_ci["p97_5"][0])
+        right_center_lower = float(dump_center_ci["p02_5"][1])
+        boundary_lower = float(dump_boundary_ci["p02_5"])
+        boundary_upper = float(dump_boundary_ci["p97_5"])
+        left_margin = boundary_lower - left_center_upper
+        right_margin = right_center_lower - boundary_upper
+        passed = left_margin > 0.0 and right_margin > 0.0
+        if not passed:
+            failures.append(
+                "dump_boundary_ci_not_strictly_between_adjacent_center_cis"
+            )
+        dump_separation = {
+            "left_center_p97_5": left_center_upper,
+            "boundary_p02_5": boundary_lower,
+            "boundary_p97_5": boundary_upper,
+            "right_center_p02_5": right_center_lower,
+            "left_separation_margin": left_margin,
+            "right_separation_margin": right_margin,
+            "passed": passed,
+        }
+
+    sector_center_ci = sector_bootstrap.get("cluster_centers")
+    sector_boundary_ci = sector_bootstrap.get("boundaries")
+    sector_separation: list[dict[str, Any]] = []
+    if sector_center_ci is None or sector_boundary_ci is None:
+        failures.append("sector_boundary_or_center_bootstrap_operand_missing")
+    else:
+        for index in range(len(SECTORS) - 1):
+            left_center_upper = float(sector_center_ci["p97_5"][index])
+            right_center_lower = float(sector_center_ci["p02_5"][index + 1])
+            boundary_lower = float(sector_boundary_ci["p02_5"][index])
+            boundary_upper = float(sector_boundary_ci["p97_5"][index])
+            left_margin = boundary_lower - left_center_upper
+            right_margin = right_center_lower - boundary_upper
+            passed = left_margin > 0.0 and right_margin > 0.0
+            if not passed:
+                failures.append(
+                    f"sector_boundary_{index}_ci_not_strictly_between_"
+                    "adjacent_center_cis"
+                )
+            sector_separation.append(
+                {
+                    "boundary_index": index,
+                    "left_sector": SECTORS[index],
+                    "right_sector": SECTORS[index + 1],
+                    "left_center_p97_5": left_center_upper,
+                    "boundary_p02_5": boundary_lower,
+                    "boundary_p97_5": boundary_upper,
+                    "right_center_p02_5": right_center_lower,
+                    "left_separation_margin": left_margin,
+                    "right_separation_margin": right_margin,
+                    "passed": passed,
+                }
+            )
+
+    dump_centers = np.asarray(
+        numeric["dump_release"]["swing_cluster_centers"],
+        dtype=np.float64,
+    )
+    dump_width = (
+        None
+        if dump_boundary_ci is None
+        else float(dump_boundary_ci["p97_5"])
+        - float(dump_boundary_ci["p02_5"])
+    )
+    sector_centers = np.asarray(
+        sector["cluster_centers_low_to_high"],
+        dtype=np.float64,
+    )
+    sector_widths = (
+        []
+        if sector_boundary_ci is None
+        else (
+            np.asarray(sector_boundary_ci["p97_5"], dtype=np.float64)
+            - np.asarray(sector_boundary_ci["p02_5"], dtype=np.float64)
+        ).tolist()
+    )
+    return {
+        "schema": "simverify_annotation_bootstrap_gate_report_v2",
+        "stage": "M0",
+        "evidence_scope": "recorded-observation/offline",
+        "passed": not failures,
+        "failure_reasons": sorted(set(failures)),
+        "training_authorized": False,
+        "m1_import_smoke_authorized": not failures,
+        "criteria": {
+            "bootstrap_unit": "source_episode",
+            "all_requested_refits_must_be_computable": True,
+            "boundary_ci_must_remain_strictly_between_adjacent_center_cis": True,
+            "posthoc_heldout_threshold_change_allowed": False,
+        },
+        "dump_boundary_separation": dump_separation,
+        "sector_boundary_separation": sector_separation,
+        "diagnostic_only_not_gate": {
+            "v1_maximum_ci95_width_fraction_of_cluster_gap": 0.25,
+            "dump_ci95_width_to_cluster_gap": (
+                None
+                if dump_width is None
+                else dump_width / float(np.diff(dump_centers)[0])
+            ),
+            "sector_ci95_width_to_minimum_cluster_gap": (
+                np.asarray(sector_widths, dtype=np.float64)
+                / float(np.min(np.diff(sector_centers)))
+            ).tolist()
+            if sector_widths
+            else [],
         },
     }
 
@@ -1671,8 +2177,8 @@ def _fit_sector_visual_calibration(
         )
     )
     rng = np.random.default_rng(int(seed))
-    null_accuracy = [
-        _episode_block_null_accuracy(
+    null_metrics = [
+        _episode_block_null_metrics(
             validation_rows,
             rng,
             labels=("left", "center", "right"),
@@ -1704,7 +2210,18 @@ def _fit_sector_visual_calibration(
             "validation_balanced_accuracy": balanced_accuracy,
             "permutation_null_replicates": int(null_replicates),
             "permutation_unit": "source_episode_sector_mapping",
-            "permutation_null_p95_accuracy": float(np.quantile(null_accuracy, 0.95)),
+            "permutation_null_p95_accuracy": float(
+                np.quantile(
+                    [row["accuracy"] for row in null_metrics],
+                    0.95,
+                )
+            ),
+            "permutation_null_p95_balanced_accuracy": float(
+                np.quantile(
+                    [row["balanced_accuracy"] for row in null_metrics],
+                    0.95,
+                )
+            ),
             "minimum_similarity": minimum_similarity,
             "minimum_margin": minimum_margin,
             "source_episode_bootstrap": bootstrap,
@@ -1837,24 +2354,64 @@ def _bootstrap_sector_visual_labeler(
 def _require_sector_visual_identifiability(
     calibration: Mapping[str, Any],
 ) -> None:
+    report = _sector_visual_gate_report_v2(calibration)
+    if report["passed"]:
+        return
+    raise RuntimeError(
+        "observable eye-pair sector Gate failed: "
+        + ",".join(report["failure_reasons"])
+    )
+
+
+def _sector_visual_gate_report_v2(
+    calibration: Mapping[str, Any],
+) -> dict[str, Any]:
     sector = calibration["sector"]
-    null = float(sector["permutation_null_p95_accuracy"])
-    if float(sector["validation_accuracy"]) <= null:
-        raise RuntimeError(
-            "observable eye-pair sector labeler is not above its null control"
+    null = float(sector["permutation_null_p95_balanced_accuracy"])
+    failures: list[str] = []
+    if float(sector["validation_balanced_accuracy"]) <= null:
+        failures.append(
+            "validation_balanced_accuracy_not_above_episode_mapping_null_p95"
         )
     bootstrap = sector["source_episode_bootstrap"]
-    failure_rate = int(bootstrap["failed_samples"]) / int(
-        bootstrap["requested_samples"]
-    )
-    if failure_rate > 0.01:
-        raise RuntimeError(
-            "observable visual-sector source-episode bootstrap is unstable"
+    if int(bootstrap["failed_samples"]) != 0:
+        failures.append("source_episode_bootstrap_not_fully_computable")
+    if float(bootstrap["validation_balanced_accuracy"]["p02_5"]) <= null:
+        failures.append(
+            "bootstrap_balanced_accuracy_lower_bound_not_above_null_p95"
         )
-    if float(bootstrap["validation_accuracy"]["p02_5"]) <= null:
-        raise RuntimeError(
-            "visual-sector bootstrap lower bound is not above null control"
-        )
+    return {
+        "schema": "observable_sector_visual_gate_report_v2",
+        "stage": "M0-SECTOR-03",
+        "evidence_scope": "recorded-observation/offline",
+        "passed": not failures,
+        "failure_reasons": failures,
+        "criteria": {
+            "metric": "balanced_accuracy",
+            "bootstrap_unit": "source_episode",
+            "null_unit": "source_episode_sector_mapping",
+            "requested_refits_must_all_be_computable": True,
+            "bootstrap_p02_5_must_exceed_null_p95": True,
+        },
+        "operands": {
+            "validation_balanced_accuracy": float(
+                sector["validation_balanced_accuracy"]
+            ),
+            "permutation_null_p95_balanced_accuracy": null,
+            "bootstrap_validation_balanced_accuracy_p02_5": float(
+                bootstrap["validation_balanced_accuracy"]["p02_5"]
+            ),
+            "bootstrap_requested_samples": int(bootstrap["requested_samples"]),
+            "bootstrap_successful_samples": int(bootstrap["successful_samples"]),
+            "bootstrap_failed_samples": int(bootstrap["failed_samples"]),
+        },
+        "cannot_prove": [
+            "real_camera_generalization",
+            "sim_to_real_geometric_equivalence",
+            "policy_performance",
+        ],
+        "training_authorized": False,
+    }
 
 
 def _fit_visual_calibration(
@@ -2172,6 +2729,21 @@ def _episode_block_null_accuracy(
     *,
     labels: Sequence[str],
 ) -> float:
+    return float(
+        _episode_block_null_metrics(
+            rows,
+            rng,
+            labels=labels,
+        )["accuracy"]
+    )
+
+
+def _episode_block_null_metrics(
+    rows: Sequence[Mapping[str, Any]],
+    rng: np.random.Generator,
+    *,
+    labels: Sequence[str],
+) -> dict[str, float]:
     ordered_labels = tuple(map(str, labels))
     mappings = {
         int(episode_id): dict(zip(ordered_labels, permutation))
@@ -2183,15 +2755,29 @@ def _episode_block_null_accuracy(
             for episode_id in sorted({int(row["episode_id"]) for row in rows})
         )
     }
-    return float(
+    targets = [
+        mappings[int(row["episode_id"])][str(row["label"])]
+        for row in rows
+    ]
+    correct = [
+        str(row["prediction"]) == target
+        for row, target in zip(rows, targets)
+    ]
+    per_class = [
         np.mean(
             [
-                str(row["prediction"])
-                == mappings[int(row["episode_id"])][str(row["label"])]
-                for row in rows
+                row_correct
+                for row_correct, target in zip(correct, targets)
+                if target == label
             ]
         )
-    )
+        for label in ordered_labels
+        if any(target == label for target in targets)
+    ]
+    return {
+        "accuracy": float(np.mean(correct)),
+        "balanced_accuracy": float(np.mean(per_class)),
+    }
 
 
 def _non_identity_permutation(
@@ -2842,7 +3428,7 @@ def _annotation_manifest(
         for split_name in split["splits"]
     }
     return {
-        "schema": "observable_cycle_annotation_manifest_v1",
+        "schema": "observable_cycle_annotation_manifest_v2",
         "evidence_scope": "recorded-observation/offline",
         "observable_inputs": [
             "four_camera_images",
@@ -2854,11 +3440,11 @@ def _annotation_manifest(
         "historical_command": "unknown_not_recorded",
         "condition_source": "hindsight_outcome",
         "annotation_thresholds": {
-            "path": "annotation_thresholds_v1.json",
+            "path": "annotation_thresholds_v2.json",
             "sha256": thresholds_identity["sha256"],
         },
         "feature_prototypes": {
-            "path": "annotation_feature_prototypes_v1.npz",
+            "path": "annotation_feature_prototypes_v2.npz",
             "sha256": prototype_identity["sha256"],
         },
         "feature_extractor": extractor_provenance,
@@ -3036,6 +3622,113 @@ def _aggregate_resample_qc(
         "max_preserved_onset_delay_s": max_delay,
         "episodes": list(rows),
         "provenance": common_provenance,
+    }
+
+
+def _transition_support_gate_report_v2(
+    inventory: Mapping[str, Any],
+) -> dict[str, Any]:
+    failures: list[str] = []
+    required_splits = ("train", "validation")
+    split_operands: dict[str, Any] = {}
+    for split_name in required_splits:
+        row = inventory["splits"][split_name]
+        nonzero = int(row["nonzero_transition_count"])
+        continuity_errors = list(row["continuity_errors"])
+        split_operands[split_name] = {
+            "status": row["status"],
+            "nonzero_transition_count": nonzero,
+            "required_nonzero_transition_count": 9,
+            "transition_matrix": row["transition_matrix"],
+            "continuity_error_count": len(continuity_errors),
+        }
+        if row["status"] != "computed":
+            failures.append(f"{split_name}_transition_inventory_not_computed")
+        if nonzero != 9:
+            failures.append(
+                f"{split_name}_does_not_retain_all_3x3_transitions"
+            )
+        if continuity_errors:
+            failures.append(f"{split_name}_condition_continuity_error")
+    held_out = inventory["splits"]["held_out_test"]
+    if held_out["status"] != "locked_unread":
+        failures.append("held_out_transition_inventory_not_locked")
+    return {
+        "schema": "retained_condition_transition_support_gate_report_v2",
+        "stage": "M0-COV-01",
+        "evidence_scope": "recorded-observation/offline",
+        "passed": not failures,
+        "failure_reasons": failures,
+        "required_transition_space": {
+            "sectors": list(SECTORS),
+            "count": 9,
+            "splits": list(required_splits),
+        },
+        "splits": split_operands,
+        "held_out_test_status": held_out["status"],
+        "posthoc_threshold_change_allowed": False,
+        "training_authorized": False,
+    }
+
+
+def _resample_gate_report_v2(
+    qc: Mapping[str, Any],
+) -> dict[str, Any]:
+    failures: list[str] = []
+    if qc["source_time_basis"] != "step_id_times_metadata_dt":
+        failures.append("source_time_basis_not_sim_step_id_times_dt")
+    if bool(qc["wall_clock_step_ns_used"]):
+        failures.append("wall_clock_time_used")
+    if float(qc["action_label_offset_s"]) != 0.0:
+        failures.append("action_label_offset_not_zero")
+    if not bool(qc["same_source_row_all_fields"]):
+        failures.append("fields_not_aligned_to_same_source_row")
+    if int(qc["episode_count"]) <= 0:
+        failures.append("no_source_episodes_processed")
+    if int(qc["valid_action_sign_segment_count"]) < int(
+        qc["preserved_action_sign_segment_count"]
+    ):
+        failures.append("preserved_segment_count_exceeds_valid_count")
+    if int(qc["durable_missing_segment_count"]) != 0:
+        failures.append("durable_action_segment_missing")
+    if not bool(qc["all_missing_segments_shorter_than_50ms"]):
+        failures.append("missing_segment_at_least_one_20hz_period")
+    if not math.isfinite(float(qc["max_preserved_onset_delay_s"])):
+        failures.append("non_finite_preserved_onset_delay")
+    return {
+        "schema": "sim_20hz_export_integrity_gate_report_v2",
+        "stage": "M0-EXPORT-01",
+        "evidence_scope": "recorded-observation/offline",
+        "passed": not failures,
+        "failure_reasons": failures,
+        "criteria": {
+            "source_time_basis": "step_id_times_metadata_dt",
+            "wall_clock_step_ns_used": False,
+            "action_label_offset_s": 0.0,
+            "same_source_row_all_fields": True,
+            "maximum_durable_missing_segment_count": 0,
+            "durable_min_duration_s": 0.05,
+            "finite_preserved_onset_delay_required": True,
+        },
+        "operands": {
+            "episode_count": int(qc["episode_count"]),
+            "valid_action_sign_segment_count": int(
+                qc["valid_action_sign_segment_count"]
+            ),
+            "preserved_action_sign_segment_count": int(
+                qc["preserved_action_sign_segment_count"]
+            ),
+            "missing_action_sign_segment_count": int(
+                qc["missing_action_sign_segment_count"]
+            ),
+            "durable_missing_segment_count": int(
+                qc["durable_missing_segment_count"]
+            ),
+            "max_preserved_onset_delay_s": float(
+                qc["max_preserved_onset_delay_s"]
+            ),
+        },
+        "training_authorized": False,
     }
 
 

@@ -283,6 +283,7 @@ def fit_event_null_control(
     by_episode = _rows_by_episode(rows)
     rng = np.random.default_rng(int(seed))
     accuracies: dict[str, list[float]] = defaultdict(list)
+    balanced_accuracies: dict[str, list[float]] = defaultdict(list)
     coverages: dict[str, list[float]] = defaultdict(list)
     for _ in range(int(replicates)):
         coverage_mappings = {
@@ -310,6 +311,7 @@ def fit_event_null_control(
             for role in FEATURE_ROLES
         }
         role_correct: dict[str, list[bool]] = defaultdict(list)
+        role_outcomes: dict[str, list[tuple[str, bool]]] = defaultdict(list)
         phase_confirmed: dict[str, list[bool]] = defaultdict(list)
         for episode_id in ids:
             for row in by_episode[episode_id]:
@@ -331,10 +333,12 @@ def fit_event_null_control(
                         role=role,
                     )
                     prediction = max(scores, key=scores.get)
-                    role_correct[role].append(
+                    correct = (
                         prediction
                         == accuracy_mappings[role][episode_id][expected_phase]
                     )
+                    role_correct[role].append(correct)
+                    role_outcomes[role].append((expected_phase, correct))
                 selection = match_event_interval(
                     row,
                     features,
@@ -347,6 +351,26 @@ def fit_event_null_control(
         for role in FEATURE_ROLES:
             values = role_correct.get(role, [])
             accuracies[role].append(float(np.mean(values)) if values else 0.0)
+            outcomes = role_outcomes.get(role, [])
+            labels = sorted({label for label, _correct in outcomes})
+            balanced_accuracies[role].append(
+                float(
+                    np.mean(
+                        [
+                            np.mean(
+                                [
+                                    correct
+                                    for observed_label, correct in outcomes
+                                    if observed_label == label
+                                ]
+                            )
+                            for label in labels
+                        ]
+                    )
+                )
+                if labels
+                else 0.0
+            )
         for phase in EVENT_PHASES:
             values = phase_confirmed.get(phase, [])
             coverages[phase].append(float(np.mean(values)) if values else 0.0)
@@ -357,6 +381,10 @@ def fit_event_null_control(
         "accuracy_p95": {
             role: float(np.quantile(values, 0.95))
             for role, values in sorted(accuracies.items())
+        },
+        "balanced_accuracy_p95": {
+            role: float(np.quantile(values, 0.95))
+            for role, values in sorted(balanced_accuracies.items())
         },
         "coverage_p95": {
             phase: float(np.quantile(values, 0.95))
@@ -796,6 +824,7 @@ def bootstrap_event_selected_sector(
     boundaries: list[list[float]] = []
     coverage_values: dict[str, list[float]] = defaultdict(list)
     accuracy_values: dict[str, list[float]] = defaultdict(list)
+    balanced_accuracy_values: dict[str, list[float]] = defaultdict(list)
     offset_low_values: dict[str, list[float]] = defaultdict(list)
     offset_high_values: dict[str, list[float]] = defaultdict(list)
     selected_cycle_counts: list[float] = []
@@ -838,6 +867,9 @@ def bootstrap_event_selected_sector(
             coverage_values[phase].append(float(row["confirmed_fraction"]))
         for role, row in fitted["validation"]["classification"].items():
             accuracy_values[role].append(float(row["accuracy"]))
+            balanced_accuracy_values[role].append(
+                float(row["balanced_accuracy"])
+            )
         for phase, row in fitted["offset_bounds"].items():
             offset_low_values[phase].append(float(row["minimum_signed_offset_steps"]))
             offset_high_values[phase].append(float(row["maximum_signed_offset_steps"]))
@@ -934,6 +966,10 @@ def bootstrap_event_selected_sector(
                 role: _summary(values)
                 for role, values in sorted(accuracy_values.items())
             },
+            "validation_balanced_accuracy": {
+                role: _summary(values)
+                for role, values in sorted(balanced_accuracy_values.items())
+            },
             "validation_coverage": {
                 phase: _summary(values)
                 for phase, values in sorted(coverage_values.items())
@@ -971,6 +1007,8 @@ def bootstrap_event_selected_sector(
 def refit_outer_sector_with_stability_mask(
     outer_bootstrap: dict[str, Any],
     stability_assessment: Mapping[str, Any],
+    *,
+    mask_name: str = "point_stability",
 ) -> None:
     """Refit outer sector distributions using the frozen point-stability mask."""
 
@@ -1014,7 +1052,8 @@ def refit_outer_sector_with_stability_mask(
         if successful == 0
         else {
             "unit": (
-                "source_episode_full_selector_refit_with_frozen_point_stability_mask"
+                "source_episode_full_selector_refit_with_frozen_"
+                f"{mask_name}_mask"
             ),
             "seed": int(outer_bootstrap["seed"]),
             "requested_samples": requested,
@@ -1104,6 +1143,203 @@ def event_selector_gate_report(
             "failed_samples": failed,
             "failure_reasons": copy.deepcopy(outer_bootstrap["failure_reasons"]),
             "event_selector": copy.deepcopy(outer_bootstrap.get("event_selector", {})),
+        },
+    }
+
+
+def assess_interval_confirmation_stability(
+    point_selections: Mapping[str, Any],
+    outer_bootstrap: Mapping[str, Any],
+    *,
+    minimum_confirmation_frequency: float,
+) -> dict[str, Any]:
+    """Freeze an interval-confirmation mask without gating exact visual points.
+
+    Numeric signals continue to own the candidate interval, event type, and
+    representative source row.  Visual selection confirms that an eligible
+    row exists inside the interval.  The exact visual argmin/argmax row and its
+    reselection spread remain diagnostics because a broad observable envelope
+    may contain several equally valid rows.
+    """
+
+    threshold = float(minimum_confirmation_frequency)
+    if not 0.0 < threshold <= 1.0:
+        raise ValueError("minimum_confirmation_frequency must be in (0, 1]")
+    outer_rows = outer_bootstrap.get("selection_stability", {})
+    assessments: dict[str, Any] = {}
+    total: Counter[str] = Counter()
+    confirmed: Counter[str] = Counter()
+    retained: Counter[str] = Counter()
+    reasons: dict[str, Counter[str]] = defaultdict(Counter)
+    for key, selection in point_selections["events"].items():
+        phase = str(selection["phase"])
+        total[phase] += 1
+        row_reasons: list[str] = []
+        outer = outer_rows.get(key)
+        if selection["status"] != "confirmed":
+            row_reasons.append("point_selection_not_confirmed")
+        elif outer is None:
+            confirmed[phase] += 1
+            row_reasons.append("outer_interval_confirmation_missing")
+        else:
+            confirmed[phase] += 1
+            frequency = float(outer["confirmation_frequency"])
+            if frequency < threshold:
+                row_reasons.append(
+                    "interval_confirmation_frequency_below_calibrated_threshold"
+                )
+        passed = not row_reasons
+        if passed:
+            retained[phase] += 1
+        else:
+            reasons[phase].update(row_reasons)
+        assessments[key] = {
+            "passed": passed,
+            "reason_codes": sorted(set(row_reasons)),
+            "minimum_interval_confirmation_frequency": threshold,
+            "outer": copy.deepcopy(outer),
+            "exact_visual_point_reselection": (
+                "diagnostic_only_numeric_anchor_owns_representative"
+            ),
+        }
+    return {
+        "schema": "observable_event_interval_confirmation_stability_v2",
+        "events": assessments,
+        "summary": {
+            "minimum_interval_confirmation_frequency": threshold,
+            "representative_ownership": "numeric_observable_anchor",
+            "exact_visual_point_reselection": "diagnostic_only",
+            "by_phase": {
+                phase: {
+                    "event_count": int(total[phase]),
+                    "point_confirmed_count": int(confirmed[phase]),
+                    "retained_count": int(retained[phase]),
+                    "retained_fraction": (
+                        float(retained[phase] / total[phase])
+                        if total[phase]
+                        else 0.0
+                    ),
+                    "reason_counts": dict(sorted(reasons[phase].items())),
+                }
+                for phase in EVENT_PHASES
+            },
+        },
+    }
+
+
+def event_selector_gate_report_v2(
+    null_control: Mapping[str, Any],
+    outer_bootstrap: Mapping[str, Any],
+    interval_stability: Mapping[str, Any],
+    reliability_contract: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Evaluate the audited M0 visual-event Gate.
+
+    The Gate tests only properties that map directly to the annotation
+    contract: every requested source-episode refit must be computable, the
+    frozen visual roles must identify their numeric-anchor phases above an
+    episode-mapping null, and the most conservative interval-confirmation
+    threshold that preserves the declared train/validation transition support
+    must retain majority bootstrap support.  Exact visual point localization,
+    offset-endpoint width, and own-support coverage under a wrong-prototype
+    permutation remain diagnostics rather than promotion operands.
+    """
+
+    failures: list[str] = []
+    requested = int(outer_bootstrap["requested_samples"])
+    failed = int(outer_bootstrap["failed_samples"])
+    if requested <= 0 or failed != 0:
+        failures.append("event_selector_outer_bootstrap_not_fully_computable")
+
+    selector_summary = outer_bootstrap.get("event_selector", {})
+    observed_balanced = selector_summary.get(
+        "validation_balanced_accuracy",
+        {},
+    )
+    null_balanced = null_control.get("balanced_accuracy_p95", {})
+    identifiability: dict[str, Any] = {}
+    for role in FEATURE_ROLES:
+        observed = observed_balanced.get(role)
+        null = null_balanced.get(role)
+        if observed is None or null is None:
+            failures.append(f"{role}_balanced_accuracy_null_operand_missing")
+            identifiability[role] = None
+            continue
+        lower = float(observed["p02_5"])
+        null_p95 = float(null)
+        passed = lower > null_p95
+        if not passed:
+            failures.append(
+                f"{role}_balanced_accuracy_lower_bound_not_above_null"
+            )
+        identifiability[role] = {
+            "source_episode_bootstrap_p02_5": lower,
+            "episode_mapping_permutation_null_p95": null_p95,
+            "advantage": lower - null_p95,
+            "passed": passed,
+        }
+
+    reliability_passed = bool(reliability_contract.get("passed", False))
+    if not reliability_passed:
+        failures.extend(
+            str(reason)
+            for reason in reliability_contract.get(
+                "failure_reasons",
+                ["interval_confirmation_reliability_contract_failed"],
+            )
+        )
+
+    return {
+        "schema": "observable_event_selector_gate_report_v2",
+        "stage": "M0",
+        "evidence_scope": "recorded-observation/offline",
+        "passed": not failures,
+        "failure_reasons": sorted(set(failures)),
+        "m1_import_smoke_authorized": False,
+        "training_authorized": False,
+        "criteria": {
+            "bootstrap_unit": "source_episode",
+            "all_requested_refits_must_be_computable": True,
+            "role_balanced_accuracy_lower_bound_above_episode_mapping_null_p95": (
+                True
+            ),
+            "interval_confirmation_threshold": (
+                "maximum_cycle_minimum_frequency_preserving_all_3x3_"
+                "transitions_in_train_and_validation"
+            ),
+            "minimum_reliability_wilson_lower_bound": (
+                "strictly_above_majority_0.5"
+            ),
+            "representative_ownership": "numeric_observable_anchor",
+            "posthoc_heldout_threshold_change_allowed": False,
+        },
+        "visual_role_identifiability": identifiability,
+        "interval_confirmation_reliability": copy.deepcopy(
+            reliability_contract
+        ),
+        "interval_stability_summary": copy.deepcopy(
+            interval_stability["summary"]
+        ),
+        "diagnostic_only_not_gate": {
+            "wrong_prototype_own_support_coverage": copy.deepcopy(
+                null_control.get("coverage_p95", {})
+            ),
+            "visual_argmin_argmax_point_reselection": True,
+            "signed_offset_endpoint_ci_width": copy.deepcopy(
+                selector_summary.get("offset_bounds", {})
+            ),
+            "v1_stable_point_fraction": (
+                "retired_population_average_vs_per_item_extreme_threshold_"
+                "comparison"
+            ),
+        },
+        "outer_bootstrap": {
+            "requested_samples": requested,
+            "successful_samples": int(outer_bootstrap["successful_samples"]),
+            "failed_samples": failed,
+            "failure_reasons": copy.deepcopy(
+                outer_bootstrap.get("failure_reasons", {})
+            ),
         },
     }
 
@@ -1210,9 +1446,17 @@ def apply_event_selections(
     selector: Mapping[str, Any],
     selector_sha256: str,
     episode_ids: Sequence[int],
+    representative_ownership: str = "visual_selected_point",
 ) -> None:
     """Attach point selections/confidence and rebuild confirmed cycle ranges."""
 
+    if representative_ownership not in (
+        "visual_selected_point",
+        "numeric_observable_anchor",
+    ):
+        raise ValueError(
+            f"unsupported representative ownership: {representative_ownership!r}"
+        )
     rows = event_rows(cycles, episode_ids=episode_ids)
     reference_to_row: dict[tuple[int, int, str], Mapping[str, Any]] = {}
     for row in rows:
@@ -1260,6 +1504,24 @@ def apply_event_selections(
                 "kind": "empirical_support_score_not_probability",
                 "joint": 0.0,
             }
+        visual_representative = selection.get("representative_step")
+        selection["representative_ownership"] = representative_ownership
+        selection["visual_selected_representative_step"] = (
+            None
+            if visual_representative is None
+            else int(visual_representative)
+        )
+        if (
+            selection["status"] == "confirmed"
+            and representative_ownership == "numeric_observable_anchor"
+        ):
+            selection["representative_step"] = int(
+                selection["numeric_representative_step"]
+            )
+            confidence["bootstrap_interval_confirmation_frequency"] = float(
+                stability[key]["confirmation_frequency"]
+            )
+            confidence["exact_visual_point_reselection"] = "diagnostic_only"
         selection["confidence"] = confidence
         selection["selector_sha256"] = str(selector_sha256)
     for cycle_result in selection_result["cycles"].values():

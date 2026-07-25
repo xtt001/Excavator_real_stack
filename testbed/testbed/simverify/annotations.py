@@ -14,8 +14,8 @@ from typing import Any
 
 import numpy as np
 
-ANNOTATION_SCHEMA = "observable_cycle_annotation_v1"
-ANNOTATION_THRESHOLDS_SCHEMA = "observable_annotation_thresholds_v1"
+ANNOTATION_SCHEMA = "observable_cycle_annotation_v2"
+ANNOTATION_THRESHOLDS_SCHEMA = "observable_annotation_thresholds_v2"
 SECTORS = ("left", "center", "right")
 SECTOR_TO_INDEX = {name: index for index, name in enumerate(SECTORS)}
 
@@ -246,6 +246,7 @@ def bootstrap_numeric_thresholds(
         raise ValueError("samples must be positive")
     rng = np.random.default_rng(int(seed))
     dump_thresholds: list[float] = []
+    dump_centers: list[list[float]] = []
     failures = 0
     for _ in range(int(samples)):
         draw = [
@@ -262,6 +263,9 @@ def bootstrap_numeric_thresholds(
             continue
         release = fitted["dump_release"]
         dump_thresholds.append(float(release["swing_threshold"]))
+        dump_centers.append(
+            list(map(float, release["swing_cluster_centers"]))
+        )
     if not dump_thresholds:
         raise ValueError("all numeric-threshold bootstrap samples failed")
 
@@ -274,12 +278,19 @@ def bootstrap_numeric_thresholds(
             "std": float(np.std(array)),
         }
 
+    center_array = np.asarray(dump_centers, dtype=np.float64)
     return {
         "unit": "source_episode",
         "seed": int(seed),
         "requested_samples": int(samples),
         "successful_samples": len(dump_thresholds),
         "failed_samples": int(failures),
+        "dump_swing_cluster_centers": {
+            "median": np.median(center_array, axis=0).tolist(),
+            "p02_5": np.quantile(center_array, 0.025, axis=0).tolist(),
+            "p97_5": np.quantile(center_array, 0.975, axis=0).tolist(),
+            "std": np.std(center_array, axis=0).tolist(),
+        },
         "dump_swing_threshold": summary(dump_thresholds),
         "release_pulse_merge_rule": (
             "structural_observable_swing_cluster_exit_no_gap_threshold"
