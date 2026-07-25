@@ -8,6 +8,9 @@ from testbed.simverify.m3_condition_gate import (
     paired_metric_result,
     symmetric_trace_consistency,
 )
+from testbed.simverify.m3_condition_replay import (
+    _most_frequent_train_condition,
+)
 
 
 def test_g4_formula_audit_corrects_double_null_and_rate_units() -> None:
@@ -55,3 +58,28 @@ def test_symmetric_trace_consistency_is_bounded_and_exact() -> None:
     assert symmetric_trace_consistency(reference, reference.copy()) == 1.0
     assert symmetric_trace_consistency(reference, -reference) == 0.0
     assert symmetric_trace_consistency(np.zeros(2), np.zeros(2)) == 1.0
+
+
+def test_masked_condition_is_fit_from_train_frequency_only() -> None:
+    def row(split: str, current: str, next_sector: str, vector: list[int]):
+        return {
+            "split": split,
+            "quality": {"status": "accepted"},
+            "policy_condition": {
+                "current_sector": current,
+                "next_ready_sector": next_sector,
+                "vector": vector,
+            },
+        }
+
+    selected = _most_frequent_train_condition(
+        [
+            row("train", "left", "center", [1, 0, 0, 0, 1, 0]),
+            row("train", "right", "left", [0, 0, 1, 1, 0, 0]),
+            row("train", "right", "left", [0, 0, 1, 1, 0, 0]),
+            row("validation", "center", "right", [0, 1, 0, 0, 0, 1]),
+        ]
+    )
+    assert selected["current_sector"] == "right"
+    assert selected["next_sector"] == "left"
+    assert selected["selected_count"] == 2

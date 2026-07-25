@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
@@ -43,11 +44,14 @@ def run_condition_swap_replay(
     m2_root: str | Path = (
         "/data/pingfan/Excavator_real_stack_data/sim_observable_cycle_v3_m2_contract_v1"
     ),
+    condition_delivery_mode: str = "requested",
 ) -> dict[str, Any]:
     if split_name not in {"train", "validation"}:
         raise ValueError("condition replay split must be train or validation")
     if repeat_id < 0:
         raise ValueError("repeat_id must be non-negative")
+    if condition_delivery_mode not in {"requested", "masked_canonical"}:
+        raise ValueError("unknown condition delivery mode")
     repository = Path(repo_root).resolve(strict=True)
     git = git_provenance(repository)
     if (
@@ -89,6 +93,7 @@ def run_condition_swap_replay(
     templates = event_envelope["templates"]
     deadzone = list(map(float, event_envelope["effective_deadzone"]))
     annotation_rows = _read_jsonl(m0 / "cycle_annotations.jsonl")
+    canonical_condition = _most_frequent_train_condition(annotation_rows)
     annotations = {
         (int(row["episode_id"]), int(row["cycle_id"])): row
         for row in annotation_rows
@@ -162,6 +167,17 @@ def run_condition_swap_replay(
                         "changed_factor": anchor["changed_factors"][0],
                         "base_condition": anchor["base_condition"],
                         "target_condition": anchor["target_condition"],
+                        "condition_delivery_mode": condition_delivery_mode,
+                        "delivered_base_condition": (
+                            anchor["base_condition"]
+                            if condition_delivery_mode == "requested"
+                            else canonical_condition
+                        ),
+                        "delivered_target_condition": (
+                            anchor["target_condition"]
+                            if condition_delivery_mode == "requested"
+                            else canonical_condition
+                        ),
                         "support_evidence": anchor["support_evidence"],
                         "supported": bool(anchor["supported"]),
                         "included_in_success_denominator": bool(
@@ -180,13 +196,23 @@ def run_condition_swap_replay(
                         )
                         continue
                     annotation = annotations[key]
+                    delivered_base = (
+                        anchor["base_condition"]["vector"]
+                        if condition_delivery_mode == "requested"
+                        else canonical_condition["vector"]
+                    )
+                    delivered_target = (
+                        anchor["target_condition"]["vector"]
+                        if condition_delivery_mode == "requested"
+                        else canonical_condition["vector"]
+                    )
                     if key not in base_cache:
                         base_arrays = replay_cycle_arrays(
                             policy=policy,
                             episode=episode,
                             annotation=annotation,
                             camera_names=CAMERAS,
-                            condition_override=anchor["base_condition"]["vector"],
+                            condition_override=delivered_base,
                             pass_condition_to_policy=True,
                         )
                         base_cache[key] = base_arrays
@@ -203,7 +229,7 @@ def run_condition_swap_replay(
                         episode=episode,
                         annotation=annotation,
                         camera_names=CAMERAS,
-                        condition_override=anchor["target_condition"]["vector"],
+                        condition_override=delivered_target,
                         pass_condition_to_policy=True,
                     )
                     target_relative = Path("target_traces") / (
@@ -260,6 +286,15 @@ def run_condition_swap_replay(
                 "baseline_id": baseline_id,
                 "split": split_name,
                 "repeat_id": repeat_id,
+                "condition_delivery_mode": condition_delivery_mode,
+                "masked_canonical_condition": (
+                    canonical_condition
+                    if condition_delivery_mode == "masked_canonical"
+                    else None
+                ),
+                "requested_condition_diff_delivered_to_policy": (
+                    condition_delivery_mode == "requested"
+                ),
                 "episode_ids": episode_ids,
                 "anchor_count": len(rows),
                 "supported_anchor_count": sum(bool(row["supported"]) for row in rows),
@@ -300,6 +335,7 @@ def run_condition_swap_replay(
             "baseline_id": baseline_id,
             "split": split_name,
             "repeat_id": repeat_id,
+            "condition_delivery_mode": condition_delivery_mode,
             "anchor_count": len(rows),
             "supported_anchor_count": sum(bool(row["supported"]) for row in rows),
             "manifest_sha256": manifest_identity["sha256"],
@@ -415,6 +451,40 @@ def _condition_effect_metrics(
         ),
         "target_event_order_valid": bool(target_task["event_order_valid"]),
         "closed_loop_execution": False,
+    }
+
+
+def _most_frequent_train_condition(
+    annotations: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    accepted = [
+        row
+        for row in annotations
+        if row["split"] == "train" and row["quality"]["status"] == "accepted"
+    ]
+    if not accepted:
+        raise ValueError("canonical condition fit has no accepted train cycles")
+    keys = [
+        (
+            str(row["policy_condition"]["current_sector"]),
+            str(row["policy_condition"]["next_ready_sector"]),
+            tuple(map(float, row["policy_condition"]["vector"])),
+        )
+        for row in accepted
+    ]
+    counts = Counter(keys)
+    selected, count = sorted(
+        counts.items(),
+        key=lambda item: (-item[1], item[0]),
+    )[0]
+    return {
+        "schema": "simverify_masked_canonical_condition_v1",
+        "current_sector": selected[0],
+        "next_sector": selected[1],
+        "vector": list(selected[2]),
+        "train_accepted_cycle_count": len(accepted),
+        "selected_count": int(count),
+        "selection": ("most_frequent_accepted_train_condition_lexical_tie_break"),
     }
 
 

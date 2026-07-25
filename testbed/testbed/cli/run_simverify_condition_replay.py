@@ -22,6 +22,11 @@ def main() -> None:
         choices=("train", "validation"),
         default="validation",
     )
+    parser.add_argument(
+        "--condition-delivery-mode",
+        choices=("requested", "masked_canonical"),
+        default="requested",
+    )
     args = parser.parse_args()
     result = run_condition_swap_replay(
         repo_root=args.repo_root,
@@ -29,6 +34,7 @@ def main() -> None:
         bundle_root=args.bundle_root,
         repeat_id=args.repeat_id,
         split_name=args.split,
+        condition_delivery_mode=args.condition_delivery_mode,
     )
     print(json.dumps(result, indent=2, sort_keys=True))
 
