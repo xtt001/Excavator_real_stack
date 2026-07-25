@@ -1,0 +1,127 @@
+experiment_contract:
+  experiment_id: simverify_b1_conditioned_v1
+  stage: M3
+  baseline_id: B1
+  evidence_scope: recorded-observation/offline
+  condition_input: cycle_condition_v1_low_dim
+  condition_label_association: observed_hindsight
+  source_domain: sim
+  held_out_test: locked_unread
+  closed_loop_claim_allowed: false
+  m0_dataset_manifest_sha256: 3ee02fa711581b25803c04524c3bfa6bd96464c1c69e3d7c8a269f00111ecc62
+  m1_report_sha256: 9e50b0bae20412f5d67313e5ab3786966a3bf899aa2f8b83e8d71b64416b2091
+  m2_manifest_sha256: edb8720c4573e59017991c62a1b473826b6f4c595545fa5e750c15de943265a0
+  g3_manifest_sha256: a2873857da24f9532cffed296c8b9e7eff9f0021339815a4a69cc818059616b2
+  split_manifest_sha256: 20945e8ffe3591817e9c9801c4f259395cff5c26daf335842af29e60861c6c44
+  condition_schema_sha256: 43f226b85281e012c2532cdf410870a73129c17198e1ed7ad3c4e3641404997e
+  baseline_reference_tag: g49-n5-live-frozen-20260723
+  pact_condition_reference_commit: 9bcb29212b59cc3f788ed6c5046677de26c1ee3b
+  inherited_hyperparameter_source: simverify_b0_unconditioned_v1
+  one_primary_factor_vs_b0: add_cycle_condition_v1_low_dim
+  one_primary_factor_vs_b2: condition_label_association
+
+checkpoint_semantics:
+  domain: sim
+  source_action_domain: actuator_speed_cmd
+  deployment_status: offline_evaluation_only
+  real_control_allowed: false
+  jetson_allowed: false
+  evidence_scope: recorded-observation/offline
+
+task:
+  task_name: simverify_b1_conditioned_v1
+  equipment_model: real_excavator
+  dataset_dir: /data/pingfan/Excavator_real_stack_data/sim_observable_cycle_v3/episodes
+  num_episodes: 1000000
+  episode_ids:
+    - 3
+    - 4
+    - 6
+    - 7
+    - 8
+    - 9
+    - 10
+    - 12
+    - 14
+    - 16
+    - 20
+    - 24
+    - 27
+    - 28
+    - 29
+    - 30
+    - 32
+    - 34
+  episode_len:
+  camera_names:
+    - video4
+    - video5
+    - video6
+    - video7
+  backend:
+    name: offline_recorded_observation
+    dt: 0.05
+
+policy:
+  class: ACT
+  device: cuda
+  low_dim_keys:
+    - qpos
+    - qvel
+    - cycle_condition_v1
+  act_params:
+    chunk_size: 20
+    kl_weight: 10.0
+    hidden_dim: 512
+    dim_feedforward: 3200
+    state_dim: 14
+    camera_role_encoding:
+      enabled: true
+      roles:
+        video4: eye_left
+        video5: eye_right
+        video6: stick_down
+        video7: stick_up
+
+train:
+  lr: 1.0e-5
+  num_epochs: 2000
+  batch_size: 4
+  seed: 0
+  device: cuda
+  num_workers: 4
+  prefetch_factor: 2
+  persistent_workers: true
+  pin_memory: true
+  split_seed: 0
+  train_split_ratio: 0.8333333333333334
+  reuse_split: true
+  split_path: testbed/testbed/configs/simverify_b0_split_v1.yaml
+  sample_valid_mask_path: conditions/valid_mask
+  norm_stats_train_only: true
+  condition_shuffle:
+    enabled: false
+    key: cycle_condition_v1
+    scope: train_only
+    seed: 20260725
+  image_transform: none
+  val_every: 10
+  save_latest_every: 100
+  checkpoint_every: 500
+  plot_every: 500
+  amp: true
+  amp_dtype: auto
+  deadzone_loss:
+    enabled: true
+    thresholds:
+      swing: {pos: 0.05, neg: 0.05}
+      boom: {pos: 0.05, neg: 0.05}
+      stick: {pos: 0.05, neg: 0.05}
+      bucket: {pos: 0.05, neg: 0.05}
+    same_dir_promote_weight: 1.0
+    idle_suppression_weight: 0.0
+    wrong_effective_weight: 0.0
+    margin: 0.0
+    same_dir_window: expert_transition_window
+    same_dir_window_steps: 5
+  ckpt_dir: /data/pingfan/Excavator_real_stack_data/simverify_b1_conditioned_v1_seed0

@@ -7,7 +7,9 @@ PyTorch data loading utilities for real-excavator HDF5 episodes.
 from __future__ import annotations
 
 import datetime
+import hashlib
 import json
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +23,7 @@ from testbed.data.hdf5_io import list_episodes
 from testbed.data.image_transforms import build_image_transform
 from testbed.data.schema import ATTR_IS_REAL, GRP_ENCODED_IMAGES
 
-SUPPORTED_LOW_DIM_KEYS = ("qpos", "qvel")
+SUPPORTED_LOW_DIM_KEYS = ("qpos", "qvel", "cycle_condition_v1")
 
 
 def _normalize_low_dim_keys(low_dim_keys: list[str] | tuple[str, ...] | None) -> list[str]:
@@ -39,17 +41,33 @@ def _assemble_low_dim_observation(
     *,
     qpos: np.ndarray,
     qvel: np.ndarray,
+    cycle_condition_v1: np.ndarray | None = None,
     low_dim_keys: list[str],
 ) -> np.ndarray:
     qpos_arr = np.asarray(qpos, dtype=np.float32)
     qvel_arr = np.asarray(qvel, dtype=np.float32)
-    sequence_mode = qpos_arr.ndim > 1 or qvel_arr.ndim > 1
+    condition_arr = (
+        None
+        if cycle_condition_v1 is None
+        else np.asarray(cycle_condition_v1, dtype=np.float32)
+    )
+    sequence_mode = (
+        qpos_arr.ndim > 1
+        or qvel_arr.ndim > 1
+        or (condition_arr is not None and condition_arr.ndim > 1)
+    )
     parts: list[np.ndarray] = []
     for key in low_dim_keys:
         if key == "qpos":
             part = qpos_arr
         elif key == "qvel":
             part = qvel_arr
+        elif key == "cycle_condition_v1":
+            if condition_arr is None:
+                raise ValueError(
+                    "cycle_condition_v1 is configured but unavailable."
+                )
+            part = condition_arr
         else:
             continue
         if sequence_mode:
@@ -115,6 +133,11 @@ def get_norm_stats(
         with h5py.File(p, "r") as f:
             qpos   = f["/observations/qpos"][()]
             qvel   = f["/observations/qvel"][()]
+            cycle_condition = (
+                f["/conditions/cycle_condition_v1"][()]
+                if "cycle_condition_v1" in selected_low_dim_keys
+                else None
+            )
             action = f["/action"][()]
             valid_mask = np.ones(int(action.shape[0]), dtype=bool)
             if valid_mask_path:
@@ -139,6 +162,11 @@ def get_norm_stats(
                 action_mask &= mask
             qpos = np.asarray(qpos, dtype=np.float32)[valid_mask]
             qvel = np.asarray(qvel, dtype=np.float32)[valid_mask]
+            if cycle_condition is not None:
+                cycle_condition = np.asarray(
+                    cycle_condition,
+                    dtype=np.float32,
+                )[valid_mask]
             action = np.asarray(action, dtype=np.float32)[action_mask]
             if qpos.shape[0] == 0 or action.shape[0] == 0:
                 raise ValueError(
@@ -147,6 +175,7 @@ def get_norm_stats(
         proprio = _assemble_low_dim_observation(
             qpos=qpos,
             qvel=qvel,
+            cycle_condition_v1=cycle_condition,
             low_dim_keys=selected_low_dim_keys,
         )
         all_proprio_data.append(torch.from_numpy(proprio))
@@ -229,6 +258,7 @@ class EpisodicDataset(Dataset):
         image_transform: str = "none",
         deadzone_intent: dict[str, Any] | None = None,
         sample_valid_mask_path: str | None = None,
+        condition_shuffle_seed: int | None = None,
     ):
         super().__init__()
         self.episode_ids  = episode_ids
@@ -243,6 +273,29 @@ class EpisodicDataset(Dataset):
         self.deadzone_intent = _resolve_deadzone_intent_config(deadzone_intent)
         self.sample_valid_mask_path = (
             str(sample_valid_mask_path) if sample_valid_mask_path else None
+        )
+        self.condition_shuffle_seed = (
+            None
+            if condition_shuffle_seed is None
+            else int(condition_shuffle_seed)
+        )
+        if (
+            self.condition_shuffle_seed is not None
+            and "cycle_condition_v1" not in self.low_dim_keys
+        ):
+            raise ValueError(
+                "condition shuffle requires cycle_condition_v1 in low_dim_keys"
+            )
+        (
+            self.condition_shuffle_mapping,
+            self.condition_shuffle_manifest,
+        ) = _build_condition_shuffle_mapping(
+            dataset_dir=self.dataset_dir,
+            episode_ids=self.episode_ids,
+            action_chunk_size=self.action_chunk_size,
+            deadzone_intent=self.deadzone_intent,
+            sample_valid_mask_path=self.sample_valid_mask_path,
+            seed=self.condition_shuffle_seed,
         )
         self.is_real: bool | None = None
         # Warm-up to populate self.is_real
@@ -294,9 +347,20 @@ class EpisodicDataset(Dataset):
             # ── observation at t0 ─────────────────────────────────────────
             qpos = f["/observations/qpos"][t0]
             qvel = f["/observations/qvel"][t0]
+            cycle_condition = (
+                np.asarray(
+                    f["/conditions/cycle_condition_v1"][t0],
+                    dtype=np.float32,
+                )
+                if "cycle_condition_v1" in self.low_dim_keys
+                else None
+            )
+            if self.condition_shuffle_mapping is not None:
+                cycle_condition = self.condition_shuffle_mapping[(ep_id, t0)]
             proprio = _assemble_low_dim_observation(
                 qpos=qpos,
                 qvel=qvel,
+                cycle_condition_v1=cycle_condition,
                 low_dim_keys=self.low_dim_keys,
             )
             image_dict = {}
@@ -424,6 +488,128 @@ def _bool_attr(value: Any) -> bool:
         return bool(int(value))
     except Exception:
         return str(value).strip().lower() in {"true", "yes", "1"}
+
+
+def _build_condition_shuffle_mapping(
+    *,
+    dataset_dir: Path,
+    episode_ids: list[int],
+    action_chunk_size: int | None,
+    deadzone_intent: dict[str, Any],
+    sample_valid_mask_path: str | None,
+    seed: int | None,
+) -> tuple[
+    dict[tuple[int, int], np.ndarray] | None,
+    dict[str, Any],
+]:
+    if seed is None:
+        return None, {
+            "enabled": False,
+            "scope": "none",
+        }
+
+    import h5py
+
+    keys: list[tuple[int, int]] = []
+    values: list[np.ndarray] = []
+    for episode_id in episode_ids:
+        path = dataset_dir / f"episode_{episode_id}.hdf5"
+        with h5py.File(path, "r") as handle:
+            total_steps = int(handle["/action"].shape[0])
+            condition_path = "/conditions/cycle_condition_v1"
+            if condition_path not in handle:
+                raise KeyError(
+                    f"condition shuffle requires {condition_path}: {path}"
+                )
+            condition = np.asarray(
+                handle[condition_path][()],
+                dtype=np.float32,
+            )
+            if condition.shape != (total_steps, 6):
+                raise ValueError(
+                    "cycle_condition_v1 must have shape (T, 6)"
+                )
+            action_loss_start_mask = _read_optional_handoff_mask(
+                handle,
+                "handoff/action_loss_mask",
+                total_steps,
+                enabled=bool(
+                    deadzone_intent["require_action_loss_in_chunk"]
+                ),
+            )
+            valid_starts = _valid_start_indices(
+                total_steps=total_steps,
+                train_exclude_mask=_combined_training_exclude_mask(
+                    handle,
+                    total_steps,
+                    sample_valid_mask_path=sample_valid_mask_path,
+                ),
+                action_chunk_size=action_chunk_size,
+                action_loss_mask=action_loss_start_mask,
+                require_action_loss_in_chunk=bool(
+                    deadzone_intent["require_action_loss_in_chunk"]
+                ),
+            )
+            for tick in valid_starts.tolist():
+                vector = condition[int(tick)]
+                _validate_cycle_condition_vector(vector)
+                keys.append((int(episode_id), int(tick)))
+                values.append(vector.copy())
+    if not keys:
+        raise ValueError("condition shuffle has no valid training starts")
+
+    matrix = np.stack(values).astype(np.float32)
+    permutation = np.random.default_rng(seed).permutation(len(keys))
+    shuffled = matrix[permutation].copy()
+    source_counts = Counter(_condition_key(row) for row in matrix)
+    shuffled_counts = Counter(_condition_key(row) for row in shuffled)
+    if source_counts != shuffled_counts:
+        raise AssertionError("condition shuffle changed token marginals")
+    mapping = {
+        key: shuffled[index].copy() for index, key in enumerate(keys)
+    }
+    digest = hashlib.sha256()
+    for key in keys:
+        digest.update(np.asarray(key, dtype=np.int64).tobytes())
+        digest.update(mapping[key].astype(np.float32).tobytes())
+    changed = int(
+        np.sum(np.any(matrix != shuffled, axis=1))
+    )
+    return mapping, {
+        "enabled": True,
+        "scope": "train_valid_starts_only",
+        "key": "cycle_condition_v1",
+        "seed": int(seed),
+        "row_count": len(keys),
+        "changed_row_count": changed,
+        "unchanged_row_count": len(keys) - changed,
+        "changed_row_fraction": float(changed / len(keys)),
+        "source_token_counts": {
+            key: int(count) for key, count in sorted(source_counts.items())
+        },
+        "shuffled_token_counts": {
+            key: int(count) for key, count in sorted(shuffled_counts.items())
+        },
+        "mapping_sha256": digest.hexdigest(),
+    }
+
+
+def _validate_cycle_condition_vector(vector: np.ndarray) -> None:
+    value = np.asarray(vector, dtype=np.float32)
+    if (
+        value.shape != (6,)
+        or not np.isfinite(value).all()
+        or not np.all(np.isin(value, (0.0, 1.0)))
+        or float(np.sum(value[:3])) != 1.0
+        or float(np.sum(value[3:])) != 1.0
+    ):
+        raise ValueError(
+            "cycle_condition_v1 must contain two one-hot[3] fields"
+        )
+
+
+def _condition_key(vector: np.ndarray) -> str:
+    return ",".join(str(int(value)) for value in vector.tolist())
 
 
 def _resolve_deadzone_intent_config(raw: dict[str, Any] | None) -> dict[str, Any]:
@@ -605,6 +791,7 @@ def load_data(
     deadzone_intent: dict[str, Any] | None = None,
     sample_valid_mask_path: str | None = None,
     norm_stats_train_only: bool = False,
+    condition_shuffle_seed_train: int | None = None,
 ) -> tuple[DataLoader, DataLoader, dict, bool, dict[str, Any]]:
     """
     Build train/val DataLoaders from an HDF5 dataset directory.
@@ -752,6 +939,7 @@ def load_data(
         image_transform=image_transform,
         deadzone_intent=deadzone_intent,
         sample_valid_mask_path=sample_valid_mask_path,
+        condition_shuffle_seed=condition_shuffle_seed_train,
     )
     val_ds = EpisodicDataset(
         val_ids,
@@ -764,6 +952,7 @@ def load_data(
         image_transform=image_transform,
         deadzone_intent=deadzone_intent,
         sample_valid_mask_path=sample_valid_mask_path,
+        condition_shuffle_seed=None,
     )
 
     split_info["dataset_max_episode_len"] = int(max_episode_len)
@@ -777,6 +966,12 @@ def load_data(
     )
     split_info["sample_valid_mask_path"] = str(sample_valid_mask_path or "")
     split_info["norm_stats_train_only"] = bool(norm_stats_train_only)
+    split_info["condition_shuffle_train"] = dict(
+        train_ds.condition_shuffle_manifest
+    )
+    split_info["condition_shuffle_validation"] = dict(
+        val_ds.condition_shuffle_manifest
+    )
     split_info["norm_stats_episode_ids"] = [
         int(ep_id) for ep_id in norm_stats_episode_ids
     ]

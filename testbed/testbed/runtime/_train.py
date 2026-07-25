@@ -42,6 +42,25 @@ def train_policy(config: dict[str, Any]) -> None:
     norm_stats_train_only = bool(
         train_cfg.get("norm_stats_train_only", False)
     )
+    condition_shuffle = copy.deepcopy(
+        train_cfg.get("condition_shuffle", {}) or {}
+    )
+    condition_shuffle_enabled = bool(condition_shuffle.get("enabled", False))
+    if condition_shuffle_enabled:
+        if (
+            condition_shuffle.get("key") != "cycle_condition_v1"
+            or condition_shuffle.get("scope") != "train_only"
+            or "cycle_condition_v1" not in low_dim_keys
+        ):
+            raise ValueError(
+                "condition shuffle requires key=cycle_condition_v1, "
+                "scope=train_only, and cycle_condition_v1 in low_dim_keys"
+            )
+        condition_shuffle_seed_train = int(
+            condition_shuffle.get("seed", 0)
+        )
+    else:
+        condition_shuffle_seed_train = None
     checkpoint_semantics = copy.deepcopy(
         config.get("checkpoint_semantics", {}) or {}
     )
@@ -127,6 +146,7 @@ def train_policy(config: dict[str, Any]) -> None:
         "image_transform": image_transform,
         "sample_valid_mask_path": sample_valid_mask_path,
         "norm_stats_train_only": norm_stats_train_only,
+        "condition_shuffle": condition_shuffle,
         "checkpoint_semantics": checkpoint_semantics,
         "experiment_contract": experiment_contract,
     }
@@ -160,6 +180,13 @@ def train_policy(config: dict[str, Any]) -> None:
         deadzone_intent    = deadzone_intent,
         sample_valid_mask_path=sample_valid_mask_path or None,
         norm_stats_train_only=norm_stats_train_only,
+        condition_shuffle_seed_train=condition_shuffle_seed_train,
+    )
+    experiment_contract["condition_shuffle_provenance"] = copy.deepcopy(
+        split_info["condition_shuffle_train"]
+    )
+    full_config["experiment_contract"] = copy.deepcopy(
+        experiment_contract
     )
 
     # save normalisation stats so trainer can load them
@@ -223,6 +250,9 @@ def _build_resolved_train_config(
     resolved = copy.deepcopy(config)
     task_cfg = resolved.setdefault("task", {})
     train_cfg = resolved.setdefault("train", {})
+    resolved["experiment_contract"] = copy.deepcopy(
+        full_config["experiment_contract"]
+    )
 
     task_cfg["dataset_dir"] = str(dataset_dir)
     if "train_ready_manifest_path" in config.get("task", {}):
@@ -247,6 +277,9 @@ def _build_resolved_train_config(
     train_cfg["norm_stats_train_only"] = bool(
         full_config["norm_stats_train_only"]
     )
+    train_cfg["condition_shuffle"] = copy.deepcopy(
+        full_config["condition_shuffle"]
+    )
     return resolved
 
 
@@ -254,6 +287,10 @@ def _resolve_low_dim_state_dim(low_dim_keys: list[str], equipment_model: str) ->
     dims = {
         "qpos": _resolve_single_low_dim_dim("qpos", equipment_model),
         "qvel": _resolve_single_low_dim_dim("qvel", equipment_model),
+        "cycle_condition_v1": _resolve_single_low_dim_dim(
+            "cycle_condition_v1",
+            equipment_model,
+        ),
     }
     return int(sum(dims[key] for key in low_dim_keys))
 
@@ -261,6 +298,8 @@ def _resolve_low_dim_state_dim(low_dim_keys: list[str], equipment_model: str) ->
 def _resolve_single_low_dim_dim(key: str, equipment_model: str) -> int:
     if key in ("qpos", "qvel"):
         return 4
+    if key == "cycle_condition_v1":
+        return 6
     raise ValueError(f"Unsupported low-dim key {key!r}.")
 
 

@@ -966,6 +966,7 @@ class ACTAdapter(Policy):
         obs   dict with keys:
                 "qpos"      : (Nq,) float32
                 "qvel"      : (Nv,) float32 when configured in low_dim_keys
+                "cycle_condition_v1": (6,) float32 when configured
                 "image_<cam>": (C, H, W) float32 [0, 1]   for each camera
                 "image_timestamp_ns": optional per-camera timestamp mapping;
                     a local causal step fallback is used when absent

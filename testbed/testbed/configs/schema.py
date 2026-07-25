@@ -36,7 +36,9 @@ class PolicyConfig(BaseModel):
 
     name: str = "act"
     params: dict = Field(default_factory=dict)
-    low_dim_keys: list[Literal["qpos", "qvel"]] = Field(default_factory=lambda: ["qpos", "qvel"])
+    low_dim_keys: list[
+        Literal["qpos", "qvel", "cycle_condition_v1"]
+    ] = Field(default_factory=lambda: ["qpos", "qvel"])
 
 
 class ACTPolicyParams(BaseModel):

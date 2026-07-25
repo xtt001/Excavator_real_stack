@@ -660,7 +660,11 @@ def _act_policy_config_from_resolved(resolved: dict[str, Any]) -> dict[str, Any]
     act_params = dict(policy_cfg.get("act_params", {}) or {})
     camera_names = list(task_cfg.get("camera_names", ["fpv"]))
     low_dim_keys = list(policy_cfg.get("low_dim_keys", ["qpos", "qvel"]))
-    state_dim = int(act_params.get("state_dim", 4 * len(low_dim_keys)))
+    default_state_dim = sum(
+        6 if key == "cycle_condition_v1" else 4
+        for key in low_dim_keys
+    )
+    state_dim = int(act_params.get("state_dim", default_state_dim))
     episode_len = task_cfg.get("episode_len")
     max_episode_len = 400 if episode_len is None else int(episode_len)
     return {

@@ -8,7 +8,7 @@ import pytest
 import torch
 import yaml
 
-from testbed.data.dataset import load_data
+from testbed.data.dataset import EpisodicDataset, load_data
 from testbed.policies.act.trainer import ACTTrainer
 from testbed.runtime.run_metadata import _find_git_root
 from testbed.simverify.m3_gate import bootstrap_episode_mean
@@ -26,6 +26,7 @@ def _write_episode(
     *,
     value: float,
     valid_mask: list[int],
+    condition_values: np.ndarray | None = None,
 ) -> None:
     image = np.zeros((4, 8, 12, 3), dtype=np.uint8)
     values = np.full((4, 4), value, dtype=np.float32)
@@ -37,10 +38,29 @@ def _write_episode(
         images = observations.create_group("images")
         images.create_dataset("video4", data=image)
         handle.create_dataset("action", data=values)
-        conditions = handle.create_group("conditions")
-        conditions.create_dataset(
+        condition_group = handle.create_group("conditions")
+        condition_group.create_dataset(
             "valid_mask",
             data=np.asarray(valid_mask, dtype=np.uint8),
+        )
+        if condition_values is None:
+            condition_array = np.asarray(
+                [
+                    [1, 0, 0, 1, 0, 0],
+                    [1, 0, 0, 0, 1, 0],
+                    [0, 1, 0, 0, 1, 0],
+                    [0, 1, 0, 0, 0, 1],
+                ],
+                dtype=np.float32,
+            )
+        else:
+            condition_array = np.asarray(
+                condition_values,
+                dtype=np.float32,
+            )
+        condition_group.create_dataset(
+            "cycle_condition_v1",
+            data=condition_array,
         )
 
 
@@ -271,3 +291,148 @@ def test_g3_bootstrap_resamples_source_episode_means_deterministically() -> None
         repetitions=10_000,
         seed=7,
     )
+
+
+def test_b1_condition_is_appended_to_train_only_normalized_proprio(
+    tmp_path: Path,
+) -> None:
+    _write_episode(
+        tmp_path / "episode_0.hdf5",
+        value=1.0,
+        valid_mask=[1, 1, 1, 1],
+    )
+    _write_episode(
+        tmp_path / "episode_1.hdf5",
+        value=2.0,
+        valid_mask=[1, 1, 1, 1],
+    )
+    split_path = tmp_path / "split.yaml"
+    split_path.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": 1,
+                "dataset_dir": str(tmp_path.resolve()),
+                "available_episode_ids": [0, 1],
+                "train_ids": [0],
+                "val_ids": [1],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    train, _val, stats, _is_real, split = load_data(
+        dataset_dir=tmp_path,
+        num_episodes=2,
+        camera_names=["video4"],
+        episode_len=4,
+        batch_size_train=1,
+        batch_size_val=1,
+        num_workers=0,
+        split_path=split_path,
+        reuse_split=True,
+        low_dim_keys=["qpos", "qvel", "cycle_condition_v1"],
+        episode_ids=[0, 1],
+        action_chunk_size=2,
+        sample_valid_mask_path="conditions/valid_mask",
+        norm_stats_train_only=True,
+    )
+
+    sample = next(iter(train))
+    assert sample[1].shape == (1, 14)
+    assert stats["proprio_mean"].shape == (14,)
+    assert stats["proprio_keys"].tolist() == [
+        "qpos",
+        "qvel",
+        "cycle_condition_v1",
+    ]
+    assert split["condition_shuffle_train"]["enabled"] is False
+
+
+def test_b2_train_condition_shuffle_is_reproducible_and_preserves_marginals(
+    tmp_path: Path,
+) -> None:
+    _write_episode(
+        tmp_path / "episode_0.hdf5",
+        value=1.0,
+        valid_mask=[1, 1, 1, 1],
+    )
+    _write_episode(
+        tmp_path / "episode_1.hdf5",
+        value=2.0,
+        valid_mask=[1, 1, 1, 1],
+    )
+    norm_stats = {
+        "action_mean": np.zeros(4, dtype=np.float32),
+        "action_std": np.ones(4, dtype=np.float32),
+        "proprio_mean": np.zeros(14, dtype=np.float32),
+        "proprio_std": np.ones(14, dtype=np.float32),
+        "proprio_dim": 14,
+        "qpos_only_dim": 4,
+    }
+    kwargs = {
+        "episode_ids": [0, 1],
+        "dataset_dir": tmp_path,
+        "camera_names": ["video4"],
+        "norm_stats": norm_stats,
+        "low_dim_keys": ["qpos", "qvel", "cycle_condition_v1"],
+        "action_chunk_size": 2,
+        "sample_valid_mask_path": "conditions/valid_mask",
+        "condition_shuffle_seed": 20260725,
+    }
+    first = EpisodicDataset(**kwargs)
+    second = EpisodicDataset(**kwargs)
+    validation = EpisodicDataset(
+        **{**kwargs, "condition_shuffle_seed": None}
+    )
+
+    manifest = first.condition_shuffle_manifest
+    assert manifest["row_count"] == 8
+    assert manifest["source_token_counts"] == manifest[
+        "shuffled_token_counts"
+    ]
+    assert manifest["mapping_sha256"] == second.condition_shuffle_manifest[
+        "mapping_sha256"
+    ]
+    assert manifest["changed_row_count"] > 0
+    assert validation.condition_shuffle_manifest == {
+        "enabled": False,
+        "scope": "none",
+    }
+
+
+def test_b1_b2_configs_are_matched_except_condition_association() -> None:
+    b1 = yaml.safe_load(
+        (CONFIG_ROOT / "simverify_b1_conditioned_v1.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    b2 = yaml.safe_load(
+        (CONFIG_ROOT / "simverify_b2_shuffled_condition_v1.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert b1["policy"] == b2["policy"]
+    assert b1["policy"]["low_dim_keys"] == [
+        "qpos",
+        "qvel",
+        "cycle_condition_v1",
+    ]
+    assert b1["policy"]["act_params"]["state_dim"] == 14
+    assert b1["task"] | {"task_name": "matched"} == (
+        b2["task"] | {"task_name": "matched"}
+    )
+    b1_train = {
+        **b1["train"],
+        "ckpt_dir": "matched",
+        "condition_shuffle": "declared_factor",
+    }
+    b2_train = {
+        **b2["train"],
+        "ckpt_dir": "matched",
+        "condition_shuffle": "declared_factor",
+    }
+    assert b1_train == b2_train
+    assert b1["train"]["condition_shuffle"]["enabled"] is False
+    assert b2["train"]["condition_shuffle"]["enabled"] is True
+    assert b1["checkpoint_semantics"] == b2["checkpoint_semantics"]
