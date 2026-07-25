@@ -88,7 +88,7 @@ DEFAULT_SOURCE_ROOT = Path(
     "yulong_v2_2_pro_full_task_four_camera_jpeg_20260717_cycle_clean_v1"
 )
 DEFAULT_OUTPUT_ROOT = Path(
-    "/data/pingfan/Excavator_real_stack_data/sim_observable_cycle_v2"
+    "/data/pingfan/Excavator_real_stack_data/sim_observable_cycle_v3"
 )
 DEFAULT_RESNET18_WEIGHTS = Path(
     "/home/pingfan/.cache/torch/hub/checkpoints/resnet18-f37072fd.pth"
@@ -2198,9 +2198,12 @@ def _fit_sector_visual_calibration(
             f"sector_{key}": value for key, value in centroids.items()
         },
         "sector_centroids": centroids,
-        "sector": {
-            "method": "eye_pair_cosine_nearest_centroid",
-            "fit_split": "train",
+            "sector": {
+                "method": "eye_pair_cosine_nearest_centroid",
+                "acceptance_rule": (
+                    "unique_nearest_centroid_then_require_qpos_label_agreement"
+                ),
+                "fit_split": "train",
             "calibration_split": "validation",
             "event_selector_dependency": (
                 "frozen_event_selector_gate_passed_selected_dig_rows"
@@ -2392,6 +2395,10 @@ def _sector_visual_gate_report_v2(
             "null_unit": "source_episode_sector_mapping",
             "requested_refits_must_all_be_computable": True,
             "bootstrap_p02_5_must_exceed_null_p95": True,
+            "row_acceptance": (
+                "unique_nearest_centroid_then_require_qpos_label_agreement"
+            ),
+            "absolute_similarity_and_margin_quantiles": "diagnostic_only",
         },
         "operands": {
             "validation_balanced_accuracy": float(
@@ -3185,6 +3192,7 @@ def _fuse_all_annotations(
                 visual_minimum_margin=float(
                     visual_calibration["sector"]["minimum_margin"]
                 ),
+                visual_acceptance_rule="unique_nearest_centroid",
             )
             event_reasons: list[str] = []
             event_confidences: list[float] = []

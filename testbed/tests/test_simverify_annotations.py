@@ -263,3 +263,48 @@ def test_qpos_visual_sector_disagreement_is_ambiguous_and_requires_review() -> N
     assert fused["policy_condition"]["vector"] is None
     assert fused["outcome"]["actual_current_sector"] is None
     assert fused["verification"]["visual_confirmation_complete"] is True
+
+
+def test_unique_nearest_centroid_confirms_without_absolute_similarity_cutoff() -> None:
+    cycle = deepcopy(
+        annotate_numeric_cycles(_two_cycle_episode(), _numeric_thresholds())[0]
+    )
+    cycle["quality"] = {
+        "status": "accepted",
+        "review_required": False,
+        "reason_codes": [],
+    }
+    cycle["numeric_sector_evidence"] = {
+        "current_swing_qpos": -0.9,
+        "next_swing_qpos": 0.0,
+    }
+    sector_thresholds = {
+        "cluster_centers_low_to_high": [-1.0, 0.0, 1.0],
+        "boundaries_low_to_high": [-0.5, 0.5],
+        "labels_low_to_high": ["left", "center", "right"],
+        "boundary_review_margin": 0.05,
+    }
+    centroids = {
+        "left": np.asarray([1.0, 0.0, 0.0]),
+        "center": np.asarray([0.8, 0.6, 0.0]),
+        "right": np.asarray([0.0, 0.0, 1.0]),
+    }
+
+    fused = fuse_cycle_sectors(
+        cycle,
+        sector_thresholds=sector_thresholds,
+        current_eye_feature=np.asarray([0.9, -0.1, 0.4]),
+        next_eye_feature=np.asarray([0.7, 0.7, 0.1]),
+        visual_centroids=centroids,
+        visual_minimum_similarity=0.9999,
+        visual_minimum_margin=0.5,
+        visual_acceptance_rule="unique_nearest_centroid",
+    )
+
+    assert fused["quality"]["status"] == "accepted"
+    assert fused["policy_condition"]["current_sector"] == "left"
+    assert fused["policy_condition"]["next_ready_sector"] == "center"
+    assert (
+        fused["visual_sector_evidence"]["current"]["visual_acceptance_rule"]
+        == "unique_nearest_centroid"
+    )

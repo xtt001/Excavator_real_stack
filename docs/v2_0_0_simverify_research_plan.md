@@ -4,7 +4,7 @@
 
 | 项目 | 当前值 |
 | --- | --- |
-| 状态 | `m0_gate_v2_predeclared_before_rerun` |
+| 状态 | `m0_gate_v3_predeclared_before_rerun` |
 | 策略代码仓库 | `Excavator_real_stack` |
 | Git 分支 | `v2.0.0-simVerify` |
 | 基线标签 | `g49-n5-live-frozen-20260723` |
@@ -21,6 +21,8 @@ M0 Gate 的逐项设计理由、v1 失败复盘和 v2 预注册规则见
 `docs/simverify_m0_gate_design_audit_v2.md`。v2 将 interval confirmation 与精确视觉选点
 分开：数值可观察候选拥有确定性代表行，视觉证据确认 interval；自动保留阈值由
 train/validation 的 3x3 transition support 生成，held-out 继续锁定。
+首次正式 v2 rerun 暴露的 condition 计数单位和 sector eye/qpos 融合问题，以及 v3
+预声明修正，见 `docs/simverify_m0_gate_design_audit_v3.md`。
 
 ## 1. 研究目标
 
@@ -1076,7 +1078,7 @@ docs: record evidence and promotion decision
 建议目录：
 
 ```text
-/data/pingfan/Excavator_real_stack_data/sim_observable_cycle_v2/
+/data/pingfan/Excavator_real_stack_data/sim_observable_cycle_v3/
 /data/pingfan/Excavator_real_stack_runs/simverify_cycle_v1/
 ```
 

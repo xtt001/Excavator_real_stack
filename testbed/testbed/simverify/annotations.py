@@ -795,6 +795,7 @@ def classify_visual_sector(
     *,
     minimum_similarity: float,
     minimum_margin: float,
+    acceptance_rule: str = "absolute_similarity_and_margin",
 ) -> tuple[str | None, float, dict[str, float]]:
     value = unit_normalize(np.asarray(feature, dtype=np.float64).reshape(1, -1))[0]
     scores = {
@@ -804,7 +805,16 @@ def classify_visual_sector(
     ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
     label, best = ranked[0]
     margin = float(best - ranked[1][1])
-    accepted = best >= float(minimum_similarity) and margin >= float(minimum_margin)
+    if acceptance_rule == "absolute_similarity_and_margin":
+        accepted = best >= float(minimum_similarity) and margin >= float(
+            minimum_margin
+        )
+    elif acceptance_rule == "unique_nearest_centroid":
+        accepted = margin > 0.0
+    else:
+        raise ValueError(
+            f"unsupported visual-sector acceptance rule: {acceptance_rule!r}"
+        )
     return (label if accepted else None, float(best), scores)
 
 
@@ -817,6 +827,7 @@ def fuse_cycle_sectors(
     visual_centroids: Mapping[str, np.ndarray],
     visual_minimum_similarity: float,
     visual_minimum_margin: float,
+    visual_acceptance_rule: str = "absolute_similarity_and_margin",
 ) -> dict[str, Any]:
     """Require independent qpos and eye-pair evidence to agree."""
 
@@ -847,6 +858,7 @@ def fuse_cycle_sectors(
             visual_centroids,
             minimum_similarity=visual_minimum_similarity,
             minimum_margin=visual_minimum_margin,
+            acceptance_rule=visual_acceptance_rule,
         )
         if visual_label is None:
             reasons.append(f"{role}_visual_sector_ambiguous")
@@ -868,6 +880,13 @@ def fuse_cycle_sectors(
             "visual_label": visual_label,
             "visual_confidence": visual_confidence,
             "visual_scores": scores,
+            "visual_acceptance_rule": visual_acceptance_rule,
+            "absolute_similarity_threshold_diagnostic_only": float(
+                visual_minimum_similarity
+            ),
+            "absolute_margin_threshold_diagnostic_only": float(
+                visual_minimum_margin
+            ),
             "fused_label": label,
         }
 

@@ -190,9 +190,12 @@ def transition_inventory(
         continuity_errors: list[dict[str, Any]] = []
         for episode_id, cycles in grouped.items():
             for cycle in cycles:
-                sector_counts[
-                    str(cycle["policy_condition"]["current_sector"])
-                ] += 1
+                current = str(cycle["policy_condition"]["current_sector"])
+                next_sector = str(
+                    cycle["policy_condition"]["next_ready_sector"]
+                )
+                sector_counts[current] += 1
+                transitions[(current, next_sector)] += 1
             for left, right in zip(cycles[:-1], cycles[1:]):
                 if int(right["cycle_id"]) != int(left["cycle_id"]) + 1:
                     continue
@@ -204,7 +207,6 @@ def transition_inventory(
                     right["policy_condition"]["current_sector"]
                 )
                 adjacent_pairs += 1
-                transitions[(current, expected_next)] += 1
                 if expected_next != actual_next:
                     continuity_errors.append(
                         {
@@ -265,6 +267,12 @@ def transition_inventory(
     return {
         "schema": "split_transition_inventory_v1",
         "accepted_only": True,
+        "transition_count_unit": (
+            "accepted_cycle_current_sector_to_next_ready_sector_condition"
+        ),
+        "adjacent_pair_count_unit": (
+            "two_consecutive_accepted_source_cycles"
+        ),
         "command_source": "unknown_not_recorded",
         "condition_source": "hindsight_outcome",
         "locked_splits": sorted(locked),

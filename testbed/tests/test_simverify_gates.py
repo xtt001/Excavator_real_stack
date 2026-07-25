@@ -148,7 +148,7 @@ def _accepted_cycle(
     }
 
 
-def test_transition_inventory_counts_only_adjacent_accepted_cycles() -> None:
+def test_transition_inventory_separates_conditions_from_adjacent_pairs() -> None:
     records = [
         _accepted_cycle(1, 0, "left", "center"),
         _accepted_cycle(1, 1, "center", "right"),
@@ -176,12 +176,15 @@ def test_transition_inventory_counts_only_adjacent_accepted_cycles() -> None:
     assert train["adjacent_two_cycle_pair_count"] == 2
     assert train["transition_matrix"]["left"]["center"] == 1
     assert train["transition_matrix"]["center"]["right"] == 1
-    assert train["nonzero_transition_count"] == 2
+    assert train["transition_matrix"]["right"]["left"] == 1
+    assert train["nonzero_transition_count"] == 3
     assert train["three_cycle_inventory"]["left->center->right"] == 1
     assert train["continuity_errors"] == []
 
     validation = inventory["splits"]["validation"]
     assert validation["transition_matrix"]["right"]["right"] == 1
+    assert validation["transition_matrix"]["left"]["center"] == 1
+    assert validation["nonzero_transition_count"] == 2
     assert validation["continuity_errors"] == [
         {
             "episode_id": 2,
@@ -191,6 +194,7 @@ def test_transition_inventory_counts_only_adjacent_accepted_cycles() -> None:
             "right_current": "left",
         }
     ]
+    assert inventory["transition_count_unit"].startswith("accepted_cycle")
     assert inventory["condition_source"] == "hindsight_outcome"
 
 
