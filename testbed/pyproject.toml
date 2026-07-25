@@ -56,6 +56,7 @@ tb-build-online-qc-reference = "testbed.cli.build_online_qc_reference:main"
 tb-build-simverify-m0 = "testbed.cli.build_simverify_m0:main"
 tb-run-simverify-m1 = "testbed.cli.run_simverify_m1:main"
 tb-build-simverify-m2 = "testbed.cli.build_simverify_m2:main"
+tb-run-simverify-b0-replay = "testbed.cli.run_simverify_b0_replay:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

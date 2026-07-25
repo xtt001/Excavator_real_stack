@@ -4,12 +4,17 @@ from pathlib import Path
 
 import h5py
 import numpy as np
+import pytest
 import torch
 import yaml
 
 from testbed.data.dataset import load_data
 from testbed.policies.act.trainer import ACTTrainer
 from testbed.runtime.run_metadata import _find_git_root
+from testbed.simverify.m3_replay import (
+    _validate_b0_checkpoint_contract,
+    replay_cycle_arrays,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_ROOT = REPO_ROOT / "testbed/testbed/configs"
@@ -92,14 +97,10 @@ def test_simverify_mask_and_train_only_stats_exclude_invalid_and_validation(
 
 def test_b0_config_is_unconditioned_sim_domain_and_holds_out_test() -> None:
     config = yaml.safe_load(
-        (CONFIG_ROOT / "simverify_b0_unconditioned_v1.yaml").read_text(
-            encoding="utf-8"
-        )
+        (CONFIG_ROOT / "simverify_b0_unconditioned_v1.yaml").read_text(encoding="utf-8")
     )
     split = yaml.safe_load(
-        (CONFIG_ROOT / "simverify_b0_split_v1.yaml").read_text(
-            encoding="utf-8"
-        )
+        (CONFIG_ROOT / "simverify_b0_split_v1.yaml").read_text(encoding="utf-8")
     )
 
     assert config["experiment_contract"]["baseline_id"] == "B0"
@@ -156,3 +157,100 @@ def test_checkpoint_embeds_sim_domain_prohibition(tmp_path: Path) -> None:
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
     assert checkpoint["config"]["checkpoint_semantics"] == semantics
     assert checkpoint["config"]["experiment_contract"]["baseline_id"] == "B0"
+
+
+def test_b0_replay_rejects_checkpoint_without_embedded_prohibition(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "policy.ckpt"
+    torch.save(
+        {
+            "config": {
+                "checkpoint_semantics": {
+                    "domain": "sim",
+                    "real_control_allowed": True,
+                    "jetson_allowed": False,
+                },
+                "experiment_contract": {
+                    "baseline_id": "B0",
+                    "condition_input": "absent",
+                },
+            }
+        },
+        path,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="embedded sim-domain prohibition",
+    ):
+        _validate_b0_checkpoint_contract(path)
+
+
+def test_b0_cycle_replay_materializes_independent_action_stages(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "episode_0.hdf5"
+    image = np.zeros((3, 8, 12, 3), dtype=np.uint8)
+    with h5py.File(path, "w") as handle:
+        observations = handle.create_group("observations")
+        observations.create_dataset(
+            "qpos",
+            data=np.zeros((3, 4), dtype=np.float32),
+        )
+        observations.create_dataset(
+            "qvel",
+            data=np.zeros((3, 4), dtype=np.float32),
+        )
+        images = observations.create_group("images")
+        images.create_dataset("video4", data=image)
+        handle.create_dataset(
+            "action",
+            data=np.zeros((3, 4), dtype=np.float32),
+        )
+        diagnostics = handle.create_group("diagnostics")
+        diagnostics.create_dataset(
+            "source_observation_index",
+            data=np.arange(3, dtype=np.int64),
+        )
+        diagnostics.create_dataset(
+            "target_tick",
+            data=np.arange(3, dtype=np.int64),
+        )
+
+    class _Policy:
+        def reset(self) -> None:
+            pass
+
+        def predict(self, _observation: dict[str, object]) -> np.ndarray:
+            return np.asarray([0.1, 0.0, 0.0, 0.0], dtype=np.float32)
+
+        def last_raw_action_chunk(self) -> np.ndarray:
+            return np.zeros((2, 4), dtype=np.float32)
+
+        def last_raw_action_chunk_direct(self) -> np.ndarray:
+            return np.ones((2, 4), dtype=np.float32)
+
+    annotation = {
+        "cycle_id": 4,
+        "target_steps_20hz": [0, 2],
+        "policy_condition": {
+            "vector": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        },
+    }
+    with h5py.File(path, "r") as episode:
+        arrays = replay_cycle_arrays(
+            policy=_Policy(),
+            episode=episode,
+            annotation=annotation,
+            camera_names=["video4"],
+        )
+
+    assert arrays["raw_policy_chunk_normalized"].shape == (3, 2, 4)
+    assert arrays["raw_policy_chunk_direct"].shape == (3, 2, 4)
+    assert arrays["temporal_aggregation_action"].shape == (3, 4)
+    assert not np.shares_memory(
+        arrays["temporal_aggregation_action"],
+        arrays["future_runtime_safe_action"],
+    )
+    np.testing.assert_array_equal(arrays["condition_cycle_id"], [4, 4, 4])
