@@ -61,6 +61,7 @@ tb-build-simverify-g3 = "testbed.cli.build_simverify_g3:main"
 tb-run-simverify-condition-replay = "testbed.cli.run_simverify_condition_replay:main"
 tb-build-simverify-g4 = "testbed.cli.build_simverify_g4:main"
 tb-build-simverify-transition-stitch = "testbed.cli.build_simverify_transition_stitch:main"
+tb-build-simverify-history-stitch = "testbed.cli.build_simverify_history_stitch:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
