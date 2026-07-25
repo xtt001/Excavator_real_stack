@@ -11,6 +11,7 @@ import yaml
 from testbed.data.dataset import load_data
 from testbed.policies.act.trainer import ACTTrainer
 from testbed.runtime.run_metadata import _find_git_root
+from testbed.simverify.m3_gate import bootstrap_episode_mean
 from testbed.simverify.m3_replay import (
     _validate_b0_checkpoint_contract,
     replay_cycle_arrays,
@@ -254,3 +255,19 @@ def test_b0_cycle_replay_materializes_independent_action_stages(
         arrays["future_runtime_safe_action"],
     )
     np.testing.assert_array_equal(arrays["condition_cycle_id"], [4, 4, 4])
+
+
+def test_g3_bootstrap_resamples_source_episode_means_deterministically() -> None:
+    result = bootstrap_episode_mean(
+        np.asarray([0.0, 0.0, 1.0], dtype=np.float64),
+        repetitions=10_000,
+        seed=7,
+    )
+
+    assert result["observed_mean"] == pytest.approx(1.0 / 3.0)
+    assert result["p02_5"] == 0.0
+    assert result == bootstrap_episode_mean(
+        np.asarray([0.0, 0.0, 1.0], dtype=np.float64),
+        repetitions=10_000,
+        seed=7,
+    )
