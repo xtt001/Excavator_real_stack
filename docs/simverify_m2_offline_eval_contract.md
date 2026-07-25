@@ -1,6 +1,6 @@
 # SimVerify M2 Offline-Evaluation Contract
 
-Status: `implementation_pending_formal_immutable_build`
+Status: `formal_immutable_build_completed_B0_replays_pending`
 
 Evidence scope: `recorded-observation/offline`
 
@@ -78,3 +78,10 @@ share storage or be described as the same semantic stage.
 A passing M2 package may authorize only M3 B0 baseline work. It does not
 authorize B1, B2 threshold finalization, held-out access, real control,
 simulator closed-loop execution, or any closed-loop success claim.
+
+The formal package was built from clean Git commit
+`c9c8ab733dedaea3c11b4de8d27dde520edf3b2e`. Its manifest SHA-256 is
+`edb8720c4573e59017991c62a1b473826b6f4c595545fa5e750c15de943265a0`;
+the checksum inventory SHA-256 is
+`382d9d4356e4cf3b611fabdf2f08fdb75c4f9166c9abc5d45c0735a95551e33e`.
+The evidence record is `docs/simverify_m2_evidence_20260725.md`.
