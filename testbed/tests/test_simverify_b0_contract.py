@@ -4,9 +4,11 @@ from pathlib import Path
 
 import h5py
 import numpy as np
+import torch
 import yaml
 
 from testbed.data.dataset import load_data
+from testbed.policies.act.trainer import ACTTrainer
 from testbed.runtime.run_metadata import _find_git_root
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -118,3 +120,39 @@ def test_b0_config_is_unconditioned_sim_domain_and_holds_out_test() -> None:
 
 def test_run_metadata_discovers_worktree_git_root() -> None:
     assert _find_git_root(Path(__file__).resolve()) == REPO_ROOT
+
+
+def test_checkpoint_embeds_sim_domain_prohibition(tmp_path: Path) -> None:
+    class _Adapter:
+        @staticmethod
+        def state_dict() -> dict[str, torch.Tensor]:
+            return {"weight": torch.ones(1)}
+
+    class _Optimizer:
+        @staticmethod
+        def state_dict() -> dict[str, object]:
+            return {}
+
+    path = tmp_path / "policy.ckpt"
+    semantics = {
+        "domain": "sim",
+        "real_control_allowed": False,
+        "jetson_allowed": False,
+    }
+    ACTTrainer._save_ckpt(
+        path,
+        _Adapter(),
+        _Optimizer(),
+        0,
+        1.0,
+        {
+            "task_name": "simverify_b0",
+            "seed": 0,
+            "checkpoint_semantics": semantics,
+            "experiment_contract": {"baseline_id": "B0"},
+        },
+    )
+
+    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    assert checkpoint["config"]["checkpoint_semantics"] == semantics
+    assert checkpoint["config"]["experiment_contract"]["baseline_id"] == "B0"

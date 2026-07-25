@@ -19,8 +19,8 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from testbed.policies.base import Trainer, compute_dict_mean, detach_dict, set_seed
 from testbed.policies.act.adapter import ACTAdapter
+from testbed.policies.base import Trainer, compute_dict_mean, detach_dict, set_seed
 
 
 class ACTTrainer(Trainer):
@@ -261,6 +261,12 @@ class ACTTrainer(Trainer):
                     "task_name":    config.get("task_name", ""),
                     "seed":         config.get("seed", 0),
                     "policy_class": "ACT",
+                    "checkpoint_semantics": deepcopy(
+                        config.get("checkpoint_semantics", {}) or {}
+                    ),
+                    "experiment_contract": deepcopy(
+                        config.get("experiment_contract", {}) or {}
+                    ),
                 },
             },
             path,

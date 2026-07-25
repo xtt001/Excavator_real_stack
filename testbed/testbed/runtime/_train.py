@@ -45,6 +45,9 @@ def train_policy(config: dict[str, Any]) -> None:
     checkpoint_semantics = copy.deepcopy(
         config.get("checkpoint_semantics", {}) or {}
     )
+    experiment_contract = copy.deepcopy(
+        config.get("experiment_contract", {}) or {}
+    )
 
     if policy_class != "ACT":
         raise NotImplementedError(f"Trainer for policy class {policy_class!r} not yet implemented.")
@@ -125,6 +128,7 @@ def train_policy(config: dict[str, Any]) -> None:
         "sample_valid_mask_path": sample_valid_mask_path,
         "norm_stats_train_only": norm_stats_train_only,
         "checkpoint_semantics": checkpoint_semantics,
+        "experiment_contract": experiment_contract,
     }
 
     ckpt_dir.mkdir(parents=True, exist_ok=True)
@@ -184,9 +188,7 @@ def train_policy(config: dict[str, Any]) -> None:
     )
     run_metadata["status"] = "started"
     run_metadata["checkpoint_semantics"] = checkpoint_semantics
-    run_metadata["experiment_contract"] = copy.deepcopy(
-        config.get("experiment_contract", {}) or {}
-    )
+    run_metadata["experiment_contract"] = experiment_contract
     run_metadata_path = write_json(ckpt_dir / "run_metadata.json", run_metadata)
     print(f"Saved resolved config to {resolved_config_path}")
     print(f"Saved run metadata to {run_metadata_path}")

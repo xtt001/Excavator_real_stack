@@ -104,3 +104,9 @@ encoding, deadzone loss, checkpoint sim-domain metadata, train-only stats, and
 run provenance. It is not a G3 result. Formal 2000-epoch B0 training may start
 only after that smoke passes.
 
+The first smoke directory
+`simverify_b0_unconditioned_v1_seed0_smoke1` completed training but failed this
+handoff contract: `run_metadata.json` contained the sim-domain prohibition,
+while `policy_best.ckpt` did not embed it. That artifact is retained as failed
+evidence and is not promotable. The serializer must be fixed and a new
+versioned smoke must pass before formal B0 training.
