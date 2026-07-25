@@ -46,6 +46,8 @@ def replay_cycle_arrays(
     episode: h5py.File,
     annotation: Mapping[str, Any],
     camera_names: Sequence[str] = CAMERAS,
+    condition_override: Sequence[float] | None = None,
+    pass_condition_to_policy: bool = False,
 ) -> dict[str, np.ndarray]:
     """Replay one accepted cycle, including its shared ready-end boundary."""
 
@@ -54,7 +56,11 @@ def replay_cycle_arrays(
     if not 0 <= start < end < total_steps:
         raise ValueError("cycle replay requires 0 <= start < end < episode length")
     condition = np.asarray(
-        annotation["policy_condition"]["vector"],
+        (
+            annotation["policy_condition"]["vector"]
+            if condition_override is None
+            else condition_override
+        ),
         dtype=np.float32,
     )
     if condition.shape != (6,):
@@ -74,6 +80,8 @@ def replay_cycle_arrays(
             "qpos": np.asarray(qpos[target_tick], dtype=np.float32),
             "qvel": np.asarray(qvel[target_tick], dtype=np.float32),
         }
+        if pass_condition_to_policy:
+            observation["cycle_condition_v1"] = condition.copy()
         for camera in camera_names:
             observation[f"image_{camera}"] = _read_camera_image(
                 episode,

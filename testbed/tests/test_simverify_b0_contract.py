@@ -240,10 +240,20 @@ def test_b0_cycle_replay_materializes_independent_action_stages(
         )
 
     class _Policy:
+        def __init__(self) -> None:
+            self.conditions: list[np.ndarray] = []
+
         def reset(self) -> None:
             pass
 
-        def predict(self, _observation: dict[str, object]) -> np.ndarray:
+        def predict(self, observation: dict[str, object]) -> np.ndarray:
+            if "cycle_condition_v1" in observation:
+                self.conditions.append(
+                    np.asarray(
+                        observation["cycle_condition_v1"],
+                        dtype=np.float32,
+                    )
+                )
             return np.asarray([0.1, 0.0, 0.0, 0.0], dtype=np.float32)
 
         def last_raw_action_chunk(self) -> np.ndarray:
@@ -259,12 +269,16 @@ def test_b0_cycle_replay_materializes_independent_action_stages(
             "vector": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
         },
     }
+    policy = _Policy()
+    target_condition = [0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
     with h5py.File(path, "r") as episode:
         arrays = replay_cycle_arrays(
-            policy=_Policy(),
+            policy=policy,
             episode=episode,
             annotation=annotation,
             camera_names=["video4"],
+            condition_override=target_condition,
+            pass_condition_to_policy=True,
         )
 
     assert arrays["raw_policy_chunk_normalized"].shape == (3, 2, 4)
@@ -275,6 +289,15 @@ def test_b0_cycle_replay_materializes_independent_action_stages(
         arrays["future_runtime_safe_action"],
     )
     np.testing.assert_array_equal(arrays["condition_cycle_id"], [4, 4, 4])
+    np.testing.assert_array_equal(
+        arrays["condition"],
+        np.repeat(
+            np.asarray(target_condition, dtype=np.float32).reshape(1, 6),
+            3,
+            axis=0,
+        ),
+    )
+    assert len(policy.conditions) == 3
 
 
 def test_g3_bootstrap_resamples_source_episode_means_deterministically() -> None:
