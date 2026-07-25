@@ -2,6 +2,11 @@ from __future__ import annotations
 
 import numpy as np
 
+from testbed.simverify.m3_condition_causal_v2 import (
+    _semantic_permutations,
+    phase_specificity,
+    signed_semantic_margin,
+)
 from testbed.simverify.m3_condition_gate import (
     _formula_audit,
     first_effect_latency,
@@ -83,3 +88,50 @@ def test_masked_condition_is_fit_from_train_frequency_only() -> None:
     assert selected["current_sector"] == "right"
     assert selected["next_sector"] == "left"
     assert selected["selected_count"] == 2
+
+
+def test_signed_semantic_margin_changes_under_wrong_label_mapping() -> None:
+    row = {
+        "changed_factor": "current_sector",
+        "base_condition": {"current_sector": "left"},
+        "target_condition": {"current_sector": "right"},
+        "metrics": {"swing_action_delta_mean": 0.2},
+    }
+    centers = {"left": -1.0, "center": 0.0, "right": 1.0}
+    identity = {"left": "left", "center": "center", "right": "right"}
+    reversed_mapping = {"left": "right", "center": "center", "right": "left"}
+    assert (
+        signed_semantic_margin(
+            row,
+            semantic_mapping=identity,
+            sector_centers=centers,
+            action_direction_sign=1,
+        )
+        == 0.2
+    )
+    assert (
+        signed_semantic_margin(
+            row,
+            semantic_mapping=reversed_mapping,
+            sector_centers=centers,
+            action_direction_sign=1,
+        )
+        == -0.2
+    )
+
+
+def test_phase_specificity_separates_intended_and_off_window() -> None:
+    row = {
+        "metrics": {
+            "per_tick_effect_l1": [0.1, 0.5, 0.5, 0.1],
+            "relevant_window_local": [1, 3],
+        }
+    }
+    assert phase_specificity(row) == 0.4
+
+
+def test_exactly_five_non_identity_sector_permutations() -> None:
+    mappings = _semantic_permutations()
+    assert len(mappings) == 5
+    assert all(set(mapping) == {"left", "center", "right"} for mapping in mappings)
+    assert all(len(set(mapping.values())) == 3 for mapping in mappings)
