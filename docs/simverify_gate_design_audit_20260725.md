@@ -191,7 +191,12 @@ closed-loop failure and does not authorize blaming condition.
 
 ### Current status
 
-Pending. M2 freezes the evaluator; M3 B0 training/replay has not started.
+Passed for the `recorded-observation/offline` baseline scope. The immutable G3
+package uses 111 train cycles, three repeats of 31 validation cycles, and
+source-episode bootstrap. Validation event coverage is non-inferior to the
+paired expert envelope at the bootstrap lower endpoint, event-order violation
+is zero, and repeat semantic noise is zero. This authorizes only B1/B2; it is
+not closed-loop evidence and does not unlock held-out test.
 
 ## G4 — Condition response
 
@@ -226,8 +231,9 @@ finite thresholds cannot be generated before these artifacts exist.
 
 ### Current status
 
-Not authorized until B0 evidence exists. M2 only freezes intervention anchors
-and denominator rules.
+B1/B2 are now authorized by the G3 recorded-observation baseline decision. G4
+itself remains pending because neither the B1 paired condition response nor the
+B2 shuffled-condition null exists yet.
 
 ## G5 — Two-cycle continuity
 
@@ -330,4 +336,3 @@ logic:
   offset, and strict timeout-to-zero semantics.
 
 These changes constrain the experiment; they do not lower any model Gate.
-

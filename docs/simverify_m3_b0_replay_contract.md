@@ -1,6 +1,6 @@
 # SimVerify M3 B0 Recorded-Observation Replay Contract
 
-Status: `implementation_frozen_replays_pending`
+Status: `implementation_frozen_replays_and_g3_calibration_completed`
 
 Evidence scope: `recorded-observation/offline`
 
@@ -92,7 +92,9 @@ G3 remains pending after any single replay. A later calibration step must:
 4. generate bootstrap uncertainty without reading held-out test;
 5. preserve the fact that the B2 null needed for G4/G5 is still unavailable.
 
-Only after the research-plan threshold-generation sequence is complete may
+The completed G3 source-episode calibration may authorize the matched B1/B2
+ablations, but it does not generate the global threshold file. Only after the
+research-plan threshold-generation sequence is complete may
 `gate_thresholds_v1.json` be frozen and hashed.
 
 ## Immutability and provenance
