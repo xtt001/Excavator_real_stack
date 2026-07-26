@@ -58,8 +58,8 @@ def build_condition_causal_v2(
             f"immutable condition causal output exists: {destination}"
         )
 
-    if candidate_baseline_id not in {"B1", "B1.1"}:
-        raise ValueError("condition causal candidate must be B1 or B1.1")
+    if candidate_baseline_id not in {"B1", "B1.1", "B1.2"}:
+        raise ValueError("condition causal candidate must be B1, B1.1, or B1.2")
     b1_packages = [
         _validated_package(
             Path(root).resolve(strict=True),

@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import pytest
 import torch
 
-from testbed.policies.act.trainer import ACTTrainer
 from testbed.policies.act.adapter import (
     ACTAdapter,
     _masked_action_l1,
+    _resolve_condition_counterfactual_consistency_config,
     _resolve_deadzone_loss_config,
     _resolve_intent_loss_config,
     _resolve_temporal_release_loss_config,
 )
+from testbed.policies.act.trainer import ACTTrainer
 
 
 def _adapter_with_deadzone_loss() -> ACTAdapter:
@@ -210,6 +212,10 @@ def test_trainer_forward_passes_extended_deadzone_batch_masks() -> None:
         "deadzone_stop_mask": torch.zeros((1, 2), dtype=torch.bool),
         "deadzone_wrong_mask": torch.zeros((1, 2, 4, 2), dtype=torch.bool),
         "action_loss_mask": torch.ones((1, 2), dtype=torch.bool),
+        "counterfactual_proprio": torch.ones((1, 4), dtype=torch.float32),
+        "counterfactual_consistency_eligible": torch.ones(
+            (1,), dtype=torch.bool
+        ),
     }
 
     ACTTrainer._forward(data, adapter)
@@ -220,7 +226,68 @@ def test_trainer_forward_passes_extended_deadzone_batch_masks() -> None:
         "deadzone_stop_mask",
         "deadzone_wrong_mask",
         "action_loss_mask",
+        "counterfactual_proprio",
+        "counterfactual_consistency_eligible",
     }
+
+
+def test_counterfactual_consistency_uses_deterministic_inference_pair() -> None:
+    class _ConditionModel(torch.nn.Module):
+        num_queries = 2
+
+        def forward(self, proprio, image, env_state, actions, is_pad):
+            assert self.training is False
+            assert actions is None
+            assert is_pad is None
+            values = proprio[:, -1].reshape(-1, 1, 1)
+            prediction = values.expand(-1, 2, 4)
+            latent = (
+                torch.zeros((proprio.shape[0], 1), dtype=proprio.dtype),
+                torch.zeros((proprio.shape[0], 1), dtype=proprio.dtype),
+            )
+            return prediction, None, latent
+
+    adapter = ACTAdapter.__new__(ACTAdapter)
+    adapter._model = _ConditionModel()
+    adapter._condition_counterfactual_consistency = (
+        _resolve_condition_counterfactual_consistency_config(
+            {
+                "enabled": True,
+                "coefficient": 1.0,
+                "candidate_forward": "inference_zero_latent",
+                "loss_domain": "normalized_action",
+                "reduction": "mean_abs_all_queries_axes",
+            }
+        )
+    )
+    terms = adapter._condition_counterfactual_consistency_terms(
+        proprio=torch.tensor([[0.0], [3.0]], dtype=torch.float32),
+        image=torch.zeros((2, 1, 3, 2, 2), dtype=torch.float32),
+        counterfactual_proprio=torch.tensor(
+            [[2.0], [9.0]],
+            dtype=torch.float32,
+        ),
+        eligible_mask=torch.tensor([True, False]),
+        device_like=torch.zeros((2, 2, 4), dtype=torch.float32),
+    )
+
+    assert terms["condition_counterfactual_consistency_raw_l1"] == 2.0
+    assert terms["condition_counterfactual_consistency_loss"] == 2.0
+    assert terms["condition_counterfactual_consistency_eligible_count"] == 1.0
+    assert adapter._model.training is True
+
+
+def test_counterfactual_consistency_rejects_loss_scale_tuning() -> None:
+    with pytest.raises(ValueError, match="coefficient must be frozen"):
+        _resolve_condition_counterfactual_consistency_config(
+            {
+                "enabled": True,
+                "coefficient": 0.5,
+                "candidate_forward": "inference_zero_latent",
+                "loss_domain": "normalized_action",
+                "reduction": "mean_abs_all_queries_axes",
+            }
+        )
 
 
 def test_window_deadzone_loss_uses_explicit_move_stop_and_wrong_masks() -> None:

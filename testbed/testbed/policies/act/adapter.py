@@ -350,6 +350,36 @@ def _resolve_temporal_release_loss_config(raw: Any) -> dict[str, Any]:
     }
 
 
+def _resolve_condition_counterfactual_consistency_config(
+    raw: Any,
+) -> dict[str, Any]:
+    cfg = dict(raw or {})
+    enabled = bool(cfg.get("enabled", False))
+    if not enabled:
+        return {
+            "enabled": False,
+            "coefficient": 0.0,
+            "candidate_forward": "inference_zero_latent",
+            "loss_domain": "normalized_action",
+            "reduction": "mean_abs_all_queries_axes",
+        }
+
+    expected = {
+        "coefficient": 1.0,
+        "candidate_forward": "inference_zero_latent",
+        "loss_domain": "normalized_action",
+        "reduction": "mean_abs_all_queries_axes",
+    }
+    for key, expected_value in expected.items():
+        actual = cfg.get(key)
+        if actual != expected_value:
+            raise ValueError(
+                "condition_counterfactual_consistency."
+                f"{key} must be frozen to {expected_value!r}, got {actual!r}"
+            )
+    return {"enabled": True, **expected}
+
+
 def _resolve_demo_target_hold_loss_config(raw: Any) -> dict[str, Any]:
     """Resolve the assist-aware held-sequence training objective."""
 
@@ -665,6 +695,11 @@ class ACTAdapter(Policy):
         )
         self._temporal_release_loss = _resolve_temporal_release_loss_config(
             policy_config.get("temporal_release_loss")
+        )
+        self._condition_counterfactual_consistency = (
+            _resolve_condition_counterfactual_consistency_config(
+                policy_config.get("condition_counterfactual_consistency")
+            )
         )
         self._demo_target_hold_loss = _resolve_demo_target_hold_loss_config(
             policy_config.get("demo_target_hold_loss")
@@ -1399,6 +1434,8 @@ class ACTAdapter(Policy):
         effective_action_phase: torch.Tensor | None = None,
         effective_action_valid: torch.Tensor | None = None,
         effective_action_loss_weight: torch.Tensor | None = None,
+        counterfactual_proprio: torch.Tensor | None = None,
+        counterfactual_consistency_eligible: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         """
         Training-time forward pass.
@@ -1606,6 +1643,13 @@ class ACTAdapter(Policy):
                 resolve_action_state_effort_config({"enabled": False}),
             ),
         )
+        consistency_loss_d = self._condition_counterfactual_consistency_terms(
+            proprio=proprio,
+            image=image,
+            counterfactual_proprio=counterfactual_proprio,
+            eligible_mask=counterfactual_consistency_eligible,
+            device_like=a_hat,
+        )
 
         return {
             "l1": l1,
@@ -1622,6 +1666,7 @@ class ACTAdapter(Policy):
             **action_state_loss_d,
             **effective_action_loss_d,
             **factorized_loss_d,
+            **consistency_loss_d,
             "loss": (
                 imitation_loss
                 + total_kld[0] * self.kl_weight
@@ -1633,8 +1678,80 @@ class ACTAdapter(Policy):
                 + goal_effect_loss_d["goal_effect_loss"]
                 + action_state_loss_d["action_state_loss"]
                 + effective_action_loss_d["effective_action_loss"]
+                + consistency_loss_d["condition_counterfactual_consistency_loss"]
             ),
         }
+
+    def _condition_counterfactual_consistency_terms(
+        self,
+        *,
+        proprio: torch.Tensor,
+        image: torch.Tensor,
+        counterfactual_proprio: torch.Tensor | None,
+        eligible_mask: torch.Tensor | None,
+        device_like: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        zero = device_like.new_zeros(())
+        result = {
+            "condition_counterfactual_consistency_raw_l1": zero,
+            "condition_counterfactual_consistency_loss": zero,
+            "condition_counterfactual_consistency_eligible_count": zero,
+        }
+        cfg = getattr(
+            self,
+            "_condition_counterfactual_consistency",
+            _resolve_condition_counterfactual_consistency_config(None),
+        )
+        if not cfg["enabled"]:
+            return result
+        if (counterfactual_proprio is None) != (eligible_mask is None):
+            raise ValueError(
+                "counterfactual proprio and eligibility must be supplied together"
+            )
+        if counterfactual_proprio is None:
+            return result
+
+        eligible = eligible_mask.to(
+            device=proprio.device,
+            dtype=torch.bool,
+        ).reshape(-1)
+        if eligible.shape[0] != proprio.shape[0]:
+            raise ValueError(
+                "counterfactual eligibility batch does not match proprio"
+            )
+        if tuple(counterfactual_proprio.shape) != tuple(proprio.shape):
+            raise ValueError(
+                "counterfactual proprio must match primary proprio shape"
+            )
+        result["condition_counterfactual_consistency_eligible_count"] = (
+            eligible.sum().to(dtype=device_like.dtype)
+        )
+        if not bool(eligible.any()):
+            return result
+
+        primary_proprio = proprio[eligible]
+        paired_proprio = torch.cat(
+            (primary_proprio, counterfactual_proprio[eligible]),
+            dim=0,
+        )
+        paired_image = torch.cat((image[eligible], image[eligible]), dim=0)
+        model_was_training = self._model.training
+        self._model.eval()
+        try:
+            paired_a_hat = self._unpack_model_output(
+                self._model(paired_proprio, paired_image, None, None, None)
+            )[0]
+        finally:
+            self._model.train(model_was_training)
+        pair_count = primary_proprio.shape[0]
+        raw_l1 = (
+            paired_a_hat[:pair_count] - paired_a_hat[pair_count:]
+        ).abs().mean()
+        result["condition_counterfactual_consistency_raw_l1"] = raw_l1
+        result["condition_counterfactual_consistency_loss"] = (
+            raw_l1 * cfg["coefficient"]
+        )
+        return result
 
     @staticmethod
     def _unpack_model_output(output):

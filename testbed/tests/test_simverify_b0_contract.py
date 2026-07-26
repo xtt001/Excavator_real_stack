@@ -548,6 +548,108 @@ def test_b1_1_phase_randomization_is_chunk_safe_and_exact_marginal(
         assert not np.array_equal(randomized[3:], condition[tick, 3:])
 
 
+def test_b1_2_counterfactual_pair_preserves_primary_and_changes_only_next(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    condition = np.asarray(
+        [
+            [1, 0, 0, 1, 0, 0],
+            [1, 0, 0, 1, 0, 0],
+            [1, 0, 0, 1, 0, 0],
+            [1, 0, 0, 1, 0, 0],
+            [0, 1, 0, 0, 1, 0],
+            [0, 1, 0, 0, 1, 0],
+            [0, 1, 0, 0, 1, 0],
+            [0, 1, 0, 0, 1, 0],
+            [0, 0, 1, 0, 0, 1],
+            [0, 0, 1, 0, 0, 1],
+            [0, 0, 1, 0, 0, 1],
+            [0, 0, 1, 0, 0, 1],
+        ],
+        dtype=np.float32,
+    )
+    cycle_ids = np.repeat(np.arange(3), 4)
+    _write_episode(
+        tmp_path / "episode_0.hdf5",
+        value=1.0,
+        valid_mask=[1] * 12,
+        condition_values=condition,
+        cycle_ids=cycle_ids,
+    )
+    annotation_path = tmp_path / "annotations.jsonl"
+    rows = []
+    for cycle_id, (start, dump_end) in enumerate(((0, 3), (4, 7), (8, 11))):
+        rows.append(
+            {
+                "episode_id": 0,
+                "cycle_id": cycle_id,
+                "split": "train",
+                "quality": {"status": "accepted"},
+                "policy_condition": {"vector": condition[start].tolist()},
+                "observable_events": {
+                    "dump_end_proxy": {
+                        "representative_target_tick": dump_end,
+                    }
+                },
+            }
+        )
+    annotation_path.write_text(
+        "".join(f"{json.dumps(row)}\n" for row in rows),
+        encoding="utf-8",
+    )
+    digest = hashlib.sha256(annotation_path.read_bytes()).hexdigest()
+    norm_stats = {
+        "action_mean": np.zeros(4, dtype=np.float32),
+        "action_std": np.ones(4, dtype=np.float32),
+        "proprio_mean": np.zeros(14, dtype=np.float32),
+        "proprio_std": np.ones(14, dtype=np.float32),
+        "proprio_dim": 14,
+        "qpos_only_dim": 4,
+    }
+    dataset = EpisodicDataset(
+        episode_ids=[0],
+        dataset_dir=tmp_path,
+        camera_names=["video4"],
+        norm_stats=norm_stats,
+        low_dim_keys=["qpos", "qvel", "cycle_condition_v1"],
+        action_chunk_size=1,
+        sample_valid_mask_path="conditions/valid_mask",
+        condition_counterfactual_consistency={
+            "enabled": True,
+            "key": "cycle_condition_v1.next_sector",
+            "scope": "train_only",
+            "seed": 20260726,
+            "phase_boundary": "dump_end_proxy.representative_target_tick",
+            "eligibility_rule": "t0_plus_chunk_le_dump_end",
+            "annotation_path": str(annotation_path),
+            "annotation_sha256": digest,
+        },
+    )
+
+    monkeypatch.setattr(np.random, "choice", lambda *_args, **_kwargs: 0)
+    sample = dataset[0]
+    assert isinstance(sample, dict)
+    assert bool(sample["counterfactual_consistency_eligible"])
+    np.testing.assert_array_equal(sample["proprio"][-6:].numpy(), condition[0])
+    np.testing.assert_array_equal(
+        sample["counterfactual_proprio"][-6:-3].numpy(),
+        condition[0, :3],
+    )
+    assert not np.array_equal(
+        sample["counterfactual_proprio"][-3:].numpy(),
+        condition[0, 3:],
+    )
+    manifest = dataset.condition_counterfactual_consistency_manifest
+    assert manifest["usage"] == "auxiliary_pair_only_primary_condition_unchanged"
+    assert manifest["expert_supervision_on_counterfactual_branch"] is False
+    assert manifest["eligible_randomized_start_count"] == 9
+    assert (
+        manifest["source_next_sector_counts"]
+        == manifest["randomized_next_sector_counts"]
+    )
+
+
 def test_exact_marginal_derangement_is_reproducible() -> None:
     labels = np.asarray([0, 0, 1, 1, 2, 2], dtype=np.int64)
     first = _exact_marginal_label_derangement(labels, seed=7)
@@ -619,5 +721,35 @@ def test_b1_1_config_changes_only_train_phase_randomization() -> None:
         **candidate["train"],
         "ckpt_dir": "matched",
         "condition_phase_randomization": "declared_factor",
+    }
+    assert b1_train == candidate_train
+
+
+def test_b1_2_config_changes_only_counterfactual_consistency() -> None:
+    b1 = yaml.safe_load(
+        (CONFIG_ROOT / "simverify_b1_conditioned_v1.yaml").read_text(encoding="utf-8")
+    )
+    candidate = yaml.safe_load(
+        (CONFIG_ROOT / "simverify_b1_2_pre_dump_consistency_v1.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert candidate["experiment_contract"]["baseline_id"] == "B1.2"
+    assert candidate["experiment_contract"]["held_out_test"] == "locked_unread"
+    assert b1["policy"] == candidate["policy"]
+    assert b1["checkpoint_semantics"] == candidate["checkpoint_semantics"]
+    assert b1["task"] | {"task_name": "matched"} == (
+        candidate["task"] | {"task_name": "matched"}
+    )
+    b1_train = {
+        **b1["train"],
+        "ckpt_dir": "matched",
+        "condition_counterfactual_consistency": "declared_factor",
+    }
+    candidate_train = {
+        **candidate["train"],
+        "ckpt_dir": "matched",
+        "condition_counterfactual_consistency": "declared_factor",
     }
     assert b1_train == candidate_train

@@ -237,6 +237,8 @@ class ACTTrainer(Trainer):
                 "deadzone_stop_mask",
                 "deadzone_wrong_mask",
                 "action_loss_mask",
+                "counterfactual_proprio",
+                "counterfactual_consistency_eligible",
             ):
                 if key in data:
                     extra[key] = data[key].to(adapter.device)

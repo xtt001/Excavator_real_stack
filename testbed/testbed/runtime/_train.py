@@ -84,6 +84,29 @@ def train_policy(config: dict[str, Any]) -> None:
             raise ValueError(
                 "condition shuffle and phase randomization are mutually exclusive"
             )
+    condition_counterfactual_consistency = copy.deepcopy(
+        train_cfg.get("condition_counterfactual_consistency", {}) or {}
+    )
+    condition_counterfactual_consistency_enabled = bool(
+        condition_counterfactual_consistency.get("enabled", False)
+    )
+    if condition_counterfactual_consistency_enabled:
+        if (
+            condition_counterfactual_consistency.get("key")
+            != "cycle_condition_v1.next_sector"
+            or condition_counterfactual_consistency.get("scope") != "train_only"
+            or "cycle_condition_v1" not in low_dim_keys
+        ):
+            raise ValueError(
+                "condition counterfactual consistency requires "
+                "key=cycle_condition_v1.next_sector, scope=train_only, "
+                "and cycle_condition_v1 in low_dim_keys"
+            )
+        if condition_shuffle_enabled or condition_phase_randomization_enabled:
+            raise ValueError(
+                "condition counterfactual consistency is mutually exclusive "
+                "with condition shuffle and phase randomization"
+            )
     checkpoint_semantics = copy.deepcopy(config.get("checkpoint_semantics", {}) or {})
     experiment_contract = copy.deepcopy(config.get("experiment_contract", {}) or {})
 
@@ -144,6 +167,9 @@ def train_policy(config: dict[str, Any]) -> None:
             or {}
         ),
         "camera_role_encoding": camera_role_encoding,
+        "condition_counterfactual_consistency": copy.deepcopy(
+            condition_counterfactual_consistency
+        ),
     }
 
     full_config = {
@@ -171,6 +197,9 @@ def train_policy(config: dict[str, Any]) -> None:
         "norm_stats_train_only": norm_stats_train_only,
         "condition_shuffle": condition_shuffle,
         "condition_phase_randomization": condition_phase_randomization,
+        "condition_counterfactual_consistency": (
+            condition_counterfactual_consistency
+        ),
         "checkpoint_semantics": checkpoint_semantics,
         "experiment_contract": experiment_contract,
     }
@@ -211,12 +240,20 @@ def train_policy(config: dict[str, Any]) -> None:
             if condition_phase_randomization_enabled
             else None
         ),
+        condition_counterfactual_consistency_train=(
+            condition_counterfactual_consistency
+            if condition_counterfactual_consistency_enabled
+            else None
+        ),
     )
     experiment_contract["condition_shuffle_provenance"] = copy.deepcopy(
         split_info["condition_shuffle_train"]
     )
     experiment_contract["condition_phase_randomization_provenance"] = copy.deepcopy(
         split_info["condition_phase_randomization_train"]
+    )
+    experiment_contract["condition_counterfactual_consistency_provenance"] = (
+        copy.deepcopy(split_info["condition_counterfactual_consistency_train"])
     )
     full_config["experiment_contract"] = copy.deepcopy(experiment_contract)
 
@@ -309,6 +346,9 @@ def _build_resolved_train_config(
     train_cfg["condition_shuffle"] = copy.deepcopy(full_config["condition_shuffle"])
     train_cfg["condition_phase_randomization"] = copy.deepcopy(
         full_config["condition_phase_randomization"]
+    )
+    train_cfg["condition_counterfactual_consistency"] = copy.deepcopy(
+        full_config["condition_counterfactual_consistency"]
     )
     return resolved
 

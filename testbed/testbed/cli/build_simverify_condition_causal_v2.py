@@ -18,7 +18,7 @@ def main() -> None:
     parser.add_argument("--masked-b1-replay-root", type=Path, required=True)
     parser.add_argument(
         "--candidate-baseline-id",
-        choices=("B1", "B1.1"),
+        choices=("B1", "B1.1", "B1.2"),
         default="B1",
     )
     parser.add_argument("--bootstrap-repetitions", type=int, default=100_000)

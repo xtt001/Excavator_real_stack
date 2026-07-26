@@ -262,6 +262,7 @@ class EpisodicDataset(Dataset):
         sample_valid_mask_path: str | None = None,
         condition_shuffle_seed: int | None = None,
         condition_phase_randomization: dict[str, Any] | None = None,
+        condition_counterfactual_consistency: dict[str, Any] | None = None,
     ):
         super().__init__()
         self.episode_ids = episode_ids
@@ -305,6 +306,27 @@ class EpisodicDataset(Dataset):
             raise ValueError(
                 "condition shuffle and phase randomization are mutually exclusive"
             )
+        self.condition_counterfactual_consistency = dict(
+            condition_counterfactual_consistency or {}
+        )
+        counterfactual_consistency_enabled = bool(
+            self.condition_counterfactual_consistency.get("enabled", False)
+        )
+        if (
+            counterfactual_consistency_enabled
+            and "cycle_condition_v1" not in self.low_dim_keys
+        ):
+            raise ValueError(
+                "condition counterfactual consistency requires "
+                "cycle_condition_v1 in low_dim_keys"
+            )
+        if counterfactual_consistency_enabled and (
+            self.condition_shuffle_seed is not None or phase_randomization_enabled
+        ):
+            raise ValueError(
+                "condition counterfactual consistency is mutually exclusive "
+                "with condition shuffle and phase randomization"
+            )
         (
             self.condition_shuffle_mapping,
             self.condition_shuffle_manifest,
@@ -326,6 +348,27 @@ class EpisodicDataset(Dataset):
             deadzone_intent=self.deadzone_intent,
             sample_valid_mask_path=self.sample_valid_mask_path,
             config=self.condition_phase_randomization,
+        )
+        (
+            self.condition_counterfactual_consistency_mapping,
+            consistency_manifest,
+        ) = _build_condition_phase_randomization_mapping(
+            dataset_dir=self.dataset_dir,
+            episode_ids=self.episode_ids,
+            action_chunk_size=self.action_chunk_size,
+            deadzone_intent=self.deadzone_intent,
+            sample_valid_mask_path=self.sample_valid_mask_path,
+            config=self.condition_counterfactual_consistency,
+        )
+        self.condition_counterfactual_consistency_manifest = (
+            {
+                **consistency_manifest,
+                "schema": "condition_pre_dump_counterfactual_consistency_manifest_v1",
+                "usage": "auxiliary_pair_only_primary_condition_unchanged",
+                "expert_supervision_on_counterfactual_branch": False,
+            }
+            if consistency_manifest["enabled"]
+            else consistency_manifest
         )
         self.is_real: bool | None = None
         # Warm-up to populate self.is_real
@@ -392,10 +435,25 @@ class EpisodicDataset(Dataset):
                     (ep_id, t0),
                     cycle_condition,
                 )
+            counterfactual_condition = cycle_condition
+            counterfactual_consistency_eligible = False
+            if self.condition_counterfactual_consistency_mapping is not None:
+                mapped = self.condition_counterfactual_consistency_mapping.get(
+                    (ep_id, t0)
+                )
+                if mapped is not None:
+                    counterfactual_condition = mapped
+                    counterfactual_consistency_eligible = True
             proprio = _assemble_low_dim_observation(
                 qpos=qpos,
                 qvel=qvel,
                 cycle_condition_v1=cycle_condition,
+                low_dim_keys=self.low_dim_keys,
+            )
+            counterfactual_proprio = _assemble_low_dim_observation(
+                qpos=qpos,
+                qvel=qvel,
+                cycle_condition_v1=counterfactual_condition,
                 low_dim_keys=self.low_dim_keys,
             )
             image_dict = {}
@@ -482,6 +540,9 @@ class EpisodicDataset(Dataset):
         # ── convert to tensors ────────────────────────────────────────────
         image_data = torch.from_numpy(all_cam_images)
         proprio_data = torch.from_numpy(proprio).float()
+        counterfactual_proprio_data = torch.from_numpy(
+            counterfactual_proprio
+        ).float()
         action_data = torch.from_numpy(padded_action).float()
         is_pad_t = torch.from_numpy(is_pad)
 
@@ -495,20 +556,43 @@ class EpisodicDataset(Dataset):
         proprio_data = (
             proprio_data - torch.from_numpy(self.norm_stats["proprio_mean"])
         ) / torch.from_numpy(self.norm_stats["proprio_std"])
+        counterfactual_proprio_data = (
+            counterfactual_proprio_data
+            - torch.from_numpy(self.norm_stats["proprio_mean"])
+        ) / torch.from_numpy(self.norm_stats["proprio_std"])
 
-        if deadzone_labels is None:
+        if (
+            deadzone_labels is None
+            and self.condition_counterfactual_consistency_mapping is None
+        ):
             return image_data, proprio_data, action_data, is_pad_t
 
-        return {
+        result = {
             "image": image_data,
             "proprio": proprio_data,
             "action": action_data,
             "is_pad": is_pad_t,
-            "deadzone_move_mask": torch.from_numpy(padded_move_mask),
-            "deadzone_stop_mask": torch.from_numpy(padded_stop_mask),
-            "deadzone_wrong_mask": torch.from_numpy(padded_wrong_mask),
-            "action_loss_mask": torch.from_numpy(padded_action_loss_mask),
         }
+        if deadzone_labels is not None:
+            result.update(
+                {
+                    "deadzone_move_mask": torch.from_numpy(padded_move_mask),
+                    "deadzone_stop_mask": torch.from_numpy(padded_stop_mask),
+                    "deadzone_wrong_mask": torch.from_numpy(padded_wrong_mask),
+                    "action_loss_mask": torch.from_numpy(padded_action_loss_mask),
+                }
+            )
+        if self.condition_counterfactual_consistency_mapping is not None:
+            result.update(
+                {
+                    "counterfactual_proprio": counterfactual_proprio_data,
+                    "counterfactual_consistency_eligible": torch.tensor(
+                        counterfactual_consistency_eligible,
+                        dtype=torch.bool,
+                    ),
+                }
+            )
+        return result
 
 
 def _read_camera_image(h5_file: Any, camera_name: str, timestep: int) -> np.ndarray:
@@ -1093,6 +1177,7 @@ def load_data(
     norm_stats_train_only: bool = False,
     condition_shuffle_seed_train: int | None = None,
     condition_phase_randomization_train: dict[str, Any] | None = None,
+    condition_counterfactual_consistency_train: dict[str, Any] | None = None,
 ) -> tuple[DataLoader, DataLoader, dict, bool, dict[str, Any]]:
     """
     Build train/val DataLoaders from an HDF5 dataset directory.
@@ -1242,6 +1327,9 @@ def load_data(
         sample_valid_mask_path=sample_valid_mask_path,
         condition_shuffle_seed=condition_shuffle_seed_train,
         condition_phase_randomization=condition_phase_randomization_train,
+        condition_counterfactual_consistency=(
+            condition_counterfactual_consistency_train
+        ),
     )
     val_ds = EpisodicDataset(
         val_ids,
@@ -1256,6 +1344,7 @@ def load_data(
         sample_valid_mask_path=sample_valid_mask_path,
         condition_shuffle_seed=None,
         condition_phase_randomization=None,
+        condition_counterfactual_consistency=None,
     )
 
     split_info["dataset_max_episode_len"] = int(max_episode_len)
@@ -1276,6 +1365,12 @@ def load_data(
     )
     split_info["condition_phase_randomization_validation"] = dict(
         val_ds.condition_phase_randomization_manifest
+    )
+    split_info["condition_counterfactual_consistency_train"] = dict(
+        train_ds.condition_counterfactual_consistency_manifest
+    )
+    split_info["condition_counterfactual_consistency_validation"] = dict(
+        val_ds.condition_counterfactual_consistency_manifest
     )
     split_info["norm_stats_episode_ids"] = [
         int(ep_id) for ep_id in norm_stats_episode_ids
