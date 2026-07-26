@@ -54,3 +54,9 @@ They do not reopen G5 or held-out test. The additional evidence keeps the
 terminal decision at `revise_condition`: current-sector understanding passes,
 while next-sector semantic identifiability and response-phase specificity do
 not.
+
+The subsequent B1.1 hard pre-dump next-sector randomization is recorded in
+`docs/simverify_b1_1_phase_randomization_evidence_20260726.md`. It partially
+improved next-sector phase timing but weakened semantic evidence and regressed
+current-sector evidence. B1.1 is rejected as a revision candidate; the terminal
+decision remains `revise_condition`.
