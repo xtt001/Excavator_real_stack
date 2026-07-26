@@ -7,6 +7,7 @@ import numpy as np
 from testbed.simverify.e04_camera_counterfactual import (
     aggregate_e04_by_source,
     camera_pair_failed,
+    compare_reproduction_arrays,
     cross_process_replay_noise,
     derive_e04_thresholds,
     evaluate_e04_gate,
@@ -140,3 +141,24 @@ def test_cross_process_noise_uses_immutable_trace_maximum(tmp_path: Path) -> Non
     assert np.isclose(result["max_abs_delta"], 0.02)
     assert result["shared_trace_count"] == 1
     assert result["comparison_count"] == 2
+
+
+def test_reproduction_comparison_separates_float_delta_from_task_signature() -> None:
+    old = {
+        "future_runtime_safe_action": np.asarray(
+            [[0.1, 0.0], [-0.2, 0.01]],
+            dtype=np.float32,
+        ),
+        "condition_route_index": np.asarray([0, 2], dtype=np.int8),
+    }
+    new = {
+        "future_runtime_safe_action": np.asarray(
+            [[0.1001, 0.0001], [-0.2001, 0.0101]],
+            dtype=np.float32,
+        ),
+        "condition_route_index": np.asarray([0, 2], dtype=np.int8),
+    }
+    result = compare_reproduction_arrays(new, old, deadzone=[0.05, 0.05])
+    assert result["max_abs_delta"] > 0.0
+    assert result["effective_signature_mismatch_count"] == 0
+    assert result["route_mismatch_count"] == 0

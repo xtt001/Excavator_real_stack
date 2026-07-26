@@ -164,6 +164,8 @@ def build_e04_camera_counterfactual(
     result_rows: list[dict[str, Any]] = []
     pair_rows: list[dict[str, Any]] = []
     reproduction_max_abs_delta = 0.0
+    reproduction_effective_signature_mismatch_count = 0
+    reproduction_route_mismatch_count = 0
     try:
         grouped: dict[int, list[tuple[int, Mapping[str, Any]]]] = defaultdict(list)
         for anchor_index, anchor in enumerate(validation):
@@ -241,22 +243,22 @@ def build_e04_camera_counterfactual(
                                         previous_g5 / prior["trace_path"],
                                         allow_pickle=False,
                                     ) as old:
-                                        delta = float(
-                                            np.max(
-                                                np.abs(
-                                                    arrays["future_runtime_safe_action"]
-                                                    - np.asarray(
-                                                        old[
-                                                            "future_runtime_safe_action"
-                                                        ],
-                                                        dtype=np.float32,
-                                                    )
-                                                )
-                                            )
+                                        comparison = compare_reproduction_arrays(
+                                            arrays,
+                                            old,
+                                            deadzone=deadzone,
+                                        )
+                                        reproduction_effective_signature_mismatch_count += int(
+                                            comparison[
+                                                "effective_signature_mismatch_count"
+                                            ]
+                                        )
+                                        reproduction_route_mismatch_count += int(
+                                            comparison["route_mismatch_count"]
                                         )
                                     reproduction_max_abs_delta = max(
                                         reproduction_max_abs_delta,
-                                        delta,
+                                        comparison["max_abs_delta"],
                                     )
                             pair_rows.append(
                                 camera_pair_metric(
@@ -267,9 +269,13 @@ def build_e04_camera_counterfactual(
                                     direction=direction,
                                 )
                             )
-        if reproduction_max_abs_delta > reproduction_noise["max_abs_delta"]:
+        if (
+            reproduction_max_abs_delta > min(deadzone)
+            or reproduction_effective_signature_mismatch_count != 0
+            or reproduction_route_mismatch_count != 0
+        ):
             raise ValueError(
-                "E04 four-camera replay exceeds the cross-process B1 noise envelope"
+                "E04 four-camera replay is not task-semantically equivalent to G5.1"
             )
 
         thresholds = derive_e04_thresholds(pair_rows)
@@ -345,6 +351,13 @@ def build_e04_camera_counterfactual(
                 "four_camera_reproduction_max_abs_delta": (reproduction_max_abs_delta),
                 "four_camera_reproduction_cross_process_noise_envelope": (
                     reproduction_noise
+                ),
+                "four_camera_reproduction_effective_deadzone_upper": min(deadzone),
+                "four_camera_reproduction_effective_signature_mismatch_count": (
+                    reproduction_effective_signature_mismatch_count
+                ),
+                "four_camera_reproduction_route_mismatch_count": (
+                    reproduction_route_mismatch_count
                 ),
                 "decision": gate["decision"],
                 "authorizes_e05": gate["authorizes_e05"],
@@ -889,4 +902,43 @@ def cross_process_replay_noise(roots: Sequence[Path]) -> dict[str, Any]:
         "shared_trace_count": comparable_trace_count,
         "comparison_count": comparison_count,
         "estimator": "maximum_pairwise_delta_against_repeat0",
+    }
+
+
+def compare_reproduction_arrays(
+    new: Mapping[str, np.ndarray],
+    old: Mapping[str, np.ndarray],
+    *,
+    deadzone: Sequence[float],
+) -> dict[str, Any]:
+    """Compare raw numerical and frozen task-semantic replay identity."""
+
+    new_action = np.asarray(new["future_runtime_safe_action"], dtype=np.float32)
+    old_action = np.asarray(old["future_runtime_safe_action"], dtype=np.float32)
+    if new_action.shape != old_action.shape:
+        raise ValueError("reproduction action shapes differ")
+    threshold = np.asarray(deadzone, dtype=np.float32)
+    if threshold.shape != (new_action.shape[1],):
+        raise ValueError("reproduction deadzone shape differs from action")
+    new_signature = np.where(
+        np.abs(new_action) >= threshold[None, :],
+        np.sign(new_action),
+        0,
+    )
+    old_signature = np.where(
+        np.abs(old_action) >= threshold[None, :],
+        np.sign(old_action),
+        0,
+    )
+    new_route = np.asarray(new["condition_route_index"], dtype=np.int8)
+    old_route = np.asarray(old["condition_route_index"], dtype=np.int8)
+    if new_route.shape != old_route.shape:
+        raise ValueError("reproduction route shapes differ")
+    return {
+        "max_abs_delta": float(np.max(np.abs(new_action - old_action))),
+        "mean_abs_delta": float(np.mean(np.abs(new_action - old_action))),
+        "effective_signature_mismatch_count": int(
+            np.sum(new_signature != old_signature)
+        ),
+        "route_mismatch_count": int(np.sum(new_route != old_route)),
     }

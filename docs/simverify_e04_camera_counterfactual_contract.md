@@ -1,6 +1,6 @@
 # SimVerify E04 Camera Counterfactual Contract
 
-Status: `method_amended_after_bitwise_reproduction_probe_before_successful_run`
+Status: `method_amended_after_two_numeric_reproduction_probes_before_successful_run`
 
 Evidence scope: `recorded-observation/offline teacher-forced development`
 
@@ -74,11 +74,12 @@ For each eligible pair and variant, replay both:
 The policy resets once at trace start. The condition-cycle router resets once
 at the shared ready boundary. Temporal aggregation does not reset there.
 
-`four_camera` is run twice. Repeat 0 must agree with the immutable G5.1 trace
-within the maximum action delta measured from the three immutable B1.4
-cross-process replay packages; repeat 0 versus repeat 1 generates the
-same-process action and metric noise floor. No hand-entered tolerance is
-allowed.
+`four_camera` is run twice. Repeat 0 must be task-semantically equivalent to the
+immutable G5.1 trace: its maximum action delta must remain below the frozen M2
+minimum effective deadzone, its deadzone-effective action signature must match
+exactly, and its condition-route sequence must match exactly. Repeat 0 versus
+repeat 1 generates the same-process action and metric noise floor. No
+hand-entered tolerance is allowed.
 
 The first attempted build correctly stopped because it required bitwise
 equality across separate GPU processes. The observed old-versus-new maximum
@@ -87,6 +88,16 @@ B1.4 envelope was `1.6319751739501953e-04`. The within-process E04 repeat delta
 was exactly zero. The amendment replaces an invalid bitwise premise with this
 independently recorded data-derived envelope; it does not change any camera
 intervention or success metric.
+
+The second attempted build showed why a one-cycle raw maximum is not a valid
+hard upper bound for a longer temporally aggregated two-cycle trace. Its
+old-versus-new maximum was `1.8209218978881836e-04`, slightly above the
+one-cycle envelope, while mean absolute delta stayed below
+`8.085956324066501e-06`, action signs never differed, and the same-process
+repeat remained exact. The final reproduction Gate therefore uses the already
+frozen M2 effective deadzone (`0.05` on every axis), exact effective-signature
+equality, and exact router equality. The three cross-process repeats remain
+recorded as numerical context, not as an invalid duration-independent maximum.
 
 ## Metrics and aggregation
 
