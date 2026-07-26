@@ -18,6 +18,12 @@ def main() -> None:
     parser.add_argument("--m0-root", type=Path, required=True)
     parser.add_argument("--m2-root", type=Path, required=True)
     parser.add_argument("--b1-bundle-root", type=Path, required=True)
+    parser.add_argument(
+        "--b1-repeat-root",
+        type=Path,
+        action="append",
+        required=True,
+    )
     parser.add_argument("--previous-g5-root", type=Path, required=True)
     parser.add_argument("--contract-path", type=Path, required=True)
     parser.add_argument("--device", default="cuda")
@@ -28,6 +34,7 @@ def main() -> None:
         m0_root=args.m0_root,
         m2_root=args.m2_root,
         b1_bundle_root=args.b1_bundle_root,
+        b1_repeat_roots=args.b1_repeat_root,
         previous_g5_root=args.previous_g5_root,
         contract_path=args.contract_path,
         device=args.device,

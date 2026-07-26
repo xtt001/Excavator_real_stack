@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import numpy as np
+
 from testbed.simverify.e04_camera_counterfactual import (
     aggregate_e04_by_source,
     camera_pair_failed,
+    cross_process_replay_noise,
     derive_e04_thresholds,
     evaluate_e04_gate,
 )
@@ -117,3 +122,21 @@ def test_e04_gate_requires_every_frozen_variant() -> None:
     )
     assert gate["authorizes_e05"] is False
     assert gate["criteria"]["stick_only"]["passed"] is False
+
+
+def test_cross_process_noise_uses_immutable_trace_maximum(tmp_path: Path) -> None:
+    roots = [tmp_path / f"repeat{index}" for index in range(3)]
+    for index, root in enumerate(roots):
+        trace = root / "base_traces" / "episode.npz"
+        trace.parent.mkdir(parents=True)
+        np.savez_compressed(
+            trace,
+            future_runtime_safe_action=np.asarray(
+                [[0.0, float(index) * 0.01]],
+                dtype=np.float32,
+            ),
+        )
+    result = cross_process_replay_noise(roots)
+    assert np.isclose(result["max_abs_delta"], 0.02)
+    assert result["shared_trace_count"] == 1
+    assert result["comparison_count"] == 2

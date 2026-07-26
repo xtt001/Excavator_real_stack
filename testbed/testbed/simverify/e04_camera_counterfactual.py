@@ -44,6 +44,7 @@ def build_e04_camera_counterfactual(
     m0_root: str | Path,
     m2_root: str | Path,
     b1_bundle_root: str | Path,
+    b1_repeat_roots: Sequence[str | Path],
     previous_g5_root: str | Path,
     contract_path: str | Path,
     device: str = "cuda",
@@ -64,6 +65,9 @@ def build_e04_camera_counterfactual(
     m0 = Path(m0_root).resolve(strict=True)
     m2 = Path(m2_root).resolve(strict=True)
     previous_g5 = Path(previous_g5_root).resolve(strict=True)
+    repeat_roots = [Path(path).resolve(strict=True) for path in b1_repeat_roots]
+    if len(repeat_roots) < 2:
+        raise ValueError("E04 requires at least two cross-process B1 repeats")
     contract = Path(contract_path).resolve(strict=True)
     verifications = {
         "m0": verify_checksums(m0, m0 / "checksums.sha256"),
@@ -73,8 +77,13 @@ def build_e04_camera_counterfactual(
             previous_g5 / "checksums.sha256",
         ),
     }
+    repeat_verifications = [
+        verify_checksums(root, root / "checksums.sha256") for root in repeat_roots
+    ]
     if not all(row["ok"] for row in verifications.values()):
         raise ValueError("E04 input checksum verification failed")
+    if not all(row["ok"] for row in repeat_verifications):
+        raise ValueError("E04 repeat input checksum verification failed")
     previous_gate = _read_json(previous_g5 / "g5_core_gate_v1.json")
     if (
         previous_gate["decision"]
@@ -129,6 +138,20 @@ def build_e04_camera_counterfactual(
         if row["baseline_id"] == "B1.4"
     }
     bundle = _validate_bundle(Path(b1_bundle_root).resolve(strict=True), "B1.4")
+    repeat_manifests = [
+        _read_json(root / "condition_replay_manifest.json") for root in repeat_roots
+    ]
+    checkpoint_shas = {
+        str(manifest["checkpoint"]["sha256"]) for manifest in repeat_manifests
+    }
+    if checkpoint_shas != {str(bundle["identity"]["checkpoint_sha256"])}:
+        raise ValueError("E04 repeat checkpoints do not match B1.4")
+    if any(
+        manifest["baseline_id"] != "B1.4" or bool(manifest["held_out_test_read"])
+        for manifest in repeat_manifests
+    ):
+        raise ValueError("E04 repeat package provenance is invalid")
+    reproduction_noise = cross_process_replay_noise(repeat_roots)
     max_steps = max(
         int(row["target_steps_20hz"][1]) - int(row["target_steps_20hz"][0]) + 1
         for row in validation
@@ -244,8 +267,10 @@ def build_e04_camera_counterfactual(
                                     direction=direction,
                                 )
                             )
-        if reproduction_max_abs_delta != 0.0:
-            raise ValueError("E04 four-camera replay does not exactly reproduce G5.1")
+        if reproduction_max_abs_delta > reproduction_noise["max_abs_delta"]:
+            raise ValueError(
+                "E04 four-camera replay exceeds the cross-process B1 noise envelope"
+            )
 
         thresholds = derive_e04_thresholds(pair_rows)
         source_rows = aggregate_e04_by_source(pair_rows, thresholds=thresholds)
@@ -296,12 +321,31 @@ def build_e04_camera_counterfactual(
                     "g5_two_cycle_manifest.json",
                     verifications["previous_g5"],
                 ),
+                "b1_cross_process_repeats": [
+                    {
+                        **_input_identity(
+                            root,
+                            "condition_replay_manifest.json",
+                            verification,
+                        ),
+                        "checkpoint_sha256": manifest["checkpoint"]["sha256"],
+                    }
+                    for root, verification, manifest in zip(
+                        repeat_roots,
+                        repeat_verifications,
+                        repeat_manifests,
+                        strict=True,
+                    )
+                ],
                 "bundle": bundle["identity"],
                 "camera_mapping_sha256": sha256_file(m0 / "camera_mapping.json"),
                 "variants": list(CAMERA_VARIANTS),
                 "supported_validation_pair_count": len(validation),
                 "source_episode_ids": source_ids,
                 "four_camera_reproduction_max_abs_delta": (reproduction_max_abs_delta),
+                "four_camera_reproduction_cross_process_noise_envelope": (
+                    reproduction_noise
+                ),
                 "decision": gate["decision"],
                 "authorizes_e05": gate["authorizes_e05"],
                 "validation_role": "development",
@@ -793,4 +837,56 @@ def _input_identity(
         "manifest_sha256": sha256_file(root / manifest_name),
         "checksums_sha256": sha256_file(root / "checksums.sha256"),
         "verified_file_count": verification["verified_file_count"],
+    }
+
+
+def cross_process_replay_noise(roots: Sequence[Path]) -> dict[str, Any]:
+    """Derive an action envelope from immutable repeated replay packages."""
+
+    if len(roots) < 2:
+        raise ValueError("cross-process noise requires at least two roots")
+    reference = roots[0]
+    relative_paths = sorted(
+        path.relative_to(reference) for path in reference.glob("**/*.npz")
+    )
+    shared = [
+        relative
+        for relative in relative_paths
+        if all((root / relative).is_file() for root in roots[1:])
+    ]
+    if not shared:
+        raise ValueError("cross-process repeats have no shared NPZ traces")
+    maximum = 0.0
+    comparison_count = 0
+    comparable_trace_count = 0
+    for relative in shared:
+        with np.load(reference / relative, allow_pickle=False) as first:
+            if "future_runtime_safe_action" not in first:
+                continue
+            reference_action = np.asarray(
+                first["future_runtime_safe_action"],
+                dtype=np.float32,
+            )
+        comparable_trace_count += 1
+        for root in roots[1:]:
+            with np.load(root / relative, allow_pickle=False) as other:
+                action = np.asarray(
+                    other["future_runtime_safe_action"],
+                    dtype=np.float32,
+                )
+            if action.shape != reference_action.shape:
+                raise ValueError("cross-process repeat action shapes differ")
+            maximum = max(
+                maximum,
+                float(np.max(np.abs(reference_action - action))),
+            )
+            comparison_count += 1
+    if comparison_count == 0:
+        raise ValueError("cross-process repeats have no comparable action traces")
+    return {
+        "schema": "simverify_cross_process_replay_noise_v1",
+        "max_abs_delta": maximum,
+        "shared_trace_count": comparable_trace_count,
+        "comparison_count": comparison_count,
+        "estimator": "maximum_pairwise_delta_against_repeat0",
     }

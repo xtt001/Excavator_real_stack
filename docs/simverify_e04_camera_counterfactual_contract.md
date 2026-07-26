@@ -1,6 +1,6 @@
 # SimVerify E04 Camera Counterfactual Contract
 
-Status: `method_frozen_before_e04_run`
+Status: `method_amended_after_bitwise_reproduction_probe_before_successful_run`
 
 Evidence scope: `recorded-observation/offline teacher-forced development`
 
@@ -23,6 +23,8 @@ intrinsics/extrinsics, or closed-loop digging.
 - the M0 camera mapping and read-only 20 Hz episode exports;
 - M2 supported two-cycle condition-switch anchors and expert event envelope;
 - the B1.4 sim-domain checkpoint;
+- the three immutable B1.4 validation repeat packages used to measure
+  cross-process numerical replay variation;
 - held-out episodes `1`, `13`, `25`, and `33` remain unread.
 
 Only supported changed-next-target validation pairs enter the success
@@ -72,9 +74,19 @@ For each eligible pair and variant, replay both:
 The policy resets once at trace start. The condition-cycle router resets once
 at the shared ready boundary. Temporal aggregation does not reset there.
 
-`four_camera` is run twice. Repeat 0 must agree with the immutable G5.1 trace;
-repeat 0 versus repeat 1 generates the same-checkpoint action and metric noise
-floor. No hand-entered tolerance is allowed.
+`four_camera` is run twice. Repeat 0 must agree with the immutable G5.1 trace
+within the maximum action delta measured from the three immutable B1.4
+cross-process replay packages; repeat 0 versus repeat 1 generates the
+same-process action and metric noise floor. No hand-entered tolerance is
+allowed.
+
+The first attempted build correctly stopped because it required bitwise
+equality across separate GPU processes. The observed old-versus-new maximum
+action delta was `7.200241088867188e-05`, while the pre-existing three-repeat
+B1.4 envelope was `1.6319751739501953e-04`. The within-process E04 repeat delta
+was exactly zero. The amendment replaces an invalid bitwise premise with this
+independently recorded data-derived envelope; it does not change any camera
+intervention or success metric.
 
 ## Metrics and aggregation
 
