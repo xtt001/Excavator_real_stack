@@ -64,6 +64,7 @@ tb-build-simverify-transition-stitch = "testbed.cli.build_simverify_transition_s
 tb-build-simverify-history-stitch = "testbed.cli.build_simverify_history_stitch:main"
 tb-build-simverify-transition-delta-stitch = "testbed.cli.build_simverify_transition_delta_stitch:main"
 tb-build-simverify-transition-delta-stitch-audit = "testbed.cli.build_simverify_transition_delta_stitch_audit:main"
+tb-build-simverify-condition-delta-stitch = "testbed.cli.build_simverify_condition_delta_stitch:main"
 tb-build-simverify-condition-causal-v2 = "testbed.cli.build_simverify_condition_causal_v2:main"
 
 [tool.setuptools.packages.find]
