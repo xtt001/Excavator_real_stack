@@ -864,6 +864,15 @@ class ACTAdapter(Policy):
             condition_router.reset()
         self._last_condition_route_diagnostics = None
 
+    def reset_condition_cycle(self) -> None:
+        """Start a new routed-condition cycle without clearing ACT history."""
+
+        condition_router = getattr(self, "_condition_phase_router", None)
+        if condition_router is None:
+            raise RuntimeError("reset_condition_cycle requires phase-routed condition")
+        condition_router.reset()
+        self._last_condition_route_diagnostics = None
+
     def snapshot_state(self) -> ACTAdapterState:
         """Capture temporal inference state without sharing mutable storage."""
 

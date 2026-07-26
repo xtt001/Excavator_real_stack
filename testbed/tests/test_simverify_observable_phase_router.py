@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 import torch
 
+from testbed.policies.act.adapter import ACTAdapter
 from testbed.policies.act.phase_routed_condition import RoutedConditionProjection
 from testbed.simverify.observable_phase_router import (
     ObservablePhaseRouter,
@@ -71,6 +72,34 @@ def test_runtime_router_reset_and_parity() -> None:
     np.testing.assert_array_equal(observed, expected)
     router.reset()
     assert router.route == 0
+
+
+def test_condition_cycle_reset_preserves_temporal_adapter_state() -> None:
+    class _Router:
+        route = 2
+        consecutive = 7
+
+        def reset(self) -> None:
+            self.route = 0
+            self.consecutive = 0
+
+    adapter = object.__new__(ACTAdapter)
+    adapter._condition_phase_router = _Router()
+    adapter._last_condition_route_diagnostics = {"route_index": 2}
+    adapter._t = 37
+    adapter._all_time_actions = torch.ones((2, 3, 4))
+    adapter._cached_actions = torch.ones((5, 4))
+    all_time_actions = adapter._all_time_actions
+    cached_actions = adapter._cached_actions
+
+    adapter.reset_condition_cycle()
+
+    assert adapter._condition_phase_router.route == 0
+    assert adapter._condition_phase_router.consecutive == 0
+    assert adapter._last_condition_route_diagnostics is None
+    assert adapter._t == 37
+    assert adapter._all_time_actions is all_time_actions
+    assert adapter._cached_actions is cached_actions
 
 
 def test_router_rejects_non_finite_observation() -> None:

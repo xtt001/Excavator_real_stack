@@ -7,6 +7,7 @@ import numpy as np
 
 from testbed.simverify import g5_two_cycle_replay as module
 from testbed.simverify.g5_two_cycle_replay import (
+    build_two_cycle_condition_support,
     derive_expert_two_cycle_thresholds,
     evaluate_expert_two_cycle_gate,
     replay_two_cycle_arrays,
@@ -16,6 +17,7 @@ from testbed.simverify.g5_two_cycle_replay import (
 class _Policy:
     def __init__(self) -> None:
         self.reset_count = 0
+        self.condition_cycle_reset_count = 0
         self.conditions: list[np.ndarray] = []
         self.condition_route_diagnostics = {
             "route_index": 2,
@@ -24,6 +26,9 @@ class _Policy:
 
     def reset(self) -> None:
         self.reset_count += 1
+
+    def reset_condition_cycle(self) -> None:
+        self.condition_cycle_reset_count += 1
 
     def predict(self, observation: dict[str, object]) -> np.ndarray:
         condition = np.asarray(observation["cycle_condition_v1"], dtype=np.float32)
@@ -69,13 +74,16 @@ def test_two_cycle_replay_resets_once_and_switches_at_boundary(
             episode=episode,
             anchor=anchor,
             condition_mode="switched",
+            reset_condition_cycle_at_boundary=True,
         )
     assert policy.reset_count == 1
+    assert policy.condition_cycle_reset_count == 1
     assert arrays["shared_ready_boundary_local_index"] == 2
     np.testing.assert_array_equal(arrays["condition"][1], [1, 0, 0, 1, 0, 0])
     np.testing.assert_array_equal(arrays["condition"][2], [1, 0, 0, 0, 1, 0])
     assert arrays["temporal_aggregation_action"][1, 0] == 0.0
     assert arrays["temporal_aggregation_action"][2, 0] == 1.0
+    assert arrays["condition_cycle_router_reset_count"] == 1
 
 
 def test_expert_thresholds_are_generated_from_source_episode_rows() -> None:
@@ -104,3 +112,48 @@ def test_expert_thresholds_are_generated_from_source_episode_rows() -> None:
     )
     assert thresholds["two_cycle_phase_coverage_lower"] < 1.0
     assert gate["passed"] is True
+
+
+def test_two_cycle_support_uses_second_cycle_counterfactual() -> None:
+    anchors = [
+        {
+            "split": "train",
+            "episode_id": 3,
+            "first_cycle_id": 1,
+            "second_cycle_id": 2,
+            "first_condition": {"next_ready_sector": "left"},
+            "second_condition": {"next_ready_sector": "right"},
+        },
+        {
+            "split": "validation",
+            "episode_id": 12,
+            "first_cycle_id": 4,
+            "second_cycle_id": 5,
+            "first_condition": {"next_ready_sector": "center"},
+            "second_condition": {"next_ready_sector": "left"},
+        },
+    ]
+    counterfactual = [
+        {
+            "split": "train",
+            "episode_id": 3,
+            "cycle_id": 2,
+            "changed_factors": ["next_sector"],
+            "target_condition": {"next_sector": "left"},
+            "supported": True,
+            "status": "supported_counterfactual",
+        },
+        {
+            "split": "validation",
+            "episode_id": 12,
+            "cycle_id": 5,
+            "changed_factors": ["next_sector"],
+            "target_condition": {"next_sector": "center"},
+            "supported": False,
+            "status": "unsupported_counterfactual",
+        },
+    ]
+    support = build_two_cycle_condition_support(anchors, counterfactual)
+    assert support["train_source_episode_minimum"] == 1
+    assert support["train_supported_changed_pair_count"] == 1
+    assert support["validation_supported_changed_pair_count"] == 0
