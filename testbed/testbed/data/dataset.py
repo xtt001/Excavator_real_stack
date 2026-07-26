@@ -22,6 +22,9 @@ from testbed.data.deadzone_intent_labels import compute_deadzone_intent_labels
 from testbed.data.hdf5_io import list_episodes
 from testbed.data.image_transforms import build_image_transform
 from testbed.data.schema import ATTR_IS_REAL, GRP_ENCODED_IMAGES
+from testbed.policies.act.phase_routed_condition import (
+    resolve_phase_routed_condition_config,
+)
 
 SUPPORTED_LOW_DIM_KEYS = ("qpos", "qvel", "cycle_condition_v1")
 
@@ -263,6 +266,7 @@ class EpisodicDataset(Dataset):
         condition_shuffle_seed: int | None = None,
         condition_phase_randomization: dict[str, Any] | None = None,
         condition_counterfactual_consistency: dict[str, Any] | None = None,
+        phase_routed_condition: dict[str, Any] | None = None,
     ):
         super().__init__()
         self.episode_ids = episode_ids
@@ -370,6 +374,25 @@ class EpisodicDataset(Dataset):
             if consistency_manifest["enabled"]
             else consistency_manifest
         )
+        self.phase_routed_condition = resolve_phase_routed_condition_config(
+            phase_routed_condition
+        )
+        if self.phase_routed_condition["enabled"] and self.low_dim_keys != [
+            "qpos",
+            "qvel",
+            "cycle_condition_v1",
+        ]:
+            raise ValueError(
+                "phase-routed condition requires low_dim_keys in frozen "
+                "qpos,qvel,cycle_condition_v1 order"
+            )
+        (
+            self.phase_route_mapping,
+            self.phase_route_manifest,
+        ) = _load_phase_route_assignments(
+            self.phase_routed_condition,
+            episode_ids=self.episode_ids,
+        )
         self.is_real: bool | None = None
         # Warm-up to populate self.is_real
         self.__getitem__(0)
@@ -428,6 +451,11 @@ class EpisodicDataset(Dataset):
                 if "cycle_condition_v1" in self.low_dim_keys
                 else None
             )
+            cycle_id = (
+                int(f["/conditions/cycle_id"][t0])
+                if self.phase_routed_condition["enabled"]
+                else None
+            )
             if self.condition_shuffle_mapping is not None:
                 cycle_condition = self.condition_shuffle_mapping[(ep_id, t0)]
             if self.condition_phase_randomization_mapping is not None:
@@ -444,6 +472,15 @@ class EpisodicDataset(Dataset):
                 if mapped is not None:
                     counterfactual_condition = mapped
                     counterfactual_consistency_eligible = True
+            condition_route = None
+            if self.phase_route_mapping is not None:
+                route_key = (int(ep_id), int(cycle_id), int(t0))
+                if route_key not in self.phase_route_mapping:
+                    raise ValueError(
+                        "missing frozen phase-route assignment for "
+                        f"episode={ep_id}, cycle={cycle_id}, tick={t0}"
+                    )
+                condition_route = int(self.phase_route_mapping[route_key])
             proprio = _assemble_low_dim_observation(
                 qpos=qpos,
                 qvel=qvel,
@@ -564,6 +601,7 @@ class EpisodicDataset(Dataset):
         if (
             deadzone_labels is None
             and self.condition_counterfactual_consistency_mapping is None
+            and self.phase_route_mapping is None
         ):
             return image_data, proprio_data, action_data, is_pad_t
 
@@ -592,6 +630,11 @@ class EpisodicDataset(Dataset):
                     ),
                 }
             )
+        if self.phase_route_mapping is not None:
+            result["condition_route"] = torch.tensor(
+                condition_route,
+                dtype=torch.int64,
+            )
         return result
 
 
@@ -606,6 +649,68 @@ def _read_camera_image(h5_file: Any, camera_name: str, timestep: int) -> np.ndar
         )
     encoded = np.asarray(h5_file[encoded_path][timestep], dtype=np.uint8).reshape(-1)
     return _decode_jpeg_image(encoded)
+
+
+def _load_phase_route_assignments(
+    config: dict[str, Any],
+    *,
+    episode_ids: list[int],
+) -> tuple[dict[tuple[int, int, int], int] | None, dict[str, Any]]:
+    if not config["enabled"]:
+        return None, {"enabled": False}
+    path = Path(config["router_files"]["assignments"]).resolve(strict=True)
+    arrays = np.load(path, allow_pickle=False)
+    required = {
+        "episode_id",
+        "cycle_id",
+        "tick",
+        "split",
+        "raw_route",
+        "route",
+        "true_route",
+    }
+    if set(arrays.files) != required:
+        raise ValueError(
+            "phase-route assignment keys differ from frozen schema: "
+            f"{sorted(arrays.files)}"
+        )
+    lengths = {int(np.asarray(arrays[key]).shape[0]) for key in required}
+    if len(lengths) != 1:
+        raise ValueError("phase-route assignment arrays have inconsistent lengths")
+    allowed_episodes = set(map(int, episode_ids))
+    mapping: dict[tuple[int, int, int], int] = {}
+    episode = np.asarray(arrays["episode_id"], dtype=np.int64)
+    cycle = np.asarray(arrays["cycle_id"], dtype=np.int64)
+    tick = np.asarray(arrays["tick"], dtype=np.int64)
+    route = np.asarray(arrays["route"], dtype=np.int64)
+    if route.size and not np.isin(route, (0, 1, 2)).all():
+        raise ValueError("phase-route assignments contain an invalid route")
+    for ep_id, cycle_id, target_tick, route_id in zip(
+        episode.tolist(),
+        cycle.tolist(),
+        tick.tolist(),
+        route.tolist(),
+        strict=True,
+    ):
+        if int(ep_id) not in allowed_episodes:
+            continue
+        key = (int(ep_id), int(cycle_id), int(target_tick))
+        if key in mapping:
+            raise ValueError(f"duplicate phase-route assignment: {key}")
+        mapping[key] = int(route_id)
+    if not mapping:
+        raise ValueError("phase-route assignments contain no requested episodes")
+    return mapping, {
+        "enabled": True,
+        "schema": "simverify_phase_route_loader_manifest_v1",
+        "assignment_path": str(path),
+        "assignment_sha256": str(config["route_assignments_sha256"]),
+        "params_sha256": str(config["router_params_sha256"]),
+        "source_manifest_sha256": str(config["router_manifest_sha256"]),
+        "episode_ids": sorted(allowed_episodes),
+        "assignment_count": len(mapping),
+        "held_out_test_read": False,
+    }
 
 
 def _bool_attr(value: Any) -> bool:
@@ -1178,6 +1283,7 @@ def load_data(
     condition_shuffle_seed_train: int | None = None,
     condition_phase_randomization_train: dict[str, Any] | None = None,
     condition_counterfactual_consistency_train: dict[str, Any] | None = None,
+    phase_routed_condition: dict[str, Any] | None = None,
 ) -> tuple[DataLoader, DataLoader, dict, bool, dict[str, Any]]:
     """
     Build train/val DataLoaders from an HDF5 dataset directory.
@@ -1330,6 +1436,7 @@ def load_data(
         condition_counterfactual_consistency=(
             condition_counterfactual_consistency_train
         ),
+        phase_routed_condition=phase_routed_condition,
     )
     val_ds = EpisodicDataset(
         val_ids,
@@ -1345,6 +1452,7 @@ def load_data(
         condition_shuffle_seed=None,
         condition_phase_randomization=None,
         condition_counterfactual_consistency=None,
+        phase_routed_condition=phase_routed_condition,
     )
 
     split_info["dataset_max_episode_len"] = int(max_episode_len)
@@ -1371,6 +1479,12 @@ def load_data(
     )
     split_info["condition_counterfactual_consistency_validation"] = dict(
         val_ds.condition_counterfactual_consistency_manifest
+    )
+    split_info["phase_routed_condition_train"] = dict(
+        train_ds.phase_route_manifest
+    )
+    split_info["phase_routed_condition_validation"] = dict(
+        val_ds.phase_route_manifest
     )
     split_info["norm_stats_episode_ids"] = [
         int(ep_id) for ep_id in norm_stats_episode_ids

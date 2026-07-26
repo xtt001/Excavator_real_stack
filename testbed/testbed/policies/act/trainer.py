@@ -239,6 +239,7 @@ class ACTTrainer(Trainer):
                 "action_loss_mask",
                 "counterfactual_proprio",
                 "counterfactual_consistency_eligible",
+                "condition_route",
             ):
                 if key in data:
                     extra[key] = data[key].to(adapter.device)

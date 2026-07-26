@@ -11,6 +11,10 @@ from testbed.policies.act.camera_role_encoding import (
     CameraRoleEncoding,
     resolve_camera_role_encoding_config,
 )
+from testbed.policies.act.phase_routed_condition import (
+    RoutedConditionProjection,
+    STATE_DIM as PHASE_ROUTED_STATE_DIM,
+)
 
 from ...goal_effect import GoalEffectHead
 from .backbone import build_backbone
@@ -122,6 +126,7 @@ class DETRVAE(nn.Module):
         effective_action_config=None,
         temporal_input_config=None,
         camera_role_encoding_config=None,
+        phase_routed_condition_config=None,
     ):
         """ Initializes the model.
         Parameters:
@@ -146,6 +151,14 @@ class DETRVAE(nn.Module):
         self.transformer = transformer
         self.encoder = encoder
         hidden_dim = transformer.d_model
+        phase_routed_cfg = dict(phase_routed_condition_config or {})
+        self.phase_routed_condition_enabled = bool(
+            phase_routed_cfg.get("enabled", False)
+        )
+        if self.phase_routed_condition_enabled and int(robot_state_dim) != 14:
+            raise ValueError(
+                "phase-routed condition requires qpos+qvel+condition state_dim=14"
+            )
         camera_role_cfg = resolve_camera_role_encoding_config(
             camera_role_encoding_config,
             camera_names=camera_names,
@@ -180,7 +193,11 @@ class DETRVAE(nn.Module):
         if backbones is not None:
             self.input_proj = nn.Conv2d(backbones[0].num_channels, hidden_dim, kernel_size=1)
             self.backbones = nn.ModuleList(backbones)
-            self.input_proj_robot_state = nn.Linear(robot_state_dim, hidden_dim)
+            self.input_proj_robot_state = (
+                RoutedConditionProjection(hidden_dim)
+                if self.phase_routed_condition_enabled
+                else nn.Linear(robot_state_dim, hidden_dim)
+            )
             self.temporal_feature_mixer = (
                 TemporalFeatureMixer(hidden_dim, self.temporal_history_steps)
                 if self.temporal_input_enabled
@@ -200,7 +217,14 @@ class DETRVAE(nn.Module):
         self.latent_dim = 32 # final size of latent z # TODO tune
         self.cls_embed = nn.Embedding(1, hidden_dim) # extra cls token embedding
         self.encoder_action_proj = nn.Linear(action_dim, hidden_dim) # project action to embedding
-        self.encoder_joint_proj = nn.Linear(robot_state_dim, hidden_dim)  # project robot state to embedding
+        self.encoder_joint_proj = nn.Linear(
+            (
+                PHASE_ROUTED_STATE_DIM
+                if self.phase_routed_condition_enabled
+                else robot_state_dim
+            ),
+            hidden_dim,
+        )  # project robot state to embedding
         self.latent_proj = nn.Linear(hidden_dim, self.latent_dim*2) # project hidden state to latent std, var
         self.register_buffer('pos_table', get_sinusoid_encoding_table(1+1+num_queries, hidden_dim)) # [CLS], qpos, a_seq
 
@@ -302,7 +326,15 @@ class DETRVAE(nn.Module):
             ]
         return all_cam_features, all_cam_pos
 
-    def forward(self, qpos, image, env_state, actions=None, is_pad=None):
+    def forward(
+        self,
+        qpos,
+        image,
+        env_state,
+        actions=None,
+        is_pad=None,
+        condition_route=None,
+    ):
         """
         qpos: batch, qpos_dim
         image: batch, num_cam, channel, height, width for single-frame ACT;
@@ -318,7 +350,12 @@ class DETRVAE(nn.Module):
         if is_training:
             # project action sequence to embedding dim, and concat with a CLS token
             action_embed = self.encoder_action_proj(actions) # (bs, seq, hidden_dim)
-            qpos_embed = self.encoder_joint_proj(qpos)  # (bs, hidden_dim)
+            encoder_state = (
+                qpos[:, :PHASE_ROUTED_STATE_DIM]
+                if self.phase_routed_condition_enabled
+                else qpos
+            )
+            qpos_embed = self.encoder_joint_proj(encoder_state)  # (bs, hidden_dim)
             qpos_embed = torch.unsqueeze(qpos_embed, axis=1)  # (bs, 1, hidden_dim)
             cls_embed = self.cls_embed.weight # (1, hidden_dim)
             cls_embed = torch.unsqueeze(cls_embed, axis=0).repeat(bs, 1, 1) # (bs, 1, hidden_dim)
@@ -436,7 +473,19 @@ class DETRVAE(nn.Module):
                 all_cam_features.append(features * self.vision_feature_scale)
                 all_cam_pos.append(pos)
             # proprioception features
-            proprio_input = self.input_proj_robot_state(qpos) * self.proprio_feature_scale
+            if self.phase_routed_condition_enabled:
+                if condition_route is None:
+                    raise ValueError(
+                        "phase-routed ACT requires a causal condition_route"
+                    )
+                proprio_input = (
+                    self.input_proj_robot_state(qpos, condition_route)
+                    * self.proprio_feature_scale
+                )
+            else:
+                proprio_input = (
+                    self.input_proj_robot_state(qpos) * self.proprio_feature_scale
+                )
             # fold camera dimension into width dimension
             src = torch.cat(all_cam_features, axis=3)
             pos = torch.cat(all_cam_pos, axis=3)
@@ -609,6 +658,11 @@ def build(args):
         effective_action_config=getattr(args, "effective_action", None),
         temporal_input_config=getattr(args, "temporal_input", None),
         camera_role_encoding_config=getattr(args, "camera_role_encoding", None),
+        phase_routed_condition_config=getattr(
+            args,
+            "phase_routed_condition",
+            None,
+        ),
     )
 
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)

@@ -58,8 +58,10 @@ def build_condition_causal_v2(
             f"immutable condition causal output exists: {destination}"
         )
 
-    if candidate_baseline_id not in {"B1", "B1.1", "B1.2"}:
-        raise ValueError("condition causal candidate must be B1, B1.1, or B1.2")
+    if candidate_baseline_id not in {"B1", "B1.1", "B1.2", "B1.3"}:
+        raise ValueError(
+            "condition causal candidate must be B1, B1.1, B1.2, or B1.3"
+        )
     b1_packages = [
         _validated_package(
             Path(root).resolve(strict=True),
@@ -68,8 +70,11 @@ def build_condition_causal_v2(
         )
         for root in b1_replay_roots
     ]
+    null_baseline_id = "B2.3" if candidate_baseline_id == "B1.3" else "B2"
     b2 = _validated_package(
-        Path(b2_replay_root).resolve(strict=True), "B2", "requested"
+        Path(b2_replay_root).resolve(strict=True),
+        null_baseline_id,
+        "requested",
     )
     masked = _validated_package(
         Path(masked_b1_replay_root).resolve(strict=True),
@@ -126,6 +131,7 @@ def build_condition_causal_v2(
         "held_out_test_read": False,
         "condition_understanding_established": passed,
         "candidate_baseline_id": candidate_baseline_id,
+        "null_baseline_id": null_baseline_id,
         "factor_pass": factor_pass,
         "criteria": criteria,
         "decision_rule": (
@@ -165,6 +171,7 @@ def build_condition_causal_v2(
                 "git": git,
                 "decision": decision,
                 "candidate_baseline_id": candidate_baseline_id,
+                "null_baseline_id": null_baseline_id,
                 "evidence_scope": "recorded-observation/offline",
                 "closed_loop_execution": False,
                 "held_out_test_read": False,

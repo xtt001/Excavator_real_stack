@@ -57,6 +57,10 @@ from testbed.policies.act.goal_effect import (
     goal_effect_loss_terms,
     resolve_goal_effect_config,
 )
+from testbed.policies.act.phase_routed_condition import (
+    build_runtime_phase_router,
+    resolve_phase_routed_condition_config,
+)
 from testbed.policies.base import Policy, register_policy
 
 
@@ -170,6 +174,8 @@ class ACTAdapterState:
     temporal_fallback_timestamp: int
     visual_history_state: CausalVisualHistoryState | None
     factorized_aggregator_state: FactorizedTemporalState | None
+    condition_route: int | None
+    condition_route_consecutive: int | None
 
 
 def _coerce_timestamp(value: Any) -> int | None:
@@ -701,6 +707,9 @@ class ACTAdapter(Policy):
                 policy_config.get("condition_counterfactual_consistency")
             )
         )
+        self._phase_routed_condition = resolve_phase_routed_condition_config(
+            policy_config.get("phase_routed_condition")
+        )
         self._demo_target_hold_loss = _resolve_demo_target_hold_loss_config(
             policy_config.get("demo_target_hold_loss")
         )
@@ -715,6 +724,9 @@ class ACTAdapter(Policy):
             policy_config.get("effective_action")
         )
         policy_config = dict(policy_config)
+        policy_config["phase_routed_condition"] = dict(
+            self._phase_routed_condition
+        )
         goal_effect_policy_config = dict(policy_config.get("goal_effect") or {})
         goal_effect_policy_config["enabled"] = bool(self._goal_effect.enabled)
         goal_effect_policy_config["horizons"] = list(self._goal_effect.horizons)
@@ -797,6 +809,10 @@ class ACTAdapter(Policy):
         self._temporal_fallback_timestamp = 0
         self._last_temporal_input_diagnostics: dict[str, Any] | None = None
         self._last_raw_action_chunk: torch.Tensor | None = None
+        self._condition_phase_router = build_runtime_phase_router(
+            self._phase_routed_condition
+        )
+        self._last_condition_route_diagnostics: dict[str, Any] | None = None
 
         self._normalize = transforms.Normalize(
             mean=[0.485, 0.456, 0.406],
@@ -843,6 +859,10 @@ class ACTAdapter(Policy):
         factorized_aggregator = getattr(self, "_factorized_aggregator", None)
         if factorized_aggregator is not None:
             factorized_aggregator.reset()
+        condition_router = getattr(self, "_condition_phase_router", None)
+        if condition_router is not None:
+            condition_router.reset()
+        self._last_condition_route_diagnostics = None
 
     def snapshot_state(self) -> ACTAdapterState:
         """Capture temporal inference state without sharing mutable storage."""
@@ -883,6 +903,16 @@ class ACTAdapter(Policy):
                 None
                 if factorized_aggregator is None
                 else factorized_aggregator.snapshot_state()
+            ),
+            condition_route=(
+                None
+                if getattr(self, "_condition_phase_router", None) is None
+                else int(self._condition_phase_router.route)
+            ),
+            condition_route_consecutive=(
+                None
+                if getattr(self, "_condition_phase_router", None) is None
+                else int(self._condition_phase_router.consecutive)
             ),
         )
 
@@ -935,6 +965,14 @@ class ACTAdapter(Policy):
             raise ValueError("ACT adapter factorized state/config mismatch")
         if factorized_aggregator is not None:
             factorized_aggregator.restore_state(state.factorized_aggregator_state)
+        condition_router = getattr(self, "_condition_phase_router", None)
+        if (condition_router is None) != (state.condition_route is None):
+            raise ValueError("ACT adapter condition router state/config mismatch")
+        if condition_router is not None:
+            if state.condition_route_consecutive is None:
+                raise ValueError("ACT adapter condition router counter is missing")
+            condition_router.route = int(state.condition_route)
+            condition_router.consecutive = int(state.condition_route_consecutive)
 
     @property
     def camera_names(self) -> list[str]:
@@ -992,6 +1030,10 @@ class ACTAdapter(Policy):
 
         return deepcopy(getattr(self, "_last_temporal_aggregation_diagnostics", None))
 
+    @property
+    def condition_route_diagnostics(self) -> dict[str, Any] | None:
+        return deepcopy(getattr(self, "_last_condition_route_diagnostics", None))
+
     # ── inference ─────────────────────────────────────────────────────────────
 
     def predict(self, obs: dict) -> np.ndarray:
@@ -1033,6 +1075,27 @@ class ACTAdapter(Policy):
     def _predict_action_and_optional_intent(
         self, obs: dict
     ) -> tuple[np.ndarray, np.ndarray | None]:
+        condition_route = None
+        condition_router = getattr(self, "_condition_phase_router", None)
+        if condition_router is not None:
+            if "qpos" not in obs or "qvel" not in obs:
+                raise ValueError(
+                    "phase-routed ACT requires qpos and qvel for causal routing"
+                )
+            condition_route = int(
+                condition_router.step(obs["qpos"], obs["qvel"])
+            )
+            self._last_condition_route_diagnostics = {
+                "schema": "simverify_condition_route_runtime_diagnostics_v1",
+                "route": ("current", "neutral", "next")[condition_route],
+                "route_index": condition_route,
+                "consecutive_pending": int(condition_router.consecutive),
+                "runtime_inputs": [
+                    "current_qpos",
+                    "current_qvel",
+                    "past_router_state",
+                ],
+            }
         proprio = self._build_proprio(obs)
 
         # normalise low-dimensional robot state
@@ -1121,7 +1184,11 @@ class ACTAdapter(Policy):
 
         if self._model.training:
             self._model.eval()
-        a_hat, intent_logits = self._forward_inference(proprio, image)
+        a_hat, intent_logits = self._forward_inference(
+            proprio,
+            image,
+            condition_route=condition_route,
+        )
         if intent_logits is not None and (
             intent_logits.ndim != 3
             or intent_logits.shape[0] != 1
@@ -1202,6 +1269,8 @@ class ACTAdapter(Policy):
         self,
         proprio: torch.Tensor,
         image: torch.Tensor,
+        *,
+        condition_route: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Run only the neural-network forward in the requested precision."""
         inference_autocast_dtype = getattr(
@@ -1225,7 +1294,22 @@ class ACTAdapter(Policy):
                 goal_effect_outputs,
                 _action_state_logits,
                 _effective_action_phase_logits,
-            ) = self._unpack_model_output(self._model(proprio, image, None))
+            ) = self._unpack_model_output(
+                (
+                    self._model(proprio, image, None)
+                    if condition_route is None
+                    else self._model(
+                        proprio,
+                        image,
+                        None,
+                        condition_route=torch.as_tensor(
+                            [condition_route],
+                            dtype=torch.int64,
+                            device=proprio.device,
+                        ),
+                    )
+                )
+            )
 
         # Aggregation, diagnostics, sigmoid, and CPU conversion stay in FP32.
         a_hat = a_hat.float()
@@ -1436,6 +1520,7 @@ class ACTAdapter(Policy):
         effective_action_loss_weight: torch.Tensor | None = None,
         counterfactual_proprio: torch.Tensor | None = None,
         counterfactual_consistency_eligible: torch.Tensor | None = None,
+        condition_route: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         """
         Training-time forward pass.
@@ -1494,7 +1579,18 @@ class ACTAdapter(Policy):
             action_state_logits,
             effective_action_phase_logits,
         ) = self._unpack_model_output(
-            self._model(proprio, image, None, actions, is_pad)
+            (
+                self._model(proprio, image, None, actions, is_pad)
+                if condition_route is None
+                else self._model(
+                    proprio,
+                    image,
+                    None,
+                    actions,
+                    is_pad,
+                    condition_route=condition_route,
+                )
+            )
         )
         total_kld, _, _ = _kl_divergence(mu, logvar)
 

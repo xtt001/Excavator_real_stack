@@ -73,6 +73,8 @@ def replay_cycle_arrays(
     raw_normalized_rows: list[np.ndarray] = []
     raw_direct_rows: list[np.ndarray] = []
     aggregated = np.zeros((step_count, 4), dtype=np.float32)
+    condition_route_index = np.full(step_count, -1, dtype=np.int8)
+    condition_route_pending = np.full(step_count, -1, dtype=np.int16)
     qpos = episode["observations/qpos"]
     qvel = episode["observations/qvel"]
     for local_index, target_tick in enumerate(range(start, end + 1)):
@@ -92,6 +94,18 @@ def replay_cycle_arrays(
             policy.predict(observation),
             dtype=np.float32,
         ).reshape(4)
+        route_diagnostics = getattr(
+            policy,
+            "condition_route_diagnostics",
+            None,
+        )
+        if route_diagnostics is not None:
+            condition_route_index[local_index] = int(
+                route_diagnostics["route_index"]
+            )
+            condition_route_pending[local_index] = int(
+                route_diagnostics["consecutive_pending"]
+            )
         raw_normalized = np.asarray(
             policy.last_raw_action_chunk(),
             dtype=np.float32,
@@ -126,6 +140,8 @@ def replay_cycle_arrays(
         "raw_policy_chunk_direct": np.stack(raw_direct_rows).astype(np.float32),
         "temporal_aggregation_action": aggregated.copy(),
         "future_runtime_safe_action": aggregated.copy(),
+        "condition_route_index": condition_route_index,
+        "condition_route_pending_count": condition_route_pending,
         "expert_action": np.asarray(
             episode["action"][start : end + 1],
             dtype=np.float32,

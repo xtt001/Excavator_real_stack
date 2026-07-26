@@ -678,6 +678,9 @@ def _act_policy_config_from_resolved(resolved: dict[str, Any]) -> dict[str, Any]
         "camera_role_encoding": copy.deepcopy(
             act_params.get("camera_role_encoding", {}) or {}
         ),
+        "phase_routed_condition": copy.deepcopy(
+            act_params.get("phase_routed_condition", {}) or {}
+        ),
         "lr_backbone": 1e-5,
         "backbone": "resnet18",
         "enc_layers": 4,

@@ -107,6 +107,30 @@ def train_policy(config: dict[str, Any]) -> None:
                 "condition counterfactual consistency is mutually exclusive "
                 "with condition shuffle and phase randomization"
             )
+    phase_routed_condition = copy.deepcopy(
+        (policy_cfg.get("act_params", {}) or {}).get(
+            "phase_routed_condition",
+            {},
+        )
+        or {}
+    )
+    phase_routed_condition_enabled = bool(
+        phase_routed_condition.get("enabled", False)
+    )
+    if phase_routed_condition_enabled:
+        if low_dim_keys != ["qpos", "qvel", "cycle_condition_v1"]:
+            raise ValueError(
+                "phase-routed condition requires low_dim_keys in frozen "
+                "qpos,qvel,cycle_condition_v1 order"
+            )
+        if (
+            condition_phase_randomization_enabled
+            or condition_counterfactual_consistency_enabled
+        ):
+            raise ValueError(
+                "phase-routed condition is mutually exclusive with B1.1/B1.2 "
+                "phase interventions"
+            )
     checkpoint_semantics = copy.deepcopy(config.get("checkpoint_semantics", {}) or {})
     experiment_contract = copy.deepcopy(config.get("experiment_contract", {}) or {})
 
@@ -170,6 +194,7 @@ def train_policy(config: dict[str, Any]) -> None:
         "condition_counterfactual_consistency": copy.deepcopy(
             condition_counterfactual_consistency
         ),
+        "phase_routed_condition": copy.deepcopy(phase_routed_condition),
     }
 
     full_config = {
@@ -200,6 +225,7 @@ def train_policy(config: dict[str, Any]) -> None:
         "condition_counterfactual_consistency": (
             condition_counterfactual_consistency
         ),
+        "phase_routed_condition": phase_routed_condition,
         "checkpoint_semantics": checkpoint_semantics,
         "experiment_contract": experiment_contract,
     }
@@ -245,6 +271,11 @@ def train_policy(config: dict[str, Any]) -> None:
             if condition_counterfactual_consistency_enabled
             else None
         ),
+        phase_routed_condition=(
+            phase_routed_condition
+            if phase_routed_condition_enabled
+            else None
+        ),
     )
     experiment_contract["condition_shuffle_provenance"] = copy.deepcopy(
         split_info["condition_shuffle_train"]
@@ -255,6 +286,12 @@ def train_policy(config: dict[str, Any]) -> None:
     experiment_contract["condition_counterfactual_consistency_provenance"] = (
         copy.deepcopy(split_info["condition_counterfactual_consistency_train"])
     )
+    experiment_contract["phase_routed_condition_provenance"] = {
+        "train": copy.deepcopy(split_info["phase_routed_condition_train"]),
+        "validation": copy.deepcopy(
+            split_info["phase_routed_condition_validation"]
+        ),
+    }
     full_config["experiment_contract"] = copy.deepcopy(experiment_contract)
 
     # save normalisation stats so trainer can load them
@@ -349,6 +386,9 @@ def _build_resolved_train_config(
     )
     train_cfg["condition_counterfactual_consistency"] = copy.deepcopy(
         full_config["condition_counterfactual_consistency"]
+    )
+    train_cfg["phase_routed_condition"] = copy.deepcopy(
+        full_config["phase_routed_condition"]
     )
     return resolved
 
