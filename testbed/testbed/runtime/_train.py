@@ -11,40 +11,44 @@ from typing import Any
 
 
 def train_policy(config: dict[str, Any]) -> None:
-    task_cfg   = config.get("task", {})
+    task_cfg = config.get("task", {})
     policy_cfg = config.get("policy", {})
-    train_cfg  = config.get("train", {})
+    train_cfg = config.get("train", {})
 
-    policy_class  = str(policy_cfg.get("class", policy_cfg.get("name", "ACT"))).upper()
-    task_name     = task_cfg.get("task_name", task_cfg.get("name", config.get("task_name", "")))
-    dataset_dir   = Path(task_cfg.get("dataset_dir", config.get("dataset_dir", "data")))
-    num_episodes  = task_cfg.get("num_episodes", config.get("num_episodes", 50))
+    policy_class = str(policy_cfg.get("class", policy_cfg.get("name", "ACT"))).upper()
+    task_name = task_cfg.get(
+        "task_name", task_cfg.get("name", config.get("task_name", ""))
+    )
+    dataset_dir = Path(task_cfg.get("dataset_dir", config.get("dataset_dir", "data")))
+    num_episodes = task_cfg.get("num_episodes", config.get("num_episodes", 50))
     episode_len_raw = task_cfg.get("episode_len", config.get("episode_len", 400))
     episode_len = None if episode_len_raw is None else int(episode_len_raw)
-    camera_names  = task_cfg.get("camera_names", config.get("camera_names", []))
-    low_dim_keys  = list(policy_cfg.get("low_dim_keys", ["qpos"]))
-    ckpt_dir      = Path(train_cfg.get("ckpt_dir", config.get("ckpt_dir", f"ckpts/{task_name}")))
-    equipment_model = task_cfg.get("equipment_model", config.get("equipment_model", "real_excavator"))
-    device        = str(train_cfg.get("device", policy_cfg.get("device", "cuda")))
+    camera_names = task_cfg.get("camera_names", config.get("camera_names", []))
+    low_dim_keys = list(policy_cfg.get("low_dim_keys", ["qpos"]))
+    ckpt_dir = Path(
+        train_cfg.get("ckpt_dir", config.get("ckpt_dir", f"ckpts/{task_name}"))
+    )
+    equipment_model = task_cfg.get(
+        "equipment_model", config.get("equipment_model", "real_excavator")
+    )
+    device = str(train_cfg.get("device", policy_cfg.get("device", "cuda")))
     split_seed_raw = train_cfg.get("split_seed")
-    split_seed = int(train_cfg.get("seed", 0) if split_seed_raw is None else split_seed_raw)
+    split_seed = int(
+        train_cfg.get("seed", 0) if split_seed_raw is None else split_seed_raw
+    )
     train_split_ratio = float(train_cfg.get("train_split_ratio", 0.8))
     reuse_split = bool(train_cfg.get("reuse_split", True))
     split_path = Path(train_cfg.get("split_path", ckpt_dir / "train_val_split.yaml"))
     episode_ids = _resolve_training_episode_ids(task_cfg=task_cfg, train_cfg=train_cfg)
-    image_transform = str(train_cfg.get("image_transform", task_cfg.get("image_transform", "none")))
+    image_transform = str(
+        train_cfg.get("image_transform", task_cfg.get("image_transform", "none"))
+    )
     deadzone_intent = copy.deepcopy(
         train_cfg.get("deadzone_intent", policy_cfg.get("deadzone_intent", {})) or {}
     )
-    sample_valid_mask_path = str(
-        train_cfg.get("sample_valid_mask_path", "")
-    ).strip()
-    norm_stats_train_only = bool(
-        train_cfg.get("norm_stats_train_only", False)
-    )
-    condition_shuffle = copy.deepcopy(
-        train_cfg.get("condition_shuffle", {}) or {}
-    )
+    sample_valid_mask_path = str(train_cfg.get("sample_valid_mask_path", "")).strip()
+    norm_stats_train_only = bool(train_cfg.get("norm_stats_train_only", False))
+    condition_shuffle = copy.deepcopy(train_cfg.get("condition_shuffle", {}) or {})
     condition_shuffle_enabled = bool(condition_shuffle.get("enabled", False))
     if condition_shuffle_enabled:
         if (
@@ -56,20 +60,37 @@ def train_policy(config: dict[str, Any]) -> None:
                 "condition shuffle requires key=cycle_condition_v1, "
                 "scope=train_only, and cycle_condition_v1 in low_dim_keys"
             )
-        condition_shuffle_seed_train = int(
-            condition_shuffle.get("seed", 0)
-        )
+        condition_shuffle_seed_train = int(condition_shuffle.get("seed", 0))
     else:
         condition_shuffle_seed_train = None
-    checkpoint_semantics = copy.deepcopy(
-        config.get("checkpoint_semantics", {}) or {}
+    condition_phase_randomization = copy.deepcopy(
+        train_cfg.get("condition_phase_randomization", {}) or {}
     )
-    experiment_contract = copy.deepcopy(
-        config.get("experiment_contract", {}) or {}
+    condition_phase_randomization_enabled = bool(
+        condition_phase_randomization.get("enabled", False)
     )
+    if condition_phase_randomization_enabled:
+        if (
+            condition_phase_randomization.get("key") != "cycle_condition_v1.next_sector"
+            or condition_phase_randomization.get("scope") != "train_only"
+            or "cycle_condition_v1" not in low_dim_keys
+        ):
+            raise ValueError(
+                "condition phase randomization requires "
+                "key=cycle_condition_v1.next_sector, scope=train_only, "
+                "and cycle_condition_v1 in low_dim_keys"
+            )
+        if condition_shuffle_enabled:
+            raise ValueError(
+                "condition shuffle and phase randomization are mutually exclusive"
+            )
+    checkpoint_semantics = copy.deepcopy(config.get("checkpoint_semantics", {}) or {})
+    experiment_contract = copy.deepcopy(config.get("experiment_contract", {}) or {})
 
     if policy_class != "ACT":
-        raise NotImplementedError(f"Trainer for policy class {policy_class!r} not yet implemented.")
+        raise NotImplementedError(
+            f"Trainer for policy class {policy_class!r} not yet implemented."
+        )
 
     from testbed.data.dataset import load_data
     from testbed.policies.act.trainer import ACTTrainer
@@ -85,23 +106,23 @@ def train_policy(config: dict[str, Any]) -> None:
         act_params.get("camera_role_encoding", {}) or {}
     )
     policy_config = {
-        "lr":            float(train_cfg.get("lr", 1e-5)),
-        "num_queries":   int(act_params.get("chunk_size", 100)),
-        "kl_weight":     float(act_params.get("kl_weight", 10)),
-        "hidden_dim":    int(act_params.get("hidden_dim", 512)),
+        "lr": float(train_cfg.get("lr", 1e-5)),
+        "num_queries": int(act_params.get("chunk_size", 100)),
+        "kl_weight": float(act_params.get("kl_weight", 10)),
+        "hidden_dim": int(act_params.get("hidden_dim", 512)),
         "dim_feedforward": int(act_params.get("dim_feedforward", 3200)),
         "vision_feature_scale": float(act_params.get("vision_feature_scale", 1.0)),
         "proprio_feature_scale": float(act_params.get("proprio_feature_scale", 1.0)),
-        "lr_backbone":   1e-5,
-        "backbone":      "resnet18",
-        "enc_layers":    4,
-        "dec_layers":    7,
-        "nheads":        8,
-        "camera_names":  camera_names,
+        "lr_backbone": 1e-5,
+        "backbone": "resnet18",
+        "enc_layers": 4,
+        "dec_layers": 7,
+        "nheads": 8,
+        "camera_names": camera_names,
         "equipment_model": equipment_model,
-        "low_dim_keys":  low_dim_keys,
-        "state_dim":     _resolve_low_dim_state_dim(low_dim_keys, equipment_model),
-        "device":        device,
+        "low_dim_keys": low_dim_keys,
+        "state_dim": _resolve_low_dim_state_dim(low_dim_keys, equipment_model),
+        "device": device,
         "deadzone_loss": copy.deepcopy(
             train_cfg.get("deadzone_loss", policy_cfg.get("deadzone_loss", {})) or {}
         ),
@@ -126,68 +147,78 @@ def train_policy(config: dict[str, Any]) -> None:
     }
 
     full_config = {
-        "num_epochs":     int(train_cfg.get("num_epochs", 2000)),
-        "ckpt_dir":       str(ckpt_dir),
-        "seed":           int(train_cfg.get("seed", 0)),
-        "task_name":      task_name,
-        "device":         device,
-        "resume_ckpt":    train_cfg.get("resume_ckpt"),
-        "start_epoch":    train_cfg.get("start_epoch"),
-        "val_every":      int(train_cfg.get("val_every", 1)),
+        "num_epochs": int(train_cfg.get("num_epochs", 2000)),
+        "ckpt_dir": str(ckpt_dir),
+        "seed": int(train_cfg.get("seed", 0)),
+        "task_name": task_name,
+        "device": device,
+        "resume_ckpt": train_cfg.get("resume_ckpt"),
+        "start_epoch": train_cfg.get("start_epoch"),
+        "val_every": int(train_cfg.get("val_every", 1)),
         "save_latest_every": int(train_cfg.get("save_latest_every", 1)),
         "checkpoint_every": int(train_cfg.get("checkpoint_every", 100)),
-        "plot_every":     int(train_cfg.get("plot_every", train_cfg.get("checkpoint_every", 100))),
-        "amp":            bool(train_cfg.get("amp", False)),
-        "amp_dtype":      str(train_cfg.get("amp_dtype", "auto")),
-        "split_seed":     split_seed,
+        "plot_every": int(
+            train_cfg.get("plot_every", train_cfg.get("checkpoint_every", 100))
+        ),
+        "amp": bool(train_cfg.get("amp", False)),
+        "amp_dtype": str(train_cfg.get("amp_dtype", "auto")),
+        "split_seed": split_seed,
         "train_split_ratio": train_split_ratio,
-        "reuse_split":    reuse_split,
-        "split_path":     str(split_path),
+        "reuse_split": reuse_split,
+        "split_path": str(split_path),
         "image_transform": image_transform,
         "sample_valid_mask_path": sample_valid_mask_path,
         "norm_stats_train_only": norm_stats_train_only,
         "condition_shuffle": condition_shuffle,
+        "condition_phase_randomization": condition_phase_randomization,
         "checkpoint_semantics": checkpoint_semantics,
         "experiment_contract": experiment_contract,
     }
 
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
-    batch_size   = int(train_cfg.get("batch_size", 8))
-    num_workers  = int(train_cfg.get("num_workers", 4))
-    pf_raw       = train_cfg.get("prefetch_factor", 2)
+    batch_size = int(train_cfg.get("batch_size", 8))
+    num_workers = int(train_cfg.get("num_workers", 4))
+    pf_raw = train_cfg.get("prefetch_factor", 2)
     prefetch_factor = int(pf_raw) if pf_raw is not None and num_workers > 0 else None
     action_chunk_size = int(act_params.get("chunk_size", 100))
     train_loader, val_loader, norm_stats, _, split_info = load_data(
-        dataset_dir  = dataset_dir,
-        num_episodes = num_episodes,
-        camera_names = camera_names,
-        episode_len  = episode_len,
-        batch_size_train   = batch_size,
-        batch_size_val     = batch_size,
-        num_workers        = num_workers,
-        prefetch_factor    = prefetch_factor,
-        persistent_workers = bool(train_cfg.get("persistent_workers", True)) and num_workers > 0,
-        pin_memory         = bool(train_cfg.get("pin_memory", True)),
-        split_seed         = split_seed,
-        train_split_ratio  = train_split_ratio,
-        split_path         = split_path,
-        reuse_split        = reuse_split,
-        low_dim_keys       = low_dim_keys,
-        episode_ids        = episode_ids,
-        action_chunk_size  = action_chunk_size,
-        image_transform    = image_transform,
-        deadzone_intent    = deadzone_intent,
+        dataset_dir=dataset_dir,
+        num_episodes=num_episodes,
+        camera_names=camera_names,
+        episode_len=episode_len,
+        batch_size_train=batch_size,
+        batch_size_val=batch_size,
+        num_workers=num_workers,
+        prefetch_factor=prefetch_factor,
+        persistent_workers=bool(train_cfg.get("persistent_workers", True))
+        and num_workers > 0,
+        pin_memory=bool(train_cfg.get("pin_memory", True)),
+        split_seed=split_seed,
+        train_split_ratio=train_split_ratio,
+        split_path=split_path,
+        reuse_split=reuse_split,
+        low_dim_keys=low_dim_keys,
+        episode_ids=episode_ids,
+        action_chunk_size=action_chunk_size,
+        image_transform=image_transform,
+        deadzone_intent=deadzone_intent,
         sample_valid_mask_path=sample_valid_mask_path or None,
         norm_stats_train_only=norm_stats_train_only,
         condition_shuffle_seed_train=condition_shuffle_seed_train,
+        condition_phase_randomization_train=(
+            condition_phase_randomization
+            if condition_phase_randomization_enabled
+            else None
+        ),
     )
     experiment_contract["condition_shuffle_provenance"] = copy.deepcopy(
         split_info["condition_shuffle_train"]
     )
-    full_config["experiment_contract"] = copy.deepcopy(
-        experiment_contract
+    experiment_contract["condition_phase_randomization_provenance"] = copy.deepcopy(
+        split_info["condition_phase_randomization_train"]
     )
+    full_config["experiment_contract"] = copy.deepcopy(experiment_contract)
 
     # save normalisation stats so trainer can load them
     stats_path = ckpt_dir / "dataset_stats.pkl"
@@ -202,7 +233,9 @@ def train_policy(config: dict[str, Any]) -> None:
         split_path=split_path,
         full_config=full_config,
     )
-    resolved_config_path = write_resolved_config(ckpt_dir / "resolved_config.yaml", resolved_config)
+    resolved_config_path = write_resolved_config(
+        ckpt_dir / "resolved_config.yaml", resolved_config
+    )
     run_metadata = build_train_run_metadata(
         dataset_dir=dataset_dir,
         ckpt_dir=ckpt_dir,
@@ -222,7 +255,9 @@ def train_policy(config: dict[str, Any]) -> None:
 
     trainer = ACTTrainer(policy_config=policy_config, config=full_config)
     try:
-        best_epoch, best_val_loss, _ = trainer.fit(train_loader, val_loader, full_config)
+        best_epoch, best_val_loss, _ = trainer.fit(
+            train_loader, val_loader, full_config
+        )
     except Exception as exc:
         run_metadata["status"] = "failed"
         run_metadata["completed_at"] = datetime.datetime.utcnow().isoformat()
@@ -250,9 +285,7 @@ def _build_resolved_train_config(
     resolved = copy.deepcopy(config)
     task_cfg = resolved.setdefault("task", {})
     train_cfg = resolved.setdefault("train", {})
-    resolved["experiment_contract"] = copy.deepcopy(
-        full_config["experiment_contract"]
-    )
+    resolved["experiment_contract"] = copy.deepcopy(full_config["experiment_contract"])
 
     task_cfg["dataset_dir"] = str(dataset_dir)
     if "train_ready_manifest_path" in config.get("task", {}):
@@ -271,14 +304,11 @@ def _build_resolved_train_config(
     train_cfg["plot_every"] = int(full_config["plot_every"])
     train_cfg["amp"] = bool(full_config["amp"])
     train_cfg["amp_dtype"] = str(full_config["amp_dtype"])
-    train_cfg["sample_valid_mask_path"] = str(
-        full_config["sample_valid_mask_path"]
-    )
-    train_cfg["norm_stats_train_only"] = bool(
-        full_config["norm_stats_train_only"]
-    )
-    train_cfg["condition_shuffle"] = copy.deepcopy(
-        full_config["condition_shuffle"]
+    train_cfg["sample_valid_mask_path"] = str(full_config["sample_valid_mask_path"])
+    train_cfg["norm_stats_train_only"] = bool(full_config["norm_stats_train_only"])
+    train_cfg["condition_shuffle"] = copy.deepcopy(full_config["condition_shuffle"])
+    train_cfg["condition_phase_randomization"] = copy.deepcopy(
+        full_config["condition_phase_randomization"]
     )
     return resolved
 
@@ -318,7 +348,9 @@ def _resolve_training_episode_ids(
         return None
     manifest_path = Path(str(manifest_raw))
     if not manifest_path.exists():
-        raise FileNotFoundError(f"train_ready_manifest_path does not exist: {manifest_path}")
+        raise FileNotFoundError(
+            f"train_ready_manifest_path does not exist: {manifest_path}"
+        )
     payload = json.loads(manifest_path.read_text())
     ids: list[int] = []
     for value in payload.get("train_ready_episode_ids", []):
@@ -327,5 +359,7 @@ def _resolve_training_episode_ids(
             text = text.split("_", 1)[1]
         ids.append(int(text))
     if not ids:
-        raise ValueError(f"train_ready_manifest_path contains no train_ready_episode_ids: {manifest_path}")
+        raise ValueError(
+            f"train_ready_manifest_path contains no train_ready_episode_ids: {manifest_path}"
+        )
     return sorted(set(ids))

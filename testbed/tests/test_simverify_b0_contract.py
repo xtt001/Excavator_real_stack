@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 
 import h5py
@@ -8,7 +10,11 @@ import pytest
 import torch
 import yaml
 
-from testbed.data.dataset import EpisodicDataset, load_data
+from testbed.data.dataset import (
+    EpisodicDataset,
+    _exact_marginal_label_derangement,
+    load_data,
+)
 from testbed.policies.act.trainer import ACTTrainer
 from testbed.runtime.run_metadata import _find_git_root
 from testbed.simverify.m3_gate import bootstrap_episode_mean
@@ -27,9 +33,15 @@ def _write_episode(
     value: float,
     valid_mask: list[int],
     condition_values: np.ndarray | None = None,
+    cycle_ids: np.ndarray | None = None,
 ) -> None:
-    image = np.zeros((4, 8, 12, 3), dtype=np.uint8)
-    values = np.full((4, 4), value, dtype=np.float32)
+    total_steps = (
+        int(np.asarray(condition_values).shape[0])
+        if condition_values is not None
+        else 4
+    )
+    image = np.zeros((total_steps, 8, 12, 3), dtype=np.uint8)
+    values = np.full((total_steps, 4), value, dtype=np.float32)
     with h5py.File(path, "w") as handle:
         handle.attrs["is_real"] = False
         observations = handle.create_group("observations")
@@ -62,6 +74,11 @@ def _write_episode(
             "cycle_condition_v1",
             data=condition_array,
         )
+        if cycle_ids is not None:
+            condition_group.create_dataset(
+                "cycle_id",
+                data=np.asarray(cycle_ids, dtype=np.int64),
+            )
 
 
 def test_simverify_mask_and_train_only_stats_exclude_invalid_and_validation(
@@ -404,18 +421,15 @@ def test_b2_train_condition_shuffle_is_reproducible_and_preserves_marginals(
     }
     first = EpisodicDataset(**kwargs)
     second = EpisodicDataset(**kwargs)
-    validation = EpisodicDataset(
-        **{**kwargs, "condition_shuffle_seed": None}
-    )
+    validation = EpisodicDataset(**{**kwargs, "condition_shuffle_seed": None})
 
     manifest = first.condition_shuffle_manifest
     assert manifest["row_count"] == 8
-    assert manifest["source_token_counts"] == manifest[
-        "shuffled_token_counts"
-    ]
-    assert manifest["mapping_sha256"] == second.condition_shuffle_manifest[
-        "mapping_sha256"
-    ]
+    assert manifest["source_token_counts"] == manifest["shuffled_token_counts"]
+    assert (
+        manifest["mapping_sha256"]
+        == second.condition_shuffle_manifest["mapping_sha256"]
+    )
     assert manifest["changed_row_count"] > 0
     assert validation.condition_shuffle_manifest == {
         "enabled": False,
@@ -423,11 +437,129 @@ def test_b2_train_condition_shuffle_is_reproducible_and_preserves_marginals(
     }
 
 
+def test_b1_1_phase_randomization_is_chunk_safe_and_exact_marginal(
+    tmp_path: Path,
+) -> None:
+    condition = np.asarray(
+        [
+            [1, 0, 0, 1, 0, 0],
+            [1, 0, 0, 1, 0, 0],
+            [1, 0, 0, 1, 0, 0],
+            [1, 0, 0, 1, 0, 0],
+            [0, 1, 0, 0, 1, 0],
+            [0, 1, 0, 0, 1, 0],
+            [0, 1, 0, 0, 1, 0],
+            [0, 1, 0, 0, 1, 0],
+            [0, 0, 1, 0, 0, 1],
+            [0, 0, 1, 0, 0, 1],
+            [0, 0, 1, 0, 0, 1],
+            [0, 0, 1, 0, 0, 1],
+        ],
+        dtype=np.float32,
+    )
+    cycle_ids = np.repeat(np.arange(3), 4)
+    _write_episode(
+        tmp_path / "episode_0.hdf5",
+        value=1.0,
+        valid_mask=[1] * 12,
+        condition_values=condition,
+        cycle_ids=cycle_ids,
+    )
+    annotation_path = tmp_path / "annotations.jsonl"
+    rows = []
+    for cycle_id, (start, dump_end) in enumerate(((0, 3), (4, 7), (8, 11))):
+        rows.append(
+            {
+                "episode_id": 0,
+                "cycle_id": cycle_id,
+                "split": "train",
+                "quality": {"status": "accepted"},
+                "policy_condition": {
+                    "vector": condition[start].tolist(),
+                },
+                "observable_events": {
+                    "dump_end_proxy": {
+                        "representative_target_tick": dump_end,
+                    }
+                },
+            }
+        )
+    annotation_path.write_text(
+        "".join(f"{json.dumps(row)}\n" for row in rows),
+        encoding="utf-8",
+    )
+    digest = hashlib.sha256(annotation_path.read_bytes()).hexdigest()
+    norm_stats = {
+        "action_mean": np.zeros(4, dtype=np.float32),
+        "action_std": np.ones(4, dtype=np.float32),
+        "proprio_mean": np.zeros(14, dtype=np.float32),
+        "proprio_std": np.ones(14, dtype=np.float32),
+        "proprio_dim": 14,
+        "qpos_only_dim": 4,
+    }
+    dataset = EpisodicDataset(
+        episode_ids=[0],
+        dataset_dir=tmp_path,
+        camera_names=["video4"],
+        norm_stats=norm_stats,
+        low_dim_keys=["qpos", "qvel", "cycle_condition_v1"],
+        action_chunk_size=1,
+        sample_valid_mask_path="conditions/valid_mask",
+        condition_phase_randomization={
+            "enabled": True,
+            "key": "cycle_condition_v1.next_sector",
+            "scope": "train_only",
+            "seed": 20260726,
+            "phase_boundary": "dump_end_proxy.representative_target_tick",
+            "eligibility_rule": "t0_plus_chunk_le_dump_end",
+            "annotation_path": str(annotation_path),
+            "annotation_sha256": digest,
+        },
+    )
+
+    manifest = dataset.condition_phase_randomization_manifest
+    mapping = dataset.condition_phase_randomization_mapping
+    assert manifest["eligible_randomized_start_count"] == 9
+    assert manifest["preserved_crossing_or_post_start_count"] == 3
+    assert manifest["changed_eligible_fraction"] == 1.0
+    assert manifest["source_next_sector_counts"] == {
+        "left": 3,
+        "center": 3,
+        "right": 3,
+    }
+    assert (
+        manifest["source_next_sector_counts"]
+        == manifest["randomized_next_sector_counts"]
+    )
+    assert mapping is not None
+    assert set(mapping) == {
+        (0, 0),
+        (0, 1),
+        (0, 2),
+        (0, 4),
+        (0, 5),
+        (0, 6),
+        (0, 8),
+        (0, 9),
+        (0, 10),
+    }
+    for (_episode_id, tick), randomized in mapping.items():
+        np.testing.assert_array_equal(randomized[:3], condition[tick, :3])
+        assert not np.array_equal(randomized[3:], condition[tick, 3:])
+
+
+def test_exact_marginal_derangement_is_reproducible() -> None:
+    labels = np.asarray([0, 0, 1, 1, 2, 2], dtype=np.int64)
+    first = _exact_marginal_label_derangement(labels, seed=7)
+    second = _exact_marginal_label_derangement(labels, seed=7)
+    np.testing.assert_array_equal(first, second)
+    assert np.all(first != labels)
+    assert sorted(first.tolist()) == sorted(labels.tolist())
+
+
 def test_b1_b2_configs_are_matched_except_condition_association() -> None:
     b1 = yaml.safe_load(
-        (CONFIG_ROOT / "simverify_b1_conditioned_v1.yaml").read_text(
-            encoding="utf-8"
-        )
+        (CONFIG_ROOT / "simverify_b1_conditioned_v1.yaml").read_text(encoding="utf-8")
     )
     b2 = yaml.safe_load(
         (CONFIG_ROOT / "simverify_b2_shuffled_condition_v1.yaml").read_text(
@@ -459,3 +591,33 @@ def test_b1_b2_configs_are_matched_except_condition_association() -> None:
     assert b1["train"]["condition_shuffle"]["enabled"] is False
     assert b2["train"]["condition_shuffle"]["enabled"] is True
     assert b1["checkpoint_semantics"] == b2["checkpoint_semantics"]
+
+
+def test_b1_1_config_changes_only_train_phase_randomization() -> None:
+    b1 = yaml.safe_load(
+        (CONFIG_ROOT / "simverify_b1_conditioned_v1.yaml").read_text(encoding="utf-8")
+    )
+    candidate = yaml.safe_load(
+        (CONFIG_ROOT / "simverify_b1_1_next_phase_randomized_v1.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert candidate["experiment_contract"]["baseline_id"] == "B1.1"
+    assert candidate["experiment_contract"]["held_out_test"] == "locked_unread"
+    assert b1["policy"] == candidate["policy"]
+    assert b1["checkpoint_semantics"] == candidate["checkpoint_semantics"]
+    assert b1["task"] | {"task_name": "matched"} == (
+        candidate["task"] | {"task_name": "matched"}
+    )
+    b1_train = {
+        **b1["train"],
+        "ckpt_dir": "matched",
+        "condition_phase_randomization": "declared_factor",
+    }
+    candidate_train = {
+        **candidate["train"],
+        "ckpt_dir": "matched",
+        "condition_phase_randomization": "declared_factor",
+    }
+    assert b1_train == candidate_train

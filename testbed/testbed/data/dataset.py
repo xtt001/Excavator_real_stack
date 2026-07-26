@@ -26,7 +26,9 @@ from testbed.data.schema import ATTR_IS_REAL, GRP_ENCODED_IMAGES
 SUPPORTED_LOW_DIM_KEYS = ("qpos", "qvel", "cycle_condition_v1")
 
 
-def _normalize_low_dim_keys(low_dim_keys: list[str] | tuple[str, ...] | None) -> list[str]:
+def _normalize_low_dim_keys(
+    low_dim_keys: list[str] | tuple[str, ...] | None,
+) -> list[str]:
     keys = ["qpos"] if not low_dim_keys else [str(key) for key in low_dim_keys]
     invalid = [key for key in keys if key not in SUPPORTED_LOW_DIM_KEYS]
     if invalid:
@@ -64,9 +66,7 @@ def _assemble_low_dim_observation(
             part = qvel_arr
         elif key == "cycle_condition_v1":
             if condition_arr is None:
-                raise ValueError(
-                    "cycle_condition_v1 is configured but unavailable."
-                )
+                raise ValueError("cycle_condition_v1 is configured but unavailable.")
             part = condition_arr
         else:
             continue
@@ -82,6 +82,7 @@ def _assemble_low_dim_observation(
 
 
 # ─── Normalization stats ──────────────────────────────────────────────────────
+
 
 def get_norm_stats(
     dataset_dir: str | Path,
@@ -120,8 +121,8 @@ def get_norm_stats(
     selected_low_dim_keys = _normalize_low_dim_keys(low_dim_keys)
     deadzone_intent_cfg = _resolve_deadzone_intent_config(deadzone_intent)
     all_proprio_data: list[torch.Tensor] = []
-    all_qpos_data:    list[torch.Tensor] = []
-    all_action_data:  list[torch.Tensor] = []
+    all_qpos_data: list[torch.Tensor] = []
+    all_action_data: list[torch.Tensor] = []
     example_qpos = None
     example_proprio = None
 
@@ -131,8 +132,8 @@ def get_norm_stats(
         if not p.exists():
             continue
         with h5py.File(p, "r") as f:
-            qpos   = f["/observations/qpos"][()]
-            qvel   = f["/observations/qvel"][()]
+            qpos = f["/observations/qpos"][()]
+            qvel = f["/observations/qvel"][()]
             cycle_condition = (
                 f["/conditions/cycle_condition_v1"][()]
                 if "cycle_condition_v1" in selected_low_dim_keys
@@ -194,21 +195,21 @@ def get_norm_stats(
     # controlled recordings can stop at different lengths, so stats are
     # computed over the concatenated time axis.
     proprio_tensor = torch.cat(all_proprio_data, dim=0)  # (sum_T, Np)
-    qpos_tensor    = torch.cat(all_qpos_data, dim=0)     # (sum_T, Nq)
-    action_tensor  = torch.cat(all_action_data, dim=0)   # (sum_T, Na)
+    qpos_tensor = torch.cat(all_qpos_data, dim=0)  # (sum_T, Nq)
+    action_tensor = torch.cat(all_action_data, dim=0)  # (sum_T, Na)
 
     action_mean = action_tensor.mean(dim=0, keepdim=True)
-    action_std  = action_tensor.std(dim=0,  keepdim=True).clamp(min=1e-2)
+    action_std = action_tensor.std(dim=0, keepdim=True).clamp(min=1e-2)
     proprio_mean = proprio_tensor.mean(dim=0, keepdim=True)
-    proprio_std  = proprio_tensor.std(dim=0,  keepdim=True).clamp(min=1e-2)
-    qpos_mean    = qpos_tensor.mean(dim=0,    keepdim=True)
-    qpos_std     = qpos_tensor.std(dim=0,     keepdim=True).clamp(min=1e-2)
+    proprio_std = proprio_tensor.std(dim=0, keepdim=True).clamp(min=1e-2)
+    qpos_mean = qpos_tensor.mean(dim=0, keepdim=True)
+    qpos_std = qpos_tensor.std(dim=0, keepdim=True).clamp(min=1e-2)
 
     stats = {
-        "action_mean":  action_mean.numpy().squeeze().astype(np.float32),
-        "action_std":   action_std.numpy().squeeze().astype(np.float32),
+        "action_mean": action_mean.numpy().squeeze().astype(np.float32),
+        "action_std": action_std.numpy().squeeze().astype(np.float32),
         "proprio_mean": proprio_mean.numpy().squeeze().astype(np.float32),
-        "proprio_std":  proprio_std.numpy().squeeze().astype(np.float32),
+        "proprio_std": proprio_std.numpy().squeeze().astype(np.float32),
         "example_proprio": example_proprio,
         "proprio_keys": np.asarray(selected_low_dim_keys, dtype=object),
         "proprio_dim": int(proprio_tensor.shape[1]),
@@ -226,6 +227,7 @@ def get_norm_stats(
 
 
 # ─── Dataset ─────────────────────────────────────────────────────────────────
+
 
 class EpisodicDataset(Dataset):
     """
@@ -259,15 +261,18 @@ class EpisodicDataset(Dataset):
         deadzone_intent: dict[str, Any] | None = None,
         sample_valid_mask_path: str | None = None,
         condition_shuffle_seed: int | None = None,
+        condition_phase_randomization: dict[str, Any] | None = None,
     ):
         super().__init__()
-        self.episode_ids  = episode_ids
-        self.dataset_dir  = Path(dataset_dir)
+        self.episode_ids = episode_ids
+        self.dataset_dir = Path(dataset_dir)
         self.camera_names = camera_names
-        self.norm_stats   = norm_stats
-        self.episode_len  = int(episode_len) if episode_len is not None else None
+        self.norm_stats = norm_stats
+        self.episode_len = int(episode_len) if episode_len is not None else None
         self.low_dim_keys = _normalize_low_dim_keys(low_dim_keys)
-        self.action_chunk_size = int(action_chunk_size) if action_chunk_size is not None else None
+        self.action_chunk_size = (
+            int(action_chunk_size) if action_chunk_size is not None else None
+        )
         self.image_transform_name = str(image_transform or "none")
         self.image_transform = build_image_transform(self.image_transform_name)
         self.deadzone_intent = _resolve_deadzone_intent_config(deadzone_intent)
@@ -275,9 +280,7 @@ class EpisodicDataset(Dataset):
             str(sample_valid_mask_path) if sample_valid_mask_path else None
         )
         self.condition_shuffle_seed = (
-            None
-            if condition_shuffle_seed is None
-            else int(condition_shuffle_seed)
+            None if condition_shuffle_seed is None else int(condition_shuffle_seed)
         )
         if (
             self.condition_shuffle_seed is not None
@@ -285,6 +288,22 @@ class EpisodicDataset(Dataset):
         ):
             raise ValueError(
                 "condition shuffle requires cycle_condition_v1 in low_dim_keys"
+            )
+        self.condition_phase_randomization = dict(condition_phase_randomization or {})
+        phase_randomization_enabled = bool(
+            self.condition_phase_randomization.get("enabled", False)
+        )
+        if (
+            phase_randomization_enabled
+            and "cycle_condition_v1" not in self.low_dim_keys
+        ):
+            raise ValueError(
+                "condition phase randomization requires "
+                "cycle_condition_v1 in low_dim_keys"
+            )
+        if phase_randomization_enabled and self.condition_shuffle_seed is not None:
+            raise ValueError(
+                "condition shuffle and phase randomization are mutually exclusive"
             )
         (
             self.condition_shuffle_mapping,
@@ -297,6 +316,17 @@ class EpisodicDataset(Dataset):
             sample_valid_mask_path=self.sample_valid_mask_path,
             seed=self.condition_shuffle_seed,
         )
+        (
+            self.condition_phase_randomization_mapping,
+            self.condition_phase_randomization_manifest,
+        ) = _build_condition_phase_randomization_mapping(
+            dataset_dir=self.dataset_dir,
+            episode_ids=self.episode_ids,
+            action_chunk_size=self.action_chunk_size,
+            deadzone_intent=self.deadzone_intent,
+            sample_valid_mask_path=self.sample_valid_mask_path,
+            config=self.condition_phase_randomization,
+        )
         self.is_real: bool | None = None
         # Warm-up to populate self.is_real
         self.__getitem__(0)
@@ -307,8 +337,8 @@ class EpisodicDataset(Dataset):
     def __getitem__(self, index: int):
         import h5py
 
-        ep_id  = self.episode_ids[index]
-        path   = self.dataset_dir / f"episode_{ep_id}.hdf5"
+        ep_id = self.episode_ids[index]
+        path = self.dataset_dir / f"episode_{ep_id}.hdf5"
 
         with h5py.File(path, "r") as f:
             is_real: bool = bool(f.attrs.get(ATTR_IS_REAL, True))
@@ -357,6 +387,11 @@ class EpisodicDataset(Dataset):
             )
             if self.condition_shuffle_mapping is not None:
                 cycle_condition = self.condition_shuffle_mapping[(ep_id, t0)]
+            if self.condition_phase_randomization_mapping is not None:
+                cycle_condition = self.condition_phase_randomization_mapping.get(
+                    (ep_id, t0),
+                    cycle_condition,
+                )
             proprio = _assemble_low_dim_observation(
                 qpos=qpos,
                 qvel=qvel,
@@ -372,7 +407,7 @@ class EpisodicDataset(Dataset):
 
             # ── action from t0 onward ────────────────────────────────────
             start = t0 if (not is_real or action_prealigned) else max(0, t0 - 1)
-            action     = f["/action"][start:]
+            action = f["/action"][start:]
             action_len = T - start
             deadzone_labels = None
             if self.deadzone_intent["enabled"]:
@@ -413,7 +448,9 @@ class EpisodicDataset(Dataset):
                 f"episode_len {target_len}. Increase task.episode_len or re-record."
             )
 
-        padded_action = np.zeros((target_len, original_action_shape[1]), dtype=np.float32)
+        padded_action = np.zeros(
+            (target_len, original_action_shape[1]), dtype=np.float32
+        )
         padded_action[:action_len] = action
         is_pad = np.ones(target_len, dtype=bool)
         is_pad[:action_len] = False
@@ -422,14 +459,20 @@ class EpisodicDataset(Dataset):
         padded_wrong_mask = None
         padded_action_loss_mask = None
         if deadzone_labels is not None:
-            padded_move_mask = np.zeros((target_len, original_action_shape[1], 2), dtype=bool)
+            padded_move_mask = np.zeros(
+                (target_len, original_action_shape[1], 2), dtype=bool
+            )
             padded_stop_mask = np.zeros(target_len, dtype=bool)
-            padded_wrong_mask = np.zeros((target_len, original_action_shape[1], 2), dtype=bool)
+            padded_wrong_mask = np.zeros(
+                (target_len, original_action_shape[1], 2), dtype=bool
+            )
             padded_action_loss_mask = np.zeros(target_len, dtype=bool)
             padded_move_mask[:action_len] = deadzone_labels.move_mask[start:]
             padded_stop_mask[:action_len] = deadzone_labels.stop_mask[start:]
             padded_wrong_mask[:action_len] = deadzone_labels.wrong_mask[start:]
-            padded_action_loss_mask[:action_len] = deadzone_labels.action_loss_mask[start:]
+            padded_action_loss_mask[:action_len] = deadzone_labels.action_loss_mask[
+                start:
+            ]
 
         # ── assemble camera tensor ─────────────────────────────────────────
         all_cam_images = np.stack(
@@ -437,22 +480,20 @@ class EpisodicDataset(Dataset):
         )  # (n_cams, H, W, 3)
 
         # ── convert to tensors ────────────────────────────────────────────
-        image_data   = torch.from_numpy(all_cam_images)
+        image_data = torch.from_numpy(all_cam_images)
         proprio_data = torch.from_numpy(proprio).float()
-        action_data  = torch.from_numpy(padded_action).float()
-        is_pad_t     = torch.from_numpy(is_pad)
+        action_data = torch.from_numpy(padded_action).float()
+        is_pad_t = torch.from_numpy(is_pad)
 
         # channel-last → channel-first + normalize to [0, 1]
         image_data = torch.einsum("k h w c -> k c h w", image_data).float() / 255.0
 
         # normalise proprio and actions
         action_data = (
-            action_data
-            - torch.from_numpy(self.norm_stats["action_mean"])
+            action_data - torch.from_numpy(self.norm_stats["action_mean"])
         ) / torch.from_numpy(self.norm_stats["action_std"])
         proprio_data = (
-            proprio_data
-            - torch.from_numpy(self.norm_stats["proprio_mean"])
+            proprio_data - torch.from_numpy(self.norm_stats["proprio_mean"])
         ) / torch.from_numpy(self.norm_stats["proprio_std"])
 
         if deadzone_labels is None:
@@ -476,7 +517,9 @@ def _read_camera_image(h5_file: Any, camera_name: str, timestep: int) -> np.ndar
         return np.asarray(h5_file[raw_path][timestep], dtype=np.uint8)
     encoded_path = f"{GRP_ENCODED_IMAGES}/{camera_name}"
     if encoded_path not in h5_file:
-        raise KeyError(f"Camera {camera_name!r} not found as raw or encoded image data.")
+        raise KeyError(
+            f"Camera {camera_name!r} not found as raw or encoded image data."
+        )
     encoded = np.asarray(h5_file[encoded_path][timestep], dtype=np.uint8).reshape(-1)
     return _decode_jpeg_image(encoded)
 
@@ -518,24 +561,18 @@ def _build_condition_shuffle_mapping(
             total_steps = int(handle["/action"].shape[0])
             condition_path = "/conditions/cycle_condition_v1"
             if condition_path not in handle:
-                raise KeyError(
-                    f"condition shuffle requires {condition_path}: {path}"
-                )
+                raise KeyError(f"condition shuffle requires {condition_path}: {path}")
             condition = np.asarray(
                 handle[condition_path][()],
                 dtype=np.float32,
             )
             if condition.shape != (total_steps, 6):
-                raise ValueError(
-                    "cycle_condition_v1 must have shape (T, 6)"
-                )
+                raise ValueError("cycle_condition_v1 must have shape (T, 6)")
             action_loss_start_mask = _read_optional_handoff_mask(
                 handle,
                 "handoff/action_loss_mask",
                 total_steps,
-                enabled=bool(
-                    deadzone_intent["require_action_loss_in_chunk"]
-                ),
+                enabled=bool(deadzone_intent["require_action_loss_in_chunk"]),
             )
             valid_starts = _valid_start_indices(
                 total_steps=total_steps,
@@ -565,16 +602,12 @@ def _build_condition_shuffle_mapping(
     shuffled_counts = Counter(_condition_key(row) for row in shuffled)
     if source_counts != shuffled_counts:
         raise AssertionError("condition shuffle changed token marginals")
-    mapping = {
-        key: shuffled[index].copy() for index, key in enumerate(keys)
-    }
+    mapping = {key: shuffled[index].copy() for index, key in enumerate(keys)}
     digest = hashlib.sha256()
     for key in keys:
         digest.update(np.asarray(key, dtype=np.int64).tobytes())
         digest.update(mapping[key].astype(np.float32).tobytes())
-    changed = int(
-        np.sum(np.any(matrix != shuffled, axis=1))
-    )
+    changed = int(np.sum(np.any(matrix != shuffled, axis=1)))
     return mapping, {
         "enabled": True,
         "scope": "train_valid_starts_only",
@@ -594,6 +627,266 @@ def _build_condition_shuffle_mapping(
     }
 
 
+def _build_condition_phase_randomization_mapping(
+    *,
+    dataset_dir: Path,
+    episode_ids: list[int],
+    action_chunk_size: int | None,
+    deadzone_intent: dict[str, Any],
+    sample_valid_mask_path: str | None,
+    config: dict[str, Any],
+) -> tuple[
+    dict[tuple[int, int], np.ndarray] | None,
+    dict[str, Any],
+]:
+    if not bool(config.get("enabled", False)):
+        return None, {
+            "enabled": False,
+            "scope": "none",
+        }
+    if (
+        config.get("key") != "cycle_condition_v1.next_sector"
+        or config.get("scope") != "train_only"
+        or config.get("phase_boundary") != "dump_end_proxy.representative_target_tick"
+        or config.get("eligibility_rule") != "t0_plus_chunk_le_dump_end"
+    ):
+        raise ValueError(
+            "condition phase randomization requires the frozen B1.1 key, "
+            "scope, phase boundary, and eligibility rule"
+        )
+    if action_chunk_size is None or int(action_chunk_size) <= 0:
+        raise ValueError(
+            "condition phase randomization requires a positive action chunk size"
+        )
+    annotation_path = Path(str(config.get("annotation_path", "")))
+    if not annotation_path.is_file():
+        raise FileNotFoundError(
+            f"condition phase annotation file does not exist: {annotation_path}"
+        )
+    expected_sha = str(config.get("annotation_sha256", "")).strip()
+    observed_sha = _sha256_path(annotation_path)
+    if not expected_sha or observed_sha != expected_sha:
+        raise ValueError(
+            "condition phase annotation SHA mismatch: "
+            f"expected={expected_sha} observed={observed_sha}"
+        )
+    seed = int(config.get("seed", 0))
+    boundaries = _load_train_dump_end_boundaries(
+        annotation_path,
+        episode_ids=episode_ids,
+    )
+
+    import h5py
+
+    keys: list[tuple[int, int]] = []
+    values: list[np.ndarray] = []
+    valid_start_total = 0
+    preserved_crossing_or_post = 0
+    for episode_id in episode_ids:
+        path = dataset_dir / f"episode_{episode_id}.hdf5"
+        with h5py.File(path, "r") as handle:
+            total_steps = int(handle["/action"].shape[0])
+            condition_path = "/conditions/cycle_condition_v1"
+            cycle_id_path = "/conditions/cycle_id"
+            if condition_path not in handle or cycle_id_path not in handle:
+                raise KeyError(
+                    "condition phase randomization requires "
+                    f"{condition_path} and {cycle_id_path}: {path}"
+                )
+            condition = np.asarray(handle[condition_path][()], dtype=np.float32)
+            cycle_ids = np.asarray(handle[cycle_id_path][()], dtype=np.int64)
+            if condition.shape != (total_steps, 6) or cycle_ids.shape != (total_steps,):
+                raise ValueError(
+                    "condition phase arrays must have shapes (T, 6) and (T,)"
+                )
+            action_loss_start_mask = _read_optional_handoff_mask(
+                handle,
+                "handoff/action_loss_mask",
+                total_steps,
+                enabled=bool(deadzone_intent["require_action_loss_in_chunk"]),
+            )
+            valid_starts = _valid_start_indices(
+                total_steps=total_steps,
+                train_exclude_mask=_combined_training_exclude_mask(
+                    handle,
+                    total_steps,
+                    sample_valid_mask_path=sample_valid_mask_path,
+                ),
+                action_chunk_size=action_chunk_size,
+                action_loss_mask=action_loss_start_mask,
+                require_action_loss_in_chunk=bool(
+                    deadzone_intent["require_action_loss_in_chunk"]
+                ),
+            )
+            valid_start_total += int(valid_starts.size)
+            for tick_raw in valid_starts.tolist():
+                tick = int(tick_raw)
+                cycle_id = int(cycle_ids[tick])
+                boundary_key = (int(episode_id), cycle_id)
+                if boundary_key not in boundaries:
+                    raise ValueError(
+                        "valid training start lacks an accepted train dump-end "
+                        f"annotation: episode={episode_id} tick={tick} "
+                        f"cycle_id={cycle_id}"
+                    )
+                vector = condition[tick]
+                _validate_cycle_condition_vector(vector)
+                dump_end = int(boundaries[boundary_key]["dump_end_target_tick"])
+                if tick + int(action_chunk_size) <= dump_end:
+                    if not np.array_equal(
+                        vector,
+                        boundaries[boundary_key]["condition"],
+                    ):
+                        raise ValueError(
+                            "episode condition disagrees with annotation at "
+                            f"episode={episode_id} cycle={cycle_id}"
+                        )
+                    keys.append((int(episode_id), tick))
+                    values.append(vector.copy())
+                else:
+                    preserved_crossing_or_post += 1
+    if not keys:
+        raise ValueError("condition phase randomization has no eligible train starts")
+
+    matrix = np.stack(values).astype(np.float32)
+    source_labels = np.argmax(matrix[:, 3:], axis=1).astype(np.int64)
+    randomized_labels = _exact_marginal_label_derangement(
+        source_labels,
+        seed=seed,
+    )
+    randomized = matrix.copy()
+    randomized[:, 3:] = 0.0
+    randomized[np.arange(randomized.shape[0]), 3 + randomized_labels] = 1.0
+    source_counts = Counter(int(value) for value in source_labels.tolist())
+    randomized_counts = Counter(int(value) for value in randomized_labels.tolist())
+    if source_counts != randomized_counts:
+        raise AssertionError("phase randomization changed next-sector marginals")
+    mapping = {key: randomized[index].copy() for index, key in enumerate(keys)}
+    digest = hashlib.sha256()
+    for key in keys:
+        digest.update(np.asarray(key, dtype=np.int64).tobytes())
+        digest.update(mapping[key].astype(np.float32).tobytes())
+    changed = int(np.sum(source_labels != randomized_labels))
+    sector_names = ("left", "center", "right")
+    return mapping, {
+        "schema": "condition_next_phase_randomization_manifest_v1",
+        "enabled": True,
+        "scope": "train_chunk_safe_pre_dump_valid_starts_only",
+        "key": "cycle_condition_v1.next_sector",
+        "seed": seed,
+        "action_chunk_size": int(action_chunk_size),
+        "phase_boundary": "dump_end_proxy.representative_target_tick",
+        "eligibility_rule": "t0_plus_chunk_le_dump_end",
+        "annotation_path": str(annotation_path.resolve()),
+        "annotation_sha256": observed_sha,
+        "annotation_episode_ids": sorted({int(key[0]) for key in boundaries}),
+        "annotation_cycle_count": len(boundaries),
+        "valid_start_count": valid_start_total,
+        "eligible_randomized_start_count": len(keys),
+        "preserved_crossing_or_post_start_count": preserved_crossing_or_post,
+        "changed_row_count": changed,
+        "unchanged_eligible_row_count": len(keys) - changed,
+        "changed_eligible_fraction": float(changed / len(keys)),
+        "source_next_sector_counts": {
+            sector_names[key]: int(value)
+            for key, value in sorted(source_counts.items())
+        },
+        "randomized_next_sector_counts": {
+            sector_names[key]: int(value)
+            for key, value in sorted(randomized_counts.items())
+        },
+        "current_sector_unchanged": True,
+        "post_boundary_condition_unchanged": True,
+        "normalization_stats_unchanged": True,
+        "mapping_sha256": digest.hexdigest(),
+    }
+
+
+def _load_train_dump_end_boundaries(
+    path: Path,
+    *,
+    episode_ids: list[int],
+) -> dict[tuple[int, int], dict[str, Any]]:
+    selected_ids = {int(value) for value in episode_ids}
+    boundaries: dict[tuple[int, int], dict[str, Any]] = {}
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            episode_id = int(row["episode_id"])
+            if episode_id not in selected_ids:
+                continue
+            if (
+                row.get("split") != "train"
+                or row.get("quality", {}).get("status") != "accepted"
+            ):
+                continue
+            cycle_id = int(row["cycle_id"])
+            vector = np.asarray(
+                row["policy_condition"]["vector"],
+                dtype=np.float32,
+            )
+            _validate_cycle_condition_vector(vector)
+            key = (episode_id, cycle_id)
+            if key in boundaries:
+                raise ValueError(f"duplicate accepted annotation for {key}")
+            boundaries[key] = {
+                "dump_end_target_tick": int(
+                    row["observable_events"]["dump_end_proxy"][
+                        "representative_target_tick"
+                    ]
+                ),
+                "condition": vector,
+            }
+    if not boundaries:
+        raise ValueError("condition phase annotation selected no train cycles")
+    return boundaries
+
+
+def _exact_marginal_label_derangement(
+    labels: np.ndarray,
+    *,
+    seed: int,
+) -> np.ndarray:
+    source = np.asarray(labels, dtype=np.int64).reshape(-1)
+    if source.size < 2 or np.any((source < 0) | (source > 2)):
+        raise ValueError("next-sector labels must be a non-empty 0..2 vector")
+    counts = Counter(int(value) for value in source.tolist())
+    maximum = max(counts.values())
+    if maximum > source.size - maximum:
+        raise ValueError(
+            "exact-marginal next-sector derangement is impossible for the "
+            f"observed counts: {dict(sorted(counts.items()))}"
+        )
+    rng = np.random.default_rng(seed)
+    ordered_indices: list[int] = []
+    for label, _count in sorted(
+        counts.items(),
+        key=lambda item: (-item[1], item[0]),
+    ):
+        indices = np.flatnonzero(source == label)
+        ordered_indices.extend(rng.permutation(indices).tolist())
+    receiver = np.asarray(ordered_indices, dtype=np.int64)
+    ordered_labels = source[receiver]
+    donor_labels = np.roll(ordered_labels, -maximum)
+    randomized = np.empty_like(source)
+    randomized[receiver] = donor_labels
+    if np.any(randomized == source):
+        raise AssertionError("constructed next-sector assignment is not a derangement")
+    if Counter(randomized.tolist()) != counts:
+        raise AssertionError("constructed derangement changed label marginals")
+    return randomized
+
+
+def _sha256_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _validate_cycle_condition_vector(vector: np.ndarray) -> None:
     value = np.asarray(vector, dtype=np.float32)
     if (
@@ -603,9 +896,7 @@ def _validate_cycle_condition_vector(vector: np.ndarray) -> None:
         or float(np.sum(value[:3])) != 1.0
         or float(np.sum(value[3:])) != 1.0
     ):
-        raise ValueError(
-            "cycle_condition_v1 must contain two one-hot[3] fields"
-        )
+        raise ValueError("cycle_condition_v1 must contain two one-hot[3] fields")
 
 
 def _condition_key(vector: np.ndarray) -> str:
@@ -627,12 +918,20 @@ def _resolve_deadzone_intent_config(raw: dict[str, Any] | None) -> dict[str, Any
     if thresholds is None:
         threshold_json = cfg.get("threshold_json")
         if not threshold_json:
-            raise ValueError("deadzone_intent.enabled requires thresholds or threshold_json")
+            raise ValueError(
+                "deadzone_intent.enabled requires thresholds or threshold_json"
+            )
         path = Path(str(threshold_json))
         if not path.exists():
-            raise FileNotFoundError(f"deadzone_intent threshold_json does not exist: {path}")
+            raise FileNotFoundError(
+                f"deadzone_intent threshold_json does not exist: {path}"
+            )
         payload = json.loads(path.read_text(encoding="utf-8"))
-        thresholds = payload.get("deadzone_action", payload) if isinstance(payload, dict) else payload
+        thresholds = (
+            payload.get("deadzone_action", payload)
+            if isinstance(payload, dict)
+            else payload
+        )
     if not isinstance(thresholds, dict):
         raise ValueError("deadzone_intent thresholds must be a mapping")
     return {
@@ -687,9 +986,7 @@ def _read_required_valid_mask(
         raise KeyError(f"required sample valid-mask is missing: {normalized}")
     mask = np.asarray(h5_file[normalized][()], dtype=bool).reshape(-1)
     if mask.size != int(total_steps):
-        raise ValueError(
-            f"{normalized} length must be {total_steps}, got {mask.size}"
-        )
+        raise ValueError(f"{normalized} length must be {total_steps}, got {mask.size}")
     return mask
 
 
@@ -759,7 +1056,9 @@ def _decode_jpeg_image(encoded: np.ndarray) -> np.ndarray:
     try:
         import cv2
     except ImportError as exc:
-        raise RuntimeError("opencv-python is required to decode JPEG training images") from exc
+        raise RuntimeError(
+            "opencv-python is required to decode JPEG training images"
+        ) from exc
     bgr = cv2.imdecode(np.asarray(encoded, dtype=np.uint8), cv2.IMREAD_COLOR)
     if bgr is None:
         raise RuntimeError("failed to decode JPEG training image")
@@ -767,6 +1066,7 @@ def _decode_jpeg_image(encoded: np.ndarray) -> np.ndarray:
 
 
 # ─── load_data ────────────────────────────────────────────────────────────────
+
 
 def load_data(
     dataset_dir: str | Path,
@@ -792,6 +1092,7 @@ def load_data(
     sample_valid_mask_path: str | None = None,
     norm_stats_train_only: bool = False,
     condition_shuffle_seed_train: int | None = None,
+    condition_phase_randomization_train: dict[str, Any] | None = None,
 ) -> tuple[DataLoader, DataLoader, dict, bool, dict[str, Any]]:
     """
     Build train/val DataLoaders from an HDF5 dataset directory.
@@ -805,10 +1106,7 @@ def load_data(
     deadzone_intent_cfg = _resolve_deadzone_intent_config(deadzone_intent)
 
     # discover available episode files
-    discovered = [
-        int(p.stem.split("_", 1)[1])
-        for p in list_episodes(dataset_dir)
-    ]
+    discovered = [int(p.stem.split("_", 1)[1]) for p in list_episodes(dataset_dir)]
     if episode_ids is None:
         available = [i for i in discovered if i < num_episodes]
     else:
@@ -836,6 +1134,7 @@ def load_data(
     # Filter to episodes where action_dim matches qpos_dim.
     # Real v1 expects one normalized command per recorded joint axis.
     import h5py
+
     dim_info = {}
     length_info = {}
     valid_start_count = {}
@@ -900,7 +1199,9 @@ def load_data(
         )
 
     max_episode_len = max(length_info[ep_id] for ep_id in available)
-    target_episode_len = int(episode_len) if episode_len is not None else max_episode_len
+    target_episode_len = (
+        int(episode_len) if episode_len is not None else max_episode_len
+    )
     if max_episode_len > target_episode_len:
         raise ValueError(
             f"Dataset contains an episode of length {max_episode_len}, but configured "
@@ -940,6 +1241,7 @@ def load_data(
         deadzone_intent=deadzone_intent,
         sample_valid_mask_path=sample_valid_mask_path,
         condition_shuffle_seed=condition_shuffle_seed_train,
+        condition_phase_randomization=condition_phase_randomization_train,
     )
     val_ds = EpisodicDataset(
         val_ids,
@@ -953,24 +1255,27 @@ def load_data(
         deadzone_intent=deadzone_intent,
         sample_valid_mask_path=sample_valid_mask_path,
         condition_shuffle_seed=None,
+        condition_phase_randomization=None,
     )
 
     split_info["dataset_max_episode_len"] = int(max_episode_len)
     split_info["loader_episode_len"] = int(target_episode_len)
     split_info["low_dim_keys"] = list(selected_low_dim_keys)
     split_info["low_dim_dim"] = int(norm_stats["proprio_dim"])
-    split_info["action_chunk_size"] = None if action_chunk_size is None else int(action_chunk_size)
-    split_info["image_transform"] = str(image_transform or "none")
-    split_info["deadzone_intent_enabled"] = bool(
-        deadzone_intent_cfg["enabled"]
+    split_info["action_chunk_size"] = (
+        None if action_chunk_size is None else int(action_chunk_size)
     )
+    split_info["image_transform"] = str(image_transform or "none")
+    split_info["deadzone_intent_enabled"] = bool(deadzone_intent_cfg["enabled"])
     split_info["sample_valid_mask_path"] = str(sample_valid_mask_path or "")
     split_info["norm_stats_train_only"] = bool(norm_stats_train_only)
-    split_info["condition_shuffle_train"] = dict(
-        train_ds.condition_shuffle_manifest
+    split_info["condition_shuffle_train"] = dict(train_ds.condition_shuffle_manifest)
+    split_info["condition_shuffle_validation"] = dict(val_ds.condition_shuffle_manifest)
+    split_info["condition_phase_randomization_train"] = dict(
+        train_ds.condition_phase_randomization_manifest
     )
-    split_info["condition_shuffle_validation"] = dict(
-        val_ds.condition_shuffle_manifest
+    split_info["condition_phase_randomization_validation"] = dict(
+        val_ds.condition_phase_randomization_manifest
     )
     split_info["norm_stats_episode_ids"] = [
         int(ep_id) for ep_id in norm_stats_episode_ids
@@ -987,8 +1292,12 @@ def load_data(
         loader_kw["prefetch_factor"] = prefetch_factor
         loader_kw["persistent_workers"] = bool(persistent_workers)
 
-    train_loader = DataLoader(train_ds, batch_size=batch_size_train, shuffle=True,  **loader_kw)
-    val_loader   = DataLoader(val_ds,   batch_size=batch_size_val,   shuffle=True,  **loader_kw)
+    train_loader = DataLoader(
+        train_ds, batch_size=batch_size_train, shuffle=True, **loader_kw
+    )
+    val_loader = DataLoader(
+        val_ds, batch_size=batch_size_val, shuffle=True, **loader_kw
+    )
 
     return train_loader, val_loader, norm_stats, train_ds.is_real, split_info
 
@@ -1094,7 +1403,9 @@ def _validate_saved_split(
     train_ids = [int(ep_id) for ep_id in split_info.get("train_ids", [])]
     val_ids = [int(ep_id) for ep_id in split_info.get("val_ids", [])]
     if not train_ids or not val_ids:
-        raise ValueError("Saved split file must contain non-empty train_ids and val_ids.")
+        raise ValueError(
+            "Saved split file must contain non-empty train_ids and val_ids."
+        )
 
     split_ids = set(train_ids) | set(val_ids)
     missing = sorted(split_ids - available)

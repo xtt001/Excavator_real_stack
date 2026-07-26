@@ -71,8 +71,8 @@ def run_condition_swap_replay(
     if metadata.get("status") != "completed":
         raise ValueError("condition replay requires completed training")
     baseline_id = str(metadata["experiment_contract"]["baseline_id"])
-    if baseline_id not in {"B1", "B2"}:
-        raise ValueError("condition replay requires B1 or B2")
+    if baseline_id not in {"B1", "B1.1", "B2"}:
+        raise ValueError("condition replay requires B1, B1.1, or B2")
     if metadata["experiment_contract"]["condition_input"] != (
         "cycle_condition_v1_low_dim"
     ):

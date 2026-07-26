@@ -34,6 +34,7 @@ def build_condition_causal_v2(
     b1_replay_roots: Sequence[str | Path],
     b2_replay_root: str | Path,
     masked_b1_replay_root: str | Path,
+    candidate_baseline_id: str = "B1",
     bootstrap_repetitions: int = 100_000,
     bootstrap_seed: int = 20_260_725,
 ) -> dict[str, Any]:
@@ -57,8 +58,14 @@ def build_condition_causal_v2(
             f"immutable condition causal output exists: {destination}"
         )
 
+    if candidate_baseline_id not in {"B1", "B1.1"}:
+        raise ValueError("condition causal candidate must be B1 or B1.1")
     b1_packages = [
-        _validated_package(Path(root).resolve(strict=True), "B1", "requested")
+        _validated_package(
+            Path(root).resolve(strict=True),
+            candidate_baseline_id,
+            "requested",
+        )
         for root in b1_replay_roots
     ]
     b2 = _validated_package(
@@ -66,7 +73,7 @@ def build_condition_causal_v2(
     )
     masked = _validated_package(
         Path(masked_b1_replay_root).resolve(strict=True),
-        "B1",
+        candidate_baseline_id,
         "masked_canonical",
     )
     _require_matched([*b1_packages, b2, masked])
@@ -118,6 +125,7 @@ def build_condition_causal_v2(
         "closed_loop_execution": False,
         "held_out_test_read": False,
         "condition_understanding_established": passed,
+        "candidate_baseline_id": candidate_baseline_id,
         "factor_pass": factor_pass,
         "criteria": criteria,
         "decision_rule": (
@@ -156,6 +164,7 @@ def build_condition_causal_v2(
                 "generated_at": datetime.now(timezone.utc).isoformat(),
                 "git": git,
                 "decision": decision,
+                "candidate_baseline_id": candidate_baseline_id,
                 "evidence_scope": "recorded-observation/offline",
                 "closed_loop_execution": False,
                 "held_out_test_read": False,
@@ -178,6 +187,7 @@ def build_condition_causal_v2(
             "status": "completed",
             "output_root": str(destination),
             "decision": decision,
+            "candidate_baseline_id": candidate_baseline_id,
             "condition_understanding_established": passed,
             "factor_pass": factor_pass,
             "manifest_sha256": manifest_identity["sha256"],
