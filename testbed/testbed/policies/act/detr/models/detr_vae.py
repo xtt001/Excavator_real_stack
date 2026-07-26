@@ -194,7 +194,15 @@ class DETRVAE(nn.Module):
             self.input_proj = nn.Conv2d(backbones[0].num_channels, hidden_dim, kernel_size=1)
             self.backbones = nn.ModuleList(backbones)
             self.input_proj_robot_state = (
-                RoutedConditionProjection(hidden_dim)
+                RoutedConditionProjection(
+                    hidden_dim,
+                    factor_mode=str(
+                        phase_routed_cfg.get(
+                            "factor_mode",
+                            "current_and_next",
+                        )
+                    ),
+                )
                 if self.phase_routed_condition_enabled
                 else nn.Linear(robot_state_dim, hidden_dim)
             )

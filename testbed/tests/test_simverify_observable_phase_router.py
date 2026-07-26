@@ -117,3 +117,33 @@ def test_routed_projection_fails_closed_without_valid_route() -> None:
     projection = RoutedConditionProjection(hidden_dim=4)
     with pytest.raises(ValueError, match="routes"):
         projection(torch.zeros((1, 14)), torch.tensor([3]))
+
+
+def test_next_only_projection_never_reads_current_sector() -> None:
+    projection = RoutedConditionProjection(
+        hidden_dim=3,
+        factor_mode="next_only",
+    )
+    assert projection.current is None
+    with torch.no_grad():
+        projection.state.weight.zero_()
+        projection.state.bias.zero_()
+        projection.next.weight.copy_(torch.eye(3))
+        projection.next.bias.zero_()
+    left_current = torch.zeros((3, 14), dtype=torch.float32)
+    right_current = left_current.clone()
+    left_current[:, 8] = 1.0
+    right_current[:, 10] = 1.0
+    left_current[:, 12] = 1.0
+    right_current[:, 12] = 1.0
+    routes = torch.tensor([0, 1, 2])
+
+    left_output = projection(left_current, routes)
+    right_output = projection(right_current, routes)
+
+    torch.testing.assert_close(left_output, right_output)
+    torch.testing.assert_close(left_output[:2], torch.zeros((2, 3)))
+    torch.testing.assert_close(
+        left_output[2:],
+        torch.tensor([[0.0, 1.0, 0.0]]),
+    )

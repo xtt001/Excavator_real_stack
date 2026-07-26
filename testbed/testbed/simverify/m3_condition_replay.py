@@ -71,13 +71,26 @@ def run_condition_swap_replay(
     if metadata.get("status") != "completed":
         raise ValueError("condition replay requires completed training")
     baseline_id = str(metadata["experiment_contract"]["baseline_id"])
-    if baseline_id not in {"B1", "B1.1", "B1.2", "B1.3", "B2", "B2.3"}:
+    if baseline_id not in {
+        "B1",
+        "B1.1",
+        "B1.2",
+        "B1.3",
+        "B1.4",
+        "B2",
+        "B2.3",
+        "B2.4",
+    }:
         raise ValueError(
-            "condition replay requires B1, B1.1, B1.2, B1.3, B2, or B2.3"
+            "condition replay requires a frozen B1/B2 condition baseline"
         )
-    if metadata["experiment_contract"]["condition_input"] != (
-        "cycle_condition_v1_low_dim"
-    ):
+    condition_input = metadata["experiment_contract"]["condition_input"]
+    expected_condition_input = (
+        "cycle_condition_v1_next_sector_only"
+        if baseline_id in {"B1.4", "B2.4"}
+        else "cycle_condition_v1_low_dim"
+    )
+    if condition_input != expected_condition_input:
         raise ValueError("checkpoint is not cycle_condition_v1 conditioned")
     if metadata["checkpoint_semantics"]["real_control_allowed"] is not False:
         raise ValueError("condition checkpoint lacks real-control prohibition")
@@ -107,6 +120,10 @@ def run_condition_swap_replay(
         row
         for row in _read_jsonl(m2 / "condition_counterfactual_anchors_v1.jsonl")
         if row["split"] == split_name and int(row["episode_id"]) in set(episode_ids)
+        and (
+            baseline_id not in {"B1.4", "B2.4"}
+            or row["changed_factors"] == ["next_sector"]
+        )
     ]
     if not anchors:
         raise ValueError("condition replay selected no anchors")
@@ -117,12 +134,17 @@ def run_condition_swap_replay(
     }
     if not supported_keys <= set(annotations):
         raise ValueError("supported anchor has no accepted annotation")
+    direction_fit_splits = (
+        {"train"}
+        if baseline_id in {"B1.4", "B2.4"}
+        else {"train", "validation"}
+    )
     direction_contract = _fit_sector_action_direction(
         [
             row
             for row in annotation_rows
             if row["quality"]["status"] == "accepted"
-            and row["split"] in {"train", "validation"}
+            and row["split"] in direction_fit_splits
         ],
         m0,
         deadzone=deadzone,
@@ -306,6 +328,12 @@ def run_condition_swap_replay(
                 "condition_input_used_by_policy": True,
                 "observation_history_changed": False,
                 "one_primary_factor_per_anchor": True,
+                "intervention_factors": (
+                    ["next_sector"]
+                    if baseline_id in {"B1.4", "B2.4"}
+                    else ["current_sector", "next_sector"]
+                ),
+                "sector_direction_fit_splits": sorted(direction_fit_splits),
                 "checkpoint": {
                     "path": str(checkpoint),
                     "sha256": sha256_file(checkpoint),
@@ -580,7 +608,11 @@ def _validate_condition_checkpoint(
         raise ValueError("condition checkpoint lacks embedded contracts")
     if (
         experiment.get("baseline_id") != expected_baseline
-        or experiment.get("condition_input") != "cycle_condition_v1_low_dim"
+        or experiment.get("condition_input")
+        not in {
+            "cycle_condition_v1_low_dim",
+            "cycle_condition_v1_next_sector_only",
+        }
     ):
         raise ValueError("condition checkpoint baseline/input mismatch")
     if (

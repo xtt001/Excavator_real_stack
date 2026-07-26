@@ -1,4 +1,4 @@
-"""Frozen B1.3 condition-routing configuration and projection."""
+"""Frozen B1.3/B1.4 condition-routing configuration and projection."""
 
 from __future__ import annotations
 
@@ -23,12 +23,26 @@ def resolve_phase_routed_condition_config(raw: Any) -> dict[str, Any]:
     if not bool(cfg.get("enabled", False)):
         return {
             "enabled": False,
+            "factor_mode": "disabled",
             "state_slice": [0, 8],
             "current_condition_slice": [8, 11],
             "next_condition_slice": [11, 14],
         }
+    schema = str(cfg.get("schema", ""))
+    schema_contracts = {
+        "simverify_phase_routed_separated_condition_v1": {
+            "factor_mode": "current_and_next",
+            "current_condition_influence": "route_current_only",
+        },
+        "simverify_phase_routed_next_only_condition_v1": {
+            "factor_mode": "next_only",
+            "current_condition_influence": "exact_zero",
+        },
+    }
+    if schema not in schema_contracts:
+        raise ValueError(f"unknown phase-routed condition schema: {schema!r}")
+    mode_contract = schema_contracts[schema]
     expected = {
-        "schema": "simverify_phase_routed_separated_condition_v1",
         "state_slice": [0, 8],
         "current_condition_slice": [8, 11],
         "next_condition_slice": [11, 14],
@@ -36,6 +50,8 @@ def resolve_phase_routed_condition_config(raw: Any) -> dict[str, Any]:
         "neutral_condition_influence": "exact_zero",
         "vae_encoder_inputs": ["qpos", "qvel", "actions"],
     }
+    if schema == "simverify_phase_routed_next_only_condition_v1":
+        expected.update(mode_contract)
     for key, expected_value in expected.items():
         if cfg.get(key) != expected_value:
             raise ValueError(
@@ -79,7 +95,7 @@ def resolve_phase_routed_condition_config(raw: Any) -> dict[str, Any]:
         or gate.get("authorizes_b1_3_training") is not True
         or gate.get("held_out_test_read") is not False
     ):
-        raise ValueError("phase router artifact does not authorize B1.3")
+        raise ValueError("phase router artifact does not authorize routed condition")
     if manifest.get("params_sha256") != expected_shas["params"]:
         raise ValueError("phase router manifest params linkage mismatch")
     if manifest.get("assignments_sha256") != expected_shas["assignments"]:
@@ -90,6 +106,7 @@ def resolve_phase_routed_condition_config(raw: Any) -> dict[str, Any]:
     return {
         **cfg,
         "enabled": True,
+        **mode_contract,
         "router_artifact_root": str(artifact_root),
         "router_files": {key: str(value) for key, value in files.items()},
         "classifier": params,
@@ -111,10 +128,22 @@ def build_runtime_phase_router(
 class RoutedConditionProjection(nn.Module):
     """Project state and the two condition factors through disjoint paths."""
 
-    def __init__(self, hidden_dim: int):
+    def __init__(
+        self,
+        hidden_dim: int,
+        *,
+        factor_mode: str = "current_and_next",
+    ):
         super().__init__()
+        if factor_mode not in {"current_and_next", "next_only"}:
+            raise ValueError(f"unknown routed condition factor mode: {factor_mode}")
+        self.factor_mode = factor_mode
         self.state = nn.Linear(STATE_DIM, hidden_dim)
-        self.current = nn.Linear(CONDITION_FACTOR_DIM, hidden_dim)
+        self.current = (
+            nn.Linear(CONDITION_FACTOR_DIM, hidden_dim)
+            if factor_mode == "current_and_next"
+            else None
+        )
         self.next = nn.Linear(CONDITION_FACTOR_DIM, hidden_dim)
 
     def forward(
@@ -135,13 +164,15 @@ class RoutedConditionProjection(nn.Module):
         if torch.any((route_tensor < 0) | (route_tensor > 2)):
             raise ValueError("condition routes must be current=0, neutral=1, next=2")
         state = self.state(proprio[:, :8])
-        current_gate = (route_tensor == 0).to(proprio.dtype).unsqueeze(1)
         next_gate = (route_tensor == 2).to(proprio.dtype).unsqueeze(1)
-        return (
-            state
-            + current_gate * self.current(proprio[:, 8:11])
-            + next_gate * self.next(proprio[:, 11:14])
-        )
+        result = state + next_gate * self.next(proprio[:, 11:14])
+        if self.current is not None:
+            current_gate = (route_tensor == 0).to(proprio.dtype).unsqueeze(1)
+            result = (
+                result
+                + current_gate * self.current(proprio[:, 8:11])
+            )
+        return result
 
 
 def _sha256(path: Path) -> str:
@@ -154,4 +185,3 @@ def _sha256(path: Path) -> str:
 
 def _read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
-
