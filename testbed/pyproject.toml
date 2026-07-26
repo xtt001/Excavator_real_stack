@@ -62,6 +62,7 @@ tb-run-simverify-condition-replay = "testbed.cli.run_simverify_condition_replay:
 tb-build-simverify-g4 = "testbed.cli.build_simverify_g4:main"
 tb-build-simverify-transition-stitch = "testbed.cli.build_simverify_transition_stitch:main"
 tb-build-simverify-history-stitch = "testbed.cli.build_simverify_history_stitch:main"
+tb-build-simverify-transition-delta-stitch = "testbed.cli.build_simverify_transition_delta_stitch:main"
 tb-build-simverify-condition-causal-v2 = "testbed.cli.build_simverify_condition_causal_v2:main"
 
 [tool.setuptools.packages.find]
