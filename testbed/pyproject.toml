@@ -66,6 +66,7 @@ tb-build-simverify-transition-delta-stitch = "testbed.cli.build_simverify_transi
 tb-build-simverify-transition-delta-stitch-audit = "testbed.cli.build_simverify_transition_delta_stitch_audit:main"
 tb-build-simverify-condition-delta-stitch = "testbed.cli.build_simverify_condition_delta_stitch:main"
 tb-build-simverify-g5-two-cycle = "testbed.cli.build_simverify_g5_two_cycle:main"
+tb-build-simverify-e04-camera = "testbed.cli.build_simverify_e04_camera:main"
 tb-build-simverify-condition-causal-v2 = "testbed.cli.build_simverify_condition_causal_v2:main"
 
 [tool.setuptools.packages.find]

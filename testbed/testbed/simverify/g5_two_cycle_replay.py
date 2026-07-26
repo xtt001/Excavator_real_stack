@@ -36,6 +36,20 @@ from testbed.simverify.m3_transition_stitch import HELD_OUT_EPISODES, _q
 
 EVIDENCE_SCOPE = "recorded-observation/offline teacher-forced development"
 MODES = ("switched", "unchanged")
+CAMERA_VARIANTS = (
+    "four_camera",
+    "eye_only",
+    "stick_only",
+    "drop_video4",
+    "drop_video5",
+    "drop_video6",
+    "drop_video7",
+    "swap_eye_pair",
+    "swap_stick_pair",
+    "swap_cross_role_pairs",
+    "fixed_trace_start",
+    "lag_one_tick",
+)
 
 
 def build_g5_two_cycle_replay(
@@ -422,11 +436,16 @@ def replay_two_cycle_arrays(
     condition_mode: str,
     reset_condition_cycle_at_boundary: bool = False,
     camera_names: Sequence[str] = CAMERAS,
+    camera_variant: str = "four_camera",
 ) -> dict[str, np.ndarray]:
     """Replay one adjacent pair with one reset and an atomic condition update."""
 
     if condition_mode not in MODES:
         raise ValueError(f"unknown two-cycle condition mode: {condition_mode}")
+    if tuple(camera_names) != CAMERAS:
+        raise ValueError("camera interventions require the frozen four-camera order")
+    if camera_variant not in CAMERA_VARIANTS:
+        raise ValueError(f"unknown camera variant: {camera_variant}")
     start, end = map(int, anchor["target_steps_20hz"])
     boundary = int(anchor["shared_ready_boundary_tick"])
     total_steps = int(episode["action"].shape[0])
@@ -468,12 +487,22 @@ def replay_two_cycle_arrays(
             "qvel": np.asarray(episode["observations/qvel"][tick], dtype=np.float32),
             "cycle_condition_v1": condition.copy(),
         }
-        for camera in camera_names:
-            observation[f"image_{camera}"] = _read_camera_image(
-                episode,
-                camera,
-                tick,
-            )
+        image_tick = (
+            start
+            if camera_variant == "fixed_trace_start"
+            else max(start, tick - 1)
+            if camera_variant == "lag_one_tick"
+            else tick
+        )
+        images = {
+            camera: _read_camera_image(episode, camera, image_tick)
+            for camera in camera_names
+        }
+        for camera, image in apply_camera_variant(
+            images,
+            camera_variant,
+        ).items():
+            observation[f"image_{camera}"] = image
         aggregated.append(
             np.asarray(policy.predict(observation), dtype=np.float32).reshape(4)
         )
@@ -508,7 +537,42 @@ def replay_two_cycle_arrays(
         "condition_cycle_router_reset_count": np.asarray(
             condition_cycle_reset_count, dtype=np.int8
         ),
+        "camera_variant": np.asarray(camera_variant),
     }
+
+
+def apply_camera_variant(
+    images: Mapping[str, np.ndarray],
+    variant: str,
+) -> dict[str, np.ndarray]:
+    """Apply one frozen E04 camera-role intervention."""
+
+    if variant not in CAMERA_VARIANTS:
+        raise ValueError(f"unknown camera variant: {variant}")
+    if set(images) != set(CAMERAS):
+        raise ValueError("camera variant requires exactly video4..video7")
+    result = {camera: np.asarray(images[camera]).copy() for camera in CAMERAS}
+    masked = {
+        "eye_only": ("video6", "video7"),
+        "stick_only": ("video4", "video5"),
+        "drop_video4": ("video4",),
+        "drop_video5": ("video5",),
+        "drop_video6": ("video6",),
+        "drop_video7": ("video7",),
+    }.get(variant, ())
+    for camera in masked:
+        result[camera] = np.zeros_like(result[camera])
+    swaps = {
+        "swap_eye_pair": (("video4", "video5"),),
+        "swap_stick_pair": (("video6", "video7"),),
+        "swap_cross_role_pairs": (
+            ("video4", "video6"),
+            ("video5", "video7"),
+        ),
+    }.get(variant, ())
+    for left, right in swaps:
+        result[left], result[right] = result[right], result[left]
+    return result
 
 
 def two_cycle_trace_metrics(

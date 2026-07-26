@@ -4,9 +4,11 @@ from pathlib import Path
 
 import h5py
 import numpy as np
+import pytest
 
 from testbed.simverify import g5_two_cycle_replay as module
 from testbed.simverify.g5_two_cycle_replay import (
+    apply_camera_variant,
     build_two_cycle_condition_support,
     derive_expert_two_cycle_thresholds,
     evaluate_expert_two_cycle_gate,
@@ -157,3 +159,35 @@ def test_two_cycle_support_uses_second_cycle_counterfactual() -> None:
     assert support["train_source_episode_minimum"] == 1
     assert support["train_supported_changed_pair_count"] == 1
     assert support["validation_supported_changed_pair_count"] == 0
+
+
+def test_camera_variants_mask_and_swap_only_declared_roles() -> None:
+    images = {
+        f"video{index}": np.full((2, 3, 3), index, dtype=np.uint8)
+        for index in range(4, 8)
+    }
+
+    eye_only = apply_camera_variant(images, "eye_only")
+    np.testing.assert_array_equal(eye_only["video4"], images["video4"])
+    np.testing.assert_array_equal(eye_only["video5"], images["video5"])
+    assert not np.any(eye_only["video6"])
+    assert not np.any(eye_only["video7"])
+
+    cross = apply_camera_variant(images, "swap_cross_role_pairs")
+    np.testing.assert_array_equal(cross["video4"], images["video6"])
+    np.testing.assert_array_equal(cross["video6"], images["video4"])
+    np.testing.assert_array_equal(cross["video5"], images["video7"])
+    np.testing.assert_array_equal(cross["video7"], images["video5"])
+
+    for camera in images:
+        np.testing.assert_array_equal(
+            images[camera], np.full_like(images[camera], int(camera[-1]))
+        )
+
+
+def test_camera_variant_rejects_missing_role() -> None:
+    with pytest.raises(ValueError, match="exactly video4"):
+        apply_camera_variant(
+            {"video4": np.zeros((1, 1, 3), dtype=np.uint8)},
+            "four_camera",
+        )
