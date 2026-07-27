@@ -4,6 +4,7 @@ import numpy as np
 
 from testbed.simverify.annotations import EpisodeSignals
 from testbed.simverify.habit_cycle_audit import (
+    _full_cycle_source_range,
     _true_runs,
     definition_decision,
     enumerate_causal_candidates,
@@ -116,3 +117,26 @@ def test_definition_decision_prioritizes_boundary_failure() -> None:
     )
     assert decision["decision"] == "revise_boundary"
     assert decision["training_authorized"] is False
+
+
+def test_full_cycle_range_uses_previous_shared_ready_boundary() -> None:
+    previous = {
+        "episode_id": 3,
+        "cycle_id": 4,
+        "causal_confirm_step": 100,
+        "causal_confirm_matches_reference": True,
+        "hindsight_expert_target_sector": "center",
+    }
+    current = {
+        "episode_id": 3,
+        "cycle_id": 5,
+        "current_sector": "center",
+        "causal_confirm_step": 350,
+    }
+    result = _full_cycle_source_range(
+        current,
+        {(3, 4): previous},
+    )
+    assert result == [100, 350]
+    assert current["cycle_ready_start_step"] == 100
+    assert current["cycle_ready_end_step"] == 350

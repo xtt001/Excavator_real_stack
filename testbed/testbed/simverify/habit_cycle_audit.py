@@ -49,7 +49,7 @@ DEFAULT_SOURCE_ROOT = Path(
 )
 DEFAULT_OUTPUT_ROOT = Path(
     "/data/pingfan/Excavator_real_stack_data/"
-    "simverify_habit_cycle_definition_v3"
+    "simverify_habit_cycle_definition_v4"
 )
 DEFAULT_RESNET18_WEIGHTS = Path(
     "/home/pingfan/.cache/torch/hub/checkpoints/resnet18-f37072fd.pth"
@@ -278,6 +278,16 @@ def run_habit_cycle_definition_audit(
         }
         identities = [source_snapshot]
         payloads = (
+            (
+                "habit_cycle_boundaries_v1.json",
+                {
+                    "schema": "habit_cycle_boundaries_v1",
+                    "range_semantics": (
+                        "raw_source_step_half_open_ready_start_to_ready_end"
+                    ),
+                    "records": candidates,
+                },
+            ),
             ("habit_transition_inventory_v1.json", transition_payload),
             ("dig_ready_boundary_audit_v1.json", boundary_payload),
             ("habit_condition_support_v1.json", support_payload),
@@ -1478,13 +1488,22 @@ def build_scenario_candidates(
     transition_inventory: Mapping[str, Any],
     condition_support: Mapping[str, Any],
 ) -> dict[str, Any]:
-    train = [
+    resolved_train = [
         row
         for row in candidates
         if row["split"] == "train"
         and row["causal_confirmed"]
         and row["causal_confirm_matches_reference"]
         and row["relative_intent"] in RELATIVE_INTENTS
+    ]
+    by_key = {
+        (int(row["episode_id"]), int(row["cycle_id"])): row
+        for row in resolved_train
+    }
+    train = [
+        row
+        for row in resolved_train
+        if _full_cycle_source_range(row, by_key) is not None
     ]
     scenario_rows: list[dict[str, Any]] = []
     ordered_by_episode: dict[int, list[Mapping[str, Any]]] = defaultdict(list)
@@ -2145,8 +2164,8 @@ def _scenario_record(
     episode_id = int(rows[0]["episode_id"])
     first = rows[0]
     last = rows[-1]
-    start = int(first["dump_end_step"])
-    end = int(last["causal_confirm_step"]) + 1
+    start = int(first["cycle_ready_start_step"])
+    end = int(last["causal_confirm_step"])
     action = signals[episode_id].action[start:end]
     active_fraction = float(np.mean(np.any(np.abs(action) > 0.05, axis=1)))
     source_identity = source_chains[episode_id][0]
@@ -2161,6 +2180,9 @@ def _scenario_record(
         "source_episode_id": episode_id,
         "source_cycle_ids": [int(row["cycle_id"]) for row in rows],
         "source_row_range": [start, end],
+        "source_row_range_semantics": (
+            "raw_source_step_half_open_ready_start_to_ready_end"
+        ),
         "source_vds_sha256": str(source_identity["sha256"]),
         "cycle_count": len(rows),
         "current_sector": first["current_sector"],
@@ -2184,6 +2206,29 @@ def _scenario_record(
         "physical_effect_validated": False,
         "privilege_used": False,
     }
+
+
+def _full_cycle_source_range(
+    row: Mapping[str, Any],
+    by_key: Mapping[tuple[int, int], Mapping[str, Any]],
+) -> list[int] | None:
+    previous = by_key.get(
+        (int(row["episode_id"]), int(row["cycle_id"]) - 1)
+    )
+    if (
+        previous is None
+        or not previous["causal_confirm_matches_reference"]
+        or previous["hindsight_expert_target_sector"] != row["current_sector"]
+    ):
+        return None
+    start = int(previous["causal_confirm_step"])
+    end = int(row["causal_confirm_step"])
+    if end <= start:
+        return None
+    if isinstance(row, dict):
+        row["cycle_ready_start_step"] = start
+        row["cycle_ready_end_step"] = end
+    return [start, end]
 
 
 def _summary(values: Sequence[float | int]) -> dict[str, Any] | None:
