@@ -344,6 +344,10 @@ class ObservableHabitReadyBoundaryDetector:
         self._provenance = {
             "schema": DETECTOR_SCHEMA,
             "mode": "causal_live_adaptation_of_accepted_v11_ready_boundary",
+            "activation_contract": (
+                "committed_cycle_condition_v1_and_return_motion;"
+                "condition_route_is_optional_diagnostic"
+            ),
             "artifact": dict(artifact_provenance),
             "feature_extractor": dict(feature_extractor.provenance),
             "privilege_used": False,
@@ -440,9 +444,17 @@ class ObservableHabitReadyBoundaryDetector:
             policy_observation.get("cycle_condition_v1", np.zeros(6)),
             dtype=np.float32,
         )
+        committed_condition = bool(
+            condition.shape == (6,)
+            and np.isclose(condition[:3].sum(), 1.0)
+            and np.isclose(condition[3:].sum(), 1.0)
+            and np.count_nonzero(np.isclose(condition[:3], 1.0)) == 1
+            and np.count_nonzero(np.isclose(condition[3:], 1.0)) == 1
+            and np.all(np.isclose(condition, 0.0) | np.isclose(condition, 1.0))
+        )
         target_sector = (
             None
-            if condition.shape != (6,) or not np.isclose(condition[3:].sum(), 1.0)
+            if not committed_condition
             else SECTORS[int(np.argmax(condition[3:]))]
         )
         qpos = np.asarray(observation["qpos"], dtype=np.float32)
@@ -450,7 +462,8 @@ class ObservableHabitReadyBoundaryDetector:
         swing_qpos = float(qpos[0])
         swing_speed = abs(float(qvel[0]))
         return_active = bool(
-            route == "next"
+            committed_condition
+            and route in {None, "next"}
             and target_sector is not None
             and swing_speed > self._swing_speed_threshold
         )
@@ -464,7 +477,8 @@ class ObservableHabitReadyBoundaryDetector:
         eligible = bool(
             self._armed
             and not self._confirmed
-            and route == "next"
+            and committed_condition
+            and route in {None, "next"}
             and target_sector is not None
             and qpos_sector == target_sector
             and swing_qpos < self._dump_swing_threshold
@@ -518,6 +532,7 @@ class ObservableHabitReadyBoundaryDetector:
             ),
             "confirmed": confirmed,
             "condition_route_before_predict": route,
+            "condition_committed": committed_condition,
             "target_sector": target_sector,
             "swing_qpos": swing_qpos,
             "abs_swing_qvel": swing_speed,

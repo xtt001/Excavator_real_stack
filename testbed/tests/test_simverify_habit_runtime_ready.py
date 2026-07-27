@@ -131,3 +131,46 @@ def test_v11_detector_fails_closed_without_committed_next_route() -> None:
     assert result["confirmed"] is False
     assert detector.provenance["privilege_used"] is False
     assert detector.provenance["future_observations_used"] is False
+
+
+def test_v11_detector_uses_committed_condition_when_route_is_unavailable() -> None:
+    detector = _detector()
+    precommit = _policy_observation()
+    precommit["cycle_condition_v1"] = np.zeros(6, dtype=np.float32)
+    before_commit = detector.observe(
+        policy_tick=0,
+        observation=_observation(swing_qpos=0.60, swing_qvel=-0.3),
+        policy_observation=precommit,
+        held_action=np.zeros(4),
+        condition_route=None,
+    )
+    armed = detector.observe(
+        policy_tick=1,
+        observation=_observation(swing_qpos=0.60, swing_qvel=-0.3),
+        policy_observation=_policy_observation(),
+        held_action=np.zeros(4),
+        condition_route=None,
+    )
+    dwell_one = detector.observe(
+        policy_tick=2,
+        observation=_observation(swing_qpos=0.49, swing_qvel=-0.10),
+        policy_observation=_policy_observation(),
+        held_action=np.zeros(4),
+        condition_route=None,
+    )
+    confirmed = detector.observe(
+        policy_tick=3,
+        observation=_observation(swing_qpos=0.49, swing_qvel=-0.08),
+        policy_observation=_policy_observation(),
+        held_action=np.zeros(4),
+        condition_route=None,
+    )
+
+    assert before_commit["condition_committed"] is False
+    assert before_commit["state"] == "searching_return_activation"
+    assert armed["condition_committed"] is True
+    assert armed["return_active"] is True
+    assert armed["state"] == "armed"
+    assert dwell_one["eligible_ticks"] == 1
+    assert confirmed["candidate"] is True
+    assert confirmed["confirmed"] is True
