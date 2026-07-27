@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 
 from testbed.simverify.e04_camera_counterfactual import (
+    _candidate_ready_criterion,
     aggregate_e04_by_source,
     camera_pair_failed,
     compare_reproduction_arrays,
@@ -162,3 +163,21 @@ def test_reproduction_comparison_separates_float_delta_from_task_signature() -> 
     assert result["max_abs_delta"] > 0.0
     assert result["effective_signature_mismatch_count"] == 0
     assert result["route_mismatch_count"] == 0
+
+
+def test_candidate_ready_criterion_prefers_role_based_g5_field() -> None:
+    criterion = {"maximum_allowed": 0.05}
+    gate = {"criteria": {"candidate_ready_boundary_discontinuity": criterion}}
+    assert (
+        _candidate_ready_criterion(gate, candidate_baseline_id="B1.5")
+        is criterion
+    )
+
+
+def test_candidate_ready_criterion_allows_only_legacy_b1_4_alias() -> None:
+    criterion = {"maximum_allowed": 0.05}
+    gate = {"criteria": {"b1_4_ready_boundary_discontinuity": criterion}}
+    assert (
+        _candidate_ready_criterion(gate, candidate_baseline_id="B1.4")
+        is criterion
+    )

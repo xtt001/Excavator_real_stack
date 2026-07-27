@@ -32,6 +32,7 @@ from testbed.simverify.g5_two_cycle_replay import (
     two_cycle_trace_metrics,
 )
 from testbed.simverify.m3_transition_stitch import HELD_OUT_EPISODES, _q
+from testbed.simverify.next_condition_causal import SUPPORTED_BASELINE_PAIRS
 
 EVIDENCE_SCOPE = "recorded-observation/offline teacher-forced development"
 MODES = ("switched", "unchanged")
@@ -47,10 +48,19 @@ def build_e04_camera_counterfactual(
     b1_repeat_roots: Sequence[str | Path],
     previous_g5_root: str | Path,
     contract_path: str | Path,
+    candidate_baseline_id: str = "B1.4",
     device: str = "cuda",
 ) -> dict[str, Any]:
     """Build an immutable E04 development package."""
 
+    supported_candidates = {
+        candidate for candidate, _null in SUPPORTED_BASELINE_PAIRS
+    }
+    if candidate_baseline_id not in supported_candidates:
+        raise ValueError(
+            "unsupported E04 candidate baseline; expected one of "
+            f"{sorted(supported_candidates)}"
+        )
     repository = Path(repo_root).resolve(strict=True)
     git = git_provenance(repository)
     if (
@@ -85,6 +95,7 @@ def build_e04_camera_counterfactual(
     if not all(row["ok"] for row in repeat_verifications):
         raise ValueError("E04 repeat input checksum verification failed")
     previous_gate = _read_json(previous_g5 / "g5_core_gate_v1.json")
+    previous_manifest = _read_json(previous_g5 / "g5_two_cycle_manifest.json")
     if (
         previous_gate["decision"]
         != "g5_core_two_cycle_condition_continuity_established_development"
@@ -92,6 +103,11 @@ def build_e04_camera_counterfactual(
         or previous_gate["held_out_test_read"]
     ):
         raise ValueError("E04 requires the passing unread-test G5.1 package")
+    declared_candidate = previous_manifest.get("candidate_baseline_id", "B1.4")
+    if declared_candidate != candidate_baseline_id:
+        raise ValueError(
+            "E04 candidate baseline does not match the passing G5.1 package"
+        )
 
     split = _read_json(m0 / "split_groups.json")
     if set(map(int, split["splits"]["held_out_test"])) != HELD_OUT_EPISODES:
@@ -135,9 +151,12 @@ def build_e04_camera_counterfactual(
             str(row["condition_mode"]),
         ): row
         for row in previous_results
-        if row["baseline_id"] == "B1.4"
+        if row["baseline_id"] == candidate_baseline_id
     }
-    bundle = _validate_bundle(Path(b1_bundle_root).resolve(strict=True), "B1.4")
+    bundle = _validate_bundle(
+        Path(b1_bundle_root).resolve(strict=True),
+        candidate_baseline_id,
+    )
     repeat_manifests = [
         _read_json(root / "condition_replay_manifest.json") for root in repeat_roots
     ]
@@ -145,9 +164,10 @@ def build_e04_camera_counterfactual(
         str(manifest["checkpoint"]["sha256"]) for manifest in repeat_manifests
     }
     if checkpoint_shas != {str(bundle["identity"]["checkpoint_sha256"])}:
-        raise ValueError("E04 repeat checkpoints do not match B1.4")
+        raise ValueError("E04 repeat checkpoints do not match candidate bundle")
     if any(
-        manifest["baseline_id"] != "B1.4" or bool(manifest["held_out_test_read"])
+        manifest["baseline_id"] != candidate_baseline_id
+        or bool(manifest["held_out_test_read"])
         for manifest in repeat_manifests
     ):
         raise ValueError("E04 repeat package provenance is invalid")
@@ -217,6 +237,7 @@ def build_e04_camera_counterfactual(
                                     "first_cycle_id": int(anchor["first_cycle_id"]),
                                     "second_cycle_id": int(anchor["second_cycle_id"]),
                                     "camera_variant": variant,
+                                    "baseline_id": candidate_baseline_id,
                                     "repeat": repeat,
                                     "condition_mode": mode,
                                     "first_condition": anchor["first_condition"],
@@ -284,9 +305,10 @@ def build_e04_camera_counterfactual(
             source_rows,
             thresholds=thresholds,
             ready_upper=float(
-                previous_gate["criteria"]["b1_4_ready_boundary_discontinuity"][
-                    "maximum_allowed"
-                ]
+                _candidate_ready_criterion(
+                    previous_gate,
+                    candidate_baseline_id=candidate_baseline_id,
+                )["maximum_allowed"]
             ),
         )
         identities.extend(
@@ -344,6 +366,7 @@ def build_e04_camera_counterfactual(
                     )
                 ],
                 "bundle": bundle["identity"],
+                "candidate_baseline_id": candidate_baseline_id,
                 "camera_mapping_sha256": sha256_file(m0 / "camera_mapping.json"),
                 "variants": list(CAMERA_VARIANTS),
                 "supported_validation_pair_count": len(validation),
@@ -404,6 +427,24 @@ def build_e04_camera_counterfactual(
         del policy
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
+
+def _candidate_ready_criterion(
+    previous_gate: Mapping[str, Any],
+    *,
+    candidate_baseline_id: str,
+) -> Mapping[str, Any]:
+    """Resolve the role-based G5.1 criterion with legacy B1.4 compatibility."""
+
+    criteria = previous_gate["criteria"]
+    if "candidate_ready_boundary_discontinuity" in criteria:
+        return criteria["candidate_ready_boundary_discontinuity"]
+    if (
+        candidate_baseline_id == "B1.4"
+        and "b1_4_ready_boundary_discontinuity" in criteria
+    ):
+        return criteria["b1_4_ready_boundary_discontinuity"]
+    raise ValueError("passing G5.1 package lacks candidate ready criterion")
 
 
 def camera_pair_metric(

@@ -26,6 +26,7 @@ def main() -> None:
     )
     parser.add_argument("--previous-g5-root", type=Path, required=True)
     parser.add_argument("--contract-path", type=Path, required=True)
+    parser.add_argument("--candidate-baseline-id", default="B1.4")
     parser.add_argument("--device", default="cuda")
     args = parser.parse_args()
     result = build_e04_camera_counterfactual(
@@ -37,6 +38,7 @@ def main() -> None:
         b1_repeat_roots=args.b1_repeat_root,
         previous_g5_root=args.previous_g5_root,
         contract_path=args.contract_path,
+        candidate_baseline_id=args.candidate_baseline_id,
         device=args.device,
     )
     print(json.dumps(result, indent=2, sort_keys=True))

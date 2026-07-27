@@ -101,6 +101,12 @@ mislabelled as B1.4. Router lifecycle, two-cycle anchors, expert thresholds,
 support rule, trace construction, condition-switch formula, and pass criteria
 remain unchanged.
 
+The same identity-only parameterization applies to the frozen E04 builder.
+The E04 manifest, trace rows, passing G5.1 input, candidate bundle, and
+cross-process replay packages must all declare B1.5. Camera interventions,
+matched-pair metrics, threshold estimators, source aggregation, and complete
+E04 pass criteria remain unchanged.
+
 ## Targeted causal Gate
 
 The revision is useful only if:
