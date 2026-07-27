@@ -49,7 +49,7 @@ DEFAULT_SOURCE_ROOT = Path(
 )
 DEFAULT_OUTPUT_ROOT = Path(
     "/data/pingfan/Excavator_real_stack_data/"
-    "simverify_habit_cycle_definition_v1"
+    "simverify_habit_cycle_definition_v2"
 )
 DEFAULT_RESNET18_WEIGHTS = Path(
     "/home/pingfan/.cache/torch/hub/checkpoints/resnet18-f37072fd.pth"
@@ -633,15 +633,16 @@ def fit_causal_confirmation_dwell(
                 / 2.0,
             }
         )
-    best = max(row["balanced_accuracy"] for row in scored)
+    best = max(row["true_positive_rate"] for row in scored)
     selected = next(
-        row for row in scored if math.isclose(row["balanced_accuracy"], best)
+        row for row in scored if math.isclose(row["true_positive_rate"], best)
     )
     return {
         "schema": "habit_causal_dwell_contract_v1",
         "selection_rule": (
-            "smallest_train_dwell_maximizing_balanced_accuracy_between_"
-            "reference_ready_runs_and_earlier_target_sector_runs"
+            "smallest_train_dwell_maximizing_reference_ready_candidate_recall;"
+            "earlier_target_sector_runs_are_candidates_rejected_by_the_"
+            "separate_visual_confirmation_stage"
         ),
         "selected_dwell_steps": int(selected["dwell_steps"]),
         "selected_operating_point": selected,
@@ -843,7 +844,13 @@ def build_visual_boundary_audit(
                 sum(a == b for a, b in zip(rvy, rpred)),
                 len(rvy),
             ),
-            "passed": right_metrics["balanced_accuracy"] > right_null,
+            "passed": _wilson_lower(
+                sum(a == b for a, b in zip(rvy, rpred)),
+                len(rvy),
+            )
+            > 0.5,
+            "gate_null": "binary_chance_accuracy_0_5",
+            "shuffled_label_p95_gate_eligible": False,
         }
     else:
         right_result = {
@@ -895,7 +902,13 @@ def build_visual_boundary_audit(
                 sum(a == b for a, b in zip(val_binary, binary_prediction)),
                 len(val_binary),
             ),
-            "passed": binary_metrics["balanced_accuracy"] > binary_null,
+            "passed": _wilson_lower(
+                sum(a == b for a, b in zip(val_binary, binary_prediction)),
+                len(val_binary),
+            )
+            > 0.5,
+            "gate_null": "binary_chance_accuracy_0_5",
+            "shuffled_label_p95_gate_eligible": False,
         },
         "right_ready_vs_dump_eye_stick": right_result,
         "ready_feature_calibration": (

@@ -72,12 +72,16 @@ physical_effect_validated
    连续区间；它只是真值参照。
 2. runtime 候选从 `dump_end` 后向前扫描，只读 committed target、当前/历史
    image/qpos/qvel/action。
-3. 数值 dwell 不是手填秒数；train 上比较真实 ready run 与更早的目标区穿越 run，选择
-   balanced accuracy 最大时延迟最短的 dwell。
+3. 数值 dwell 不是最终判定器；train 上选择真实 ready 候选召回率最大时延迟最短的
+   dwell，保留更早的目标区穿越交给下一层视觉证据拒绝。
 4. 冻结 eye+stick ResNet-18 特征用 train 的 ready reference、dump 和错误前向候选校准；
    runtime 取第一个被判为 ready 的前向候选。
 5. validation 检查过早确认、漏确认、sector 可分性、ready/dump 可分性，单独检查 right
    dig-ready 与固定卸料 corridor。
+
+二分类 ready/dump Gate 使用数学 chance null `0.5` 和 validation Wilson lower bound。
+shuffled label 在完全可分的二簇上会因标签整体翻转产生 `p95=1.0`，因此只保留为诊断，
+不作为二分类通过门槛；三分类 sector 仍使用 shuffled-label null。
 
 任何 runtime confirm 是否落入 reference interval，只用于审计 detector，不能作为
 runtime 输入。门槛来自 train operating point、episode 隔离 validation 和 shuffled-label

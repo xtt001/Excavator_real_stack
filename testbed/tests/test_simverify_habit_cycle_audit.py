@@ -60,7 +60,7 @@ def test_true_runs_are_half_open_and_forward_only() -> None:
     assert _true_runs(mask, start=2, end=7) == [(2, 3), (4, 7)]
 
 
-def test_train_dwell_rejects_short_earlier_target_pass() -> None:
+def test_numeric_candidate_stage_preserves_ready_recall_for_visual_gate() -> None:
     signals = _signals()
     contract = fit_causal_confirmation_dwell(
         [_candidate()],
@@ -68,15 +68,15 @@ def test_train_dwell_rejects_short_earlier_target_pass() -> None:
         sector_thresholds=_sector_thresholds(),
         dump_swing_threshold=0.63,
     )
-    assert contract["selected_dwell_steps"] == 3
+    assert contract["selected_dwell_steps"] == 1
     rows = enumerate_causal_candidates(
         [_candidate()],
-        dwell_steps=3,
+        dwell_steps=1,
         signals=signals,
         sector_thresholds=_sector_thresholds(),
         dump_swing_threshold=0.63,
     )
-    assert rows[0]["numeric_causal_candidate_steps"] == [10]
+    assert rows[0]["numeric_causal_candidate_steps"] == [3, 8]
     assert rows[0]["causal_confirmed"] is False
 
 
@@ -116,4 +116,3 @@ def test_definition_decision_prioritizes_boundary_failure() -> None:
     )
     assert decision["decision"] == "revise_boundary"
     assert decision["training_authorized"] is False
-
