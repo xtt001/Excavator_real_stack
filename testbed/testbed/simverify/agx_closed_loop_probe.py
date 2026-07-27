@@ -66,6 +66,278 @@ class ProbeEnvironment(Protocol):
     def close(self) -> None: ...
 
 
+class ReadyBoundaryDetector(Protocol):
+    """Observable-only boundary detector surface used by the probe."""
+
+    @property
+    def provenance(self) -> Mapping[str, Any]: ...
+
+    def reset(self) -> None: ...
+
+    def observe(
+        self,
+        *,
+        policy_tick: int,
+        observation: Mapping[str, Any],
+        policy_observation: Mapping[str, Any],
+        held_action: np.ndarray,
+        condition_route: Mapping[str, Any] | None,
+    ) -> Mapping[str, Any]: ...
+
+
+class ObservableReadyBoundaryDetector:
+    """Causal live adaptation of the frozen M0 observable ready contract.
+
+    The offline M0 labeler may inspect a bounded interval around a numeric
+    candidate.  A live probe cannot inspect future rows, so it first arms on a
+    sustained observable dump-release command and then accepts the first
+    return-to-work-area frame that passes the frozen ready prototypes and
+    trailing stick-pair stability threshold.
+    """
+
+    SCHEMA = "simverify_agx_observable_ready_boundary_detector_v1"
+    TICK_SCHEMA = "simverify_agx_observable_ready_boundary_tick_v1"
+
+    def __init__(
+        self,
+        *,
+        feature_extractor: Any,
+        eye_ready_prototype: np.ndarray,
+        stick_ready_prototype: np.ndarray,
+        dump_swing_threshold: float,
+        action_deadzone: float,
+        eye_support_threshold: float,
+        stick_support_threshold: float,
+        stick_change_threshold: float,
+        artifact_provenance: Mapping[str, Any],
+        minimum_release_policy_ticks: int = 2,
+    ) -> None:
+        self._feature_extractor = feature_extractor
+        self._eye_ready_prototype = _normalized_vector(
+            eye_ready_prototype,
+            name="eye_ready_prototype",
+        )
+        self._stick_ready_prototype = _normalized_vector(
+            stick_ready_prototype,
+            name="stick_ready_prototype",
+        )
+        if self._eye_ready_prototype.shape != (1024,):
+            raise ValueError("eye ready prototype must have shape (1024,)")
+        if self._stick_ready_prototype.shape != (1024,):
+            raise ValueError("stick ready prototype must have shape (1024,)")
+        numeric_values = (
+            dump_swing_threshold,
+            action_deadzone,
+            eye_support_threshold,
+            stick_support_threshold,
+            stick_change_threshold,
+        )
+        if not all(math.isfinite(float(value)) for value in numeric_values):
+            raise ValueError("ready-boundary thresholds must be finite")
+        if int(minimum_release_policy_ticks) < 2:
+            raise ValueError("minimum_release_policy_ticks must be at least two")
+        self._dump_swing_threshold = float(dump_swing_threshold)
+        self._action_deadzone = float(action_deadzone)
+        self._eye_support_threshold = float(eye_support_threshold)
+        self._stick_support_threshold = float(stick_support_threshold)
+        self._stick_change_threshold = float(stick_change_threshold)
+        self._minimum_release_policy_ticks = int(minimum_release_policy_ticks)
+        self._provenance = {
+            "schema": self.SCHEMA,
+            "mode": "causal_live_adaptation_of_frozen_m0_ready_contract",
+            "observable_inputs": [
+                "four_rgb_cameras",
+                "swing_qpos",
+                "previously_sent_bucket_action",
+                "condition_route",
+            ],
+            "privilege_used": False,
+            "future_observations_used": False,
+            "confirmation_dwell_policy_ticks": 1,
+            "minimum_release_policy_ticks": self._minimum_release_policy_ticks,
+            "thresholds": {
+                "dump_swing_threshold": self._dump_swing_threshold,
+                "action_deadzone": self._action_deadzone,
+                "eye_ready_support": self._eye_support_threshold,
+                "stick_ready_support": self._stick_support_threshold,
+                "trailing_stick_cosine_change": self._stick_change_threshold,
+            },
+            "artifacts": dict(artifact_provenance),
+            "feature_extractor": dict(feature_extractor.provenance),
+        }
+        self.reset()
+
+    @classmethod
+    def from_m0_artifacts(
+        cls,
+        *,
+        m0_root: str | Path,
+        resnet18_checkpoint: str | Path,
+        device: str = "cpu",
+        expected_resnet18_sha256: str = (
+            "f37072fd47e89c5e827621c5baffa7500819f7896bbacec160b1a16c560e07ec"
+        ),
+    ) -> ObservableReadyBoundaryDetector:
+        """Build the detector strictly from frozen local M0 artifacts."""
+
+        from testbed.simverify.features import FrozenResNet18FeatureExtractor
+
+        root = Path(m0_root).resolve(strict=True)
+        thresholds_path = root / "annotation_thresholds_v2.json"
+        prototypes_path = root / "annotation_feature_prototypes_v2.npz"
+        if not thresholds_path.is_file() or not prototypes_path.is_file():
+            raise FileNotFoundError(
+                "M0 ready detector requires annotation_thresholds_v2.json "
+                "and annotation_feature_prototypes_v2.npz"
+            )
+        thresholds = json.loads(thresholds_path.read_text(encoding="utf-8"))
+        numeric = thresholds["numeric"]
+        visual = thresholds["visual_events"]
+        with np.load(prototypes_path, allow_pickle=False) as prototypes:
+            eye = np.asarray(prototypes["event_eye_ready"], dtype=np.float32)
+            stick = np.asarray(prototypes["event_stick_ready"], dtype=np.float32)
+        extractor = FrozenResNet18FeatureExtractor(
+            resnet18_checkpoint,
+            expected_checkpoint_sha256=expected_resnet18_sha256,
+            device=device,
+            batch_size=4,
+        )
+        return cls(
+            feature_extractor=extractor,
+            eye_ready_prototype=eye,
+            stick_ready_prototype=stick,
+            dump_swing_threshold=float(numeric["dump_release"]["swing_threshold"]),
+            action_deadzone=float(numeric["action_deadzone"]),
+            eye_support_threshold=float(visual["support_thresholds"]["ready"]["eye"]),
+            stick_support_threshold=float(
+                visual["support_thresholds"]["ready"]["stick"]
+            ),
+            stick_change_threshold=float(visual["change_thresholds"]["ready"]["stick"]),
+            artifact_provenance={
+                "m0_root": str(root),
+                "annotation_thresholds_v2": {
+                    "path": str(thresholds_path),
+                    "sha256": sha256_file(thresholds_path),
+                },
+                "annotation_feature_prototypes_v2": {
+                    "path": str(prototypes_path),
+                    "sha256": sha256_file(prototypes_path),
+                },
+            },
+        )
+
+    @property
+    def provenance(self) -> dict[str, Any]:
+        return json.loads(json.dumps(self._provenance))
+
+    def reset(self) -> None:
+        self._armed = False
+        self._confirmed = False
+        self._release_ticks = 0
+        self._previous_stick_feature: np.ndarray | None = None
+
+    def observe(
+        self,
+        *,
+        policy_tick: int,
+        observation: Mapping[str, Any],
+        policy_observation: Mapping[str, Any],
+        held_action: np.ndarray,
+        condition_route: Mapping[str, Any] | None,
+    ) -> dict[str, Any]:
+        route = (
+            None if condition_route is None else str(condition_route.get("route", ""))
+        )
+        swing_qpos = float(np.asarray(observation["qpos"])[0])
+        bucket_action = float(np.asarray(held_action, dtype=np.float32)[3])
+        release_active = bool(
+            route == "next"
+            and swing_qpos > self._dump_swing_threshold
+            and bucket_action < -self._action_deadzone
+        )
+        if not self._armed and not self._confirmed:
+            self._release_ticks = self._release_ticks + 1 if release_active else 0
+            self._armed = self._release_ticks >= self._minimum_release_policy_ticks
+
+        diagnostic: dict[str, Any] = {
+            "schema": self.TICK_SCHEMA,
+            "policy_tick": int(policy_tick),
+            "state": (
+                "confirmed"
+                if self._confirmed
+                else "armed"
+                if self._armed
+                else "searching_dump_release"
+            ),
+            "confirmed": False,
+            "condition_route_before_predict": route,
+            "swing_qpos": swing_qpos,
+            "previously_sent_bucket_action": bucket_action,
+            "release_active": release_active,
+            "release_ticks": int(self._release_ticks),
+            "candidate": False,
+            "eye_ready_support": None,
+            "stick_ready_support": None,
+            "trailing_stick_cosine_change": None,
+        }
+        if not self._armed or self._confirmed:
+            return diagnostic
+
+        images = [
+            np.asarray(policy_observation[f"image_{camera}"], dtype=np.uint8)
+            for camera in ("video4", "video5", "video6", "video7")
+        ]
+        features = np.asarray(
+            self._feature_extractor.extract_rgb_batch(images),
+            dtype=np.float32,
+        )
+        if features.shape != (4, 512):
+            raise ValueError(
+                "ready-boundary feature extractor must return shape (4,512)"
+            )
+        eye_feature = _normalized_vector(
+            np.concatenate((features[0], features[1])),
+            name="live_eye_pair_feature",
+        )
+        stick_feature = _normalized_vector(
+            np.concatenate((features[2], features[3])),
+            name="live_stick_pair_feature",
+        )
+        eye_support = float(np.dot(eye_feature, self._eye_ready_prototype))
+        stick_support = float(np.dot(stick_feature, self._stick_ready_prototype))
+        stick_change = (
+            None
+            if self._previous_stick_feature is None
+            else float(1.0 - np.dot(stick_feature, self._previous_stick_feature))
+        )
+        self._previous_stick_feature = stick_feature
+        candidate = bool(
+            route == "next"
+            and swing_qpos < self._dump_swing_threshold
+            and bucket_action <= self._action_deadzone
+        )
+        confirmed = bool(
+            candidate
+            and eye_support >= self._eye_support_threshold
+            and stick_support >= self._stick_support_threshold
+            and stick_change is not None
+            and stick_change <= self._stick_change_threshold
+        )
+        if confirmed:
+            self._confirmed = True
+        diagnostic.update(
+            {
+                "state": "confirmed" if confirmed else "armed",
+                "confirmed": confirmed,
+                "candidate": candidate,
+                "eye_ready_support": eye_support,
+                "stick_ready_support": stick_support,
+                "trailing_stick_cosine_change": stick_change,
+            }
+        )
+        return diagnostic
+
+
 class ExternalAgxWorker:
     """Run the existing PACT AGX backend in an isolated subprocess."""
 
@@ -252,9 +524,7 @@ def validate_probe_bundle(bundle_root: str | Path) -> dict[str, Any]:
         "B2.4": "cycle_condition_v1_next_sector_only",
     }
     if baseline_id not in ALLOWED_BASELINES:
-        raise ValueError(
-            f"probe baseline must be one of {sorted(ALLOWED_BASELINES)}"
-        )
+        raise ValueError(f"probe baseline must be one of {sorted(ALLOWED_BASELINES)}")
     if experiment.get("condition_input") != expected_condition[baseline_id]:
         raise ValueError("probe bundle condition contract mismatch")
     if (
@@ -312,6 +582,8 @@ def run_bounded_closed_loop_probe(
     external_provenance: Mapping[str, Any],
     current_sector: str,
     next_sector: str,
+    second_next_sector: str | None = None,
+    ready_boundary_detector: ReadyBoundaryDetector | None = None,
     seed: int,
     policy_ticks: int,
     save_images: bool = True,
@@ -326,6 +598,22 @@ def run_bounded_closed_loop_probe(
     condition = build_cycle_condition(current_sector, next_sector)
     baseline_id = str(bundle_contract["baseline_id"])
     pass_condition = baseline_id != "B0"
+    lifecycle_enabled = ready_boundary_detector is not None
+    if lifecycle_enabled and not pass_condition:
+        raise ValueError("condition lifecycle cannot be enabled for B0")
+    if lifecycle_enabled != (second_next_sector is not None):
+        raise ValueError(
+            "ready boundary detector and second_next_sector must be provided together"
+        )
+    second_condition = (
+        None
+        if second_next_sector is None
+        else build_cycle_condition(next_sector, second_next_sector)
+    )
+    active_condition = condition.copy()
+    cycle_index = 0
+    condition_reset_count = 0
+    condition_reset_policy_tick: int | None = None
     info = validate_agx_info(environment.get_info())
     sim_dt = float(info["dt"])
     temporary = destination.parent / f".{destination.name}.tmp-{os.getpid()}"
@@ -341,6 +629,8 @@ def run_bounded_closed_loop_probe(
         )
         if hasattr(policy, "reset"):
             policy.reset()
+        if ready_boundary_detector is not None:
+            ready_boundary_detector.reset()
         held_action = np.zeros(4, dtype=np.float32)
         _append_step_row(
             step_rows,
@@ -369,9 +659,40 @@ def run_bounded_closed_loop_probe(
                 raise RuntimeError("AGX step sequence skipped a policy target step")
             policy_observation, encoded_frames = _policy_observation(
                 observation,
-                condition=condition if pass_condition else None,
+                condition=active_condition if pass_condition else None,
                 authoritative_time_ns=int(round(target_step * sim_dt * 1.0e9)),
             )
+            route_before_predict = getattr(policy, "condition_route_diagnostics", None)
+            boundary_diagnostic = None
+            reset_before_predict = False
+            if ready_boundary_detector is not None:
+                boundary_diagnostic = dict(
+                    ready_boundary_detector.observe(
+                        policy_tick=policy_tick,
+                        observation=observation,
+                        policy_observation=policy_observation,
+                        held_action=held_action,
+                        condition_route=route_before_predict,
+                    )
+                )
+                if bool(boundary_diagnostic.get("confirmed")):
+                    if condition_reset_count:
+                        raise RuntimeError(
+                            "bounded two-cycle probe observed more than one boundary"
+                        )
+                    if not hasattr(policy, "reset_condition_cycle"):
+                        raise TypeError(
+                            "conditioned policy lacks reset_condition_cycle()"
+                        )
+                    policy.reset_condition_cycle()
+                    if second_condition is None:
+                        raise AssertionError("second condition was not built")
+                    active_condition = second_condition.copy()
+                    policy_observation["cycle_condition_v1"] = active_condition.copy()
+                    cycle_index = 1
+                    condition_reset_count = 1
+                    condition_reset_policy_tick = int(policy_tick)
+                    reset_before_predict = True
             aggregated = np.asarray(
                 policy.predict(policy_observation),
                 dtype=np.float32,
@@ -394,29 +715,26 @@ def run_bounded_closed_loop_probe(
                     "policy_tick": int(policy_tick),
                     "source_step_id": int(target_step),
                     "source_time_s": float(target_step * sim_dt),
-                    "unity_sim_time_ns_diagnostic": int(
-                        observation["sim_time_ns"]
-                    ),
-                    "condition": condition.astype(float).tolist(),
+                    "unity_sim_time_ns_diagnostic": int(observation["sim_time_ns"]),
+                    "cycle_index": int(cycle_index),
+                    "condition": active_condition.astype(float).tolist(),
                     "condition_delivered": bool(pass_condition),
+                    "condition_router_reset_before_predict": bool(reset_before_predict),
+                    "ready_boundary": boundary_diagnostic,
                     "raw_policy_chunk_normalized": raw_normalized.astype(
                         float
                     ).tolist(),
                     "raw_policy_chunk_direct": raw_direct.astype(float).tolist(),
-                    "temporal_aggregation_action": aggregated.astype(
-                        float
-                    ).tolist(),
-                    "future_runtime_safe_action": runtime_safe.astype(
-                        float
-                    ).tolist(),
+                    "temporal_aggregation_action": aggregated.astype(float).tolist(),
+                    "future_runtime_safe_action": runtime_safe.astype(float).tolist(),
                     "actual_sent_action": runtime_safe.astype(float).tolist(),
                     "condition_route": None if route is None else dict(route),
-                    "qpos": np.asarray(
-                        observation["qpos"], dtype=np.float32
-                    ).astype(float).tolist(),
-                    "qvel": np.asarray(
-                        observation["qvel"], dtype=np.float32
-                    ).astype(float).tolist(),
+                    "qpos": np.asarray(observation["qpos"], dtype=np.float32)
+                    .astype(float)
+                    .tolist(),
+                    "qvel": np.asarray(observation["qvel"], dtype=np.float32)
+                    .astype(float)
+                    .tolist(),
                 }
             )
             if save_images:
@@ -463,16 +781,13 @@ def run_bounded_closed_loop_probe(
                     "four_rgb_cameras",
                     "qpos",
                     "qvel",
-                    *(
-                        ["cycle_condition_v1"]
-                        if pass_condition
-                        else []
-                    ),
+                    *(["cycle_condition_v1"] if pass_condition else []),
                 ],
                 "intervention": {
                     "seed": int(seed),
                     "current_sector": current_sector,
                     "next_sector": next_sector,
+                    "second_next_sector": second_next_sector,
                 },
                 "can_prove": [
                     "policy_environment_feedback_path_executes",
@@ -505,6 +820,38 @@ def run_bounded_closed_loop_probe(
                 "vector": condition.astype(float).tolist(),
                 "delivered_to_policy": bool(pass_condition),
             },
+            "condition_lifecycle_contract": {
+                "enabled": lifecycle_enabled,
+                "schema": "simverify_agx_condition_cycle_lifecycle_v1",
+                "transition": (
+                    None
+                    if second_next_sector is None
+                    else {
+                        "before": {
+                            "current_sector": current_sector,
+                            "next_sector": next_sector,
+                            "vector": condition.astype(float).tolist(),
+                        },
+                        "after": {
+                            "current_sector": next_sector,
+                            "next_sector": second_next_sector,
+                            "vector": second_condition.astype(float).tolist(),
+                        },
+                    }
+                ),
+                "trigger": (
+                    None
+                    if ready_boundary_detector is None
+                    else dict(ready_boundary_detector.provenance)
+                ),
+                "reset_count": int(condition_reset_count),
+                "reset_policy_tick": condition_reset_policy_tick,
+                "full_policy_reset_count": 1,
+                "condition_router_reset_only": bool(lifecycle_enabled),
+                "temporal_aggregation_reset_at_boundary": False,
+                "visual_history_reset_at_boundary": False,
+                "privilege_used": False,
+            },
             "agx_contract": info,
             "bundle_contract": dict(bundle_contract),
             "provenance": {
@@ -520,10 +867,7 @@ def run_bounded_closed_loop_probe(
                 np.max(
                     np.abs(
                         np.asarray(
-                            [
-                                row["actual_sent_action"]
-                                for row in policy_rows
-                            ],
+                            [row["actual_sent_action"] for row in policy_rows],
                             dtype=np.float32,
                         )
                     )
@@ -593,6 +937,16 @@ def _policy_observation(
     return policy_observation, encoded
 
 
+def _normalized_vector(value: np.ndarray, *, name: str) -> np.ndarray:
+    vector = np.asarray(value, dtype=np.float32).reshape(-1)
+    if not np.all(np.isfinite(vector)):
+        raise ValueError(f"{name} must be finite")
+    norm = float(np.linalg.norm(vector))
+    if norm <= np.finfo(np.float32).eps:
+        raise ValueError(f"{name} must have non-zero norm")
+    return np.asarray(vector / norm, dtype=np.float32)
+
+
 def _decode_and_transform_jpeg(frame: Mapping[str, Any]) -> np.ndarray:
     if str(frame.get("encoding")) != "jpeg":
         raise ValueError("AGX probe requires JPEG camera payloads")
@@ -656,12 +1010,12 @@ def _append_step_row(
                 if sent_action is None
                 else np.asarray(sent_action, dtype=np.float32).astype(float).tolist()
             ),
-            "qpos": np.asarray(
-                observation["qpos"], dtype=np.float32
-            ).astype(float).tolist(),
-            "qvel": np.asarray(
-                observation["qvel"], dtype=np.float32
-            ).astype(float).tolist(),
+            "qpos": np.asarray(observation["qpos"], dtype=np.float32)
+            .astype(float)
+            .tolist(),
+            "qvel": np.asarray(observation["qvel"], dtype=np.float32)
+            .astype(float)
+            .tolist(),
             "warnings": list(observation.get("warnings", [])),
         }
     )
