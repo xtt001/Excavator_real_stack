@@ -866,7 +866,10 @@ def _build_condition_shuffle_mapping(
             if group.size < 2:
                 continue
             labels = np.argmax(matrix[group, 3:], axis=1)
-            shuffled_labels = labels[rng.permutation(group.size)]
+            shuffled_labels = _maximum_change_marginal_label_shuffle(
+                labels,
+                rng=rng,
+            )
             shuffled[group, 3:] = 0.0
             shuffled[group, 3 + shuffled_labels] = 1.0
     source_counts = Counter(_condition_key(row) for row in matrix)
@@ -879,6 +882,13 @@ def _build_condition_shuffle_mapping(
         digest.update(np.asarray(key, dtype=np.int64).tobytes())
         digest.update(mapping[key].astype(np.float32).tobytes())
     changed = int(np.sum(np.any(matrix != shuffled, axis=1)))
+    committed_count = int(np.sum(np.asarray(committed_flags, dtype=bool)))
+    changed_committed = int(
+        np.sum(
+            np.any(matrix != shuffled, axis=1)
+            & np.asarray(committed_flags, dtype=bool)
+        )
+    )
     return mapping, {
         "enabled": True,
         "scope": (
@@ -894,6 +904,11 @@ def _build_condition_shuffle_mapping(
         "changed_row_count": changed,
         "unchanged_row_count": len(keys) - changed,
         "changed_row_fraction": float(changed / len(keys)),
+        "committed_row_count": committed_count,
+        "changed_committed_row_count": changed_committed,
+        "changed_committed_row_fraction": float(
+            changed_committed / max(1, committed_count)
+        ),
         "pre_commit_rows_unchanged": bool(
             mode != "next_sector_within_current_committed_only"
             or np.all(
@@ -1164,6 +1179,38 @@ def _exact_marginal_label_derangement(
         raise AssertionError("constructed next-sector assignment is not a derangement")
     if Counter(randomized.tolist()) != counts:
         raise AssertionError("constructed derangement changed label marginals")
+    return randomized
+
+
+def _maximum_change_marginal_label_shuffle(
+    labels: np.ndarray,
+    *,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Preserve marginals and attain the minimum possible unchanged count."""
+
+    source = np.asarray(labels, dtype=np.int64).reshape(-1)
+    if source.size < 2 or np.any((source < 0) | (source > 2)):
+        raise ValueError("next-sector labels must be a non-empty 0..2 vector")
+    counts = Counter(int(value) for value in source.tolist())
+    maximum = max(counts.values())
+    ordered_indices: list[int] = []
+    for label, _count in sorted(
+        counts.items(),
+        key=lambda item: (-item[1], item[0]),
+    ):
+        indices = np.flatnonzero(source == label)
+        ordered_indices.extend(rng.permutation(indices).tolist())
+    receiver = np.asarray(ordered_indices, dtype=np.int64)
+    ordered_labels = source[receiver]
+    donor_labels = np.roll(ordered_labels, -maximum)
+    randomized = np.empty_like(source)
+    randomized[receiver] = donor_labels
+    if Counter(randomized.tolist()) != counts:
+        raise AssertionError("maximum-change shuffle changed label marginals")
+    theoretical_minimum_unchanged = max(0, 2 * maximum - source.size)
+    if int(np.sum(randomized == source)) != theoretical_minimum_unchanged:
+        raise AssertionError("maximum-change shuffle is not maximally changed")
     return randomized
 
 
