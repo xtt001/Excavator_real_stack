@@ -43,6 +43,17 @@ def train_policy(config: dict[str, Any]) -> None:
     image_transform = str(
         train_cfg.get("image_transform", task_cfg.get("image_transform", "none"))
     )
+    camera_loss_augmentation = copy.deepcopy(
+        train_cfg.get("camera_loss_augmentation", {}) or {}
+    )
+    from testbed.data.camera_loss_augmentation import (
+        resolve_camera_loss_augmentation,
+    )
+
+    camera_loss_augmentation = resolve_camera_loss_augmentation(
+        camera_loss_augmentation,
+        camera_names=camera_names,
+    )
     deadzone_intent = copy.deepcopy(
         train_cfg.get("deadzone_intent", policy_cfg.get("deadzone_intent", {})) or {}
     )
@@ -218,6 +229,7 @@ def train_policy(config: dict[str, Any]) -> None:
         "reuse_split": reuse_split,
         "split_path": str(split_path),
         "image_transform": image_transform,
+        "camera_loss_augmentation": camera_loss_augmentation,
         "sample_valid_mask_path": sample_valid_mask_path,
         "norm_stats_train_only": norm_stats_train_only,
         "condition_shuffle": condition_shuffle,
@@ -257,6 +269,9 @@ def train_policy(config: dict[str, Any]) -> None:
         episode_ids=episode_ids,
         action_chunk_size=action_chunk_size,
         image_transform=image_transform,
+        camera_loss_augmentation_train=(
+            camera_loss_augmentation if camera_loss_augmentation["enabled"] else None
+        ),
         deadzone_intent=deadzone_intent,
         sample_valid_mask_path=sample_valid_mask_path or None,
         norm_stats_train_only=norm_stats_train_only,
@@ -291,6 +306,10 @@ def train_policy(config: dict[str, Any]) -> None:
         "validation": copy.deepcopy(
             split_info["phase_routed_condition_validation"]
         ),
+    }
+    experiment_contract["camera_loss_augmentation_provenance"] = {
+        "train": copy.deepcopy(split_info["camera_loss_augmentation_train"]),
+        "validation": copy.deepcopy(split_info["camera_loss_augmentation_validation"]),
     }
     full_config["experiment_contract"] = copy.deepcopy(experiment_contract)
 
@@ -369,6 +388,9 @@ def _build_resolved_train_config(
     train_cfg["ckpt_dir"] = str(ckpt_dir)
     train_cfg["split_path"] = str(split_path)
     train_cfg["image_transform"] = str(full_config["image_transform"])
+    train_cfg["camera_loss_augmentation"] = copy.deepcopy(
+        full_config["camera_loss_augmentation"]
+    )
     train_cfg["split_seed"] = int(full_config["split_seed"])
     train_cfg["train_split_ratio"] = float(full_config["train_split_ratio"])
     train_cfg["reuse_split"] = bool(full_config["reuse_split"])

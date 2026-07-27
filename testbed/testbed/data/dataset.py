@@ -18,6 +18,11 @@ import torch
 import yaml
 from torch.utils.data import DataLoader, Dataset
 
+from testbed.data.camera_loss_augmentation import (
+    apply_camera_loss,
+    camera_loss_manifest,
+    resolve_camera_loss_augmentation,
+)
 from testbed.data.deadzone_intent_labels import compute_deadzone_intent_labels
 from testbed.data.hdf5_io import list_episodes
 from testbed.data.image_transforms import build_image_transform
@@ -267,6 +272,7 @@ class EpisodicDataset(Dataset):
         condition_phase_randomization: dict[str, Any] | None = None,
         condition_counterfactual_consistency: dict[str, Any] | None = None,
         phase_routed_condition: dict[str, Any] | None = None,
+        camera_loss_augmentation: dict[str, Any] | None = None,
     ):
         super().__init__()
         self.episode_ids = episode_ids
@@ -393,6 +399,26 @@ class EpisodicDataset(Dataset):
             self.phase_routed_condition,
             episode_ids=self.episode_ids,
         )
+        self.camera_loss_augmentation = resolve_camera_loss_augmentation(
+            camera_loss_augmentation,
+            camera_names=self.camera_names,
+        )
+        camera_loss_keys = (
+            _camera_loss_eligible_sample_keys(
+                dataset_dir=self.dataset_dir,
+                episode_ids=self.episode_ids,
+                action_chunk_size=self.action_chunk_size,
+                deadzone_intent=self.deadzone_intent,
+                sample_valid_mask_path=self.sample_valid_mask_path,
+            )
+            if self.camera_loss_augmentation["enabled"]
+            else []
+        )
+        self.camera_loss_augmentation_manifest = camera_loss_manifest(
+            self.camera_loss_augmentation,
+            sample_keys=camera_loss_keys,
+            source_episode_ids=self.episode_ids,
+        )
         self.is_real: bool | None = None
         # Warm-up to populate self.is_real
         self.__getitem__(0)
@@ -499,6 +525,13 @@ class EpisodicDataset(Dataset):
                 if self.image_transform is not None:
                     image = self.image_transform(image)
                 image_dict[cam] = image
+            if self.camera_loss_augmentation["enabled"]:
+                image_dict = apply_camera_loss(
+                    image_dict,
+                    self.camera_loss_augmentation,
+                    episode_id=ep_id,
+                    source_tick=t0,
+                )
 
             # ── action from t0 onward ────────────────────────────────────
             start = t0 if (not is_real or action_prealigned) else max(0, t0 - 1)
@@ -1241,6 +1274,45 @@ def _valid_start_indices(
     return starts[valid]
 
 
+def _camera_loss_eligible_sample_keys(
+    *,
+    dataset_dir: Path,
+    episode_ids: list[int],
+    action_chunk_size: int | None,
+    deadzone_intent: dict[str, Any],
+    sample_valid_mask_path: str | None,
+) -> list[tuple[int, int]]:
+    """Enumerate the exact train rows eligible for camera-loss selection."""
+
+    import h5py
+
+    keys = []
+    for episode_id in sorted(map(int, episode_ids)):
+        with h5py.File(dataset_dir / f"episode_{episode_id}.hdf5", "r") as h5_file:
+            total_steps = int(h5_file["action"].shape[0])
+            action_loss_mask = _read_optional_handoff_mask(
+                h5_file,
+                "handoff/action_loss_mask",
+                total_steps,
+                enabled=bool(deadzone_intent["require_action_loss_in_chunk"]),
+            )
+            starts = _valid_start_indices(
+                total_steps=total_steps,
+                train_exclude_mask=_combined_training_exclude_mask(
+                    h5_file,
+                    total_steps,
+                    sample_valid_mask_path=sample_valid_mask_path,
+                ),
+                action_chunk_size=action_chunk_size,
+                action_loss_mask=action_loss_mask,
+                require_action_loss_in_chunk=bool(
+                    deadzone_intent["require_action_loss_in_chunk"]
+                ),
+            )
+        keys.extend((episode_id, int(tick)) for tick in starts)
+    return keys
+
+
 def _decode_jpeg_image(encoded: np.ndarray) -> np.ndarray:
     try:
         import cv2
@@ -1284,6 +1356,7 @@ def load_data(
     condition_phase_randomization_train: dict[str, Any] | None = None,
     condition_counterfactual_consistency_train: dict[str, Any] | None = None,
     phase_routed_condition: dict[str, Any] | None = None,
+    camera_loss_augmentation_train: dict[str, Any] | None = None,
 ) -> tuple[DataLoader, DataLoader, dict, bool, dict[str, Any]]:
     """
     Build train/val DataLoaders from an HDF5 dataset directory.
@@ -1437,6 +1510,7 @@ def load_data(
             condition_counterfactual_consistency_train
         ),
         phase_routed_condition=phase_routed_condition,
+        camera_loss_augmentation=camera_loss_augmentation_train,
     )
     val_ds = EpisodicDataset(
         val_ids,
@@ -1453,6 +1527,7 @@ def load_data(
         condition_phase_randomization=None,
         condition_counterfactual_consistency=None,
         phase_routed_condition=phase_routed_condition,
+        camera_loss_augmentation=None,
     )
 
     split_info["dataset_max_episode_len"] = int(max_episode_len)
@@ -1482,6 +1557,12 @@ def load_data(
     )
     split_info["phase_routed_condition_train"] = dict(
         train_ds.phase_route_manifest
+    )
+    split_info["camera_loss_augmentation_train"] = dict(
+        train_ds.camera_loss_augmentation_manifest
+    )
+    split_info["camera_loss_augmentation_validation"] = dict(
+        val_ds.camera_loss_augmentation_manifest
     )
     split_info["phase_routed_condition_validation"] = dict(
         val_ds.phase_route_manifest

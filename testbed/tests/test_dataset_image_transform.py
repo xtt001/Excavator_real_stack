@@ -7,9 +7,7 @@ from pathlib import Path
 import h5py
 import numpy as np
 
-from testbed.data.dataset import EpisodicDataset
-from testbed.data.dataset import _valid_start_indices
-from testbed.data.dataset import load_data
+from testbed.data.dataset import EpisodicDataset, _valid_start_indices, load_data
 from testbed.data.image_transforms import build_image_transform
 
 
@@ -149,6 +147,64 @@ class DatasetImageTransformTests(unittest.TestCase):
             self.assertEqual(float(norm_stats["action_mean"][0]), 1.0)
             self.assertAlmostEqual(float(norm_stats["action_std"][0]), 0.01, places=6)
 
+    def test_load_data_applies_camera_loss_to_train_manifest_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            dataset_dir = Path(tmp)
+            image = self._checkerboard_image(height=12, width=16)
+            for episode_id in (0, 1):
+                self._write_four_camera_episode(
+                    dataset_dir / f"episode_{episode_id}.hdf5",
+                    image=image,
+                )
+
+            _train, _val, _stats, _is_real, split = load_data(
+                dataset_dir=dataset_dir,
+                num_episodes=2,
+                camera_names=["video4", "video5", "video6", "video7"],
+                episode_len=2,
+                batch_size_train=1,
+                batch_size_val=1,
+                num_workers=0,
+                prefetch_factor=1,
+                persistent_workers=False,
+                pin_memory=False,
+                split_seed=0,
+                train_split_ratio=0.5,
+                reuse_split=False,
+                low_dim_keys=["qpos"],
+                action_chunk_size=1,
+                camera_loss_augmentation_train={
+                    "enabled": True,
+                    "scope": "train_only",
+                    "target_camera": "video7",
+                    "probability": 0.999999999,
+                    "seed": 20260727,
+                    "mask_rgb": [0, 0, 0],
+                    "decision_key": [
+                        "seed",
+                        "source_episode_id",
+                        "source_tick",
+                    ],
+                },
+            )
+
+            train_manifest = split["camera_loss_augmentation_train"]
+            val_manifest = split["camera_loss_augmentation_validation"]
+            self.assertTrue(train_manifest["enabled"])
+            self.assertEqual(train_manifest["eligible_row_count"], 2)
+            self.assertEqual(train_manifest["selected_row_count"], 2)
+            self.assertEqual(
+                train_manifest["source_episode_ids"],
+                split["train_ids"],
+            )
+            self.assertFalse(val_manifest["enabled"])
+            self.assertEqual(val_manifest["eligible_row_count"], 0)
+            self.assertEqual(val_manifest["selected_row_count"], 0)
+            self.assertEqual(
+                val_manifest["source_episode_ids"],
+                split["val_ids"],
+            )
+
     def test_valid_start_indices_can_require_action_loss_inside_chunk(self) -> None:
         valid = _valid_start_indices(
             total_steps=5,
@@ -200,6 +256,21 @@ class DatasetImageTransformTests(unittest.TestCase):
                 "fpv",
                 data=np.stack([image, image], axis=0).astype(np.uint8),
             )
+            f.create_dataset("action", data=np.zeros((2, 4), dtype=np.float32))
+
+    @staticmethod
+    def _write_four_camera_episode(path: Path, *, image: np.ndarray) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with h5py.File(path, "w") as f:
+            obs = f.create_group("observations")
+            obs.create_dataset("qpos", data=np.zeros((2, 4), dtype=np.float32))
+            obs.create_dataset("qvel", data=np.zeros((2, 4), dtype=np.float32))
+            images = obs.create_group("images")
+            for camera in ("video4", "video5", "video6", "video7"):
+                images.create_dataset(
+                    camera,
+                    data=np.stack([image, image], axis=0).astype(np.uint8),
+                )
             f.create_dataset("action", data=np.zeros((2, 4), dtype=np.float32))
 
     @staticmethod
