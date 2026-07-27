@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from testbed.simverify.agx_closed_loop_probe import (
+    ObservableDumpEndCommitDetector,
     ObservableReadyBoundaryDetector,
     build_cycle_condition,
     policy_source_step,
@@ -193,6 +194,37 @@ class _FakeReadyBoundaryDetector:
         }
 
 
+class _FakeConditionCommitDetector:
+    provenance = {
+        "schema": "fake_observable_dump_end_commit_detector_v1",
+        "privilege_used": False,
+        "future_observations_used": False,
+    }
+
+    def __init__(self, *, confirm_at_tick: int) -> None:
+        self.confirm_at_tick = int(confirm_at_tick)
+        self.reset_count = 0
+
+    def reset(self) -> None:
+        self.reset_count += 1
+
+    def observe(
+        self,
+        *,
+        policy_tick: int,
+        observation: dict,
+        held_action: np.ndarray,
+    ) -> dict:
+        del observation, held_action
+        confirmed = policy_tick == self.confirm_at_tick
+        return {
+            "schema": "fake_observable_dump_end_commit_tick_v1",
+            "state": "committed" if confirmed else "searching",
+            "confirmed": confirmed,
+            "committed": policy_tick >= self.confirm_at_tick,
+        }
+
+
 class _FakeFeatureExtractor:
     provenance = {
         "schema": "fake_frozen_feature_extractor_v1",
@@ -298,6 +330,93 @@ def test_observable_ready_detector_arms_on_release_then_confirms_visual_return()
     assert ready["trailing_stick_cosine_change"] == pytest.approx(0.0, abs=1.0e-6)
     assert detector.provenance["privilege_used"] is False
     assert detector.provenance["future_observations_used"] is False
+
+
+def test_observable_dump_end_detector_commits_first_tick_after_release() -> None:
+    detector = ObservableDumpEndCommitDetector(
+        dump_swing_threshold=0.6,
+        action_deadzone=0.05,
+        artifact_provenance={"source": "test"},
+        minimum_release_policy_ticks=2,
+    )
+    qpos = {"qpos": np.asarray([0.7, 0.0, 0.0, 0.0])}
+    release = np.asarray([0.0, 0.0, 0.0, -0.2], dtype=np.float32)
+    idle = np.zeros(4, dtype=np.float32)
+
+    first = detector.observe(
+        policy_tick=0,
+        observation=qpos,
+        held_action=release,
+    )
+    armed = detector.observe(
+        policy_tick=1,
+        observation=qpos,
+        held_action=release,
+    )
+    committed = detector.observe(
+        policy_tick=2,
+        observation=qpos,
+        held_action=idle,
+    )
+    later = detector.observe(
+        policy_tick=3,
+        observation=qpos,
+        held_action=idle,
+    )
+
+    assert first["state"] == "searching_dump_release"
+    assert armed["state"] == "armed"
+    assert committed["confirmed"] is True
+    assert committed["committed"] is True
+    assert later["confirmed"] is False
+    assert later["committed"] is True
+    assert detector.provenance["future_observations_used"] is False
+
+
+def test_gated_condition_is_zero_until_observable_dump_end(tmp_path: Path) -> None:
+    output = tmp_path / "gated_probe"
+    policy = _FakePolicy()
+    detector = _FakeConditionCommitDetector(confirm_at_tick=1)
+    result = run_bounded_closed_loop_probe(
+        policy=policy,
+        environment=_FakeEnvironment(),
+        output_root=output,
+        bundle_contract={
+            "baseline_id": "B1",
+            "condition_input": "cycle_condition_v1_dump_end_gated_low_dim",
+        },
+        current_git={"branch": "v2.0.0-simVerify", "dirty": False},
+        external_provenance={
+            "pact": {"git_sha": "pact", "dirty": True},
+            "unity": {"git_sha": "unity", "dirty": True},
+        },
+        current_sector="left",
+        next_sector="center",
+        condition_commit_detector=detector,
+        seed=7,
+        policy_ticks=3,
+        save_images=False,
+    )
+
+    assert detector.reset_count == 1
+    np.testing.assert_array_equal(
+        policy.observations[0]["cycle_condition_v1"],
+        np.zeros(6, dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        policy.observations[1]["cycle_condition_v1"],
+        build_cycle_condition("left", "center"),
+    )
+    assert result["condition_contract"]["committed"] is True
+    assert result["condition_contract"]["commit_policy_tick"] == 1
+    rows = [
+        json.loads(line)
+        for line in (output / "policy_ticks.jsonl").read_text().splitlines()
+    ]
+    assert rows[0]["condition_committed"] is False
+    assert rows[0]["condition"] == [0.0] * 6
+    assert rows[1]["condition_committed"] is True
+    assert rows[1]["condition_commit"]["confirmed"] is True
 
 
 def test_bounded_probe_records_feedback_without_privilege(tmp_path: Path) -> None:

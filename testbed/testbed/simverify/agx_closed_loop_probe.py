@@ -42,7 +42,7 @@ from testbed.simverify.contracts import (
 
 PROBE_SCHEMA = "simverify_agx_closed_loop_diagnostic_v1"
 TIMING_SCHEMA = "simverify_agx_ack_step_timing_v1"
-ALLOWED_BASELINES = frozenset({"B0", "B1.4", "B2.4"})
+ALLOWED_BASELINES = frozenset({"B0", "B1", "B2", "B1.4", "B2.4"})
 ACTION_SELECTION_MODES = frozenset(
     {
         "legacy_temporal_aggregation",
@@ -90,6 +90,153 @@ class ReadyBoundaryDetector(Protocol):
         held_action: np.ndarray,
         condition_route: Mapping[str, Any] | None,
     ) -> Mapping[str, Any]: ...
+
+
+class ConditionCommitDetector(Protocol):
+    """Observable-only dump-end detector used by gated-condition policies."""
+
+    @property
+    def provenance(self) -> Mapping[str, Any]: ...
+
+    def reset(self) -> None: ...
+
+    def observe(
+        self,
+        *,
+        policy_tick: int,
+        observation: Mapping[str, Any],
+        held_action: np.ndarray,
+    ) -> Mapping[str, Any]: ...
+
+
+class ObservableDumpEndCommitDetector:
+    """Commit a target at the first causal 20 Hz row after dump release.
+
+    The detector is a runtime-safe adaptation of the frozen numeric annotation:
+    a release is active only in the learned dump swing cluster while the
+    previously sent bucket action is negative.  A two-policy-tick dwell rejects
+    one-tick action spikes, and the first following inactive tick is the
+    condition commit row.  It never reads future observations or privilege.
+    """
+
+    SCHEMA = "simverify_agx_observable_dump_end_commit_detector_v1"
+    TICK_SCHEMA = "simverify_agx_observable_dump_end_commit_tick_v1"
+
+    def __init__(
+        self,
+        *,
+        dump_swing_threshold: float,
+        action_deadzone: float,
+        artifact_provenance: Mapping[str, Any],
+        minimum_release_policy_ticks: int = 2,
+    ) -> None:
+        if not math.isfinite(float(dump_swing_threshold)):
+            raise ValueError("dump_swing_threshold must be finite")
+        if not math.isfinite(float(action_deadzone)) or float(action_deadzone) <= 0:
+            raise ValueError("action_deadzone must be finite and positive")
+        if int(minimum_release_policy_ticks) < 2:
+            raise ValueError("minimum_release_policy_ticks must be at least two")
+        self._dump_swing_threshold = float(dump_swing_threshold)
+        self._action_deadzone = float(action_deadzone)
+        self._minimum_release_policy_ticks = int(minimum_release_policy_ticks)
+        self._provenance = {
+            "schema": self.SCHEMA,
+            "mode": "causal_live_adaptation_of_frozen_dump_release_end",
+            "observable_inputs": [
+                "swing_qpos",
+                "previously_sent_bucket_action",
+            ],
+            "privilege_used": False,
+            "future_observations_used": False,
+            "commit_timing": "first_policy_row_after_sustained_release_becomes_inactive",
+            "minimum_release_policy_ticks": self._minimum_release_policy_ticks,
+            "thresholds": {
+                "dump_swing_threshold": self._dump_swing_threshold,
+                "action_deadzone": self._action_deadzone,
+            },
+            "artifacts": dict(artifact_provenance),
+        }
+        self.reset()
+
+    @classmethod
+    def from_definition_artifacts(
+        cls,
+        *,
+        definition_root: str | Path,
+    ) -> ObservableDumpEndCommitDetector:
+        root = Path(definition_root).resolve(strict=True)
+        audit_path = root / "dig_ready_boundary_audit_v1.json"
+        if not audit_path.is_file():
+            raise FileNotFoundError(
+                "gated-condition probe requires dig_ready_boundary_audit_v1.json"
+            )
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        numeric = audit["numeric_thresholds"]
+        return cls(
+            dump_swing_threshold=float(
+                numeric["dump_release"]["swing_threshold"]
+            ),
+            action_deadzone=float(numeric["action_deadzone"]),
+            artifact_provenance={
+                "definition_root": str(root),
+                "dig_ready_boundary_audit_v1": {
+                    "path": str(audit_path),
+                    "sha256": sha256_file(audit_path),
+                },
+                "source_schema": str(numeric["schema"]),
+                "source_fit_scope": str(numeric["fit_scope"]),
+            },
+        )
+
+    @property
+    def provenance(self) -> dict[str, Any]:
+        return json.loads(json.dumps(self._provenance))
+
+    def reset(self) -> None:
+        self._release_ticks = 0
+        self._armed = False
+        self._committed = False
+
+    def observe(
+        self,
+        *,
+        policy_tick: int,
+        observation: Mapping[str, Any],
+        held_action: np.ndarray,
+    ) -> dict[str, Any]:
+        swing_qpos = float(np.asarray(observation["qpos"])[0])
+        bucket_action = float(np.asarray(held_action, dtype=np.float32)[3])
+        release_active = bool(
+            swing_qpos > self._dump_swing_threshold
+            and bucket_action < -self._action_deadzone
+        )
+        confirmed = False
+        if not self._committed:
+            if release_active:
+                self._release_ticks += 1
+                self._armed = (
+                    self._release_ticks >= self._minimum_release_policy_ticks
+                )
+            elif self._armed:
+                self._committed = True
+                confirmed = True
+        return {
+            "schema": self.TICK_SCHEMA,
+            "policy_tick": int(policy_tick),
+            "state": (
+                "committed"
+                if self._committed
+                else "armed"
+                if self._armed
+                else "searching_dump_release"
+            ),
+            "confirmed": confirmed,
+            "committed": self._committed,
+            "swing_qpos": swing_qpos,
+            "previously_sent_bucket_action": bucket_action,
+            "release_active": release_active,
+            "release_ticks": int(self._release_ticks),
+        }
 
 
 class ObservableReadyBoundaryDetector:
@@ -527,6 +674,8 @@ def validate_probe_bundle(bundle_root: str | Path) -> dict[str, Any]:
     baseline_id = str(experiment.get("baseline_id", ""))
     expected_condition = {
         "B0": "absent",
+        "B1": "cycle_condition_v1_dump_end_gated_low_dim",
+        "B2": "cycle_condition_v1_dump_end_gated_low_dim",
         "B1.4": "cycle_condition_v1_next_sector_only",
         "B2.4": "cycle_condition_v1_next_sector_only",
     }
@@ -591,6 +740,7 @@ def run_bounded_closed_loop_probe(
     next_sector: str,
     second_next_sector: str | None = None,
     ready_boundary_detector: ReadyBoundaryDetector | None = None,
+    condition_commit_detector: ConditionCommitDetector | None = None,
     action_selection: str = "legacy_temporal_aggregation",
     seed: int,
     policy_ticks: int,
@@ -610,9 +760,21 @@ def run_bounded_closed_loop_probe(
     condition = build_cycle_condition(current_sector, next_sector)
     baseline_id = str(bundle_contract["baseline_id"])
     pass_condition = baseline_id != "B0"
+    gated_condition = str(bundle_contract["condition_input"]) == (
+        "cycle_condition_v1_dump_end_gated_low_dim"
+    )
+    if gated_condition != (condition_commit_detector is not None):
+        raise ValueError(
+            "dump-end-gated condition bundle and condition commit detector "
+            "must be provided together"
+        )
     lifecycle_enabled = ready_boundary_detector is not None
     if lifecycle_enabled and not pass_condition:
         raise ValueError("condition lifecycle cannot be enabled for B0")
+    if lifecycle_enabled and gated_condition:
+        raise ValueError(
+            "two-cycle condition reset is not defined for dump-end-gated bundles"
+        )
     if lifecycle_enabled != (second_next_sector is not None):
         raise ValueError(
             "ready boundary detector and second_next_sector must be provided together"
@@ -622,7 +784,11 @@ def run_bounded_closed_loop_probe(
         if second_next_sector is None
         else build_cycle_condition(next_sector, second_next_sector)
     )
-    active_condition = condition.copy()
+    active_condition = (
+        np.zeros_like(condition) if gated_condition else condition.copy()
+    )
+    condition_committed = bool(pass_condition and not gated_condition)
+    condition_commit_policy_tick: int | None = None
     cycle_index = 0
     condition_reset_count = 0
     condition_reset_policy_tick: int | None = None
@@ -643,6 +809,8 @@ def run_bounded_closed_loop_probe(
             policy.reset()
         if ready_boundary_detector is not None:
             ready_boundary_detector.reset()
+        if condition_commit_detector is not None:
+            condition_commit_detector.reset()
         held_action = np.zeros(4, dtype=np.float32)
         _append_step_row(
             step_rows,
@@ -669,6 +837,23 @@ def run_bounded_closed_loop_probe(
                 )
             if int(observation["step_id"]) != target_step:
                 raise RuntimeError("AGX step sequence skipped a policy target step")
+            condition_commit_diagnostic = None
+            if condition_commit_detector is not None:
+                condition_commit_diagnostic = dict(
+                    condition_commit_detector.observe(
+                        policy_tick=policy_tick,
+                        observation=observation,
+                        held_action=held_action,
+                    )
+                )
+                if bool(condition_commit_diagnostic.get("confirmed")):
+                    if condition_committed:
+                        raise RuntimeError(
+                            "condition commit detector confirmed more than once"
+                        )
+                    active_condition = condition.copy()
+                    condition_committed = True
+                    condition_commit_policy_tick = int(policy_tick)
             policy_observation, encoded_frames = _policy_observation(
                 observation,
                 condition=active_condition if pass_condition else None,
@@ -761,6 +946,8 @@ def run_bounded_closed_loop_probe(
                     "cycle_index": int(cycle_index),
                     "condition": active_condition.astype(float).tolist(),
                     "condition_delivered": bool(pass_condition),
+                    "condition_committed": bool(condition_committed),
+                    "condition_commit": condition_commit_diagnostic,
                     "condition_router_reset_before_predict": bool(reset_before_predict),
                     "ready_boundary": boundary_diagnostic,
                     "raw_policy_chunk_normalized": raw_normalized.astype(
@@ -880,8 +1067,22 @@ def run_bounded_closed_loop_probe(
             "condition_contract": {
                 "current_sector": current_sector,
                 "next_sector": next_sector,
-                "vector": condition.astype(float).tolist(),
+                "committed_vector": condition.astype(float).tolist(),
                 "delivered_to_policy": bool(pass_condition),
+                "activation": (
+                    "first_causal_20hz_row_after_observable_dump_release_end"
+                    if gated_condition
+                    else "from_probe_start"
+                    if pass_condition
+                    else "absent"
+                ),
+                "commit_detector": (
+                    None
+                    if condition_commit_detector is None
+                    else dict(condition_commit_detector.provenance)
+                ),
+                "committed": bool(condition_committed),
+                "commit_policy_tick": condition_commit_policy_tick,
             },
             "condition_lifecycle_contract": {
                 "enabled": lifecycle_enabled,

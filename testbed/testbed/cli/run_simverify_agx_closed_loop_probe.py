@@ -10,6 +10,7 @@ from pathlib import Path
 from testbed.policies.offline_eval import load_policy_for_episode
 from testbed.simverify.agx_closed_loop_probe import (
     ExternalAgxWorker,
+    ObservableDumpEndCommitDetector,
     ObservableReadyBoundaryDetector,
     external_git_provenance,
     run_bounded_closed_loop_probe,
@@ -41,6 +42,14 @@ def main() -> None:
     )
     parser.add_argument("--m0-root", type=Path)
     parser.add_argument("--resnet18-checkpoint", type=Path)
+    parser.add_argument(
+        "--definition-root",
+        type=Path,
+        help=(
+            "Frozen habit-definition artifacts; required by B1/B2 to causally "
+            "activate the target only after observable dump-end"
+        ),
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--policy-ticks", type=int, default=10)
     parser.add_argument("--host", default="127.0.0.1")
@@ -77,6 +86,20 @@ def main() -> None:
             "--allow-dirty-external only for explicitly non-promotable diagnostics"
         )
     bundle = validate_probe_bundle(args.bundle_root)
+    gated_condition = bundle["condition_input"] == (
+        "cycle_condition_v1_dump_end_gated_low_dim"
+    )
+    if gated_condition != (args.definition_root is not None):
+        raise ValueError(
+            "--definition-root is required exactly for dump-end-gated B1/B2 bundles"
+        )
+    condition_commit_detector = (
+        None
+        if args.definition_root is None
+        else ObservableDumpEndCommitDetector.from_definition_artifacts(
+            definition_root=args.definition_root,
+        )
+    )
     lifecycle_arguments = (
         args.second_next_sector,
         args.m0_root,
@@ -133,6 +156,7 @@ def main() -> None:
             next_sector=args.next_sector,
             second_next_sector=args.second_next_sector,
             ready_boundary_detector=ready_boundary_detector,
+            condition_commit_detector=condition_commit_detector,
             action_selection=args.action_selection,
             seed=args.seed,
             policy_ticks=args.policy_ticks,
