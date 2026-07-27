@@ -1,5 +1,12 @@
 # SimVerify Expert-Habit B0/B1/B2 Evidence — 2026-07-27
 
+> **Closed-loop correction:** the offline Gate in this document remains
+> frozen, but the no-endpoint conclusion in Section 8 is superseded by
+> `simverify_expert_habit_m5_evidence_20260727.md`. The original B1 AGX ready
+> detector never armed because it incorrectly required an internal route
+> diagnostic that the low-dimensional B1 model does not expose. Corrected
+> shared-prefix and continuous runs reached their scripted v11 endpoints.
+
 ## 1. Decision
 
 ```text
