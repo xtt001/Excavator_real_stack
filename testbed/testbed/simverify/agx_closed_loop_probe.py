@@ -744,6 +744,8 @@ def run_bounded_closed_loop_probe(
     action_selection: str = "legacy_temporal_aggregation",
     seed: int,
     policy_ticks: int,
+    policy_seed: int = 0,
+    deterministic_inference: bool = False,
     save_images: bool = True,
 ) -> dict[str, Any]:
     """Run bounded feedback execution and write immutable diagnostic evidence."""
@@ -1051,6 +1053,13 @@ def run_bounded_closed_loop_probe(
                     policy_source_step(index, sim_dt=sim_dt)
                     for index in range(policy_ticks + 1)
                 ],
+            },
+            "inference_reproducibility": {
+                "policy_seed": int(policy_seed),
+                "deterministic_algorithms": bool(deterministic_inference),
+                "paired_diagnostic_requirement": (
+                    "same_environment_seed_same_policy_seed_same_real_stack_commit"
+                ),
             },
             "action_selection_contract": {
                 "mode": action_selection,

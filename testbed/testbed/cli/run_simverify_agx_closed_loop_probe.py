@@ -51,6 +51,12 @@ def main() -> None:
         ),
     )
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--policy-seed",
+        type=int,
+        default=0,
+        help="Inference RNG seed; paired diagnostics must keep this fixed",
+    )
     parser.add_argument("--policy-ticks", type=int, default=10)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=5057)
@@ -121,6 +127,9 @@ def main() -> None:
             device=args.device,
         )
     )
+    from testbed.policies.base import set_seed
+
+    set_seed(args.policy_seed)
     policy = load_policy_for_episode(
         bundle_dir=args.bundle_root,
         ckpt_path=args.bundle_root / "policy_best.ckpt",
@@ -134,6 +143,11 @@ def main() -> None:
         device=args.device,
         inference_precision=args.inference_precision,
     )
+    import torch
+
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+    torch.use_deterministic_algorithms(True)
     worker_script = repository / "scripts/simverify_agx_env_worker.py"
     environment = ExternalAgxWorker(
         repo_root=repository,
@@ -159,6 +173,8 @@ def main() -> None:
             condition_commit_detector=condition_commit_detector,
             action_selection=args.action_selection,
             seed=args.seed,
+            policy_seed=args.policy_seed,
+            deterministic_inference=True,
             policy_ticks=args.policy_ticks,
             save_images=not args.no_save_images,
         )
