@@ -47,6 +47,7 @@ ACTION_SELECTION_MODES = frozenset(
     {
         "legacy_temporal_aggregation",
         "recency_temporal_aggregation_diagnostic",
+        "newest_chunk_head_diagnostic",
     }
 )
 SECTORS = ("left", "center", "right")
@@ -716,23 +717,29 @@ def run_bounded_closed_loop_probe(
                 None,
             )
             selected_action = aggregated
-            if action_selection == "recency_temporal_aggregation_diagnostic":
+            if action_selection in {
+                "recency_temporal_aggregation_diagnostic",
+                "newest_chunk_head_diagnostic",
+            }:
                 if not isinstance(aggregation_diagnostics, Mapping):
                     raise RuntimeError(
-                        "recency action selection requires temporal "
+                        "diagnostic action selection requires temporal "
                         "aggregation diagnostics"
                     )
+                diagnostic_key = (
+                    "policy_temporal_aggregation_recency_action"
+                    if action_selection == "recency_temporal_aggregation_diagnostic"
+                    else "policy_temporal_aggregation_newest_action"
+                )
                 selected_action = np.asarray(
-                    aggregation_diagnostics[
-                        "policy_temporal_aggregation_recency_action"
-                    ],
+                    aggregation_diagnostics[diagnostic_key],
                     dtype=np.float32,
                 ).reshape(-1)
                 if selected_action.shape != (4,) or not np.all(
                     np.isfinite(selected_action)
                 ):
                     raise ValueError(
-                        "recency temporal aggregation produced invalid action"
+                        "diagnostic temporal aggregation produced invalid action"
                     )
             runtime_safe = np.clip(selected_action, -1.0, 1.0).astype(np.float32)
             raw_normalized = np.asarray(
@@ -861,7 +868,7 @@ def run_bounded_closed_loop_probe(
             "action_selection_contract": {
                 "mode": action_selection,
                 "single_factor_diagnostic": (
-                    action_selection == "recency_temporal_aggregation_diagnostic"
+                    action_selection != "legacy_temporal_aggregation"
                 ),
                 "checkpoint_changed": False,
                 "condition_changed": False,

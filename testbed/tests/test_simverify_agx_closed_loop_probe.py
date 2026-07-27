@@ -152,7 +152,13 @@ class _FakePolicy:
                 0.0,
                 0.0,
                 0.0,
-            ]
+            ],
+            "policy_temporal_aggregation_newest_action": [
+                0.6,
+                0.0,
+                0.0,
+                0.0,
+            ],
         }
 
 
@@ -432,3 +438,38 @@ def test_probe_can_select_recency_action_as_one_factor_diagnostic(
     assert rows[0]["temporal_aggregation_action"][0] == pytest.approx(0.2)
     assert rows[0]["selected_action_before_safety_clip"][0] == pytest.approx(0.8)
     assert rows[0]["actual_sent_action"][0] == pytest.approx(0.8)
+
+
+def test_probe_can_select_newest_chunk_head_as_one_factor_diagnostic(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "newest_probe"
+    result = run_bounded_closed_loop_probe(
+        policy=_FakePolicy(),
+        environment=_FakeEnvironment(),
+        output_root=output,
+        bundle_contract={
+            "baseline_id": "B1.4",
+            "condition_input": "cycle_condition_v1_next_sector_only",
+        },
+        current_git={"branch": "v2.0.0-simVerify", "dirty": False},
+        external_provenance={
+            "pact": {"git_sha": "pact", "dirty": True},
+            "unity": {"git_sha": "unity", "dirty": True},
+        },
+        current_sector="left",
+        next_sector="right",
+        action_selection="newest_chunk_head_diagnostic",
+        seed=7,
+        policy_ticks=2,
+        save_images=False,
+    )
+
+    assert result["action_selection_contract"]["mode"] == "newest_chunk_head_diagnostic"
+    rows = [
+        json.loads(line)
+        for line in (output / "policy_ticks.jsonl").read_text().splitlines()
+    ]
+    assert rows[0]["temporal_aggregation_action"][0] == pytest.approx(0.2)
+    assert rows[0]["selected_action_before_safety_clip"][0] == pytest.approx(0.6)
+    assert rows[0]["actual_sent_action"][0] == pytest.approx(0.6)

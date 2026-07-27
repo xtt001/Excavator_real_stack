@@ -53,6 +53,7 @@ def main() -> None:
         choices=(
             "legacy_temporal_aggregation",
             "recency_temporal_aggregation_diagnostic",
+            "newest_chunk_head_diagnostic",
         ),
         default="legacy_temporal_aggregation",
     )
@@ -105,7 +106,7 @@ def main() -> None:
         max_episode_len=8000,
         temporal_agg=True,
         temporal_aggregation_diagnostics=(
-            args.action_selection == "recency_temporal_aggregation_diagnostic"
+            args.action_selection != "legacy_temporal_aggregation"
         ),
         device=args.device,
         inference_precision=args.inference_precision,
