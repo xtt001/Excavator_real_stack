@@ -1,6 +1,57 @@
 # SimVerify Expert-Habit Definition Audit Evidence — 2026-07-27
 
-## 1. Decision
+## Current re-audit status
+
+The earlier `accept` result below is historical evidence for the former
+sector-entry meaning of `dig_ready`. It must not authorize new slicing,
+training, checkpoint comparison, or closed-loop claims.
+
+The existing `dig_ready_reference_interval` and `causal_confirm_step` now mean
+a sustained low-action capture of the committed target sector, rather than the
+first high-speed crossing of that sector. The existing train-fitted
+`causal_dwell` is selected by balanced discrimination between the final
+pre-dig capture and earlier short low-action visits. No parallel endpoint name
+or compatibility alias was added.
+
+Current immutable audit:
+
+```text
+/data/pingfan/Excavator_real_stack_data/
+  simverify_habit_cycle_definition_v7/
+
+code_commit=54c8bf9eb809b548d419c86d92647531b8fb05e2
+decision=revise_boundary
+scenario_freeze_authorized=false
+training_authorized=false
+held_out_test_authorized=false
+held_out_observation_read_count=0
+```
+
+The train-fitted dwell is 22 source steps, about 0.44 seconds. A half-open
+ready-to-ready slice therefore retains the preceding 21 low-action source rows
+instead of ending immediately before the first low-action command.
+
+The re-audit found only 34 train and 8 validation low-action ready references.
+Only 13 train and 2 validation references were causally matched. It produced
+one `move_adjacent` scenario candidate from one source episode and no
+`repeat_same` candidate. Validation also contains no computable right-sector
+ready-vs-dump check. This is insufficient support for freezing the scenario
+set or rebuilding B0/B1/B2.
+
+```text
+audit_manifest_sha256=79c739661ad5c48c7de322f622cb10a5ab16de99be2f37d2dace8a708772c864
+checksums_sha256=7bfc7a9709ba580c7d181fa46fa8b7adde77b38a2c2ba04cc991654e79070a89
+checksum_verification=8/8 passed
+```
+
+Operationally, the previous ready-cycle dataset and its checkpoints remain
+diagnostic artifacts for the old boundary only. The next valid step is to
+record demonstrations that deliberately finish each cycle with a sustained
+low-action target capture, including `repeat_same` and both supported adjacent
+directions, then rerun this same audit. Retuning the boundary to recover the
+old sample count would reintroduce the high-speed-crossing error.
+
+## 1. Historical v3 decision
 
 ```text
 decision=accept
