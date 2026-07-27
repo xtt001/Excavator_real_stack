@@ -223,7 +223,7 @@ def build_habit_runtime_ready_calibration(
                     ),
                 },
                 "classifier": {
-                    "centroids_path": centroids_identity["path"],
+                    "centroids_path": "runtime_ready_centroids_v1.npz",
                     "centroids_sha256": centroids_identity["sha256"],
                     "ready_feature": (
                         "l2(concat(l2(eye_left,eye_right),"
