@@ -89,8 +89,11 @@ def build_habit_runtime_ready_calibration(
         raise ValueError("calibration requires non-empty train and validation rows")
 
     source = Path(source_root).resolve(strict=True)
+    clean_dir = source / "clean_all_vds"
+    if not clean_dir.is_dir():
+        raise FileNotFoundError(clean_dir)
     paths = {
-        episode_id: (source / f"episode_{episode_id}.hdf5").resolve(strict=True)
+        episode_id: (clean_dir / f"episode_{episode_id}.hdf5").resolve(strict=True)
         for episode_id in sorted(episode_ids)
     }
     extractor = FrozenResNet18FeatureExtractor(
