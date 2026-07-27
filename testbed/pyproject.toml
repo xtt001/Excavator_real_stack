@@ -73,6 +73,7 @@ tb-build-simverify-condition-causal-v2 = "testbed.cli.build_simverify_condition_
 tb-build-simverify-habit-cycle-definition = "testbed.cli.build_simverify_habit_cycle_definition:main"
 tb-build-simverify-habit-cycle-dataset = "testbed.cli.build_simverify_habit_cycle_dataset:main"
 tb-run-simverify-habit-validation = "testbed.cli.run_simverify_habit_validation:main"
+tb-build-simverify-habit-gate = "testbed.cli.build_simverify_habit_gate:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

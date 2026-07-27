@@ -379,6 +379,11 @@ def run_habit_validation_replay(
                                 templates,
                                 deadzone=deadzone,
                             ),
+                            "zero_action_grammar": extract_ordered_task_events(
+                                np.zeros_like(arrays["expert_action"]),
+                                templates,
+                                deadzone=deadzone,
+                            ),
                             "evidence_scope": "recorded-observation/offline",
                             "closed_loop_execution": False,
                         }
