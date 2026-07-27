@@ -19,6 +19,8 @@ def main() -> None:
     parser.add_argument("--b2-bundle-root", type=Path, required=True)
     parser.add_argument("--contract-path", type=Path, required=True)
     parser.add_argument("--previous-g5-root", type=Path, required=True)
+    parser.add_argument("--candidate-baseline-id", default="B1.4")
+    parser.add_argument("--null-baseline-id", default="B2.4")
     parser.add_argument("--device", default="cuda")
     args = parser.parse_args()
     result = build_g5_two_cycle_replay(
@@ -30,6 +32,8 @@ def main() -> None:
         b2_bundle_root=args.b2_bundle_root,
         contract_path=args.contract_path,
         previous_g5_root=args.previous_g5_root,
+        candidate_baseline_id=args.candidate_baseline_id,
+        null_baseline_id=args.null_baseline_id,
         device=args.device,
     )
     print(json.dumps(result, indent=2, sort_keys=True))

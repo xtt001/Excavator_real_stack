@@ -95,6 +95,12 @@ provenance change, not a Gate change: replay rows, support, formulas, bootstrap
 unit/seed/repetitions, criteria, and thresholds remain unchanged. Cross-pairs
 such as `B1.5/B2.4` are invalid.
 
+The same identity-only parameterization applies to the frozen G5.1 builder.
+Candidate/null metric field names are role-based so B1.5 results are never
+mislabelled as B1.4. Router lifecycle, two-cycle anchors, expert thresholds,
+support rule, trace construction, condition-switch formula, and pass criteria
+remain unchanged.
+
 ## Targeted causal Gate
 
 The revision is useful only if:

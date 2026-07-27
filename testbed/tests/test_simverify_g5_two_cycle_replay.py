@@ -9,6 +9,7 @@ import pytest
 from testbed.simverify import g5_two_cycle_replay as module
 from testbed.simverify.g5_two_cycle_replay import (
     apply_camera_variant,
+    build_condition_switch_metrics,
     build_two_cycle_condition_support,
     derive_expert_two_cycle_thresholds,
     evaluate_expert_two_cycle_gate,
@@ -191,3 +192,40 @@ def test_camera_variant_rejects_missing_role() -> None:
             {"video4": np.zeros((1, 1, 3), dtype=np.uint8)},
             "four_camera",
         )
+
+
+def test_condition_switch_metrics_accepts_b1_5_b2_5_pair() -> None:
+    rows = []
+    for baseline_id in ("B1.5", "B2.5"):
+        for mode in ("switched", "unchanged"):
+            rows.append(
+                {
+                    "baseline_id": baseline_id,
+                    "anchor_index": 0,
+                    "episode_id": 12,
+                    "condition_mode": mode,
+                    "switch_action_effect": 0.1,
+                    "switch_route2_swing_delta_mean": 0.2,
+                    "first_condition": {"next_ready_sector": "left"},
+                    "second_condition": {"next_ready_sector": "right"},
+                    "next_target_changed": True,
+                    "condition_switch_counterfactual_supported": True,
+                    "trace_sha256": f"{baseline_id}-{mode}",
+                }
+            )
+
+    result = build_condition_switch_metrics(
+        rows,
+        direction={
+            "sector_swing_qpos_median": {
+                "left": 0.0,
+                "center": 0.5,
+                "right": 1.0,
+            },
+            "action_to_qpos_direction_sign": 1,
+        },
+        baseline_ids=("B1.5", "B2.5"),
+    )
+
+    assert [row["baseline_id"] for row in result] == ["B1.5", "B2.5"]
+    assert all(row["route2_semantic_margin"] == 0.2 for row in result)

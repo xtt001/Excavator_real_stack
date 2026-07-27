@@ -33,6 +33,7 @@ from testbed.simverify.m3_replay import (
     cycle_action_metrics,
 )
 from testbed.simverify.m3_transition_stitch import HELD_OUT_EPISODES, _q
+from testbed.simverify.next_condition_causal import _validate_baseline_pair
 
 EVIDENCE_SCOPE = "recorded-observation/offline teacher-forced development"
 MODES = ("switched", "unchanged")
@@ -62,10 +63,13 @@ def build_g5_two_cycle_replay(
     b2_bundle_root: str | Path,
     contract_path: str | Path,
     previous_g5_root: str | Path,
+    candidate_baseline_id: str = "B1.4",
+    null_baseline_id: str = "B2.4",
     device: str = "cuda",
 ) -> dict[str, Any]:
-    """Build the immutable B1.4/B2.4 G5.1 development artifact."""
+    """Build the immutable matched-pair G5.1 development artifact."""
 
+    _validate_baseline_pair(candidate_baseline_id, null_baseline_id)
     repository = Path(repo_root).resolve(strict=True)
     git = git_provenance(repository)
     if (
@@ -170,8 +174,14 @@ def build_g5_two_cycle_replay(
         for row in by_split["validation"]
     )
     bundles = {
-        "B1.4": _validate_bundle(Path(b1_bundle_root).resolve(strict=True), "B1.4"),
-        "B2.4": _validate_bundle(Path(b2_bundle_root).resolve(strict=True), "B2.4"),
+        candidate_baseline_id: _validate_bundle(
+            Path(b1_bundle_root).resolve(strict=True),
+            candidate_baseline_id,
+        ),
+        null_baseline_id: _validate_bundle(
+            Path(b2_bundle_root).resolve(strict=True),
+            null_baseline_id,
+        ),
     }
     temporary = destination.parent / f".{destination.name}.tmp-{os.getpid()}"
     temporary.mkdir(parents=True)
@@ -252,12 +262,23 @@ def build_g5_two_cycle_replay(
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-        attach_switch_effects_to_results(result_rows, temporary)
+        baseline_ids = tuple(bundles)
+        attach_switch_effects_to_results(
+            result_rows,
+            temporary,
+            baseline_ids=baseline_ids,
+        )
         paired_rows = build_condition_switch_metrics(
             result_rows,
             direction=direction,
+            baseline_ids=baseline_ids,
         )
-        source_rows = aggregate_g5_by_episode(result_rows, paired_rows)
+        source_rows = aggregate_g5_by_episode(
+            result_rows,
+            paired_rows,
+            candidate_baseline_id=candidate_baseline_id,
+            null_baseline_id=null_baseline_id,
+        )
         gate = evaluate_g5_core_gate(
             expert_gate=expert_gate,
             thresholds=thresholds,
@@ -355,6 +376,8 @@ def build_g5_two_cycle_replay(
                     baseline_id: bundle["identity"]
                     for baseline_id, bundle in bundles.items()
                 },
+                "candidate_baseline_id": candidate_baseline_id,
+                "null_baseline_id": null_baseline_id,
                 "train_pair_count": len(by_split["train"]),
                 "validation_pair_count": len(by_split["validation"]),
                 "validation_changed_next_target_pair_count": sum(
@@ -881,6 +904,7 @@ def build_condition_switch_metrics(
     rows: Sequence[Mapping[str, Any]],
     *,
     direction: Mapping[str, Any],
+    baseline_ids: Sequence[str] = ("B1.4", "B2.4"),
 ) -> list[dict[str, Any]]:
     indexed = {
         (
@@ -893,7 +917,7 @@ def build_condition_switch_metrics(
     centers = direction["sector_swing_qpos_median"]
     action_sign = int(direction["action_to_qpos_direction_sign"])
     result = []
-    for baseline_id in ("B1.4", "B2.4"):
+    for baseline_id in baseline_ids:
         anchor_ids = sorted(
             {
                 int(row["anchor_index"])
@@ -957,6 +981,9 @@ def _condition_switch_metric_from_rows(
 def aggregate_g5_by_episode(
     result_rows: Sequence[Mapping[str, Any]],
     switch_rows: Sequence[Mapping[str, Any]],
+    *,
+    candidate_baseline_id: str = "B1.4",
+    null_baseline_id: str = "B2.4",
 ) -> list[dict[str, Any]]:
     switched = [row for row in result_rows if row["condition_mode"] == "switched"]
     grouped_results: dict[tuple[int, str], list[Mapping[str, Any]]] = defaultdict(list)
@@ -970,62 +997,76 @@ def aggregate_g5_by_episode(
             )
     result = []
     for episode_id in sorted({key[0] for key in grouped_results}):
-        b1 = grouped_results[(episode_id, "B1.4")]
-        b1_switch = grouped_switch[(episode_id, "B1.4")]
-        b2_switch = grouped_switch[(episode_id, "B2.4")]
-        if not b1_switch or not b2_switch:
+        candidate = grouped_results[(episode_id, candidate_baseline_id)]
+        candidate_switch = grouped_switch[(episode_id, candidate_baseline_id)]
+        null_switch = grouped_switch[(episode_id, null_baseline_id)]
+        if not candidate_switch or not null_switch:
             raise ValueError("each validation source episode needs changed targets")
-        b1_semantic = float(
-            np.mean([row["route2_semantic_margin"] for row in b1_switch])
+        candidate_semantic = float(
+            np.mean([row["route2_semantic_margin"] for row in candidate_switch])
         )
-        b2_semantic = float(
-            np.mean([row["route2_semantic_margin"] for row in b2_switch])
+        null_semantic = float(
+            np.mean([row["route2_semantic_margin"] for row in null_switch])
         )
         result.append(
             {
                 "schema": "simverify_g5_source_episode_metric_v1",
                 "episode_id": episode_id,
-                "pair_count": len(b1),
-                "changed_target_pair_count": len(b1_switch),
-                "b1_4_two_cycle_phase_coverage_min": min(
-                    float(row["two_cycle_phase_coverage"]) for row in b1
+                "candidate_baseline_id": candidate_baseline_id,
+                "null_baseline_id": null_baseline_id,
+                "pair_count": len(candidate),
+                "changed_target_pair_count": len(candidate_switch),
+                "candidate_two_cycle_phase_coverage_min": min(
+                    float(row["two_cycle_phase_coverage"]) for row in candidate
                 ),
-                "b1_4_phase_coverage_mean": float(
-                    np.mean([row["two_cycle_phase_coverage"] for row in b1])
+                "candidate_phase_coverage_mean": float(
+                    np.mean(
+                        [row["two_cycle_phase_coverage"] for row in candidate]
+                    )
                 ),
-                "b1_4_event_order_valid_rate": float(
-                    np.mean([row["two_cycle_event_order_valid"] for row in b1])
+                "candidate_event_order_valid_rate": float(
+                    np.mean(
+                        [row["two_cycle_event_order_valid"] for row in candidate]
+                    )
                 ),
-                "b1_4_ready_boundary_discontinuity_q95": _q(
-                    [row["ready_boundary_discontinuity"] for row in b1],
+                "candidate_ready_boundary_discontinuity_q95": _q(
+                    [row["ready_boundary_discontinuity"] for row in candidate],
                     0.95,
                 ),
-                "b1_4_second_cycle_route2_min_ticks": min(
-                    int(row["second_cycle_route2_tick_count"]) for row in b1
+                "candidate_second_cycle_route2_min_ticks": min(
+                    int(row["second_cycle_route2_tick_count"])
+                    for row in candidate
                 ),
-                "b1_4_second_cycle_route0_min_ticks": min(
-                    int(row["second_cycle_route0_tick_count"]) for row in b1
+                "candidate_second_cycle_route0_min_ticks": min(
+                    int(row["second_cycle_route0_tick_count"])
+                    for row in candidate
                 ),
-                "b1_4_shared_ready_route0_rate": float(
+                "candidate_shared_ready_route0_rate": float(
                     np.mean(
                         [
                             int(row["shared_ready_boundary_route_index"]) == 0
-                            for row in b1
+                            for row in candidate
                         ]
                     )
                 ),
-                "b1_4_condition_cycle_reset_count_min": min(
-                    int(row["condition_cycle_router_reset_count"]) for row in b1
+                "candidate_condition_cycle_reset_count_min": min(
+                    int(row["condition_cycle_router_reset_count"])
+                    for row in candidate
                 ),
-                "b1_4_condition_cycle_reset_count_max": max(
-                    int(row["condition_cycle_router_reset_count"]) for row in b1
+                "candidate_condition_cycle_reset_count_max": max(
+                    int(row["condition_cycle_router_reset_count"])
+                    for row in candidate
                 ),
-                "b1_4_switch_action_effect_mean": float(
-                    np.mean([row["switch_action_effect"] for row in b1_switch])
+                "candidate_switch_action_effect_mean": float(
+                    np.mean(
+                        [row["switch_action_effect"] for row in candidate_switch]
+                    )
                 ),
-                "b1_4_route2_semantic_margin_mean": b1_semantic,
-                "b2_4_route2_semantic_margin_mean": b2_semantic,
-                "b1_4_minus_b2_4_semantic_margin": (b1_semantic - b2_semantic),
+                "candidate_route2_semantic_margin_mean": candidate_semantic,
+                "null_route2_semantic_margin_mean": null_semantic,
+                "candidate_minus_null_semantic_margin": (
+                    candidate_semantic - null_semantic
+                ),
             }
         )
     return result
@@ -1042,53 +1083,58 @@ def evaluate_g5_core_gate(
         "expert_validation_continuity": {
             "passed": bool(expert_gate["passed"]),
         },
-        "b1_4_two_cycle_phase_coverage": {
+        "candidate_two_cycle_phase_coverage": {
             "observed_min_source_episode_mean": min(
-                row["b1_4_phase_coverage_mean"] for row in source_rows
+                row["candidate_phase_coverage_mean"] for row in source_rows
             ),
             "minimum_allowed": thresholds["two_cycle_phase_coverage_lower"],
         },
-        "b1_4_two_cycle_event_order": {
+        "candidate_two_cycle_event_order": {
             "observed_min_source_episode_rate": min(
-                row["b1_4_event_order_valid_rate"] for row in source_rows
+                row["candidate_event_order_valid_rate"] for row in source_rows
             ),
             "minimum_allowed": thresholds["two_cycle_event_order_valid_rate_lower"],
         },
-        "b1_4_ready_boundary_discontinuity": {
+        "candidate_ready_boundary_discontinuity": {
             "observed_max_source_episode_q95": max(
-                row["b1_4_ready_boundary_discontinuity_q95"] for row in source_rows
+                row["candidate_ready_boundary_discontinuity_q95"]
+                for row in source_rows
             ),
             "maximum_allowed": thresholds["ready_boundary_discontinuity_q95_upper"],
         },
-        "b1_4_second_cycle_route_activation": {
+        "candidate_second_cycle_route_activation": {
             "observed_min_ticks": min(
-                row["b1_4_second_cycle_route2_min_ticks"] for row in source_rows
+                row["candidate_second_cycle_route2_min_ticks"]
+                for row in source_rows
             ),
             "minimum_allowed": 1,
         },
-        "b1_4_second_cycle_route_restart": {
+        "candidate_second_cycle_route_restart": {
             "observed_min_route0_ticks": min(
-                row["b1_4_second_cycle_route0_min_ticks"] for row in source_rows
+                row["candidate_second_cycle_route0_min_ticks"]
+                for row in source_rows
             ),
             "minimum_allowed": 1,
         },
-        "b1_4_shared_ready_route_is_current": {
+        "candidate_shared_ready_route_is_current": {
             "observed_min_source_episode_rate": min(
-                row["b1_4_shared_ready_route0_rate"] for row in source_rows
+                row["candidate_shared_ready_route0_rate"] for row in source_rows
             ),
             "minimum_allowed": 1.0,
         },
         "condition_cycle_reset_exactly_once": {
             "observed_min_count": min(
-                row["b1_4_condition_cycle_reset_count_min"] for row in source_rows
+                row["candidate_condition_cycle_reset_count_min"]
+                for row in source_rows
             ),
             "observed_max_count": max(
-                row["b1_4_condition_cycle_reset_count_max"] for row in source_rows
+                row["candidate_condition_cycle_reset_count_max"]
+                for row in source_rows
             ),
             "required": 1,
             "passed": all(
-                row["b1_4_condition_cycle_reset_count_min"] == 1
-                and row["b1_4_condition_cycle_reset_count_max"] == 1
+                row["candidate_condition_cycle_reset_count_min"] == 1
+                and row["candidate_condition_cycle_reset_count_max"] == 1
                 for row in source_rows
             ),
         },
@@ -1098,34 +1144,39 @@ def evaluate_g5_core_gate(
             ),
             "minimum_allowed": int(support_threshold),
         },
-        "b1_4_condition_switch_effect": {
+        "candidate_condition_switch_effect": {
             "observed_min_source_episode_mean": min(
-                row["b1_4_switch_action_effect_mean"] for row in source_rows
+                row["candidate_switch_action_effect_mean"] for row in source_rows
             ),
             "minimum_allowed": 0.0,
             "comparison": "strictly_greater",
             "passed": all(
-                row["b1_4_switch_action_effect_mean"] > 0.0 for row in source_rows
+                row["candidate_switch_action_effect_mean"] > 0.0
+                for row in source_rows
             ),
         },
-        "b1_4_route2_semantics": {
+        "candidate_route2_semantics": {
             "observed_min_source_episode_mean": min(
-                row["b1_4_route2_semantic_margin_mean"] for row in source_rows
+                row["candidate_route2_semantic_margin_mean"]
+                for row in source_rows
             ),
             "minimum_allowed": 0.0,
             "comparison": "strictly_greater",
             "passed": all(
-                row["b1_4_route2_semantic_margin_mean"] > 0.0 for row in source_rows
+                row["candidate_route2_semantic_margin_mean"] > 0.0
+                for row in source_rows
             ),
         },
-        "b1_4_exceeds_b2_4_semantics": {
+        "candidate_exceeds_null_semantics": {
             "observed_min_source_episode_delta": min(
-                row["b1_4_minus_b2_4_semantic_margin"] for row in source_rows
+                row["candidate_minus_null_semantic_margin"]
+                for row in source_rows
             ),
             "minimum_allowed": 0.0,
             "comparison": "strictly_greater",
             "passed": all(
-                row["b1_4_minus_b2_4_semantic_margin"] > 0.0 for row in source_rows
+                row["candidate_minus_null_semantic_margin"] > 0.0
+                for row in source_rows
             ),
         },
     }
@@ -1165,6 +1216,8 @@ def evaluate_g5_core_gate(
 def attach_switch_effects_to_results(
     rows: list[dict[str, Any]],
     trace_root: Path,
+    *,
+    baseline_ids: Sequence[str] = ("B1.4", "B2.4"),
 ) -> None:
     """Attach switched-vs-unchanged action effects before JSON serialization."""
 
@@ -1176,7 +1229,7 @@ def attach_switch_effects_to_results(
         ): row
         for row in rows
     }
-    for baseline_id in ("B1.4", "B2.4"):
+    for baseline_id in baseline_ids:
         anchor_ids = sorted(
             {
                 int(row["anchor_index"])
