@@ -13,6 +13,7 @@ from testbed.simverify.agx_closed_loop_probe import (
     ObservableDumpEndCommitDetector,
     ObservableReadyBoundaryDetector,
     external_git_provenance,
+    load_action_prefix,
     run_bounded_closed_loop_probe,
     validate_probe_bundle,
 )
@@ -56,6 +57,16 @@ def main() -> None:
         type=int,
         default=0,
         help="Inference RNG seed; paired diagnostics must keep this fixed",
+    )
+    parser.add_argument(
+        "--action-prefix-policy-ticks",
+        type=Path,
+        help="Prior probe policy_ticks.jsonl providing actual sent actions",
+    )
+    parser.add_argument(
+        "--action-prefix-count",
+        type=int,
+        help="Number of leading policy ticks to override from the shared prefix",
     )
     parser.add_argument("--policy-ticks", type=int, default=10)
     parser.add_argument("--host", default="127.0.0.1")
@@ -104,6 +115,25 @@ def main() -> None:
         if args.definition_root is None
         else ObservableDumpEndCommitDetector.from_definition_artifacts(
             definition_root=args.definition_root,
+        )
+    )
+    prefix_arguments = (
+        args.action_prefix_policy_ticks,
+        args.action_prefix_count,
+    )
+    if any(value is not None for value in prefix_arguments) and not all(
+        value is not None for value in prefix_arguments
+    ):
+        raise ValueError(
+            "--action-prefix-policy-ticks and --action-prefix-count "
+            "must be provided together"
+        )
+    action_prefix, action_prefix_provenance = (
+        (None, None)
+        if args.action_prefix_policy_ticks is None
+        else load_action_prefix(
+            args.action_prefix_policy_ticks,
+            count=args.action_prefix_count,
         )
     )
     lifecycle_arguments = (
@@ -175,6 +205,8 @@ def main() -> None:
             seed=args.seed,
             policy_seed=args.policy_seed,
             deterministic_inference=True,
+            action_prefix=action_prefix,
+            action_prefix_provenance=action_prefix_provenance,
             policy_ticks=args.policy_ticks,
             save_images=not args.no_save_images,
         )

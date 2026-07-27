@@ -419,6 +419,46 @@ def test_gated_condition_is_zero_until_observable_dump_end(tmp_path: Path) -> No
     assert rows[1]["condition_commit"]["confirmed"] is True
 
 
+def test_shared_prefix_overrides_sent_action_but_preserves_policy_output(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "prefix_probe"
+    prefix = np.asarray([[0.7, 0.0, 0.0, 0.0]], dtype=np.float32)
+    result = run_bounded_closed_loop_probe(
+        policy=_FakePolicy(),
+        environment=_FakeEnvironment(),
+        output_root=output,
+        bundle_contract={
+            "baseline_id": "B1.4",
+            "condition_input": "cycle_condition_v1_next_sector_only",
+        },
+        current_git={"branch": "v2.0.0-simVerify", "dirty": False},
+        external_provenance={
+            "pact": {"git_sha": "pact", "dirty": True},
+            "unity": {"git_sha": "unity", "dirty": True},
+        },
+        current_sector="left",
+        next_sector="right",
+        seed=7,
+        policy_ticks=2,
+        action_prefix=prefix,
+        action_prefix_provenance={"source": "test"},
+        save_images=False,
+    )
+
+    rows = [
+        json.loads(line)
+        for line in (output / "policy_ticks.jsonl").read_text().splitlines()
+    ]
+    assert rows[0]["future_runtime_safe_action"][0] == pytest.approx(0.2)
+    assert rows[0]["actual_sent_action"][0] == pytest.approx(0.7)
+    assert rows[0]["action_prefix_override"] is True
+    assert rows[1]["actual_sent_action"][0] == pytest.approx(0.2)
+    assert rows[1]["action_prefix_override"] is False
+    assert result["qpos_delta"][0] == pytest.approx(0.025, abs=2.0e-7)
+    assert result["shared_action_prefix_contract"]["policy_tick_count"] == 1
+
+
 def test_bounded_probe_records_feedback_without_privilege(tmp_path: Path) -> None:
     output = tmp_path / "probe"
     result = run_bounded_closed_loop_probe(

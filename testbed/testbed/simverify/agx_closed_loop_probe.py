@@ -706,6 +706,50 @@ def validate_probe_bundle(bundle_root: str | Path) -> dict[str, Any]:
     }
 
 
+def load_action_prefix(
+    policy_ticks_path: str | Path,
+    *,
+    count: int,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """Load an immutable actual-sent-action prefix from a prior probe."""
+
+    path = Path(policy_ticks_path).resolve(strict=True)
+    if int(count) <= 0:
+        raise ValueError("action prefix count must be positive")
+    rows = [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    if len(rows) < int(count):
+        raise ValueError(
+            f"action prefix requests {count} rows but source has {len(rows)}"
+        )
+    selected = rows[: int(count)]
+    if [int(row["policy_tick"]) for row in selected] != list(range(int(count))):
+        raise ValueError("action prefix policy ticks must be contiguous from zero")
+    actions = np.asarray(
+        [row["actual_sent_action"] for row in selected],
+        dtype=np.float32,
+    )
+    if actions.shape != (int(count), 4) or not np.all(np.isfinite(actions)):
+        raise ValueError("action prefix must contain finite shape (count,4)")
+    if np.max(np.abs(actions)) > 1.0 + 1.0e-6:
+        raise ValueError("action prefix exceeds runtime-safe bounds")
+    return actions, {
+        "schema": "simverify_agx_shared_action_prefix_v1",
+        "source_policy_ticks": {
+            "path": str(path),
+            "sha256": sha256_file(path),
+        },
+        "count": int(count),
+        "action_order": list(SOURCE_ACTION_ORDER),
+        "source_field": "actual_sent_action",
+        "purpose": "same_state_paired_condition_branch_at_dump_end",
+        "promotable": False,
+    }
+
+
 def external_git_provenance(path: str | Path) -> dict[str, Any]:
     """Capture external repository state without modifying it."""
 
@@ -746,6 +790,8 @@ def run_bounded_closed_loop_probe(
     policy_ticks: int,
     policy_seed: int = 0,
     deterministic_inference: bool = False,
+    action_prefix: np.ndarray | None = None,
+    action_prefix_provenance: Mapping[str, Any] | None = None,
     save_images: bool = True,
 ) -> dict[str, Any]:
     """Run bounded feedback execution and write immutable diagnostic evidence."""
@@ -755,6 +801,23 @@ def run_bounded_closed_loop_probe(
     if action_selection not in ACTION_SELECTION_MODES:
         raise ValueError(
             f"action_selection must be one of {sorted(ACTION_SELECTION_MODES)}"
+        )
+    prefix = (
+        np.empty((0, 4), dtype=np.float32)
+        if action_prefix is None
+        else np.asarray(action_prefix, dtype=np.float32)
+    )
+    if prefix.ndim != 2 or prefix.shape[1:] != (4,):
+        raise ValueError("action_prefix must have shape (T,4)")
+    if prefix.shape[0] > policy_ticks:
+        raise ValueError("action_prefix cannot exceed bounded policy ticks")
+    if not np.all(np.isfinite(prefix)) or (
+        prefix.size and np.max(np.abs(prefix)) > 1.0 + 1.0e-6
+    ):
+        raise ValueError("action_prefix must contain finite runtime-safe actions")
+    if (prefix.shape[0] > 0) != (action_prefix_provenance is not None):
+        raise ValueError(
+            "non-empty action prefix and action_prefix_provenance are required together"
         )
     destination = Path(output_root).resolve(strict=False)
     if destination.exists():
@@ -929,6 +992,12 @@ def run_bounded_closed_loop_probe(
                         "diagnostic temporal aggregation produced invalid action"
                     )
             runtime_safe = np.clip(selected_action, -1.0, 1.0).astype(np.float32)
+            prefix_override = policy_tick < int(prefix.shape[0])
+            actual_sent = (
+                prefix[policy_tick].copy()
+                if prefix_override
+                else runtime_safe.copy()
+            )
             raw_normalized = np.asarray(
                 policy.last_raw_action_chunk(),
                 dtype=np.float32,
@@ -967,7 +1036,8 @@ def run_bounded_closed_loop_probe(
                         else dict(aggregation_diagnostics)
                     ),
                     "future_runtime_safe_action": runtime_safe.astype(float).tolist(),
-                    "actual_sent_action": runtime_safe.astype(float).tolist(),
+                    "action_prefix_override": bool(prefix_override),
+                    "actual_sent_action": actual_sent.astype(float).tolist(),
                     "condition_route": None if route is None else dict(route),
                     "qpos": np.asarray(observation["qpos"], dtype=np.float32)
                     .astype(float)
@@ -987,7 +1057,7 @@ def run_bounded_closed_loop_probe(
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_bytes(bytes(frame["data"]))
                     identities.append(artifact_identity(target))
-            held_action = runtime_safe
+            held_action = actual_sent
             next_target = policy_source_step(policy_tick + 1, sim_dt=sim_dt)
             while int(observation["step_id"]) < next_target:
                 observation = _validate_environment_observation(
@@ -1072,6 +1142,23 @@ def run_bounded_closed_loop_probe(
                 "legacy_temporal_aggregation_preserved_in_evidence": True,
                 "selected_action_saved_before_safety_clip": True,
                 "promotable": False,
+            },
+            "shared_action_prefix_contract": {
+                "enabled": bool(prefix.shape[0]),
+                "policy_tick_count": int(prefix.shape[0]),
+                "closed_loop_policy_takeover_tick": int(prefix.shape[0]),
+                "policy_still_evaluated_during_prefix": True,
+                "actual_sent_action_overridden_during_prefix": bool(prefix.shape[0]),
+                "provenance": (
+                    None
+                    if action_prefix_provenance is None
+                    else dict(action_prefix_provenance)
+                ),
+                "evidence_scope": (
+                    "paired_branch_closed_loop_after_shared_prefix_non_promotable"
+                    if prefix.shape[0]
+                    else "full_rollout_closed_loop_non_promotable"
+                ),
             },
             "condition_contract": {
                 "current_sector": current_sector,
