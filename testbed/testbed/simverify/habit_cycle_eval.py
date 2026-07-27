@@ -25,7 +25,10 @@ from testbed.simverify.artifacts import (
     write_jsonl,
 )
 from testbed.simverify.contracts import git_provenance, sha256_file
-from testbed.simverify.m2_eval import validate_replay_trace_arrays
+from testbed.simverify.m2_eval import (
+    extract_ordered_task_events,
+    validate_replay_trace_arrays,
+)
 from testbed.simverify.m3_replay import cycle_action_metrics
 
 CAMERAS = ("video4", "video5", "video6", "video7")
@@ -110,6 +113,8 @@ def condition_swap_metrics(
     base_action: np.ndarray,
     alternate_action: np.ndarray,
     committed_mask: np.ndarray,
+    *,
+    expected_swing_delta_sign: int | None = None,
 ) -> dict[str, Any]:
     """Measure a fixed-observation target intervention without claiming success."""
 
@@ -123,10 +128,20 @@ def condition_swap_metrics(
     delta = alternate - base
     pre = delta[~mask]
     post = delta[mask]
+    observed_sign = int(np.sign(float(np.mean(post[:, 0]))))
+    if expected_swing_delta_sign not in {None, -1, 1}:
+        raise ValueError("expected swing delta sign must be -1, 1, or None")
     return {
         "pre_dump_effect_l1": float(np.mean(np.abs(pre))),
         "post_commit_effect_l1": float(np.mean(np.abs(post))),
         "post_commit_swing_delta_mean": float(np.mean(post[:, 0])),
+        "expected_swing_delta_sign": expected_swing_delta_sign,
+        "observed_swing_delta_sign": observed_sign,
+        "semantic_direction_correct": (
+            None
+            if expected_swing_delta_sign is None
+            else observed_sign == expected_swing_delta_sign
+        ),
         "post_commit_non_swing_effect_l1": float(np.mean(np.abs(post[:, 1:]))),
         "causal_localization_ratio": float(
             np.mean(np.abs(post)) / max(np.mean(np.abs(pre)), 1e-12)
@@ -284,6 +299,10 @@ def run_habit_validation_replay(
     if source_ids & HELD_OUT_SOURCE_EPISODES:
         raise ValueError("held-out source episode entered validation replay")
     train_targets = _train_target_support(manifest)
+    action_to_qpos_direction = _fit_swing_action_to_qpos_direction(
+        dataset,
+        split["train_ids"],
+    )
     event_envelope_file = Path(event_envelope_path).resolve(strict=True)
     event_envelope = _read_json(event_envelope_file)
     templates = event_envelope["templates"]
@@ -355,6 +374,11 @@ def run_habit_validation_replay(
                                 templates=templates,
                                 deadzone=deadzone,
                             ),
+                            "expert_action_grammar": extract_ordered_task_events(
+                                arrays["expert_action"],
+                                templates,
+                                deadzone=deadzone,
+                            ),
                             "evidence_scope": "recorded-observation/offline",
                             "closed_loop_execution": False,
                         }
@@ -414,6 +438,21 @@ def run_habit_validation_replay(
                                 arrays["temporal_aggregation_action"],
                                 alternate_arrays["temporal_aggregation_action"],
                                 arrays["target_committed_mask"],
+                                expected_swing_delta_sign=(
+                                    int(action_to_qpos_direction["sign"])
+                                    * int(
+                                        np.sign(
+                                            SECTORS.index(alternate)
+                                            - SECTORS.index(
+                                                str(
+                                                    cycle[
+                                                        "hindsight_expert_target_sector"
+                                                    ]
+                                                )
+                                            )
+                                        )
+                                    )
+                                ),
                             ),
                             "evidence_scope": "recorded-observation/offline",
                             "closed_loop_execution": False,
@@ -436,6 +475,7 @@ def run_habit_validation_replay(
                 ),
                 "split_manifest_sha256": sha256_file(dataset / "derived_split.yaml"),
                 "event_envelope_sha256": sha256_file(event_envelope_file),
+                "swing_action_to_qpos_direction": action_to_qpos_direction,
                 "validation_derived_episode_ids": val_ids,
                 "validation_source_episode_ids": sorted(source_ids),
                 "held_out_source_episode_ids": sorted(HELD_OUT_SOURCE_EPISODES),
@@ -501,6 +541,48 @@ def _train_target_support(manifest: Mapping[str, Any]) -> dict[str, set[str]]:
                 str(row["hindsight_expert_target_sector"])
             )
     return support
+
+
+def _fit_swing_action_to_qpos_direction(
+    dataset_root: Path,
+    train_ids: Sequence[int],
+) -> dict[str, Any]:
+    products: list[np.ndarray] = []
+    source_episode_ids: set[int] = set()
+    manifest = _read_json(dataset_root / "dataset_manifest.json")
+    rows = {
+        int(row["derived_episode_id"]): row
+        for row in manifest["cycles"]
+        if row["status"] == "written"
+    }
+    for derived_id in map(int, train_ids):
+        source_episode_ids.add(int(rows[derived_id]["source_episode_id"]))
+        with h5py.File(dataset_root / str(rows[derived_id]["path"]), "r") as episode:
+            action = np.asarray(episode["action"][:, 0], dtype=np.float64)
+            qvel = np.asarray(
+                episode["observations/qvel"][:, 0],
+                dtype=np.float64,
+            )
+        active = (np.abs(action) > 0.05) & (np.abs(qvel) > 1e-6)
+        if active.any():
+            products.append(action[active] * qvel[active])
+    if not products:
+        raise ValueError("train split has no active swing action/qvel samples")
+    values = np.concatenate(products)
+    median = float(np.median(values))
+    sign = int(np.sign(median))
+    if sign == 0:
+        raise ValueError("swing action-to-qpos direction is ambiguous")
+    return {
+        "schema": "simverify_swing_action_to_qpos_direction_v1",
+        "fit_split": "train",
+        "fit_source_episode_ids": sorted(source_episode_ids),
+        "active_sample_count": int(values.size),
+        "median_action_times_qvel": median,
+        "sign": sign,
+        "privilege_used": False,
+        "held_out_test_read": False,
+    }
 
 
 def _select_supported_alternate(
@@ -584,6 +666,14 @@ def _aggregate_validation_metrics(
                 ]
             )
         )
+        baseline_summary[baseline]["expert_required_event_coverage_mean"] = float(
+            np.mean(
+                [
+                    float(row["expert_action_grammar"]["required_event_coverage"])
+                    for row in selected
+                ]
+            )
+        )
     supported_swaps = [
         row
         for row in swaps
@@ -612,6 +702,18 @@ def _aggregate_validation_metrics(
                 float(
                     np.max(
                         [row["metrics"]["pre_dump_effect_l1"] for row in selected]
+                    )
+                )
+                if selected
+                else None
+            ),
+            "semantic_direction_correct_rate": (
+                float(
+                    np.mean(
+                        [
+                            bool(row["metrics"]["semantic_direction_correct"])
+                            for row in selected
+                        ]
                     )
                 )
                 if selected

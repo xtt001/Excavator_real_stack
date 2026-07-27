@@ -68,8 +68,10 @@ def test_condition_swap_metrics_reports_phase_localization() -> None:
         base,
         alternate,
         np.asarray([0, 0, 1, 1], dtype=np.uint8),
+        expected_swing_delta_sign=-1,
     )
     assert metrics["pre_dump_effect_l1"] == 0.0
     assert metrics["post_commit_effect_l1"] == pytest.approx(0.1)
     assert metrics["post_commit_swing_delta_mean"] == pytest.approx(-0.4)
+    assert metrics["semantic_direction_correct"] is True
     assert metrics["closed_loop_execution"] is False
