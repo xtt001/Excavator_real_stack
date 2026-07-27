@@ -1,0 +1,93 @@
+experiment_contract:
+  experiment_id: simverify_habit_b1_v2
+  stage: expert_habit_fixed_scenario_B1
+  baseline_id: B1
+  evidence_scope: recorded-observation/offline
+  task_contract: ready_to_ready_dump_end_target_commit
+  condition_input: cycle_condition_v1_dump_end_gated_low_dim
+  condition_label_association: observed_hindsight_after_dump_end
+  source_domain: sim
+  held_out_test: locked_unread
+  closed_loop_claim_allowed: false
+  definition_manifest_sha256: 47bc98c1ff31ef20f518c0e0a6caa9032d622dd628ac46ae45111b4a03ef8e87
+  dataset_manifest_sha256: 8ca37bf22638b4bbc86292c00e0230c2fe2e236a15d21e0426ad14dc0f2ca149
+  scenario_manifest_sha256: 9f41deabf6e7a045f3b7bd5f15320920f9ea3930e2e73911a677f22e2b0ab888
+  split_manifest_sha256: cca16faac80b9437c99a0478bdb7e3a62a694c477935c093ca98131ee4854b73
+  inherited_hyperparameter_source: simverify_habit_b0_v2
+  one_primary_factor_vs_b0: dump_end_gated_condition_input
+  one_primary_factor_vs_b2: committed_target_label_association
+  fixed_num_epochs: 2000
+  checkpoint_selection: minimum_validation_loss
+
+checkpoint_semantics:
+  domain: sim
+  source_action_domain: actuator_speed_cmd
+  deployment_status: offline_evaluation_only
+  real_control_allowed: false
+  jetson_allowed: false
+  evidence_scope: recorded-observation/offline
+
+task:
+  task_name: simverify_habit_b1_v2
+  equipment_model: real_excavator
+  dataset_dir: /data/pingfan/Excavator_real_stack_data/sim_expert_habit_ready_cycle_v2/episodes
+  num_episodes: 201
+  episode_len:
+  camera_names: [video4, video5, video6, video7]
+  backend: {name: offline_recorded_observation, dt: 0.05}
+
+policy:
+  class: ACT
+  device: cuda
+  low_dim_keys: [qpos, qvel, cycle_condition_v1]
+  act_params:
+    chunk_size: 20
+    kl_weight: 10.0
+    hidden_dim: 512
+    dim_feedforward: 3200
+    state_dim: 14
+    camera_role_encoding:
+      enabled: true
+      roles: {video4: eye_left, video5: eye_right, video6: stick_down, video7: stick_up}
+
+train:
+  lr: 1.0e-5
+  num_epochs: 2000
+  batch_size: 4
+  seed: 0
+  device: cuda
+  num_workers: 4
+  prefetch_factor: 2
+  persistent_workers: true
+  pin_memory: true
+  split_seed: 0
+  train_split_ratio: 0.7761194029850746
+  reuse_split: true
+  split_path: /data/pingfan/Excavator_real_stack_data/sim_expert_habit_ready_cycle_v2/derived_split.yaml
+  sample_valid_mask_path: conditions/valid_mask
+  norm_stats_train_only: true
+  condition_shuffle:
+    enabled: false
+    key: cycle_condition_v1
+    scope: train_only
+  image_transform: none
+  val_every: 10
+  save_latest_every: 100
+  checkpoint_every: 500
+  plot_every: 500
+  amp: true
+  amp_dtype: auto
+  deadzone_loss:
+    enabled: true
+    thresholds:
+      swing: {pos: 0.05, neg: 0.05}
+      boom: {pos: 0.05, neg: 0.05}
+      stick: {pos: 0.05, neg: 0.05}
+      bucket: {pos: 0.05, neg: 0.05}
+    same_dir_promote_weight: 1.0
+    idle_suppression_weight: 0.0
+    wrong_effective_weight: 0.0
+    margin: 0.0
+    same_dir_window: expert_transition_window
+    same_dir_window_steps: 5
+  ckpt_dir: /data/pingfan/Excavator_real_stack_runs/simverify_habit_b1_v2_seed0
