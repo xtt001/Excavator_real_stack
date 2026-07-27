@@ -269,6 +269,8 @@ class EpisodicDataset(Dataset):
         deadzone_intent: dict[str, Any] | None = None,
         sample_valid_mask_path: str | None = None,
         condition_shuffle_seed: int | None = None,
+        condition_shuffle_mode: str = "full_vector",
+        condition_shuffle_committed_mask_path: str | None = None,
         condition_phase_randomization: dict[str, Any] | None = None,
         condition_counterfactual_consistency: dict[str, Any] | None = None,
         phase_routed_condition: dict[str, Any] | None = None,
@@ -292,6 +294,12 @@ class EpisodicDataset(Dataset):
         )
         self.condition_shuffle_seed = (
             None if condition_shuffle_seed is None else int(condition_shuffle_seed)
+        )
+        self.condition_shuffle_mode = str(condition_shuffle_mode)
+        self.condition_shuffle_committed_mask_path = (
+            None
+            if condition_shuffle_committed_mask_path is None
+            else str(condition_shuffle_committed_mask_path)
         )
         if (
             self.condition_shuffle_seed is not None
@@ -347,6 +355,8 @@ class EpisodicDataset(Dataset):
             deadzone_intent=self.deadzone_intent,
             sample_valid_mask_path=self.sample_valid_mask_path,
             seed=self.condition_shuffle_seed,
+            mode=self.condition_shuffle_mode,
+            committed_mask_path=self.condition_shuffle_committed_mask_path,
         )
         (
             self.condition_phase_randomization_mapping,
@@ -763,6 +773,8 @@ def _build_condition_shuffle_mapping(
     deadzone_intent: dict[str, Any],
     sample_valid_mask_path: str | None,
     seed: int | None,
+    mode: str = "full_vector",
+    committed_mask_path: str | None = None,
 ) -> tuple[
     dict[tuple[int, int], np.ndarray] | None,
     dict[str, Any],
@@ -775,8 +787,14 @@ def _build_condition_shuffle_mapping(
 
     import h5py
 
+    if mode not in ("full_vector", "next_sector_within_current_committed_only"):
+        raise ValueError(f"unsupported condition shuffle mode: {mode!r}")
+    if mode == "next_sector_within_current_committed_only" and not committed_mask_path:
+        raise ValueError("committed-only shuffle requires committed_mask_path")
+
     keys: list[tuple[int, int]] = []
     values: list[np.ndarray] = []
+    committed_flags: list[bool] = []
     for episode_id in episode_ids:
         path = dataset_dir / f"episode_{episode_id}.hdf5"
         with h5py.File(path, "r") as handle:
@@ -809,17 +827,48 @@ def _build_condition_shuffle_mapping(
                     deadzone_intent["require_action_loss_in_chunk"]
                 ),
             )
+            committed = (
+                _read_required_valid_mask(
+                    handle,
+                    str(committed_mask_path),
+                    total_steps,
+                )
+                if mode == "next_sector_within_current_committed_only"
+                else np.ones(total_steps, dtype=bool)
+            )
             for tick in valid_starts.tolist():
                 vector = condition[int(tick)]
-                _validate_cycle_condition_vector(vector)
+                _validate_cycle_condition_vector(
+                    vector,
+                    allow_inactive_zero=(
+                        mode == "next_sector_within_current_committed_only"
+                    ),
+                )
                 keys.append((int(episode_id), int(tick)))
                 values.append(vector.copy())
+                committed_flags.append(bool(committed[int(tick)]))
     if not keys:
         raise ValueError("condition shuffle has no valid training starts")
 
     matrix = np.stack(values).astype(np.float32)
-    permutation = np.random.default_rng(seed).permutation(len(keys))
-    shuffled = matrix[permutation].copy()
+    if mode == "full_vector":
+        permutation = np.random.default_rng(seed).permutation(len(keys))
+        shuffled = matrix[permutation].copy()
+    else:
+        shuffled = matrix.copy()
+        rng = np.random.default_rng(seed)
+        committed_array = np.asarray(committed_flags, dtype=bool)
+        for current_sector in range(3):
+            group = np.flatnonzero(
+                committed_array
+                & (np.argmax(matrix[:, :3], axis=1) == current_sector)
+            )
+            if group.size < 2:
+                continue
+            labels = np.argmax(matrix[group, 3:], axis=1)
+            shuffled_labels = labels[rng.permutation(group.size)]
+            shuffled[group, 3:] = 0.0
+            shuffled[group, 3 + shuffled_labels] = 1.0
     source_counts = Counter(_condition_key(row) for row in matrix)
     shuffled_counts = Counter(_condition_key(row) for row in shuffled)
     if source_counts != shuffled_counts:
@@ -832,13 +881,30 @@ def _build_condition_shuffle_mapping(
     changed = int(np.sum(np.any(matrix != shuffled, axis=1)))
     return mapping, {
         "enabled": True,
-        "scope": "train_valid_starts_only",
+        "scope": (
+            "train_valid_starts_only"
+            if mode == "full_vector"
+            else "train_committed_valid_starts_within_current_sector"
+        ),
+        "mode": mode,
+        "committed_mask_path": committed_mask_path,
         "key": "cycle_condition_v1",
         "seed": int(seed),
         "row_count": len(keys),
         "changed_row_count": changed,
         "unchanged_row_count": len(keys) - changed,
         "changed_row_fraction": float(changed / len(keys)),
+        "pre_commit_rows_unchanged": bool(
+            mode != "next_sector_within_current_committed_only"
+            or np.all(
+                matrix[~np.asarray(committed_flags, dtype=bool)]
+                == shuffled[~np.asarray(committed_flags, dtype=bool)]
+            )
+        ),
+        "current_sector_unchanged": bool(
+            mode != "next_sector_within_current_committed_only"
+            or np.all(matrix[:, :3] == shuffled[:, :3])
+        ),
         "source_token_counts": {
             key: int(count) for key, count in sorted(source_counts.items())
         },
@@ -1109,8 +1175,19 @@ def _sha256_path(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _validate_cycle_condition_vector(vector: np.ndarray) -> None:
+def _validate_cycle_condition_vector(
+    vector: np.ndarray,
+    *,
+    allow_inactive_zero: bool = False,
+) -> None:
     value = np.asarray(vector, dtype=np.float32)
+    if (
+        allow_inactive_zero
+        and value.shape == (6,)
+        and np.isfinite(value).all()
+        and np.all(value == 0.0)
+    ):
+        return
     if (
         value.shape != (6,)
         or not np.isfinite(value).all()
@@ -1353,6 +1430,8 @@ def load_data(
     sample_valid_mask_path: str | None = None,
     norm_stats_train_only: bool = False,
     condition_shuffle_seed_train: int | None = None,
+    condition_shuffle_mode_train: str = "full_vector",
+    condition_shuffle_committed_mask_path_train: str | None = None,
     condition_phase_randomization_train: dict[str, Any] | None = None,
     condition_counterfactual_consistency_train: dict[str, Any] | None = None,
     phase_routed_condition: dict[str, Any] | None = None,
@@ -1505,6 +1584,10 @@ def load_data(
         deadzone_intent=deadzone_intent,
         sample_valid_mask_path=sample_valid_mask_path,
         condition_shuffle_seed=condition_shuffle_seed_train,
+        condition_shuffle_mode=condition_shuffle_mode_train,
+        condition_shuffle_committed_mask_path=(
+            condition_shuffle_committed_mask_path_train
+        ),
         condition_phase_randomization=condition_phase_randomization_train,
         condition_counterfactual_consistency=(
             condition_counterfactual_consistency_train

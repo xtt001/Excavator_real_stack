@@ -72,8 +72,16 @@ def train_policy(config: dict[str, Any]) -> None:
                 "scope=train_only, and cycle_condition_v1 in low_dim_keys"
             )
         condition_shuffle_seed_train = int(condition_shuffle.get("seed", 0))
+        condition_shuffle_mode_train = str(
+            condition_shuffle.get("mode", "full_vector")
+        )
+        condition_shuffle_committed_mask_path_train = condition_shuffle.get(
+            "committed_mask_path"
+        )
     else:
         condition_shuffle_seed_train = None
+        condition_shuffle_mode_train = "full_vector"
+        condition_shuffle_committed_mask_path_train = None
     condition_phase_randomization = copy.deepcopy(
         train_cfg.get("condition_phase_randomization", {}) or {}
     )
@@ -276,6 +284,10 @@ def train_policy(config: dict[str, Any]) -> None:
         sample_valid_mask_path=sample_valid_mask_path or None,
         norm_stats_train_only=norm_stats_train_only,
         condition_shuffle_seed_train=condition_shuffle_seed_train,
+        condition_shuffle_mode_train=condition_shuffle_mode_train,
+        condition_shuffle_committed_mask_path_train=(
+            condition_shuffle_committed_mask_path_train
+        ),
         condition_phase_randomization_train=(
             condition_phase_randomization
             if condition_phase_randomization_enabled
