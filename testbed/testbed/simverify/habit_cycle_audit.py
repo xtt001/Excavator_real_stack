@@ -494,34 +494,24 @@ def build_transition_candidates(
     for episode_id in sorted(cycles):
         episode = signals[episode_id]
         episode_cycles = cycles[episode_id]
+        episode_records: list[dict[str, Any]] = []
         for cycle_index, cycle in enumerate(episode_cycles):
             reasons: list[str] = []
             current_value = cycle["numeric_sector_evidence"].get(
                 "current_swing_qpos"
             )
-            next_value = cycle["numeric_sector_evidence"].get("next_swing_qpos")
             current_result = (
                 (None, 0.0, True)
                 if current_value is None
                 else classify_sector(float(current_value), sector_thresholds)
             )
-            target_result = (
-                (None, 0.0, True)
-                if next_value is None
-                else classify_sector(float(next_value), sector_thresholds)
-            )
             current, current_confidence, current_boundary = current_result
-            target, target_confidence, target_boundary = target_result
-            if current is None:
-                reasons.append("current_sector_not_identifiable")
-            if target is None:
-                reasons.append("next_sector_not_identifiable")
+            target: str | None = None
+            target_confidence = 0.0
+            target_boundary = True
             dump_event = cycle["observable_events"].get("dump_end_proxy")
-            next_observation = cycle.get("sector_observations", {}).get("next")
             if dump_event is None:
                 reasons.append("dump_end_not_identifiable")
-            if next_observation is None:
-                reasons.append("next_dig_entry_not_identifiable")
             next_cycle = (
                 episode_cycles[cycle_index + 1]
                 if cycle_index + 1 < len(episode_cycles)
@@ -534,11 +524,6 @@ def build_transition_candidates(
             )
             if next_dump_event is None:
                 reasons.append("next_dump_start_not_identifiable")
-            intent = (
-                None
-                if current is None or target is None
-                else relative_intent(current, target)
-            )
             dump_step = (
                 None
                 if dump_event is None
@@ -546,49 +531,74 @@ def build_transition_candidates(
             )
             next_dig_step: int | None = None
             interval: list[int] | None = None
-            if (
-                not reasons
-                and dump_step is not None
-                and next_dump_event is not None
-            ):
+            if dump_step is not None and next_dump_event is not None:
                 search_end = int(next_dump_event["representative_step"])
-                target_sector = _target_work_sector_mask(
-                    episode.qpos[:, 0],
-                    target=str(target),
-                    sector_thresholds=sector_thresholds,
-                    dump_swing_threshold=float(dump_swing_threshold),
-                )
-                ready_candidate = target_sector & (
-                    np.abs(np.asarray(episode.qvel[:, 0], dtype=np.float64))
-                    <= float(swing_speed_threshold)
-                )
-                runs = _true_runs(
-                    ready_candidate,
-                    start=int(dump_step) + 1,
-                    end=search_end,
-                )
-                runs = [
-                    run
-                    for run in runs
-                    if run[1] - run[0] >= int(ready_envelope_steps)
-                ]
-                if not runs:
-                    reasons.append("dig_ready_reference_not_identifiable")
+                if search_end <= int(dump_step) + 1:
+                    reasons.append("invalid_dump_to_next_ready_search_order")
                 else:
-                    # A ready capture can continue while the other joints
-                    # begin the next dig.  The reference is therefore the
-                    # first causal entry into a sustained low-swing-speed
-                    # target-sector envelope.  Selecting the longest run
-                    # would move the boundary into the following dig.
-                    selected = runs[0]
-                    interval = [
-                        int(selected[0]),
-                        int(selected[0]) + int(ready_envelope_steps),
+                    search_start = _ready_search_start(
+                        episode,
+                        dump_step=int(dump_step),
+                        search_end=search_end,
+                        swing_speed_threshold=float(
+                            swing_speed_threshold
+                        ),
+                    )
+                    ready_candidate = (
+                        np.asarray(episode.qpos[:, 0], dtype=np.float64)
+                        < float(dump_swing_threshold)
+                    ) & (
+                        np.abs(
+                            np.asarray(
+                                episode.qvel[:, 0],
+                                dtype=np.float64,
+                            )
+                        )
+                        <= float(swing_speed_threshold)
+                    )
+                    runs = [
+                        run
+                        for run in _true_runs(
+                            ready_candidate,
+                            start=search_start,
+                            end=search_end,
+                        )
+                        if run[1] - run[0] >= int(ready_envelope_steps)
                     ]
-                    next_dig_step = int(interval[1])
-            elif not reasons:
-                reasons.append("invalid_dump_to_next_ready_search_order")
-            records.append(
+                    if not runs:
+                        reasons.append("dig_ready_reference_not_identifiable")
+                    else:
+                        # This is the first causal low-speed work-area
+                        # envelope after dump. Its own qpos defines the
+                        # hindsight target; the earlier bucket proxy is not
+                        # allowed to label the sector.
+                        selected = runs[0]
+                        interval = [
+                            int(selected[0]),
+                            int(selected[0]) + int(ready_envelope_steps),
+                        ]
+                        next_dig_step = int(interval[1])
+                        target_value = float(
+                            episode.qpos[int(selected[0]), 0]
+                        )
+                        (
+                            target,
+                            target_confidence,
+                            target_boundary,
+                        ) = classify_sector(
+                            target_value,
+                            sector_thresholds,
+                        )
+            if current is None:
+                reasons.append("current_sector_not_identifiable")
+            if target is None:
+                reasons.append("next_sector_not_identifiable")
+            intent = (
+                None
+                if current is None or target is None
+                else relative_intent(current, target)
+            )
+            episode_records.append(
                 {
                     "schema": "habit_transition_candidate_v1",
                     "episode_id": int(episode_id),
@@ -608,9 +618,13 @@ def build_transition_candidates(
                     },
                     "relative_intent": intent,
                     "training_main_scope": (
-                        intent in RELATIVE_INTENTS if intent is not None else False
+                        intent in RELATIVE_INTENTS
+                        if intent is not None
+                        else False
                     ),
-                    "diagnostic_nonadjacent": intent == DIAGNOSTIC_NONADJACENT,
+                    "diagnostic_nonadjacent": (
+                        intent == DIAGNOSTIC_NONADJACENT
+                    ),
                     "dump_end_step": dump_step,
                     "next_dig_entry_step": next_dig_step,
                     "dig_ready_reference_interval": interval,
@@ -629,6 +643,40 @@ def build_transition_candidates(
                     },
                 }
             )
+        for index in range(1, len(episode_records)):
+            previous = episode_records[index - 1]
+            row = episode_records[index]
+            if (
+                int(row["cycle_id"]) != int(previous["cycle_id"]) + 1
+                or previous["hindsight_expert_target_sector"] is None
+            ):
+                continue
+            row["current_sector"] = previous[
+                "hindsight_expert_target_sector"
+            ]
+            row["sector_evidence"]["current_confidence"] = previous[
+                "sector_evidence"
+            ]["target_confidence"]
+            row["sector_evidence"]["current_boundary_review"] = previous[
+                "sector_evidence"
+            ]["target_boundary_review"]
+            row["reason_codes"] = [
+                code
+                for code in row["reason_codes"]
+                if code != "current_sector_not_identifiable"
+            ]
+            target = row["hindsight_expert_target_sector"]
+            intent = (
+                None
+                if target is None
+                else relative_intent(str(row["current_sector"]), str(target))
+            )
+            row["relative_intent"] = intent
+            row["training_main_scope"] = intent in RELATIVE_INTENTS
+            row["diagnostic_nonadjacent"] = (
+                intent == DIAGNOSTIC_NONADJACENT
+            )
+        records.extend(episode_records)
     return records
 
 
@@ -669,6 +717,12 @@ def fit_causal_confirmation_dwell(
         )
         start = int(row["dump_end_step"]) + 1
         end = int(row["next_dig_entry_step"])
+        start = _ready_search_start(
+            episode,
+            dump_step=int(row["dump_end_step"]),
+            search_end=end,
+            swing_speed_threshold=float(swing_speed_threshold),
+        )
         reference_start, reference_end = map(int, reference)
         positive_lengths.append(reference_end - reference_start)
         for run_start, run_end in _true_runs(eligible, start=start, end=end):
@@ -750,7 +804,14 @@ def enumerate_causal_candidates(
                 run_start + int(dwell_steps) - 1
                 for run_start, run_end in _true_runs(
                     eligible,
-                    start=int(row["dump_end_step"]) + 1,
+                    start=_ready_search_start(
+                        episode,
+                        dump_step=int(row["dump_end_step"]),
+                        search_end=int(row["next_dig_entry_step"]),
+                        swing_speed_threshold=float(
+                            swing_speed_threshold
+                        ),
+                    ),
                     end=int(row["next_dig_entry_step"]),
                 )
                 if run_end - run_start >= int(dwell_steps)
@@ -763,6 +824,32 @@ def enumerate_causal_candidates(
         row["reason_codes"] = sorted(set(row["reason_codes"]))
         result.append(row)
     return result
+
+
+def _ready_search_start(
+    episode: EpisodeSignals,
+    *,
+    dump_step: int,
+    search_end: int,
+    swing_speed_threshold: float,
+) -> int:
+    """Arm ready capture only after observable return swing activation."""
+
+    start = int(dump_step) + 1
+    if int(search_end) <= start:
+        return start
+    active = np.flatnonzero(
+        np.abs(
+            np.asarray(
+                episode.qvel[start:int(search_end), 0],
+                dtype=np.float64,
+            )
+        )
+        > float(swing_speed_threshold)
+    )
+    if active.size == 0:
+        return int(search_end)
+    return int(start + int(active[0]))
 
 
 def extract_candidate_features(

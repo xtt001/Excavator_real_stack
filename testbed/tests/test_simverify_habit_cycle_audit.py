@@ -20,11 +20,13 @@ def _signals() -> dict[int, EpisodeSignals]:
     qpos[8:13, 0] = 0.50
     action = np.zeros((20, 4), dtype=np.float32)
     action[3:5, 0] = -1.0
+    qvel = np.zeros((20, 4), dtype=np.float32)
+    qvel[2, 0] = -0.5
     episode = EpisodeSignals(
         episode_id=3,
         step_id=np.arange(20, dtype=np.int64),
         qpos=qpos,
-        qvel=np.zeros((20, 4), dtype=np.float32),
+        qvel=qvel,
         action=action,
         dt=0.02,
     )
