@@ -17,12 +17,14 @@ def _signals() -> dict[int, EpisodeSignals]:
     qpos[:, 0] = 0.60
     qpos[3:5, 0] = 0.50
     qpos[8:12, 0] = 0.50
+    action = np.zeros((20, 4), dtype=np.float32)
+    action[3:5, 0] = -1.0
     episode = EpisodeSignals(
         episode_id=3,
         step_id=np.arange(20, dtype=np.int64),
         qpos=qpos,
         qvel=np.zeros((20, 4), dtype=np.float32),
-        action=np.zeros((20, 4), dtype=np.float32),
+        action=action,
         dt=0.02,
     )
     episode.validate()
@@ -68,6 +70,7 @@ def test_numeric_candidate_stage_preserves_ready_recall_for_visual_gate() -> Non
         signals=signals,
         sector_thresholds=_sector_thresholds(),
         dump_swing_threshold=0.63,
+        action_deadzone=0.05,
     )
     assert contract["selected_dwell_steps"] == 1
     rows = enumerate_causal_candidates(
@@ -76,8 +79,9 @@ def test_numeric_candidate_stage_preserves_ready_recall_for_visual_gate() -> Non
         signals=signals,
         sector_thresholds=_sector_thresholds(),
         dump_swing_threshold=0.63,
+        action_deadzone=0.05,
     )
-    assert rows[0]["numeric_causal_candidate_steps"] == [3, 8]
+    assert rows[0]["numeric_causal_candidate_steps"] == [8]
     assert rows[0]["causal_confirmed"] is False
 
 

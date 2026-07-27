@@ -154,6 +154,7 @@ def run_habit_cycle_definition_audit(
         dump_swing_threshold=float(
             numeric_thresholds["dump_release"]["swing_threshold"]
         ),
+        action_deadzone=float(numeric_thresholds["action_deadzone"]),
     )
     dwell_contract = fit_causal_confirmation_dwell(
         raw_candidates,
@@ -162,6 +163,7 @@ def run_habit_cycle_definition_audit(
         dump_swing_threshold=float(
             numeric_thresholds["dump_release"]["swing_threshold"]
         ),
+        action_deadzone=float(numeric_thresholds["action_deadzone"]),
     )
     candidates = enumerate_causal_candidates(
         raw_candidates,
@@ -171,6 +173,7 @@ def run_habit_cycle_definition_audit(
         dump_swing_threshold=float(
             numeric_thresholds["dump_release"]["swing_threshold"]
         ),
+        action_deadzone=float(numeric_thresholds["action_deadzone"]),
     )
 
     if extractor is None:
@@ -475,6 +478,7 @@ def build_transition_candidates(
     split: Mapping[str, Any],
     sector_thresholds: Mapping[str, Any],
     dump_swing_threshold: float,
+    action_deadzone: float,
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     for episode_id in sorted(cycles):
@@ -529,20 +533,37 @@ def build_transition_candidates(
                 and next_dig_step is not None
                 and next_dig_step > dump_step + 1
             ):
-                reference = next_dig_step - 1
-                eligible = _target_work_sector_mask(
+                target_sector = _target_work_sector_mask(
                     episode.qpos[:, 0],
                     target=str(target),
                     sector_thresholds=sector_thresholds,
                     dump_swing_threshold=float(dump_swing_threshold),
                 )
-                if not bool(eligible[reference]):
-                    reasons.append("pre_dig_row_not_in_target_work_sector")
+                ready_candidate = target_sector & (
+                    np.abs(np.asarray(episode.action[:, 0], dtype=np.float64))
+                    <= float(action_deadzone)
+                )
+                runs = _true_runs(
+                    ready_candidate,
+                    start=int(dump_step) + 1,
+                    end=int(next_dig_step),
+                )
+                if not runs:
+                    reasons.append("dig_ready_reference_not_identifiable")
                 else:
-                    start = reference
-                    while start > dump_step + 1 and bool(eligible[start - 1]):
-                        start -= 1
-                    interval = [int(start), int(next_dig_step)]
+                    readiness = np.abs(
+                        np.asarray(episode.qvel[:, 0], dtype=np.float64)
+                    ) + np.abs(
+                        np.asarray(episode.action[:, 0], dtype=np.float64)
+                    )
+                    selected = min(
+                        runs,
+                        key=lambda run: (
+                            float(np.min(readiness[run[0] : run[1]])),
+                            -int(run[1]),
+                        ),
+                    )
+                    interval = [int(selected[0]), int(selected[1])]
             elif not reasons:
                 reasons.append("invalid_dump_to_next_dig_order")
             records.append(
@@ -595,6 +616,7 @@ def fit_causal_confirmation_dwell(
     signals: Mapping[int, EpisodeSignals],
     sector_thresholds: Mapping[str, Any],
     dump_swing_threshold: float,
+    action_deadzone: float,
 ) -> dict[str, Any]:
     """Fit the shortest dwell with the best train run discrimination.
 
@@ -619,6 +641,9 @@ def fit_causal_confirmation_dwell(
             target=str(row["hindsight_expert_target_sector"]),
             sector_thresholds=sector_thresholds,
             dump_swing_threshold=float(dump_swing_threshold),
+        ) & (
+            np.abs(np.asarray(episode.action[:, 0], dtype=np.float64))
+            <= float(action_deadzone)
         )
         start = int(row["dump_end_step"]) + 1
         end = int(row["next_dig_entry_step"])
@@ -677,6 +702,7 @@ def enumerate_causal_candidates(
     signals: Mapping[int, EpisodeSignals],
     sector_thresholds: Mapping[str, Any],
     dump_swing_threshold: float,
+    action_deadzone: float,
 ) -> list[dict[str, Any]]:
     """Enumerate runtime-safe candidate confirmation rows in forward order."""
 
@@ -694,6 +720,9 @@ def enumerate_causal_candidates(
                 target=str(row["hindsight_expert_target_sector"]),
                 sector_thresholds=sector_thresholds,
                 dump_swing_threshold=float(dump_swing_threshold),
+            ) & (
+                np.abs(np.asarray(episode.action[:, 0], dtype=np.float64))
+                <= float(action_deadzone)
             )
             candidate_steps = [
                 run_start + int(dwell_steps) - 1
@@ -1694,17 +1723,20 @@ def build_dig_ready_boundary_audit(
         "schema": "dig_ready_boundary_audit_v1",
         "boundary_semantics": {
             "candidate_enter": (
-                "first row of final contiguous target-work-sector run before "
-                "next observable dig entry"
+                "first row of a contiguous target-work-sector run whose "
+                "absolute swing action is within the frozen action deadzone"
             ),
             "causal_confirm": (
-                "candidate_enter plus train p02.5 dwell using current and "
-                "past rows only"
+                "candidate_enter plus train-fitted dwell and frozen visual "
+                "confirmation using current and past rows only"
             ),
             "runtime_future_observation_used": False,
             "offline_hindsight_used_only_for_reference_target": True,
             "dump_corridor_exclusion": (
                 "swing_qpos_must_not_exceed_train_fitted_dump_threshold"
+            ),
+            "ready_action_requirement": (
+                "abs_swing_action_lte_train_frozen_action_deadzone"
             ),
         },
         "numeric_thresholds": numeric_thresholds,

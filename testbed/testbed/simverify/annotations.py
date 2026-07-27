@@ -222,6 +222,7 @@ def fit_numeric_annotation_thresholds(
         },
         "ready": {
             "activity": "abs_swing_qvel_plus_abs_swing_action",
+            "candidate_action": "abs_swing_action_lte_action_deadzone",
             "minimum_envelope_steps": 1,
             "search_end": "first_sustained_positive_bucket_or_low_swing_run_end",
             "local_basin_rule": (
