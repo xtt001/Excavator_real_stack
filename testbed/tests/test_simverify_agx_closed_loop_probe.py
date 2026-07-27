@@ -169,8 +169,13 @@ class _FakeReadyBoundaryDetector:
         "privilege_used": False,
     }
 
-    def __init__(self, *, confirm_at_tick: int) -> None:
-        self.confirm_at_tick = int(confirm_at_tick)
+    def __init__(self, *, confirm_at_tick: int | tuple[int, ...]) -> None:
+        ticks = (
+            (confirm_at_tick,)
+            if isinstance(confirm_at_tick, int)
+            else confirm_at_tick
+        )
+        self.confirm_at_ticks = {int(tick) for tick in ticks}
         self.reset_count = 0
 
     def reset(self) -> None:
@@ -186,7 +191,7 @@ class _FakeReadyBoundaryDetector:
         condition_route: dict | None,
     ) -> dict:
         del observation, policy_observation, held_action, condition_route
-        confirmed = policy_tick == self.confirm_at_tick
+        confirmed = policy_tick in self.confirm_at_ticks
         return {
             "schema": "fake_observable_ready_boundary_tick_v1",
             "state": "confirmed" if confirmed else "searching",
@@ -531,7 +536,7 @@ def test_probe_resets_only_condition_router_at_observable_ready_boundary(
 
     assert policy.full_reset_count == 1
     assert policy.condition_reset_count == 1
-    assert detector.reset_count == 1
+    assert detector.reset_count == 2
     np.testing.assert_array_equal(
         policy.observations[0]["cycle_condition_v1"],
         build_cycle_condition("left", "right"),
@@ -558,6 +563,56 @@ def test_probe_resets_only_condition_router_at_observable_ready_boundary(
     assert rows[1]["condition_router_reset_before_predict"] is True
     assert rows[1]["condition"] == [0.0, 0.0, 1.0, 0.0, 1.0, 0.0]
     assert rows[1]["ready_boundary"]["confirmed"] is True
+
+
+def test_probe_requires_both_observable_cycles_for_two_cycle_completion(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "completed_two_cycle_probe"
+    detector = _FakeReadyBoundaryDetector(confirm_at_tick=(1, 2))
+    result = run_bounded_closed_loop_probe(
+        policy=_FakePolicy(),
+        environment=_FakeEnvironment(),
+        output_root=output,
+        bundle_contract={
+            "baseline_id": "B1.4",
+            "condition_input": "cycle_condition_v1_next_sector_only",
+        },
+        current_git={"branch": "v2.0.0-simVerify", "dirty": False},
+        external_provenance={
+            "pact": {"git_sha": "pact", "dirty": True},
+            "unity": {"git_sha": "unity", "dirty": True},
+        },
+        current_sector="left",
+        next_sector="right",
+        second_next_sector="center",
+        ready_boundary_detector=detector,
+        seed=7,
+        policy_ticks=3,
+        save_images=False,
+    )
+
+    observable = result["observable_cycle_contract"]
+    assert observable["observable_cycle_completed"] is True
+    assert observable["requested_cycle_count"] == 2
+    assert observable["completed_cycle_count"] == 2
+    assert observable["completion_policy_tick"] == 2
+    assert observable["scripted_target_sector"] == "center"
+    assert observable["realized_target_sector"] == "center"
+    assert observable["cycle_completions"] == [
+        {
+            "cycle_index": 0,
+            "completion_policy_tick": 1,
+            "scripted_target_sector": "right",
+            "realized_target_sector": "right",
+        },
+        {
+            "cycle_index": 1,
+            "completion_policy_tick": 2,
+            "scripted_target_sector": "center",
+            "realized_target_sector": "center",
+        },
+    ]
 
 
 def test_gated_probe_records_single_cycle_ready_without_router_reset(
@@ -597,6 +652,16 @@ def test_gated_probe_records_single_cycle_ready_without_router_reset(
         "completion_policy_tick": 2,
         "scripted_target_sector": "center",
         "realized_target_sector": "center",
+        "requested_cycle_count": 1,
+        "completed_cycle_count": 1,
+        "cycle_completions": [
+            {
+                "cycle_index": 0,
+                "completion_policy_tick": 2,
+                "scripted_target_sector": "center",
+                "realized_target_sector": "center",
+            }
+        ],
         "physical_effect_validated": False,
         "detector": ready.provenance,
     }

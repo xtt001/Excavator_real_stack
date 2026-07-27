@@ -855,9 +855,8 @@ def run_bounded_closed_loop_probe(
     cycle_index = 0
     condition_reset_count = 0
     condition_reset_policy_tick: int | None = None
-    observable_cycle_completed = False
-    observable_cycle_completion_tick: int | None = None
-    realized_target_sector: str | None = None
+    requested_cycle_count = 2 if lifecycle_enabled else 1
+    observable_cycle_completions: list[dict[str, Any]] = []
     info = validate_agx_info(environment.get_info())
     sim_dt = float(info["dt"])
     temporary = destination.parent / f".{destination.name}.tmp-{os.getpid()}"
@@ -946,23 +945,31 @@ def run_bounded_closed_loop_probe(
                     )
                 )
                 if bool(boundary_diagnostic.get("confirmed")):
-                    if not observable_cycle_completed:
-                        observable_cycle_completed = True
-                        observable_cycle_completion_tick = int(policy_tick)
-                        realized_target_sector = str(
+                    scripted_target_sector = (
+                        next_sector
+                        if cycle_index == 0
+                        else second_next_sector
+                    )
+                    if scripted_target_sector is None:
+                        raise AssertionError("active scripted target is missing")
+                    realized_target_sector = str(
+                        boundary_diagnostic.get(
+                            "visual_sector_prediction",
                             boundary_diagnostic.get(
-                                "visual_sector_prediction",
-                                boundary_diagnostic.get(
-                                    "qpos_sector",
-                                    next_sector,
-                                ),
-                            )
+                                "qpos_sector",
+                                scripted_target_sector,
+                            ),
                         )
-                    if lifecycle_enabled:
-                        if condition_reset_count:
-                            raise RuntimeError(
-                                "bounded two-cycle probe observed more than one boundary"
-                            )
+                    )
+                    observable_cycle_completions.append(
+                        {
+                            "cycle_index": int(cycle_index),
+                            "completion_policy_tick": int(policy_tick),
+                            "scripted_target_sector": scripted_target_sector,
+                            "realized_target_sector": realized_target_sector,
+                        }
+                    )
+                    if lifecycle_enabled and cycle_index == 0:
                         if not hasattr(policy, "reset_condition_cycle"):
                             raise TypeError(
                                 "conditioned policy lacks reset_condition_cycle()"
@@ -982,6 +989,7 @@ def run_bounded_closed_loop_probe(
                                     "gated lifecycle lacks commit detector"
                                 )
                             condition_commit_detector.reset()
+                        ready_boundary_detector.reset()
                         policy_observation["cycle_condition_v1"] = (
                             active_condition.copy()
                         )
@@ -1106,6 +1114,22 @@ def run_bounded_closed_loop_probe(
                     transition="action_hold",
                 )
         final_qpos = np.asarray(observation["qpos"], dtype=np.float32)
+        observable_cycle_completed = (
+            len(observable_cycle_completions) == requested_cycle_count
+        )
+        observable_cycle_completion_tick = (
+            int(observable_cycle_completions[-1]["completion_policy_tick"])
+            if observable_cycle_completed
+            else None
+        )
+        final_scripted_target_sector = (
+            second_next_sector if lifecycle_enabled else next_sector
+        )
+        final_realized_target_sector = (
+            str(observable_cycle_completions[-1]["realized_target_sector"])
+            if observable_cycle_completions
+            else None
+        )
         identities.append(write_jsonl(temporary / "policy_ticks.jsonl", policy_rows))
         identities.append(write_jsonl(temporary / "steps.jsonl", step_rows))
         summary = {
@@ -1219,8 +1243,11 @@ def run_bounded_closed_loop_probe(
                 "ready_detection_enabled": ready_detection_enabled,
                 "observable_cycle_completed": observable_cycle_completed,
                 "completion_policy_tick": observable_cycle_completion_tick,
-                "scripted_target_sector": next_sector,
-                "realized_target_sector": realized_target_sector,
+                "scripted_target_sector": final_scripted_target_sector,
+                "realized_target_sector": final_realized_target_sector,
+                "requested_cycle_count": requested_cycle_count,
+                "completed_cycle_count": len(observable_cycle_completions),
+                "cycle_completions": observable_cycle_completions,
                 "physical_effect_validated": False,
                 "detector": (
                     None
