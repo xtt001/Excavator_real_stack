@@ -1,8 +1,85 @@
 # SimVerify Expert-Habit Definition Audit Evidence — 2026-07-27
 
-## Current re-audit status
+## Current v11 re-audit status
 
-### Post-hoc correction
+```text
+/data/pingfan/Excavator_real_stack_data/
+  simverify_habit_cycle_definition_v11/
+
+code_commit=4ddd0c5ac3a41320d0e9a9b78b2e8ebef2f7313e
+decision=accept
+scenario_freeze_authorized=false
+training_authorized=false
+held_out_test_authorized=false
+held_out_observation_read_count=0
+```
+
+The existing boundary variables are now defined in place:
+
+- `dig_ready_reference_interval` is the first three-row entry envelope of a
+  train-fitted low-swing-speed work-area capture after observable return swing
+  activation;
+- `causal_confirm_step` is the first forward numeric candidate accepted by the
+  frozen eye+stick ready classifier;
+- `next_dig_entry_step` is the first row after that reference envelope for the
+  observable lifecycle contract, not physical contact truth.
+
+The ready candidate does not require action to enter the joystick deadzone.
+Action, qpos, qvel, and causal history remain observable evidence; nonzero slow
+approach is allowed. The train-fitted swing-speed boundary is
+`0.14331244179902017`; its source-episode bootstrap interval is
+`[0.130652131086118, 0.1610874022262318]`.
+
+Boundary result:
+
+| Check | Train | Validation |
+| --- | ---: | ---: |
+| ready references | 393 | 79 |
+| visual confirmations | 296 | 62 |
+| reference matches | 294 | 62 |
+| reference match rate | 74.81% | 78.48% |
+
+Validation match rate exceeds the train-derived Wilson lower threshold
+`70.29%`; validation Wilson lower is `68.21%`. The causal boundary Gate passes.
+
+Visual checks:
+
+| Check | Result |
+| --- | ---: |
+| ready sector eye-pair balanced accuracy | 100% |
+| ready vs dump eye+stick balanced accuracy | 100% |
+| right-ready vs dump eye+stick | 4/4, Wilson lower 51.01% |
+
+The right-ready check uses all observable ready references, including
+`left↔right` diagnostic transitions, solely for visual boundary calibration.
+Those nonadjacent transitions remain excluded from policy training, scenario
+generation, and primary evaluation.
+
+Natural train inventory is `stay=176`, `step_left=40`, `step_right=30`, and
+`nonadjacent_jump=16`; validation is `26/14/11/5`. The candidate set contains
+74 scenarios: 29 `repeat_same` and 45 `move_adjacent`, supported by 14 and 12
+train source episodes respectively. Condition support contains 296 matched
+entries, with 264 having at least one supported alternative.
+
+A physically isolated post-hoc comparison against embedded operator-entry
+timing was not used by the labeler or policy. Of 456 comparable references,
+349 occur no later than embedded entry, 424 are within two seconds, and the
+median lead is 26.5 source steps. In 107 cases the observable ready reference
+is later than embedded entry, mostly during overlapping return/dig joint
+motion. This prevents any claim that the boundary equals physical contact
+truth; it does not change the recorded-observation `accept` decision.
+
+```text
+audit_manifest_sha256=47bc98c1ff31ef20f518c0e0a6caa9032d622dd628ac46ae45111b4a03ef8e87
+checksums_sha256=5b9560eea9f8041dbad465ab00ddf2ca734cf51a73bcd903a3497b7c4a0f71cd
+checksum_verification=8/8 passed
+```
+
+`accept` authorizes only user review and freezing of the candidate scenarios.
+It does not authorize held-out access, claim physical dig-entry truth, train a
+planner, or claim simulator closed-loop success.
+
+## Historical v7 failure and post-hoc correction
 
 The `v7` result does **not** establish that the source demonstrations lack
 stop-to-ready behavior. A physically isolated diagnostic comparison against
@@ -46,7 +123,7 @@ first high-speed crossing of that sector. The existing train-fitted
 pre-dig capture and earlier short low-action visits. No parallel endpoint name
 or compatibility alias was added.
 
-Current immutable audit:
+v7 immutable audit:
 
 ```text
 /data/pingfan/Excavator_real_stack_data/
