@@ -161,7 +161,11 @@ def build_habit_runtime_ready_calibration(
         rel_tol=0.0,
         abs_tol=1.0e-12,
     ):
-        raise ValueError("exported runtime classifier does not reproduce v11")
+        raise ValueError(
+            "exported runtime classifier does not reproduce v11: "
+            f"observed={reproduction['validation']} "
+            f"expected_rate={expected_validation_rate}"
+        )
     expected_sector = audit["visual_audit"]["ready_sector_eye_pair"]
     if (
         validation_sector_metrics["accuracy"] != expected_sector["accuracy"]
