@@ -1,6 +1,8 @@
 # SimVerify Observable Ready-to-Ready Cycle Contract v2（审阅草案）
 
-状态：`draft_for_user_review`
+状态：`superseded_by_expert_habit_fixed_scenario_contract_v3_draft`
+
+替代文档：`docs/simverify_expert_habit_fixed_scenario_contract_v3_draft.md`
 
 证据范围：`definition_only_no_new_evidence`
 

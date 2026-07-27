@@ -70,6 +70,7 @@ tb-build-simverify-e04-camera = "testbed.cli.build_simverify_e04_camera:main"
 tb-build-simverify-m5-v3 = "testbed.cli.build_simverify_m5_v3:main"
 tb-build-simverify-m5-v4 = "testbed.cli.build_simverify_m5_v4:main"
 tb-build-simverify-condition-causal-v2 = "testbed.cli.build_simverify_condition_causal_v2:main"
+tb-build-simverify-habit-cycle-definition = "testbed.cli.build_simverify_habit_cycle_definition:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

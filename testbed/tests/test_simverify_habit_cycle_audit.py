@@ -1,0 +1,119 @@
+from __future__ import annotations
+
+import numpy as np
+
+from testbed.simverify.annotations import EpisodeSignals
+from testbed.simverify.habit_cycle_audit import (
+    _true_runs,
+    definition_decision,
+    enumerate_causal_candidates,
+    fit_causal_confirmation_dwell,
+)
+
+
+def _signals() -> dict[int, EpisodeSignals]:
+    qpos = np.zeros((20, 4), dtype=np.float32)
+    qpos[:, 0] = 0.60
+    qpos[3:5, 0] = 0.50
+    qpos[8:12, 0] = 0.50
+    episode = EpisodeSignals(
+        episode_id=3,
+        step_id=np.arange(20, dtype=np.int64),
+        qpos=qpos,
+        qvel=np.zeros((20, 4), dtype=np.float32),
+        action=np.zeros((20, 4), dtype=np.float32),
+        dt=0.02,
+    )
+    episode.validate()
+    return {3: episode}
+
+
+def _candidate() -> dict[str, object]:
+    return {
+        "episode_id": 3,
+        "cycle_id": 0,
+        "split": "train",
+        "relative_intent": "stay",
+        "hindsight_expert_target_sector": "left",
+        "dump_end_step": 1,
+        "next_dig_entry_step": 12,
+        "dig_ready_reference_interval": [8, 12],
+        "numeric_causal_candidate_steps": [],
+        "causal_confirm_step": None,
+        "causal_confirmed": False,
+        "causal_confirm_matches_reference": False,
+        "reason_codes": [],
+    }
+
+
+def _sector_thresholds() -> dict[str, object]:
+    return {
+        "boundaries_low_to_high": [0.52, 0.57],
+        "cluster_centers_low_to_high": [0.49, 0.545, 0.595],
+        "labels_low_to_high": ["left", "center", "right"],
+        "boundary_review_margin": 0.0,
+    }
+
+
+def test_true_runs_are_half_open_and_forward_only() -> None:
+    mask = np.asarray([False, True, True, False, True, True, True, False])
+    assert _true_runs(mask, start=2, end=7) == [(2, 3), (4, 7)]
+
+
+def test_train_dwell_rejects_short_earlier_target_pass() -> None:
+    signals = _signals()
+    contract = fit_causal_confirmation_dwell(
+        [_candidate()],
+        signals=signals,
+        sector_thresholds=_sector_thresholds(),
+        dump_swing_threshold=0.63,
+    )
+    assert contract["selected_dwell_steps"] == 3
+    rows = enumerate_causal_candidates(
+        [_candidate()],
+        dwell_steps=3,
+        signals=signals,
+        sector_thresholds=_sector_thresholds(),
+        dump_swing_threshold=0.63,
+    )
+    assert rows[0]["numeric_causal_candidate_steps"] == [10]
+    assert rows[0]["causal_confirmed"] is False
+
+
+def test_definition_decision_prioritizes_boundary_failure() -> None:
+    decision = definition_decision(
+        transition_inventory={
+            "splits": {
+                "train": {
+                    "source_episode_support": {
+                        "stay": 3,
+                        "step_left": 2,
+                        "step_right": 2,
+                    },
+                    "habit_stability": {
+                        "stay": {"controller_epochs": ["a", "b"]},
+                        "adjacent": {"controller_epochs": ["a", "b"]},
+                    },
+                },
+                "validation": {
+                    "source_episode_support": {
+                        "stay": 1,
+                        "step_left": 1,
+                        "step_right": 1,
+                    }
+                },
+            }
+        },
+        boundary_audit={
+            "causal_confirmation_passed": False,
+            "visual_boundary_passed": True,
+        },
+        condition_support={
+            "counts": {
+                "validation_entry_with_supported_alternative": 1,
+            }
+        },
+    )
+    assert decision["decision"] == "revise_boundary"
+    assert decision["training_authorized"] is False
+
