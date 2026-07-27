@@ -49,7 +49,7 @@ DEFAULT_SOURCE_ROOT = Path(
 )
 DEFAULT_OUTPUT_ROOT = Path(
     "/data/pingfan/Excavator_real_stack_data/"
-    "simverify_habit_cycle_definition_v2"
+    "simverify_habit_cycle_definition_v3"
 )
 DEFAULT_RESNET18_WEIGHTS = Path(
     "/home/pingfan/.cache/torch/hub/checkpoints/resnet18-f37072fd.pth"
@@ -1648,6 +1648,7 @@ def build_dig_ready_boundary_audit(
             counts[f"{row['split']}_reference_match_count"] += 1
         for reason in row["reason_codes"]:
             counts[f"reason:{reason}"] += 1
+            counts[f"{row['split']}:reason:{reason}"] += 1
     train_reference_n = counts["train_reference_count"]
     train_matches = counts["train_reference_match_count"]
     validation_n = counts["validation_reference_count"]
@@ -1702,7 +1703,10 @@ def build_dig_ready_boundary_audit(
         "causal_confirmation_passed": (
             validation_n > 0
             and validation_match_rate >= train_match_lower
-            and counts["reason:causal_visual_confirmation_precedes_reference_ready"]
+            and counts[
+                "validation:reason:"
+                "causal_visual_confirmation_precedes_reference_ready"
+            ]
             == 0
         ),
         "visual_audit": visual_audit,

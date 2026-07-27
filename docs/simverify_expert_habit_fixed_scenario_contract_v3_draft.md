@@ -76,8 +76,8 @@ physical_effect_validated
    dwell，保留更早的目标区穿越交给下一层视觉证据拒绝。
 4. 冻结 eye+stick ResNet-18 特征用 train 的 ready reference、dump 和错误前向候选校准；
    runtime 取第一个被判为 ready 的前向候选。
-5. validation 检查过早确认、漏确认、sector 可分性、ready/dump 可分性，单独检查 right
-   dig-ready 与固定卸料 corridor。
+5. train 的拟合误差保留为 review inventory；validation 才用于检查过早确认、漏确认、
+   sector 可分性、ready/dump 可分性，并单独检查 right dig-ready 与固定卸料 corridor。
 
 二分类 ready/dump Gate 使用数学 chance null `0.5` 和 validation Wilson lower bound。
 shuffled label 在完全可分的二簇上会因标签整体翻转产生 `p95=1.0`，因此只保留为诊断，
