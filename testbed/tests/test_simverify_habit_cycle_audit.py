@@ -17,7 +17,7 @@ def _signals() -> dict[int, EpisodeSignals]:
     qpos = np.zeros((20, 4), dtype=np.float32)
     qpos[:, 0] = 0.60
     qpos[3:7, 0] = 0.50
-    qpos[8:12, 0] = 0.50
+    qpos[8:13, 0] = 0.50
     action = np.zeros((20, 4), dtype=np.float32)
     action[3:5, 0] = -1.0
     episode = EpisodeSignals(

@@ -577,15 +577,10 @@ def build_transition_candidates(
                 else:
                     # A ready capture can continue while the other joints
                     # begin the next dig.  The reference is therefore the
-                    # causal entry envelope of the longest low-swing-speed
-                    # target-sector run, not its possibly much later end.
-                    selected = max(
-                        runs,
-                        key=lambda run: (
-                            int(run[1]) - int(run[0]),
-                            -int(run[0]),
-                        ),
-                    )
+                    # first causal entry into a sustained low-swing-speed
+                    # target-sector envelope.  Selecting the longest run
+                    # would move the boundary into the following dig.
+                    selected = runs[0]
                     interval = [
                         int(selected[0]),
                         int(selected[0]) + int(ready_envelope_steps),
