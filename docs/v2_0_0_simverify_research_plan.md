@@ -11,8 +11,8 @@
 | 基线提交 | `a8c9eef0c86d80e96bff1d0649c07e76ceaedfed` |
 | 仿真数据提供方 | `PACT/excavator_testbed` |
 | 评测方式 | 真实部署代码路径上的 recorded-observation 离线 replay |
-| 当前允许工作 | 数据契约、标注契约、离线评测设计、模型输入设计、文档评审 |
-| 当前禁止工作 | 新增仿真 backend、运行仿真闭环、真机控制、正式训练、默认配置变更 |
+| 当前允许工作 | 数据契约、标注契约、离线评测设计、模型输入设计、文档评审、用户批准的本机 bounded AGX diagnostic probe |
+| 当前禁止工作 | 新增生产仿真 backend、把 bounded probe 当作正式闭环 Gate、真机控制、默认配置变更 |
 
 本文是 conditioned-cycle 策略的唯一设计源。仿真仓库只负责产生数据和独立 oracle
 审计，不再拥有策略训练、checkpoint、离线评测或部署语义。
@@ -105,6 +105,11 @@ Real stack 不得：
 - 假设 PACT camera、qpos 或 action 语义天然等同于真机。
 
 跨仓库只允许通过有版本、哈希和 schema 的不可变数据包交换。
+
+唯一例外是第 18 节定义的、用户于 2026-07-27 明确批准的本机 bounded AGX
+diagnostic probe。该 probe 必须在独立子进程中使用现有 PACT/Unity，只允许修改
+Real Stack 当前 SimVerify 分支，不得修改或隐式发布外部仓库，也不得成为训练、主离线
+评测、真机 runtime 或部署依赖。
 
 ## 3. 策略任务定义
 
@@ -959,6 +964,9 @@ Conditioned-cycle policy、训练、checkpoint 和部署语义只在
 
 Real stack 的训练和主评测不得 import、启动或连接 simulator backend。
 
+第 18 节的 diagnostic-only probe 是显式、可删除的实验例外，不属于训练和主评测，
+不得注册为生产 backend，不改变本条对部署代码的约束。
+
 ### HR-03：Recorded-Observation Only
 
 主评测只消费已记录 observation。不得伪造 policy action 之后的 qpos、图像或土体状态。
@@ -1195,3 +1203,75 @@ decision.json
 - `gate_thresholds_v1.json` 及其输入 manifest、计算方法和 SHA。
 
 这些产物冻结前不启动正式训练；它们完成后进入 M1 导入 smoke，而不是直接进入 M3。
+
+## 18. 用户批准的 bounded AGX diagnostic probe
+
+### 18.1 目的与证据边界
+
+该 probe 只回答：
+
+> Real Stack 冻结的 checkpoint、四相机 transform、condition、20 Hz temporal
+> aggregation 和 action 输出能否通过现有 step-ack 协议形成真实的
+> action→next-observation 仿真反馈链？
+
+输出必须标记：
+
+```text
+evidence_scope=sim_closed_loop_diagnostic_non_promotable
+task_success_claimed=false
+real_control_candidate=false
+```
+
+单次 bounded probe 不能证明一铲或两铲成功，不能改变 M5 的决策枚举，也不能把 sim
+checkpoint 迁移到真机。
+
+### 18.2 仓库与运行边界
+
+- 只允许在 `Excavator_real_stack` 当前 SimVerify 分支新增 probe、测试和文档；
+- `/home/pingfan/PACT/excavator_testbed` 与
+  `/home/pingfan/AGXUnityE85ExcavatorSim` 保持只读；
+- PACT AGX backend 必须在隔离子进程中运行，避免两个仓库的同名 Python package
+  进入同一解释器；
+- 外部仓库的 Git SHA、branch、dirty 状态、status SHA 和 working-diff SHA 必须进入
+  run manifest；
+- dirty 外部工作树只能在显式 `--allow-dirty-external` 下产生
+  `non_promotable` 诊断，不得作为正式 Gate 证据。
+
+### 18.3 可观察输入与时间契约
+
+policy 只可读取：
+
+- `eye_left→video4`、`eye_right→video5`、
+  `stick_down→video6`、`stick_up→video7`；
+- source-domain `qpos`、`qvel`；
+- B1.4/B2.4 所需的 `cycle_condition_v1`。
+
+`env_state`、bucket mass、terrain grid、精确铲尖和 planner 私有状态不得进入 policy
+进程。第一版 bounded probe 不读取或保存这些 privilege。
+
+Unity 当前 `STEP_RESP.sim_time_ns` 来自 Unity frame clock，不是手动 AGX step clock。
+因此冻结：
+
+```text
+authoritative_time = applied_step_index * GET_INFO.dt
+policy_hz = 20
+sim_time_ns = diagnostic_only
+```
+
+20 Hz policy tick 选择第一个不早于目标时刻的 AGX source step，因此 50 Hz 下的 source
+step 序列为 `0, 3, 5, 8, 10, ...`。同一 policy action 在相邻 policy tick 之间保持。
+
+### 18.4 产物
+
+每次 run 至少保存：
+
+- `run_manifest.json`；
+- `policy_ticks.jsonl`，包含 raw normalized chunk、raw direct chunk、
+  temporal aggregation action、future runtime-safe action 与实际发送 action；
+- `steps.jsonl`，包含 step id、权威 source time、Unity 时间诊断、qpos/qvel 和发送动作；
+- policy tick 对应的四路源 JPEG，可通过参数显式关闭；
+- `checksums.sha256`。
+
+probe 必须使用完成状态的 B0、B1.4 或 B2.4 bundle，并验证
+`real_control_allowed=false`、`jetson_allowed=false`。正式 condition 因果结论仍要求
+同 seed/同 reset 下的 B1.4/B2.4 配对矩阵，而不是单条 probe。
