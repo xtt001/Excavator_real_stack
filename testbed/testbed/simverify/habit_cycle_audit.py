@@ -49,7 +49,7 @@ DEFAULT_SOURCE_ROOT = Path(
 )
 DEFAULT_OUTPUT_ROOT = Path(
     "/data/pingfan/Excavator_real_stack_data/"
-    "simverify_habit_cycle_definition_v4"
+    "simverify_habit_cycle_definition_v5"
 )
 DEFAULT_RESNET18_WEIGHTS = Path(
     "/home/pingfan/.cache/torch/hub/checkpoints/resnet18-f37072fd.pth"
@@ -194,6 +194,14 @@ def run_habit_cycle_definition_audit(
         null_samples=int(null_samples),
         seed=int(bootstrap_seed) + 2,
     )
+    resolved_by_key = {
+        (int(row["episode_id"]), int(row["cycle_id"])): row
+        for row in candidates
+        if row["causal_confirm_matches_reference"]
+    }
+    for row in candidates:
+        if row["causal_confirm_matches_reference"]:
+            _full_cycle_source_range(row, resolved_by_key)
     observation_audit = build_observation_sufficiency_audit(
         candidates,
         signals=signals,
