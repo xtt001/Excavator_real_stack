@@ -854,6 +854,7 @@ def run_bounded_closed_loop_probe(
     condition_commit_policy_ticks: list[int] = []
     cycle_index = 0
     condition_reset_count = 0
+    condition_router_reset_count = 0
     condition_reset_policy_tick: int | None = None
     requested_cycle_count = 2 if lifecycle_enabled else 1
     observable_cycle_completions: list[dict[str, Any]] = []
@@ -970,11 +971,14 @@ def run_bounded_closed_loop_probe(
                         }
                     )
                     if lifecycle_enabled and cycle_index == 0:
-                        if not hasattr(policy, "reset_condition_cycle"):
-                            raise TypeError(
-                                "conditioned policy lacks reset_condition_cycle()"
-                            )
-                        policy.reset_condition_cycle()
+                        if route_before_predict is not None:
+                            if not hasattr(policy, "reset_condition_cycle"):
+                                raise TypeError(
+                                    "phase-routed policy lacks "
+                                    "reset_condition_cycle()"
+                                )
+                            policy.reset_condition_cycle()
+                            condition_router_reset_count += 1
                         if second_condition is None:
                             raise AssertionError("second condition was not built")
                         active_condition = (
@@ -1282,7 +1286,12 @@ def run_bounded_closed_loop_probe(
                 "reset_count": int(condition_reset_count),
                 "reset_policy_tick": condition_reset_policy_tick,
                 "full_policy_reset_count": 1,
-                "condition_router_reset_only": bool(lifecycle_enabled),
+                "condition_router_reset_only": bool(
+                    condition_router_reset_count
+                ),
+                "condition_router_reset_count": int(
+                    condition_router_reset_count
+                ),
                 "temporal_aggregation_reset_at_boundary": False,
                 "visual_history_reset_at_boundary": False,
                 "privilege_used": False,

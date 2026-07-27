@@ -163,6 +163,13 @@ class _FakePolicy:
         }
 
 
+class _FakeLowDimPolicy(_FakePolicy):
+    condition_route_diagnostics = None
+
+    def reset_condition_cycle(self) -> None:
+        raise AssertionError("low-dim condition has no internal router to reset")
+
+
 class _FakeReadyBoundaryDetector:
     provenance = {
         "schema": "fake_observable_ready_boundary_detector_v1",
@@ -546,6 +553,7 @@ def test_probe_resets_only_condition_router_at_observable_ready_boundary(
         build_cycle_condition("right", "center"),
     )
     assert result["condition_lifecycle_contract"]["reset_count"] == 1
+    assert result["condition_lifecycle_contract"]["condition_router_reset_count"] == 1
     assert result["condition_lifecycle_contract"]["reset_policy_tick"] == 1
     assert result["condition_lifecycle_contract"]["full_policy_reset_count"] == 1
     assert (
@@ -563,6 +571,44 @@ def test_probe_resets_only_condition_router_at_observable_ready_boundary(
     assert rows[1]["condition_router_reset_before_predict"] is True
     assert rows[1]["condition"] == [0.0, 0.0, 1.0, 0.0, 1.0, 0.0]
     assert rows[1]["ready_boundary"]["confirmed"] is True
+
+
+def test_probe_uses_external_lifecycle_for_low_dim_condition(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "low_dim_two_cycle_probe"
+    policy = _FakeLowDimPolicy()
+    result = run_bounded_closed_loop_probe(
+        policy=policy,
+        environment=_FakeEnvironment(),
+        output_root=output,
+        bundle_contract={
+            "baseline_id": "B1",
+            "condition_input": "cycle_condition_v1_dump_end_gated_low_dim",
+        },
+        current_git={"branch": "v2.0.0-simVerify", "dirty": False},
+        external_provenance={
+            "pact": {"git_sha": "pact", "dirty": True},
+            "unity": {"git_sha": "unity", "dirty": True},
+        },
+        current_sector="left",
+        next_sector="left",
+        second_next_sector="left",
+        ready_boundary_detector=_FakeReadyBoundaryDetector(confirm_at_tick=1),
+        condition_commit_detector=_FakeConditionCommitDetector(confirm_at_tick=0),
+        seed=7,
+        policy_ticks=3,
+        save_images=False,
+    )
+
+    lifecycle = result["condition_lifecycle_contract"]
+    assert lifecycle["reset_count"] == 1
+    assert lifecycle["condition_router_reset_only"] is False
+    assert lifecycle["condition_router_reset_count"] == 0
+    np.testing.assert_array_equal(
+        policy.observations[1]["cycle_condition_v1"],
+        np.zeros(6, dtype=np.float32),
+    )
 
 
 def test_probe_requires_both_observable_cycles_for_two_cycle_completion(
