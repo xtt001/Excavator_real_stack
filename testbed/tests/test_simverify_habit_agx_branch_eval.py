@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import numpy as np
 
-from testbed.simverify.habit_agx_branch_eval import compute_branch_effects
+from testbed.simverify.habit_agx_branch_eval import (
+    compute_branch_effects,
+    summarize_observable_completions,
+)
 
 
 def test_branch_effect_separates_condition_from_repeat_variability() -> None:
@@ -29,3 +32,32 @@ def test_branch_effect_separates_condition_from_repeat_variability() -> None:
         [10.0, 20.0, 30.0, 40.0],
     )
     assert result["treatment_exceeds_repeat_variability_all_axes"] is True
+
+
+def test_v11_observable_completion_requires_target_match_in_all_branches() -> None:
+    records = {
+        role: {
+            "target_sector": target,
+            "observable_cycle": {
+                "ready_detection_enabled": True,
+                "observable_cycle_completed": True,
+                "completion_policy_tick": 300,
+                "scripted_target_sector": target,
+                "realized_target_sector": target,
+                "physical_effect_validated": False,
+            },
+        }
+        for role, target in {
+            "reference": "left",
+            "repeat": "left",
+            "treatment": "center",
+        }.items()
+    }
+    result = summarize_observable_completions(records)
+    assert result["all_branches_completed"] is True
+    assert result["physical_effect_validated"] is False
+
+    records["treatment"]["observable_cycle"]["realized_target_sector"] = "left"
+    failed = summarize_observable_completions(records)
+    assert failed["all_branches_completed"] is False
+    assert failed["branches"]["treatment"]["status"] == "not_completed"

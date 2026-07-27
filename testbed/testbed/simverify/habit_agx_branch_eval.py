@@ -118,14 +118,17 @@ def build_habit_agx_branch_diagnostic(
         takeover_tick=takeover_tick,
     )
     terminal = {
-        role: _terminal_diagnostic(
-            record,
-            target_sector=str(record["target_sector"]),
-            boundaries=sector["boundaries_low_to_high"],
-            review_margin=float(sector["boundary_review_margin"]),
-            action_deadzone=deadzone,
-            window=int(terminal_window_policy_ticks),
-        )
+        role: {
+            **_terminal_diagnostic(
+                record,
+                target_sector=str(record["target_sector"]),
+                boundaries=sector["boundaries_low_to_high"],
+                review_margin=float(sector["boundary_review_margin"]),
+                action_deadzone=deadzone,
+                window=int(terminal_window_policy_ticks),
+            ),
+            "v11_observable_cycle": record["observable_cycle"],
+        }
         for role, record in records.items()
     }
     signal_detected = bool(
@@ -137,6 +140,7 @@ def build_habit_agx_branch_diagnostic(
         and terminal["repeat"]["numeric_endpoint_held"]
         and terminal["treatment"]["numeric_endpoint_held"]
     )
+    observable_completion = summarize_observable_completions(records)
     result = {
         "schema": BRANCH_EVAL_SCHEMA,
         "status": "completed_paired_branch_diagnostic",
@@ -156,30 +160,38 @@ def build_habit_agx_branch_diagnostic(
             "action": action_effects,
             "condition_changes_rollout_above_repeat_variability": signal_detected,
             "interpretation": (
-                "condition_signal_detected_but_not_converted_to_target_endpoint"
-                if signal_detected and not endpoint_success
-                else "condition_signal_and_numeric_endpoint_observed"
+                "condition_signal_and_v11_observable_endpoint_observed"
+                if signal_detected and observable_completion["all_branches_completed"]
+                else "condition_signal_detected_but_not_converted_to_target_endpoint"
                 if signal_detected
+                else "numeric_endpoint_observed_without_separated_condition_signal"
+                if endpoint_success
                 else "condition_response_not_separated_from_repeat_variability"
             ),
         },
         "terminal_execution": terminal,
         "numeric_endpoint_success_all_branches": endpoint_success,
-        "observable_cycle_completed": False,
+        "observable_cycle_completed": observable_completion[
+            "all_branches_completed"
+        ],
+        "observable_cycle_completion": observable_completion,
         "observable_cycle_completed_reason": (
-            "visual_dig_ready_confirmation_not_run_and_numeric_endpoint_not_held"
-            if not endpoint_success
-            else "visual_dig_ready_confirmation_not_run"
+            "accepted_v11_ready_confirmed_in_all_paired_branches"
+            if observable_completion["all_branches_completed"]
+            else "accepted_v11_ready_not_confirmed_in_all_paired_branches"
         ),
         "physical_effect_validated": False,
         "interpretation_lock": {
             "can_state": [
                 "shared_prefix_reached_one_causal_dump_end_branch_state",
                 "condition_changed_post_commit_actions_and_observations",
-                "numeric_target_endpoint_hold_was_not_achieved",
+                *(
+                    ["accepted_v11_observable_target_ready_completed"]
+                    if observable_completion["all_branches_completed"]
+                    else ["accepted_v11_observable_target_ready_not_completed"]
+                ),
             ],
             "cannot_state": [
-                "observable_cycle_success",
                 "physical_excavation_success",
                 "held_out_generalization",
                 "real_machine_transfer",
@@ -226,6 +238,52 @@ def build_habit_agx_branch_diagnostic(
     return result
 
 
+def summarize_observable_completions(
+    records: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Summarize v11 endpoint evidence without promoting physical success."""
+
+    if set(records) != {"reference", "repeat", "treatment"}:
+        raise ValueError("observable branch roles must be reference/repeat/treatment")
+    branches: dict[str, Any] = {}
+    for role, record in records.items():
+        contract = record.get("observable_cycle")
+        if not isinstance(contract, Mapping):
+            branches[role] = {
+                "status": "not_run",
+                "observable_cycle_completed": False,
+                "scripted_target_sector": record.get("target_sector"),
+                "realized_target_sector": None,
+                "completion_policy_tick": None,
+            }
+            continue
+        scripted = str(contract.get("scripted_target_sector", ""))
+        realized = contract.get("realized_target_sector")
+        completed = bool(
+            contract.get("ready_detection_enabled") is True
+            and contract.get("observable_cycle_completed") is True
+            and scripted
+            and realized == scripted
+            and contract.get("physical_effect_validated") is False
+        )
+        branches[role] = {
+            "status": "completed" if completed else "not_completed",
+            "observable_cycle_completed": completed,
+            "scripted_target_sector": scripted or record.get("target_sector"),
+            "realized_target_sector": realized,
+            "completion_policy_tick": contract.get("completion_policy_tick"),
+        }
+    return {
+        "schema": "simverify_habit_agx_branch_observable_completion_v1",
+        "detector_contract": "accepted_v11_runtime_ready",
+        "branches": branches,
+        "all_branches_completed": all(
+            bool(row["observable_cycle_completed"]) for row in branches.values()
+        ),
+        "physical_effect_validated": False,
+    }
+
+
 def _load_run(root_value: str | Path) -> dict[str, Any]:
     root = Path(root_value).resolve(strict=True)
     verification = verify_checksums(root, root / "checksums.sha256")
@@ -268,6 +326,7 @@ def _load_run(root_value: str | Path) -> dict[str, Any]:
         "current_sector": str(intervention["current_sector"]),
         "target_sector": str(intervention["next_sector"]),
         "seed": int(intervention["seed"]),
+        "observable_cycle": manifest.get("observable_cycle_contract"),
         "identity": {
             "root": str(root),
             "run_manifest_sha256": sha256_file(manifest_path),
