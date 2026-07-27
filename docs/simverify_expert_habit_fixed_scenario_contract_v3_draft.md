@@ -1,6 +1,6 @@
 # SimVerify Expert-Habit Fixed Scenario Contract v3（审阅草案）
 
-状态：`definition_audit_implementation_ready`
+状态：`definition_audit_accept_user_scenario_review_required`
 
 证据范围：`recorded-observation/offline_definition_audit`
 
