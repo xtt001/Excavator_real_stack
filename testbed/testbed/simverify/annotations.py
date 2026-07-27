@@ -18,6 +18,7 @@ ANNOTATION_SCHEMA = "observable_cycle_annotation_v2"
 ANNOTATION_THRESHOLDS_SCHEMA = "observable_annotation_thresholds_v2"
 SECTORS = ("left", "center", "right")
 SECTOR_TO_INDEX = {name: index for index, name in enumerate(SECTORS)}
+READY_SPEED_FIT_SAMPLES_PER_EPISODE = 512
 
 
 @dataclass(frozen=True)
@@ -126,6 +127,19 @@ def fit_1d_kmeans(
     return centers
 
 
+def _uniform_sample(values: np.ndarray, *, maximum: int) -> np.ndarray:
+    samples = np.asarray(values, dtype=np.float64).reshape(-1)
+    if samples.size <= int(maximum):
+        return samples
+    indices = np.linspace(
+        0,
+        samples.size - 1,
+        int(maximum),
+        dtype=np.int64,
+    )
+    return samples[indices]
+
+
 def _release_runs(
     episode: EpisodeSignals,
     *,
@@ -206,6 +220,27 @@ def fit_numeric_annotation_thresholds(
     release_values = np.concatenate(release_swing)
     dump_centers = fit_1d_kmeans(release_values, clusters=2)
     dump_threshold = float(np.mean(dump_centers))
+    work_swing_speeds = np.concatenate(
+        [
+            _uniform_sample(
+                np.abs(
+                    np.asarray(
+                        episode.qvel[
+                            episode.qpos[:, 0] < dump_threshold,
+                            0,
+                        ],
+                        dtype=np.float64,
+                    )
+                ),
+                maximum=READY_SPEED_FIT_SAMPLES_PER_EPISODE,
+            )
+            for episode in episodes
+        ]
+    )
+    ready_speed_centers = fit_1d_kmeans(work_swing_speeds, clusters=3)
+    ready_speed_threshold = float(
+        np.mean(ready_speed_centers[:2])
+    )
     return {
         "schema": ANNOTATION_THRESHOLDS_SCHEMA,
         "fit_scope": "train_only_numeric_observations",
@@ -222,9 +257,14 @@ def fit_numeric_annotation_thresholds(
         },
         "ready": {
             "activity": "abs_swing_qvel_plus_abs_swing_action",
-            "candidate_action": "abs_swing_action_lte_action_deadzone",
-            "minimum_envelope_steps": 1,
-            "search_end": "first_sustained_positive_bucket_or_low_swing_run_end",
+            "candidate": "abs_swing_qvel_lte_train_low_speed_cluster_boundary",
+            "swing_speed_cluster_centers": ready_speed_centers.tolist(),
+            "swing_speed_threshold": ready_speed_threshold,
+            "swing_speed_fit_sampling": (
+                "episode_balanced_uniform_max_512_rows_per_episode"
+            ),
+            "minimum_envelope_steps": 3,
+            "search_end": "next_observable_dump_start",
             "local_basin_rule": (
                 "contiguous_run_containing_local_activity_minimum_below_"
                 "midpoint_of_local_minimum_and_local_median"
@@ -248,6 +288,8 @@ def bootstrap_numeric_thresholds(
     rng = np.random.default_rng(int(seed))
     dump_thresholds: list[float] = []
     dump_centers: list[list[float]] = []
+    ready_speed_thresholds: list[float] = []
+    ready_speed_centers: list[list[float]] = []
     failures = 0
     for _ in range(int(samples)):
         draw = [
@@ -263,9 +305,14 @@ def bootstrap_numeric_thresholds(
             failures += 1
             continue
         release = fitted["dump_release"]
+        ready = fitted["ready"]
         dump_thresholds.append(float(release["swing_threshold"]))
         dump_centers.append(
             list(map(float, release["swing_cluster_centers"]))
+        )
+        ready_speed_thresholds.append(float(ready["swing_speed_threshold"]))
+        ready_speed_centers.append(
+            list(map(float, ready["swing_speed_cluster_centers"]))
         )
     if not dump_thresholds:
         raise ValueError("all numeric-threshold bootstrap samples failed")
@@ -280,6 +327,10 @@ def bootstrap_numeric_thresholds(
         }
 
     center_array = np.asarray(dump_centers, dtype=np.float64)
+    ready_center_array = np.asarray(
+        ready_speed_centers,
+        dtype=np.float64,
+    )
     return {
         "unit": "source_episode",
         "seed": int(seed),
@@ -293,6 +344,17 @@ def bootstrap_numeric_thresholds(
             "std": np.std(center_array, axis=0).tolist(),
         },
         "dump_swing_threshold": summary(dump_thresholds),
+        "ready_swing_speed_cluster_centers": {
+            "median": np.median(ready_center_array, axis=0).tolist(),
+            "p02_5": np.quantile(
+                ready_center_array, 0.025, axis=0
+            ).tolist(),
+            "p97_5": np.quantile(
+                ready_center_array, 0.975, axis=0
+            ).tolist(),
+            "std": np.std(ready_center_array, axis=0).tolist(),
+        },
+        "ready_swing_speed_threshold": summary(ready_speed_thresholds),
         "release_pulse_merge_rule": (
             "structural_observable_swing_cluster_exit_no_gap_threshold"
         ),

@@ -6,6 +6,7 @@ from testbed.simverify.annotations import EpisodeSignals
 from testbed.simverify.habit_cycle_audit import (
     _full_cycle_source_range,
     _true_runs,
+    build_transition_candidates,
     definition_decision,
     enumerate_causal_candidates,
     fit_causal_confirmation_dwell,
@@ -70,19 +71,66 @@ def test_numeric_candidate_stage_preserves_ready_recall_for_visual_gate() -> Non
         signals=signals,
         sector_thresholds=_sector_thresholds(),
         dump_swing_threshold=0.63,
-        action_deadzone=0.05,
+        swing_speed_threshold=0.05,
     )
-    assert contract["selected_dwell_steps"] == 3
+    assert contract["selected_dwell_steps"] == 1
     rows = enumerate_causal_candidates(
         [_candidate()],
         dwell_steps=int(contract["selected_dwell_steps"]),
         signals=signals,
         sector_thresholds=_sector_thresholds(),
         dump_swing_threshold=0.63,
-        action_deadzone=0.05,
+        swing_speed_threshold=0.05,
     )
-    assert rows[0]["numeric_causal_candidate_steps"] == [10]
+    assert rows[0]["numeric_causal_candidate_steps"] == [3, 8]
     assert rows[0]["causal_confirmed"] is False
+
+
+def test_ready_reference_uses_low_speed_envelope_not_action_deadzone() -> None:
+    cycles = {
+        3: [
+            {
+                "cycle_id": 0,
+                "numeric_sector_evidence": {
+                    "current_swing_qpos": 0.50,
+                    "next_swing_qpos": 0.50,
+                },
+                "observable_events": {
+                    "dump_end_proxy": {"representative_step": 1},
+                },
+                "sector_observations": {
+                    "next": {"representative_step": 2},
+                },
+            },
+            {
+                "cycle_id": 1,
+                "numeric_sector_evidence": {
+                    "current_swing_qpos": 0.50,
+                    "next_swing_qpos": 0.50,
+                },
+                "observable_events": {
+                    "dump_start_proxy": {"representative_step": 15},
+                    "dump_end_proxy": {"representative_step": 18},
+                },
+                "sector_observations": {
+                    "next": {"representative_step": 19},
+                },
+            },
+        ]
+    }
+    rows = build_transition_candidates(
+        cycles,
+        signals=_signals(),
+        metadata={3: {"controller_epoch": "epoch_a"}},
+        split={"splits": {"train": [3]}},
+        sector_thresholds=_sector_thresholds(),
+        dump_swing_threshold=0.63,
+        swing_speed_threshold=0.05,
+        ready_envelope_steps=3,
+    )
+    assert rows[0]["dig_ready_reference_interval"] == [3, 6]
+    assert rows[0]["next_dig_entry_step"] == 6
+    assert rows[0]["outcome"]["source"] == "observable_ready_capture"
 
 
 def test_definition_decision_prioritizes_boundary_failure() -> None:

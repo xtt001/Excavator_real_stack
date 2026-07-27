@@ -154,7 +154,12 @@ def run_habit_cycle_definition_audit(
         dump_swing_threshold=float(
             numeric_thresholds["dump_release"]["swing_threshold"]
         ),
-        action_deadzone=float(numeric_thresholds["action_deadzone"]),
+        swing_speed_threshold=float(
+            numeric_thresholds["ready"]["swing_speed_threshold"]
+        ),
+        ready_envelope_steps=int(
+            numeric_thresholds["ready"]["minimum_envelope_steps"]
+        ),
     )
     dwell_contract = fit_causal_confirmation_dwell(
         raw_candidates,
@@ -163,7 +168,9 @@ def run_habit_cycle_definition_audit(
         dump_swing_threshold=float(
             numeric_thresholds["dump_release"]["swing_threshold"]
         ),
-        action_deadzone=float(numeric_thresholds["action_deadzone"]),
+        swing_speed_threshold=float(
+            numeric_thresholds["ready"]["swing_speed_threshold"]
+        ),
     )
     candidates = enumerate_causal_candidates(
         raw_candidates,
@@ -173,7 +180,9 @@ def run_habit_cycle_definition_audit(
         dump_swing_threshold=float(
             numeric_thresholds["dump_release"]["swing_threshold"]
         ),
-        action_deadzone=float(numeric_thresholds["action_deadzone"]),
+        swing_speed_threshold=float(
+            numeric_thresholds["ready"]["swing_speed_threshold"]
+        ),
     )
 
     if extractor is None:
@@ -478,12 +487,14 @@ def build_transition_candidates(
     split: Mapping[str, Any],
     sector_thresholds: Mapping[str, Any],
     dump_swing_threshold: float,
-    action_deadzone: float,
+    swing_speed_threshold: float,
+    ready_envelope_steps: int,
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     for episode_id in sorted(cycles):
         episode = signals[episode_id]
-        for cycle in cycles[episode_id]:
+        episode_cycles = cycles[episode_id]
+        for cycle_index, cycle in enumerate(episode_cycles):
             reasons: list[str] = []
             current_value = cycle["numeric_sector_evidence"].get(
                 "current_swing_qpos"
@@ -511,6 +522,18 @@ def build_transition_candidates(
                 reasons.append("dump_end_not_identifiable")
             if next_observation is None:
                 reasons.append("next_dig_entry_not_identifiable")
+            next_cycle = (
+                episode_cycles[cycle_index + 1]
+                if cycle_index + 1 < len(episode_cycles)
+                else None
+            )
+            next_dump_event = (
+                None
+                if next_cycle is None
+                else next_cycle["observable_events"].get("dump_start_proxy")
+            )
+            if next_dump_event is None:
+                reasons.append("next_dump_start_not_identifiable")
             intent = (
                 None
                 if current is None or target is None
@@ -521,18 +544,14 @@ def build_transition_candidates(
                 if dump_event is None
                 else int(dump_event["representative_step"])
             )
-            next_dig_step = (
-                None
-                if next_observation is None
-                else int(next_observation["representative_step"])
-            )
+            next_dig_step: int | None = None
             interval: list[int] | None = None
             if (
                 not reasons
                 and dump_step is not None
-                and next_dig_step is not None
-                and next_dig_step > dump_step + 1
+                and next_dump_event is not None
             ):
+                search_end = int(next_dump_event["representative_step"])
                 target_sector = _target_work_sector_mask(
                     episode.qpos[:, 0],
                     target=str(target),
@@ -540,26 +559,40 @@ def build_transition_candidates(
                     dump_swing_threshold=float(dump_swing_threshold),
                 )
                 ready_candidate = target_sector & (
-                    np.abs(np.asarray(episode.action[:, 0], dtype=np.float64))
-                    <= float(action_deadzone)
+                    np.abs(np.asarray(episode.qvel[:, 0], dtype=np.float64))
+                    <= float(swing_speed_threshold)
                 )
                 runs = _true_runs(
                     ready_candidate,
                     start=int(dump_step) + 1,
-                    end=int(next_dig_step),
+                    end=search_end,
                 )
+                runs = [
+                    run
+                    for run in runs
+                    if run[1] - run[0] >= int(ready_envelope_steps)
+                ]
                 if not runs:
                     reasons.append("dig_ready_reference_not_identifiable")
                 else:
-                    # The hindsight reference is the final observable target
-                    # capture before the next dig begins.  Earlier low-action
-                    # target-sector runs remain hard negatives for fitting the
-                    # existing causal dwell, rather than becoming alternate
-                    # definitions of the same boundary.
-                    selected = runs[-1]
-                    interval = [int(selected[0]), int(selected[1])]
+                    # A ready capture can continue while the other joints
+                    # begin the next dig.  The reference is therefore the
+                    # causal entry envelope of the longest low-swing-speed
+                    # target-sector run, not its possibly much later end.
+                    selected = max(
+                        runs,
+                        key=lambda run: (
+                            int(run[1]) - int(run[0]),
+                            -int(run[0]),
+                        ),
+                    )
+                    interval = [
+                        int(selected[0]),
+                        int(selected[0]) + int(ready_envelope_steps),
+                    ]
+                    next_dig_step = int(interval[1])
             elif not reasons:
-                reasons.append("invalid_dump_to_next_dig_order")
+                reasons.append("invalid_dump_to_next_ready_search_order")
             records.append(
                 {
                     "schema": "habit_transition_candidate_v1",
@@ -597,7 +630,7 @@ def build_transition_candidates(
                     },
                     "outcome": {
                         "hindsight_expert_target_sector": target,
-                        "source": "observable_numeric_next_dig_entry",
+                        "source": "observable_ready_capture",
                     },
                 }
             )
@@ -610,7 +643,7 @@ def fit_causal_confirmation_dwell(
     signals: Mapping[int, EpisodeSignals],
     sector_thresholds: Mapping[str, Any],
     dump_swing_threshold: float,
-    action_deadzone: float,
+    swing_speed_threshold: float,
 ) -> dict[str, Any]:
     """Fit the shortest dwell with the best train run discrimination.
 
@@ -636,8 +669,8 @@ def fit_causal_confirmation_dwell(
             sector_thresholds=sector_thresholds,
             dump_swing_threshold=float(dump_swing_threshold),
         ) & (
-            np.abs(np.asarray(episode.action[:, 0], dtype=np.float64))
-            <= float(action_deadzone)
+            np.abs(np.asarray(episode.qvel[:, 0], dtype=np.float64))
+            <= float(swing_speed_threshold)
         )
         start = int(row["dump_end_step"]) + 1
         end = int(row["next_dig_entry_step"])
@@ -670,15 +703,16 @@ def fit_causal_confirmation_dwell(
                 / 2.0,
             }
         )
-    best = max(row["balanced_accuracy"] for row in scored)
+    best = max(row["true_positive_rate"] for row in scored)
     selected = next(
-        row for row in scored if math.isclose(row["balanced_accuracy"], best)
+        row for row in scored if math.isclose(row["true_positive_rate"], best)
     )
     return {
         "schema": "habit_causal_dwell_contract_v1",
         "selection_rule": (
-            "smallest_train_dwell_maximizing_balanced_accuracy_between_final_"
-            "reference_ready_run_and_earlier_low_action_target_sector_runs"
+            "smallest_train_dwell_maximizing_reference_ready_candidate_recall;"
+            "earlier_low_speed_target_sector_runs_are_rejected_by_the_"
+            "separate_visual_confirmation_stage"
         ),
         "selected_dwell_steps": int(selected["dwell_steps"]),
         "selected_operating_point": selected,
@@ -695,7 +729,7 @@ def enumerate_causal_candidates(
     signals: Mapping[int, EpisodeSignals],
     sector_thresholds: Mapping[str, Any],
     dump_swing_threshold: float,
-    action_deadzone: float,
+    swing_speed_threshold: float,
 ) -> list[dict[str, Any]]:
     """Enumerate runtime-safe candidate confirmation rows in forward order."""
 
@@ -714,8 +748,8 @@ def enumerate_causal_candidates(
                 sector_thresholds=sector_thresholds,
                 dump_swing_threshold=float(dump_swing_threshold),
             ) & (
-                np.abs(np.asarray(episode.action[:, 0], dtype=np.float64))
-                <= float(action_deadzone)
+                np.abs(np.asarray(episode.qvel[:, 0], dtype=np.float64))
+                <= float(swing_speed_threshold)
             )
             candidate_steps = [
                 run_start + int(dwell_steps) - 1
@@ -1717,7 +1751,8 @@ def build_dig_ready_boundary_audit(
         "boundary_semantics": {
             "candidate_enter": (
                 "first row of a contiguous target-work-sector run whose "
-                "absolute swing action is within the frozen action deadzone"
+                "absolute swing speed is within the train-fitted low-speed "
+                "cluster"
             ),
             "causal_confirm": (
                 "candidate_enter plus train-fitted dwell and frozen visual "
@@ -1729,7 +1764,8 @@ def build_dig_ready_boundary_audit(
                 "swing_qpos_must_not_exceed_train_fitted_dump_threshold"
             ),
             "ready_action_requirement": (
-                "abs_swing_action_lte_train_frozen_action_deadzone"
+                "no_hard_action_deadzone;action_contributes_to_activity_and_"
+                "visual_candidate_history"
             ),
         },
         "numeric_thresholds": numeric_thresholds,
