@@ -154,17 +154,28 @@ def build_habit_runtime_ready_calibration(
         validation_sector_expected,
         validation_sector_prediction,
     )
-    expected_validation_rate = float(audit["causal_confirmation_validation_rate"])
-    if not math.isclose(
-        float(reproduction["validation"]["reference_match_rate"]),
-        expected_validation_rate,
-        rel_tol=0.0,
-        abs_tol=1.0e-12,
-    ):
+    audit_counts = audit["counts"]
+    expected_matches = {
+        split: int(audit_counts[f"{split}_reference_match_count"])
+        for split in ("train", "validation")
+    }
+    observed_matches = {
+        split: int(reproduction[split]["reference_match_count"])
+        for split in ("train", "validation")
+    }
+    if observed_matches != expected_matches:
         raise ValueError(
             "exported runtime classifier does not reproduce v11: "
-            f"observed={reproduction['validation']} "
-            f"expected_rate={expected_validation_rate}"
+            f"observed_matches={observed_matches} "
+            f"expected_matches={expected_matches}"
+        )
+    for split in ("train", "validation"):
+        reproduction[split]["all_numeric_reference_count"] = int(
+            audit_counts[f"{split}_reference_count"]
+        )
+        reproduction[split]["all_reference_match_rate"] = float(
+            reproduction[split]["reference_match_count"]
+            / max(1, reproduction[split]["all_numeric_reference_count"])
         )
     expected_sector = audit["visual_audit"]["ready_sector_eye_pair"]
     if (
