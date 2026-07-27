@@ -1,4 +1,4 @@
-"""Support-aware fixed-observation causal Gate for B1.4 next-sector."""
+"""Support-aware fixed-observation causal Gate for a frozen next-sector pair."""
 
 from __future__ import annotations
 
@@ -35,6 +35,12 @@ from testbed.simverify.m3_condition_causal_v2 import (
 from testbed.simverify.m3_condition_gate import paired_metric_result
 
 EVIDENCE_SCOPE = "recorded-observation/offline"
+SUPPORTED_BASELINE_PAIRS = frozenset(
+    {
+        ("B1.4", "B2.4"),
+        ("B1.5", "B2.5"),
+    }
+)
 
 
 def build_next_condition_causal_gate(
@@ -45,13 +51,16 @@ def build_next_condition_causal_gate(
     b2_replay_root: str | Path,
     masked_b1_replay_root: str | Path,
     support_root: str | Path,
+    candidate_baseline_id: str = "B1.4",
+    null_baseline_id: str = "B2.4",
     bootstrap_repetitions: int = 100_000,
     bootstrap_seed: int = 20_260_726,
 ) -> dict[str, Any]:
-    """Build the immutable B1.4 next-sector semantic decision."""
+    """Build the immutable next-sector semantic decision for a frozen pair."""
 
     if len(b1_replay_roots) < 3:
-        raise ValueError("next-condition Gate requires at least three B1.4 repeats")
+        raise ValueError("next-condition Gate requires at least three candidate repeats")
+    _validate_baseline_pair(candidate_baseline_id, null_baseline_id)
     if bootstrap_repetitions < 10_000:
         raise ValueError("next-condition Gate requires at least 10000 draws")
     repository = Path(repo_root).resolve(strict=True)
@@ -70,23 +79,27 @@ def build_next_condition_causal_gate(
 
     support = _validated_support(Path(support_root).resolve(strict=True))
     candidates = [
-        _validated_package(Path(root).resolve(strict=True), "B1.4", "requested")
+        _validated_package(
+            Path(root).resolve(strict=True),
+            candidate_baseline_id,
+            "requested",
+        )
         for root in b1_replay_roots
     ]
     shuffled = _validated_package(
         Path(b2_replay_root).resolve(strict=True),
-        "B2.4",
+        null_baseline_id,
         "requested",
     )
     masked = _validated_package(
         Path(masked_b1_replay_root).resolve(strict=True),
-        "B1.4",
+        candidate_baseline_id,
         "masked_canonical",
     )
     _require_matched([*candidates, shuffled, masked])
     repeat_ids = [int(package["manifest"]["repeat_id"]) for package in candidates]
     if len(set(repeat_ids)) != len(repeat_ids):
-        raise ValueError("B1.4 repeat ids must be unique")
+        raise ValueError("candidate repeat ids must be unique")
     reference_index = int(np.argmin(repeat_ids))
     reference = candidates[reference_index]
     repeats = [
@@ -98,12 +111,12 @@ def build_next_condition_causal_gate(
         masked["manifest"]["checkpoint"]["sha256"]
         != reference["manifest"]["checkpoint"]["sha256"]
     ):
-        raise ValueError("masked control must use the B1.4 reference checkpoint")
+        raise ValueError("masked control must use the candidate reference checkpoint")
     _require_mask_is_null(masked)
     if reference["manifest"].get("intervention_factors") != ["next_sector"]:
-        raise ValueError("B1.4 replay is not next-sector-only")
+        raise ValueError("candidate replay is not next-sector-only")
     if reference["manifest"].get("sector_direction_fit_splits") != ["train"]:
-        raise ValueError("B1.4 direction semantics were not fit train-only")
+        raise ValueError("candidate direction semantics were not fit train-only")
 
     direction = _read_json(reference["root"] / "sector_action_direction_v1.json")
     source_rows, criteria, noise = _evaluate(
@@ -116,6 +129,7 @@ def build_next_condition_causal_gate(
         action_direction_sign=int(direction["action_to_qpos_direction_sign"]),
         repetitions=bootstrap_repetitions,
         seed=bootstrap_seed,
+        null_baseline_id=null_baseline_id,
     )
     passed = all(bool(value["passed"]) for value in criteria.values())
     decision = (
@@ -174,8 +188,8 @@ def build_next_condition_causal_gate(
                 "generated_at": datetime.now(timezone.utc).isoformat(),
                 "git": git,
                 "decision": decision,
-                "candidate_baseline_id": "B1.4",
-                "null_baseline_id": "B2.4",
+                "candidate_baseline_id": candidate_baseline_id,
+                "null_baseline_id": null_baseline_id,
                 "support_artifact": {
                     "path": str(support["root"]),
                     "manifest_sha256": support["manifest_sha256"],
@@ -240,6 +254,7 @@ def _evaluate(
     action_direction_sign: int,
     repetitions: int,
     seed: int,
+    null_baseline_id: str = "B2.4",
 ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
     eligible_episodes = set(support["eligible_validation_source_episode_ids"])
     reference_rows = reference["supported_rows"]
@@ -493,7 +508,10 @@ def _evaluate(
     }
     criteria = {
         "action_sensitivity_vs_masked": action,
-        "signed_semantic_margin_vs_b2_4": margin,
+        (
+            "signed_semantic_margin_vs_"
+            + null_baseline_id.lower().replace(".", "_")
+        ): margin,
         "semantic_identifiability": semantic_identifiability,
         "phase_specificity": phase,
         "task_envelope_preservation": preservation,
@@ -509,6 +527,14 @@ def _evaluate(
         "phase_specificity_q97_5": phase_noise,
     }
     return source_rows, criteria, noise
+
+
+def _validate_baseline_pair(candidate: str, null: str) -> None:
+    if (str(candidate), str(null)) not in SUPPORTED_BASELINE_PAIRS:
+        raise ValueError(
+            "next-condition Gate baseline pair must be one of "
+            f"{sorted(SUPPORTED_BASELINE_PAIRS)}"
+        )
 
 
 def _validated_support(root: Path) -> dict[str, Any]:

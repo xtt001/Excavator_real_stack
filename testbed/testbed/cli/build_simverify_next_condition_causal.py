@@ -1,4 +1,4 @@
-"""Build the support-aware B1.4 next-condition causal Gate."""
+"""Build the support-aware next-condition causal Gate for a frozen pair."""
 
 from __future__ import annotations
 
@@ -26,6 +26,8 @@ def main() -> None:
     parser.add_argument("--b2-replay-root", type=Path, required=True)
     parser.add_argument("--masked-b1-replay-root", type=Path, required=True)
     parser.add_argument("--support-root", type=Path, required=True)
+    parser.add_argument("--candidate-baseline-id", default="B1.4")
+    parser.add_argument("--null-baseline-id", default="B2.4")
     parser.add_argument(
         "--bootstrap-repetitions",
         type=int,
@@ -40,6 +42,8 @@ def main() -> None:
         b2_replay_root=args.b2_replay_root,
         masked_b1_replay_root=args.masked_b1_replay_root,
         support_root=args.support_root,
+        candidate_baseline_id=args.candidate_baseline_id,
+        null_baseline_id=args.null_baseline_id,
         bootstrap_repetitions=args.bootstrap_repetitions,
         bootstrap_seed=args.bootstrap_seed,
     )

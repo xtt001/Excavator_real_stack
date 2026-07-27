@@ -29,6 +29,7 @@ from testbed.simverify.m3_replay import (
 )
 
 SECTORS = ("left", "center", "right")
+NEXT_ONLY_BASELINES = frozenset({"B1.4", "B1.5", "B2.4", "B2.5"})
 
 
 def run_condition_swap_replay(
@@ -77,9 +78,11 @@ def run_condition_swap_replay(
         "B1.2",
         "B1.3",
         "B1.4",
+        "B1.5",
         "B2",
         "B2.3",
         "B2.4",
+        "B2.5",
     }:
         raise ValueError(
             "condition replay requires a frozen B1/B2 condition baseline"
@@ -87,7 +90,7 @@ def run_condition_swap_replay(
     condition_input = metadata["experiment_contract"]["condition_input"]
     expected_condition_input = (
         "cycle_condition_v1_next_sector_only"
-        if baseline_id in {"B1.4", "B2.4"}
+        if baseline_id in NEXT_ONLY_BASELINES
         else "cycle_condition_v1_low_dim"
     )
     if condition_input != expected_condition_input:
@@ -121,7 +124,7 @@ def run_condition_swap_replay(
         for row in _read_jsonl(m2 / "condition_counterfactual_anchors_v1.jsonl")
         if row["split"] == split_name and int(row["episode_id"]) in set(episode_ids)
         and (
-            baseline_id not in {"B1.4", "B2.4"}
+            baseline_id not in NEXT_ONLY_BASELINES
             or row["changed_factors"] == ["next_sector"]
         )
     ]
@@ -136,7 +139,7 @@ def run_condition_swap_replay(
         raise ValueError("supported anchor has no accepted annotation")
     direction_fit_splits = (
         {"train"}
-        if baseline_id in {"B1.4", "B2.4"}
+        if baseline_id in NEXT_ONLY_BASELINES
         else {"train", "validation"}
     )
     direction_contract = _fit_sector_action_direction(
@@ -330,7 +333,7 @@ def run_condition_swap_replay(
                 "one_primary_factor_per_anchor": True,
                 "intervention_factors": (
                     ["next_sector"]
-                    if baseline_id in {"B1.4", "B2.4"}
+                    if baseline_id in NEXT_ONLY_BASELINES
                     else ["current_sector", "next_sector"]
                 ),
                 "sector_direction_fit_splits": sorted(direction_fit_splits),

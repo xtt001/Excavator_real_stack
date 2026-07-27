@@ -4,6 +4,8 @@ from pathlib import Path
 
 import yaml
 
+from testbed.simverify.m3_condition_replay import NEXT_ONLY_BASELINES
+
 CONFIG_ROOT = Path(__file__).resolve().parents[1] / "testbed" / "configs"
 
 
@@ -82,3 +84,7 @@ def test_b1_5_pair_remains_offline_and_heldout_locked() -> None:
         assert experiment["closed_loop_claim_allowed"] is False
         assert config["checkpoint_semantics"]["real_control_allowed"] is False
         assert config["checkpoint_semantics"]["jetson_allowed"] is False
+
+
+def test_b1_5_pair_uses_the_existing_next_only_replay_semantics() -> None:
+    assert {"B1.5", "B2.5"} <= NEXT_ONLY_BASELINES

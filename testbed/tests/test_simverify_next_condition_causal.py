@@ -3,8 +3,12 @@ from __future__ import annotations
 import itertools
 
 import numpy as np
+import pytest
 
-from testbed.simverify.next_condition_causal import _evaluate
+from testbed.simverify.next_condition_causal import (
+    _evaluate,
+    _validate_baseline_pair,
+)
 from testbed.simverify.next_condition_support import (
     SECTORS,
     derive_next_condition_support,
@@ -133,3 +137,58 @@ def test_next_condition_gate_uses_only_predeclared_informative_anchors() -> None
         for result in permutation_results.values()
     )
     assert noise["signed_semantic_margin_q97_5"] == 0.0
+
+
+def test_next_condition_gate_accepts_only_frozen_candidate_null_pairs() -> None:
+    _validate_baseline_pair("B1.4", "B2.4")
+    _validate_baseline_pair("B1.5", "B2.5")
+
+    with pytest.raises(ValueError, match="baseline pair"):
+        _validate_baseline_pair("B1.5", "B2.4")
+
+
+def test_b1_5_gate_names_the_matched_b2_5_margin() -> None:
+    support_contract = derive_next_condition_support(
+        _support_anchors(),
+        sector_centers={"left": 0.1, "center": 0.2, "right": 0.3},
+    )
+    validation = [
+        row for row in _support_anchors() if row["split"] == "validation"
+    ]
+    candidate_rows = {
+        index: _replay_row(row, scale=0.2)
+        for index, row in enumerate(validation)
+    }
+    shuffled_rows = {
+        index: _replay_row(row, scale=0.02)
+        for index, row in enumerate(validation)
+    }
+    masked_rows = {
+        index: _replay_row(row, scale=0.0)
+        for index, row in enumerate(validation)
+    }
+
+    def package(rows: dict, repeat_id: int = 0) -> dict:
+        return {
+            "supported_rows": rows,
+            "manifest": {"repeat_id": repeat_id},
+        }
+
+    _source_rows, criteria, _noise = _evaluate(
+        reference=package(candidate_rows),
+        repeats=[package(candidate_rows, 1), package(candidate_rows, 2)],
+        shuffled=package(shuffled_rows),
+        masked=package(masked_rows),
+        support={
+            "eligible_validation_source_episode_ids": [12, 34],
+            "permutation_support": support_contract["permutation_support"],
+        },
+        sector_centers={"left": 0.1, "center": 0.2, "right": 0.3},
+        action_direction_sign=1,
+        repetitions=10_000,
+        seed=17,
+        null_baseline_id="B2.5",
+    )
+
+    assert "signed_semantic_margin_vs_b2_5" in criteria
+    assert "signed_semantic_margin_vs_b2_4" not in criteria

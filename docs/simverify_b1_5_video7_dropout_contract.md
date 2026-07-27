@@ -89,6 +89,12 @@ No held-out episode may appear in the manifest.
 
 No threshold may be changed after observing B1.5/B2.5 validation.
 
+The frozen next-condition replay and Gate may be parameterized only to replace
+the baseline identity pair `B1.4/B2.4` with `B1.5/B2.5`. This is an evaluator
+provenance change, not a Gate change: replay rows, support, formulas, bootstrap
+unit/seed/repetitions, criteria, and thresholds remain unchanged. Cross-pairs
+such as `B1.5/B2.4` are invalid.
+
 ## Targeted causal Gate
 
 The revision is useful only if:
