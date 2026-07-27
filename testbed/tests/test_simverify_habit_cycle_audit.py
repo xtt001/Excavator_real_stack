@@ -15,7 +15,7 @@ from testbed.simverify.habit_cycle_audit import (
 def _signals() -> dict[int, EpisodeSignals]:
     qpos = np.zeros((20, 4), dtype=np.float32)
     qpos[:, 0] = 0.60
-    qpos[3:5, 0] = 0.50
+    qpos[3:7, 0] = 0.50
     qpos[8:12, 0] = 0.50
     action = np.zeros((20, 4), dtype=np.float32)
     action[3:5, 0] = -1.0
@@ -72,16 +72,16 @@ def test_numeric_candidate_stage_preserves_ready_recall_for_visual_gate() -> Non
         dump_swing_threshold=0.63,
         action_deadzone=0.05,
     )
-    assert contract["selected_dwell_steps"] == 1
+    assert contract["selected_dwell_steps"] == 3
     rows = enumerate_causal_candidates(
         [_candidate()],
-        dwell_steps=1,
+        dwell_steps=int(contract["selected_dwell_steps"]),
         signals=signals,
         sector_thresholds=_sector_thresholds(),
         dump_swing_threshold=0.63,
         action_deadzone=0.05,
     )
-    assert rows[0]["numeric_causal_candidate_steps"] == [8]
+    assert rows[0]["numeric_causal_candidate_steps"] == [10]
     assert rows[0]["causal_confirmed"] is False
 
 

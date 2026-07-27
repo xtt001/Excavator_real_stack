@@ -551,18 +551,12 @@ def build_transition_candidates(
                 if not runs:
                     reasons.append("dig_ready_reference_not_identifiable")
                 else:
-                    readiness = np.abs(
-                        np.asarray(episode.qvel[:, 0], dtype=np.float64)
-                    ) + np.abs(
-                        np.asarray(episode.action[:, 0], dtype=np.float64)
-                    )
-                    selected = min(
-                        runs,
-                        key=lambda run: (
-                            float(np.min(readiness[run[0] : run[1]])),
-                            -int(run[1]),
-                        ),
-                    )
+                    # The hindsight reference is the final observable target
+                    # capture before the next dig begins.  Earlier low-action
+                    # target-sector runs remain hard negatives for fitting the
+                    # existing causal dwell, rather than becoming alternate
+                    # definitions of the same boundary.
+                    selected = runs[-1]
                     interval = [int(selected[0]), int(selected[1])]
             elif not reasons:
                 reasons.append("invalid_dump_to_next_dig_order")
@@ -676,16 +670,15 @@ def fit_causal_confirmation_dwell(
                 / 2.0,
             }
         )
-    best = max(row["true_positive_rate"] for row in scored)
+    best = max(row["balanced_accuracy"] for row in scored)
     selected = next(
-        row for row in scored if math.isclose(row["true_positive_rate"], best)
+        row for row in scored if math.isclose(row["balanced_accuracy"], best)
     )
     return {
         "schema": "habit_causal_dwell_contract_v1",
         "selection_rule": (
-            "smallest_train_dwell_maximizing_reference_ready_candidate_recall;"
-            "earlier_target_sector_runs_are_candidates_rejected_by_the_"
-            "separate_visual_confirmation_stage"
+            "smallest_train_dwell_maximizing_balanced_accuracy_between_final_"
+            "reference_ready_run_and_earlier_low_action_target_sector_runs"
         ),
         "selected_dwell_steps": int(selected["dwell_steps"]),
         "selected_operating_point": selected,
