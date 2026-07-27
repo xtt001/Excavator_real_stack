@@ -232,3 +232,86 @@ Consequently:
 Any next training change must explain why it should improve correct-target
 execution without merely increasing target sensitivity. It must not replace or
 rewrite this failed gate after seeing the result.
+
+## 8. User-authorized bounded AGX closed-loop diagnostic
+
+After the frozen offline Gate, the user explicitly chose to inspect actual AGX
+execution because action MAE is not the task objective and the simulated
+machine tolerates non-trivial action error. This diagnostic does not rewrite
+the failed Gate and is not promotable evidence.
+
+Real Stack commits:
+
+```text
+519db99 simverify: gate closed-loop condition at dump end
+7a7045c simverify: make paired AGX inference deterministic
+9043149 simverify: add shared-prefix AGX condition branches
+d8e363d simverify: evaluate paired AGX condition branches
+```
+
+The runtime kept PACT and Unity read-only. It used the live Unity step-ack
+service at 50 Hz and the Real Stack B1 policy at 20 Hz. The B1 condition was
+all-zero before an observable dump release ended and became the committed
+current-plus-target vector at policy tick 234 (11.7 seconds).
+
+Independent full rollouts were not accepted as a causal condition pair. Even
+with fixed seeds and deterministic Torch kernels, a first-action numerical
+difference of approximately `2e-6` grew through deformable-terrain feedback.
+The final paired experiment therefore replayed one checksum-bound 234-tick
+actual-sent-action prefix in all branches, then released policy control at the
+same causal dump-end state:
+
+- reference: `left -> left`;
+- same-condition repeat: `left -> left`;
+- treatment: `left -> center`.
+
+Immutable paired result:
+
+```text
+/data/pingfan/Excavator_real_stack_data/
+  simverify_habit_b1_agx_shared_prefix_branch_eval_v1
+```
+
+Key evidence:
+
+| Quantity | Result |
+| --- | ---: |
+| condition commit / branch tick | 234 |
+| bounded horizon | 400 policy ticks |
+| condition-effect / repeat-noise action ratio by axis | 10.27 / 13.66 / 38.47 / 3.78 |
+| condition-effect / repeat-noise qpos ratio by axis | 41.51 / 42.15 / 78.91 / 6.45 |
+| `left` reference final swing qpos | 0.39674 |
+| `left` repeat final swing qpos | 0.39648 |
+| `center` treatment final swing qpos | 0.42434 |
+| `left` reference terminal mean absolute swing command | 0.55351 |
+| `center` treatment terminal mean absolute swing command | 0.80617 |
+
+All condition-effect ratios exceed the same-condition repeat variability, so
+the target input causally changes the closed-loop action and state trajectory.
+It is not merely an offline-MAE artifact.
+
+However, both targets pass through their requested swing region and continue
+left. The two `left` branches end at the left travel boundary while still
+commanding left swing. The `center` branch also ends in the left sector and
+continues commanding left swing. None holds a quiet target endpoint, and no
+visual dig-ready confirmation is obtained. The immutable decision is therefore:
+
+```text
+condition_signal_detected_but_not_converted_to_target_endpoint
+observable_cycle_completed=false
+physical_effect_validated=false
+task_success_claimed=false
+real_control_candidate=false
+```
+
+Camera evidence shows the bucket traversing the dig area, reaching the fixed
+dump bin, releasing visible soil, and returning toward the work area. This is
+useful phase-execution evidence, but it is not promoted to
+`physical_effect_validated` because no frozen physical-effect evaluator was
+run.
+
+In plain language: **the policy can perform the broad dig-and-dump sequence and
+it notices the condition, but it does not yet use that condition to brake and
+settle at the requested next digging position.** The next one-factor training
+experiment should target endpoint/progress execution rather than condition
+sensitivity or aggregate MAE.
