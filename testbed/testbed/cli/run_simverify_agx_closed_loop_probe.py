@@ -48,6 +48,14 @@ def main() -> None:
     parser.add_argument("--timeout", type=float, default=10.0)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--inference-precision", default="fp32")
+    parser.add_argument(
+        "--action-selection",
+        choices=(
+            "legacy_temporal_aggregation",
+            "recency_temporal_aggregation_diagnostic",
+        ),
+        default="legacy_temporal_aggregation",
+    )
     parser.add_argument("--no-save-images", action="store_true")
     parser.add_argument("--allow-dirty-external", action="store_true")
     args = parser.parse_args()
@@ -96,6 +104,9 @@ def main() -> None:
         stats_path=None,
         max_episode_len=8000,
         temporal_agg=True,
+        temporal_aggregation_diagnostics=(
+            args.action_selection == "recency_temporal_aggregation_diagnostic"
+        ),
         device=args.device,
         inference_precision=args.inference_precision,
     )
@@ -121,6 +132,7 @@ def main() -> None:
             next_sector=args.next_sector,
             second_next_sector=args.second_next_sector,
             ready_boundary_detector=ready_boundary_detector,
+            action_selection=args.action_selection,
             seed=args.seed,
             policy_ticks=args.policy_ticks,
             save_images=not args.no_save_images,

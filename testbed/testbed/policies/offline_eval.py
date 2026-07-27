@@ -174,6 +174,7 @@ def load_policy_for_episode(
     stats_path: str | Path | None,
     max_episode_len: int,
     temporal_agg: bool,
+    temporal_aggregation_diagnostics: bool = False,
     device: str | None,
     inference_precision: str = "fp32",
 ) -> Any:
@@ -200,6 +201,9 @@ def load_policy_for_episode(
         policy_config=policy_config,
         norm_stats_path=norm_stats_path,
         temporal_agg=bool(temporal_agg),
+        temporal_aggregation_diagnostics=bool(
+            temporal_aggregation_diagnostics
+        ),
         device=str(device or patched.get("policy", {}).get("device", "cuda")),
         inference_precision=inference_precision,
     )

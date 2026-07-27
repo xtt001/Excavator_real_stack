@@ -43,6 +43,12 @@ from testbed.simverify.contracts import (
 PROBE_SCHEMA = "simverify_agx_closed_loop_diagnostic_v1"
 TIMING_SCHEMA = "simverify_agx_ack_step_timing_v1"
 ALLOWED_BASELINES = frozenset({"B0", "B1.4", "B2.4"})
+ACTION_SELECTION_MODES = frozenset(
+    {
+        "legacy_temporal_aggregation",
+        "recency_temporal_aggregation_diagnostic",
+    }
+)
 SECTORS = ("left", "center", "right")
 EXPECTED_SOURCE_CAMERAS = (
     "stick_up",
@@ -584,6 +590,7 @@ def run_bounded_closed_loop_probe(
     next_sector: str,
     second_next_sector: str | None = None,
     ready_boundary_detector: ReadyBoundaryDetector | None = None,
+    action_selection: str = "legacy_temporal_aggregation",
     seed: int,
     policy_ticks: int,
     save_images: bool = True,
@@ -592,6 +599,10 @@ def run_bounded_closed_loop_probe(
 
     if policy_ticks <= 0:
         raise ValueError("policy_ticks must be positive")
+    if action_selection not in ACTION_SELECTION_MODES:
+        raise ValueError(
+            f"action_selection must be one of {sorted(ACTION_SELECTION_MODES)}"
+        )
     destination = Path(output_root).resolve(strict=False)
     if destination.exists():
         raise FileExistsError(f"immutable probe output exists: {destination}")
@@ -699,7 +710,31 @@ def run_bounded_closed_loop_probe(
             ).reshape(-1)
             if aggregated.shape != (4,) or not np.all(np.isfinite(aggregated)):
                 raise ValueError("policy produced a non-finite or non-4D action")
-            runtime_safe = np.clip(aggregated, -1.0, 1.0).astype(np.float32)
+            aggregation_diagnostics = getattr(
+                policy,
+                "temporal_aggregation_diagnostics",
+                None,
+            )
+            selected_action = aggregated
+            if action_selection == "recency_temporal_aggregation_diagnostic":
+                if not isinstance(aggregation_diagnostics, Mapping):
+                    raise RuntimeError(
+                        "recency action selection requires temporal "
+                        "aggregation diagnostics"
+                    )
+                selected_action = np.asarray(
+                    aggregation_diagnostics[
+                        "policy_temporal_aggregation_recency_action"
+                    ],
+                    dtype=np.float32,
+                ).reshape(-1)
+                if selected_action.shape != (4,) or not np.all(
+                    np.isfinite(selected_action)
+                ):
+                    raise ValueError(
+                        "recency temporal aggregation produced invalid action"
+                    )
+            runtime_safe = np.clip(selected_action, -1.0, 1.0).astype(np.float32)
             raw_normalized = np.asarray(
                 policy.last_raw_action_chunk(),
                 dtype=np.float32,
@@ -726,6 +761,15 @@ def run_bounded_closed_loop_probe(
                     ).tolist(),
                     "raw_policy_chunk_direct": raw_direct.astype(float).tolist(),
                     "temporal_aggregation_action": aggregated.astype(float).tolist(),
+                    "action_selection": action_selection,
+                    "selected_action_before_safety_clip": selected_action.astype(
+                        float
+                    ).tolist(),
+                    "temporal_aggregation_diagnostics": (
+                        None
+                        if aggregation_diagnostics is None
+                        else dict(aggregation_diagnostics)
+                    ),
                     "future_runtime_safe_action": runtime_safe.astype(float).tolist(),
                     "actual_sent_action": runtime_safe.astype(float).tolist(),
                     "condition_route": None if route is None else dict(route),
@@ -813,6 +857,18 @@ def run_bounded_closed_loop_probe(
                     policy_source_step(index, sim_dt=sim_dt)
                     for index in range(policy_ticks + 1)
                 ],
+            },
+            "action_selection_contract": {
+                "mode": action_selection,
+                "single_factor_diagnostic": (
+                    action_selection == "recency_temporal_aggregation_diagnostic"
+                ),
+                "checkpoint_changed": False,
+                "condition_changed": False,
+                "ready_boundary_detector_changed": False,
+                "legacy_temporal_aggregation_preserved_in_evidence": True,
+                "selected_action_saved_before_safety_clip": True,
+                "promotable": False,
             },
             "condition_contract": {
                 "current_sector": current_sector,

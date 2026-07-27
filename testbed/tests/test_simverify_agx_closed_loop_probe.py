@@ -144,6 +144,17 @@ class _FakePolicy:
     def last_raw_action_chunk_direct(self) -> np.ndarray:
         return np.full((20, 4), 0.2, dtype=np.float32)
 
+    @property
+    def temporal_aggregation_diagnostics(self) -> dict:
+        return {
+            "policy_temporal_aggregation_recency_action": [
+                0.8,
+                0.0,
+                0.0,
+                0.0,
+            ]
+        }
+
 
 class _FakeReadyBoundaryDetector:
     provenance = {
@@ -382,3 +393,42 @@ def test_probe_resets_only_condition_router_at_observable_ready_boundary(
     assert rows[1]["condition_router_reset_before_predict"] is True
     assert rows[1]["condition"] == [0.0, 0.0, 1.0, 0.0, 1.0, 0.0]
     assert rows[1]["ready_boundary"]["confirmed"] is True
+
+
+def test_probe_can_select_recency_action_as_one_factor_diagnostic(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "recency_probe"
+    result = run_bounded_closed_loop_probe(
+        policy=_FakePolicy(),
+        environment=_FakeEnvironment(),
+        output_root=output,
+        bundle_contract={
+            "baseline_id": "B1.4",
+            "condition_input": "cycle_condition_v1_next_sector_only",
+        },
+        current_git={"branch": "v2.0.0-simVerify", "dirty": False},
+        external_provenance={
+            "pact": {"git_sha": "pact", "dirty": True},
+            "unity": {"git_sha": "unity", "dirty": True},
+        },
+        current_sector="left",
+        next_sector="right",
+        action_selection="recency_temporal_aggregation_diagnostic",
+        seed=7,
+        policy_ticks=2,
+        save_images=False,
+    )
+
+    assert (
+        result["action_selection_contract"]["mode"]
+        == "recency_temporal_aggregation_diagnostic"
+    )
+    assert result["action_selection_contract"]["promotable"] is False
+    rows = [
+        json.loads(line)
+        for line in (output / "policy_ticks.jsonl").read_text().splitlines()
+    ]
+    assert rows[0]["temporal_aggregation_action"][0] == pytest.approx(0.2)
+    assert rows[0]["selected_action_before_safety_clip"][0] == pytest.approx(0.8)
+    assert rows[0]["actual_sent_action"][0] == pytest.approx(0.8)
