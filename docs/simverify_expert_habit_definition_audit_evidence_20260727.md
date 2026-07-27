@@ -2,6 +2,39 @@
 
 ## Current re-audit status
 
+### Post-hoc correction
+
+The `v7` result does **not** establish that the source demonstrations lack
+stop-to-ready behavior. A physically isolated diagnostic comparison against
+the embedded operator-entry timing, which was not read by the policy or the
+main observable audit, found that the observable `next_dig_entry_step` was
+premature in 125 of 147 comparable train/validation transitions. The median
+lead was 61 source steps, about 1.22 seconds.
+
+When the diagnostic window is extended to the embedded entry solely for this
+post-hoc check:
+
+- 100/147 transitions contain at least 0.1 seconds of swing-action release;
+- 136/147 reduce swing speed by at least 50 percent from the return peak;
+- 104/147 reduce it by at least 80 percent;
+- 81 release segments and 72 low-speed segments occur only after the
+  prematurely detected observable entry.
+
+The root cause is that the current observable proxy treats the first sustained
+positive bucket command as dig entry. In these demonstrations that command can
+start while boom/stick/bucket positioning is still in progress, before swing
+has completed its stop-to-ready transition. Therefore the low-action hard
+filter in `v7` is also not a valid final ready definition: it is one observable
+mode among several, while slow nonzero approach and dynamic deceleration must
+remain eligible.
+
+The valid next action is `revise_boundary`: redefine the existing
+`next_dig_entry_step`, `dig_ready_reference_interval`, and
+`causal_confirm_step` in place so that action/qpos/qvel generate broad
+deceleration candidates and eye/stick evidence confirms the pre-dig ready
+envelope. Do not add an alias, do not train from `v7`, and do not infer a data
+collection requirement from its reduced scenario count.
+
 The earlier `accept` result below is historical evidence for the former
 sector-entry meaning of `dig_ready`. It must not authorize new slicing,
 training, checkpoint comparison, or closed-loop claims.
@@ -46,10 +79,9 @@ checksum_verification=8/8 passed
 
 Operationally, the previous ready-cycle dataset and its checkpoints remain
 diagnostic artifacts for the old boundary only. The next valid step is to
-record demonstrations that deliberately finish each cycle with a sustained
-low-action target capture, including `repeat_same` and both supported adjacent
-directions, then rerun this same audit. Retuning the boundary to recover the
-old sample count would reintroduce the high-speed-crossing error.
+repair and re-audit the existing observable boundary variables against the
+already recorded stop/deceleration evidence. New data collection can be
+considered only if that corrected observable detector remains unstable.
 
 ## 1. Historical v3 decision
 
