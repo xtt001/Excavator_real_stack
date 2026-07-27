@@ -833,14 +833,11 @@ def run_bounded_closed_loop_probe(
             "dump-end-gated condition bundle and condition commit detector "
             "must be provided together"
         )
-    lifecycle_enabled = ready_boundary_detector is not None
-    if lifecycle_enabled and not pass_condition:
+    ready_detection_enabled = ready_boundary_detector is not None
+    lifecycle_enabled = second_next_sector is not None
+    if ready_detection_enabled and not pass_condition:
         raise ValueError("condition lifecycle cannot be enabled for B0")
-    if lifecycle_enabled and gated_condition:
-        raise ValueError(
-            "two-cycle condition reset is not defined for dump-end-gated bundles"
-        )
-    if lifecycle_enabled != (second_next_sector is not None):
+    if lifecycle_enabled and not ready_detection_enabled:
         raise ValueError(
             "ready boundary detector and second_next_sector must be provided together"
         )
@@ -854,9 +851,13 @@ def run_bounded_closed_loop_probe(
     )
     condition_committed = bool(pass_condition and not gated_condition)
     condition_commit_policy_tick: int | None = None
+    condition_commit_policy_ticks: list[int] = []
     cycle_index = 0
     condition_reset_count = 0
     condition_reset_policy_tick: int | None = None
+    observable_cycle_completed = False
+    observable_cycle_completion_tick: int | None = None
+    realized_target_sector: str | None = None
     info = validate_agx_info(environment.get_info())
     sim_dt = float(info["dt"])
     temporary = destination.parent / f".{destination.name}.tmp-{os.getpid()}"
@@ -916,9 +917,16 @@ def run_bounded_closed_loop_probe(
                         raise RuntimeError(
                             "condition commit detector confirmed more than once"
                         )
-                    active_condition = condition.copy()
+                    committed_condition = (
+                        condition if cycle_index == 0 else second_condition
+                    )
+                    if committed_condition is None:
+                        raise AssertionError("active cycle condition is missing")
+                    active_condition = committed_condition.copy()
                     condition_committed = True
-                    condition_commit_policy_tick = int(policy_tick)
+                    condition_commit_policy_ticks.append(int(policy_tick))
+                    if condition_commit_policy_tick is None:
+                        condition_commit_policy_tick = int(policy_tick)
             policy_observation, encoded_frames = _policy_observation(
                 observation,
                 condition=active_condition if pass_condition else None,
@@ -938,23 +946,49 @@ def run_bounded_closed_loop_probe(
                     )
                 )
                 if bool(boundary_diagnostic.get("confirmed")):
-                    if condition_reset_count:
-                        raise RuntimeError(
-                            "bounded two-cycle probe observed more than one boundary"
+                    if not observable_cycle_completed:
+                        observable_cycle_completed = True
+                        observable_cycle_completion_tick = int(policy_tick)
+                        realized_target_sector = str(
+                            boundary_diagnostic.get(
+                                "visual_sector_prediction",
+                                boundary_diagnostic.get(
+                                    "qpos_sector",
+                                    next_sector,
+                                ),
+                            )
                         )
-                    if not hasattr(policy, "reset_condition_cycle"):
-                        raise TypeError(
-                            "conditioned policy lacks reset_condition_cycle()"
+                    if lifecycle_enabled:
+                        if condition_reset_count:
+                            raise RuntimeError(
+                                "bounded two-cycle probe observed more than one boundary"
+                            )
+                        if not hasattr(policy, "reset_condition_cycle"):
+                            raise TypeError(
+                                "conditioned policy lacks reset_condition_cycle()"
+                            )
+                        policy.reset_condition_cycle()
+                        if second_condition is None:
+                            raise AssertionError("second condition was not built")
+                        active_condition = (
+                            np.zeros_like(second_condition)
+                            if gated_condition
+                            else second_condition.copy()
                         )
-                    policy.reset_condition_cycle()
-                    if second_condition is None:
-                        raise AssertionError("second condition was not built")
-                    active_condition = second_condition.copy()
-                    policy_observation["cycle_condition_v1"] = active_condition.copy()
-                    cycle_index = 1
-                    condition_reset_count = 1
-                    condition_reset_policy_tick = int(policy_tick)
-                    reset_before_predict = True
+                        condition_committed = not gated_condition
+                        if gated_condition:
+                            if condition_commit_detector is None:
+                                raise AssertionError(
+                                    "gated lifecycle lacks commit detector"
+                                )
+                            condition_commit_detector.reset()
+                        policy_observation["cycle_condition_v1"] = (
+                            active_condition.copy()
+                        )
+                        cycle_index = 1
+                        condition_reset_count = 1
+                        condition_reset_policy_tick = int(policy_tick)
+                        reset_before_predict = True
             aggregated = np.asarray(
                 policy.predict(policy_observation),
                 dtype=np.float32,
@@ -1179,6 +1213,20 @@ def run_bounded_closed_loop_probe(
                 ),
                 "committed": bool(condition_committed),
                 "commit_policy_tick": condition_commit_policy_tick,
+                "commit_policy_ticks": condition_commit_policy_ticks,
+            },
+            "observable_cycle_contract": {
+                "ready_detection_enabled": ready_detection_enabled,
+                "observable_cycle_completed": observable_cycle_completed,
+                "completion_policy_tick": observable_cycle_completion_tick,
+                "scripted_target_sector": next_sector,
+                "realized_target_sector": realized_target_sector,
+                "physical_effect_validated": False,
+                "detector": (
+                    None
+                    if ready_boundary_detector is None
+                    else dict(ready_boundary_detector.provenance)
+                ),
             },
             "condition_lifecycle_contract": {
                 "enabled": lifecycle_enabled,

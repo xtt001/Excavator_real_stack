@@ -18,6 +18,9 @@ from testbed.simverify.agx_closed_loop_probe import (
     validate_probe_bundle,
 )
 from testbed.simverify.contracts import git_provenance
+from testbed.simverify.habit_runtime_ready import (
+    ObservableHabitReadyBoundaryDetector,
+)
 
 
 def main() -> None:
@@ -42,6 +45,14 @@ def main() -> None:
         choices=("left", "center", "right"),
     )
     parser.add_argument("--m0-root", type=Path)
+    parser.add_argument(
+        "--runtime-ready-root",
+        type=Path,
+        help=(
+            "Accepted-v11 runtime ready calibration. May be used for a "
+            "single-cycle endpoint check or with --second-next-sector."
+        ),
+    )
     parser.add_argument("--resnet18-checkpoint", type=Path)
     parser.add_argument(
         "--definition-root",
@@ -136,27 +147,38 @@ def main() -> None:
             count=args.action_prefix_count,
         )
     )
-    lifecycle_arguments = (
-        args.second_next_sector,
-        args.m0_root,
-        args.resnet18_checkpoint,
-    )
-    if any(value is not None for value in lifecycle_arguments) and not all(
-        value is not None for value in lifecycle_arguments
-    ):
-        raise ValueError(
-            "--second-next-sector, --m0-root, and --resnet18-checkpoint "
-            "must be provided together"
+    if args.m0_root is not None and args.runtime_ready_root is not None:
+        raise ValueError("--m0-root and --runtime-ready-root are mutually exclusive")
+    if args.runtime_ready_root is not None:
+        if args.resnet18_checkpoint is None:
+            raise ValueError(
+                "--runtime-ready-root requires --resnet18-checkpoint"
+            )
+        ready_boundary_detector = (
+            ObservableHabitReadyBoundaryDetector.from_calibration_artifacts(
+                calibration_root=args.runtime_ready_root,
+                weights_path=args.resnet18_checkpoint,
+                device=args.device,
+            )
         )
-    ready_boundary_detector = (
-        None
-        if args.second_next_sector is None
-        else ObservableReadyBoundaryDetector.from_m0_artifacts(
+    elif args.m0_root is not None:
+        if args.second_next_sector is None or args.resnet18_checkpoint is None:
+            raise ValueError(
+                "legacy --m0-root requires --second-next-sector and "
+                "--resnet18-checkpoint"
+            )
+        ready_boundary_detector = ObservableReadyBoundaryDetector.from_m0_artifacts(
             m0_root=args.m0_root,
             resnet18_checkpoint=args.resnet18_checkpoint,
             device=args.device,
         )
-    )
+    else:
+        if args.second_next_sector is not None or args.resnet18_checkpoint is not None:
+            raise ValueError(
+                "--second-next-sector/--resnet18-checkpoint require "
+                "--runtime-ready-root or legacy --m0-root"
+            )
+        ready_boundary_detector = None
     from testbed.policies.base import set_seed
 
     set_seed(args.policy_seed)

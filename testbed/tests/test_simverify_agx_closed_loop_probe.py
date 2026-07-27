@@ -560,6 +560,48 @@ def test_probe_resets_only_condition_router_at_observable_ready_boundary(
     assert rows[1]["ready_boundary"]["confirmed"] is True
 
 
+def test_gated_probe_records_single_cycle_ready_without_router_reset(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "gated_single_cycle_probe"
+    policy = _FakePolicy()
+    ready = _FakeReadyBoundaryDetector(confirm_at_tick=2)
+    commit = _FakeConditionCommitDetector(confirm_at_tick=1)
+    result = run_bounded_closed_loop_probe(
+        policy=policy,
+        environment=_FakeEnvironment(),
+        output_root=output,
+        bundle_contract={
+            "baseline_id": "B1",
+            "condition_input": "cycle_condition_v1_dump_end_gated_low_dim",
+        },
+        current_git={"branch": "v2.0.0-simVerify", "dirty": False},
+        external_provenance={
+            "pact": {"git_sha": "pact", "dirty": True},
+            "unity": {"git_sha": "unity", "dirty": True},
+        },
+        current_sector="left",
+        next_sector="center",
+        ready_boundary_detector=ready,
+        condition_commit_detector=commit,
+        seed=7,
+        policy_ticks=3,
+        save_images=False,
+    )
+
+    assert policy.condition_reset_count == 0
+    assert result["condition_lifecycle_contract"]["enabled"] is False
+    assert result["observable_cycle_contract"] == {
+        "ready_detection_enabled": True,
+        "observable_cycle_completed": True,
+        "completion_policy_tick": 2,
+        "scripted_target_sector": "center",
+        "realized_target_sector": "center",
+        "physical_effect_validated": False,
+        "detector": ready.provenance,
+    }
+
+
 def test_probe_can_select_recency_action_as_one_factor_diagnostic(
     tmp_path: Path,
 ) -> None:
