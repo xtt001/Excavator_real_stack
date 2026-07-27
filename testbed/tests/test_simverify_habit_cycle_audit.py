@@ -6,6 +6,7 @@ from testbed.simverify.annotations import EpisodeSignals
 from testbed.simverify.habit_cycle_audit import (
     _full_cycle_source_range,
     _true_runs,
+    _visual_boundary_eligible,
     build_transition_candidates,
     definition_decision,
     enumerate_causal_candidates,
@@ -133,6 +134,17 @@ def test_ready_reference_uses_low_speed_envelope_not_action_deadzone() -> None:
     assert rows[0]["dig_ready_reference_interval"] == [3, 6]
     assert rows[0]["next_dig_entry_step"] == 6
     assert rows[0]["outcome"]["source"] == "observable_ready_capture"
+
+
+def test_nonadjacent_ready_is_visual_audit_only_eligible() -> None:
+    assert _visual_boundary_eligible(
+        {
+            "dig_ready_reference_interval": [10, 13],
+            "hindsight_expert_target_sector": "right",
+            "relative_intent": "nonadjacent_jump",
+            "training_main_scope": False,
+        }
+    )
 
 
 def test_definition_decision_prioritizes_boundary_failure() -> None:

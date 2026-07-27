@@ -889,12 +889,7 @@ def build_visual_boundary_audit(
     null_samples: int,
     seed: int,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    eligible = [
-        row
-        for row in candidates
-        if row["dig_ready_reference_interval"] is not None
-        and row["relative_intent"] in RELATIVE_INTENTS
-    ]
+    eligible = [row for row in candidates if _visual_boundary_eligible(row)]
     train = [row for row in eligible if row["split"] == "train"]
     validation = [row for row in eligible if row["split"] == "validation"]
     if not train or not validation:
@@ -1070,6 +1065,10 @@ def build_visual_boundary_audit(
         "ready_feature_calibration": (
             "separate_pre_dig_ready_rows_not_dig_entry_prototypes"
         ),
+        "visual_calibration_scope": (
+            "all_observable_ready_references_including_nonadjacent_diagnostic;"
+            "nonadjacent_remains_excluded_from_policy_training_and_primary_eval"
+        ),
         "runtime_confirmation_classifier": {
             "labels": ["ready", "not_ready"],
             "features": "frozen_eye_plus_stick_pair",
@@ -1081,6 +1080,15 @@ def build_visual_boundary_audit(
         },
     }
     return report, resolved
+
+
+def _visual_boundary_eligible(row: Mapping[str, Any]) -> bool:
+    """Allow diagnostic transitions to calibrate observation boundaries."""
+
+    return (
+        row["dig_ready_reference_interval"] is not None
+        and row["hindsight_expert_target_sector"] in SECTORS
+    )
 
 
 def build_observation_sufficiency_audit(
