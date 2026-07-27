@@ -307,10 +307,18 @@ def run_habit_validation_replay(
     event_envelope = _read_json(event_envelope_file)
     templates = event_envelope["templates"]
     deadzone = list(map(float, event_envelope["effective_deadzone"]))
+    dataset_manifest_sha256 = sha256_file(dataset / "dataset_manifest.json")
+    split_manifest_sha256 = sha256_file(dataset / "derived_split.yaml")
     bundles = {
-        baseline: _validate_bundle(Path(path).resolve(strict=True), baseline)
+        baseline: _validate_bundle(
+            Path(path).resolve(strict=True),
+            baseline,
+            dataset_manifest_sha256=dataset_manifest_sha256,
+            split_manifest_sha256=split_manifest_sha256,
+        )
         for baseline, path in bundle_roots.items()
     }
+    _validate_matched_bundle_contracts(bundles)
 
     np.random.seed(0)
     torch.manual_seed(0)
@@ -475,16 +483,25 @@ def run_habit_validation_replay(
                 "schema": "simverify_habit_validation_replay_manifest_v1",
                 "generated_at": datetime.now(timezone.utc).isoformat(),
                 "git": git,
-                "dataset_manifest_sha256": sha256_file(
-                    dataset / "dataset_manifest.json"
-                ),
-                "split_manifest_sha256": sha256_file(dataset / "derived_split.yaml"),
+                "dataset_manifest_sha256": dataset_manifest_sha256,
+                "split_manifest_sha256": split_manifest_sha256,
                 "event_envelope_sha256": sha256_file(event_envelope_file),
                 "swing_action_to_qpos_direction": action_to_qpos_direction,
                 "validation_derived_episode_ids": val_ids,
                 "validation_source_episode_ids": sorted(source_ids),
                 "held_out_source_episode_ids": sorted(HELD_OUT_SOURCE_EPISODES),
                 "held_out_test_read": False,
+                "bundle_artifacts": {
+                    baseline: {
+                        "experiment_id": package["experiment_id"],
+                        "path": str(package["root"] / "policy_best.ckpt"),
+                        "checkpoint_sha256": package["checkpoint_sha256"],
+                        "run_metadata_sha256": package["run_metadata_sha256"],
+                        "resolved_config_sha256": package["resolved_config_sha256"],
+                        "dataset_stats_sha256": package["dataset_stats_sha256"],
+                    }
+                    for baseline, package in bundles.items()
+                },
                 "bundle_checkpoints": {
                     baseline: {
                         "path": str(package["root"] / "policy_best.ckpt"),
@@ -609,24 +626,86 @@ def _select_supported_alternate(
     return candidates[0] if candidates else None
 
 
-def _validate_bundle(path: Path, baseline: str) -> dict[str, Any]:
+def _validate_bundle(
+    path: Path,
+    baseline: str,
+    *,
+    dataset_manifest_sha256: str | None = None,
+    split_manifest_sha256: str | None = None,
+) -> dict[str, Any]:
     metadata = _read_json(path / "run_metadata.json")
     if metadata.get("status") != "completed":
         raise ValueError(f"{baseline} training is not completed")
-    if metadata.get("experiment_contract", {}).get("baseline_id") != baseline:
+    contract = metadata.get("experiment_contract", {})
+    if contract.get("baseline_id") != baseline:
         raise ValueError(f"{baseline} bundle has mismatched experiment contract")
+    if (
+        dataset_manifest_sha256 is not None
+        and contract.get("dataset_manifest_sha256") != dataset_manifest_sha256
+    ):
+        raise ValueError(f"{baseline} bundle dataset manifest SHA mismatch")
+    if (
+        split_manifest_sha256 is not None
+        and contract.get("split_manifest_sha256") != split_manifest_sha256
+    ):
+        raise ValueError(f"{baseline} bundle split manifest SHA mismatch")
     semantics = metadata.get("checkpoint_semantics", {})
     if (
-        semantics.get("real_control_allowed") is not False
+        semantics.get("domain") != "sim"
+        or semantics.get("source_action_domain") != "actuator_speed_cmd"
+        or semantics.get("real_control_allowed") is not False
         or semantics.get("evidence_scope") != "recorded-observation/offline"
     ):
         raise ValueError(f"{baseline} checkpoint semantics are unsafe")
     checkpoint = path / "policy_best.ckpt"
+    resolved_config = path / "resolved_config.yaml"
+    dataset_stats = path / "dataset_stats.pkl"
     return {
         "root": path,
         "metadata": metadata,
+        "experiment_id": str(contract.get("experiment_id", "")),
         "checkpoint_sha256": sha256_file(checkpoint),
+        "run_metadata_sha256": sha256_file(path / "run_metadata.json"),
+        "resolved_config_sha256": sha256_file(resolved_config),
+        "dataset_stats_sha256": sha256_file(dataset_stats),
     }
+
+
+def _validate_matched_bundle_contracts(
+    bundles: Mapping[str, Mapping[str, Any]],
+) -> None:
+    if set(bundles) != {"B0", "B1", "B2"}:
+        raise ValueError("matched habit bundles must contain B0, B1, and B2")
+    contracts = {
+        baseline: package["metadata"]["experiment_contract"]
+        for baseline, package in bundles.items()
+    }
+    expected_condition = {
+        "B0": "absent",
+        "B1": "cycle_condition_v1_dump_end_gated_low_dim",
+        "B2": "cycle_condition_v1_dump_end_gated_low_dim",
+    }
+    for baseline, expected in expected_condition.items():
+        if contracts[baseline].get("condition_input") != expected:
+            raise ValueError(f"{baseline} condition contract mismatch")
+        if contracts[baseline].get("held_out_test") != "locked_unread":
+            raise ValueError(f"{baseline} held-out contract is not locked")
+        if contracts[baseline].get("closed_loop_claim_allowed") is not False:
+            raise ValueError(f"{baseline} bundle permits a closed-loop claim")
+    b1_shuffle = contracts["B1"].get("condition_shuffle_provenance", {})
+    b2_shuffle = contracts["B2"].get("condition_shuffle_provenance", {})
+    if b1_shuffle.get("enabled") is not False:
+        raise ValueError("B1 must use the correct, unshuffled condition")
+    if (
+        b2_shuffle.get("enabled") is not True
+        or b2_shuffle.get("scope")
+        != "train_committed_valid_starts_within_current_sector"
+        or b2_shuffle.get("pre_commit_rows_unchanged") is not True
+        or b2_shuffle.get("current_sector_unchanged") is not True
+    ):
+        raise ValueError("B2 matched-shuffle provenance is incomplete")
+    if bundles["B1"]["dataset_stats_sha256"] != bundles["B2"]["dataset_stats_sha256"]:
+        raise ValueError("B1/B2 normalization statistics differ")
 
 
 def _aggregate_validation_metrics(
