@@ -15,6 +15,9 @@ CONTROL_PORT="${EXCAVATOR_CONTROL_PORT:-8766}"
 GATEWAY_HOST="${EXCAVATOR_GATEWAY_HOST:-127.0.0.1}"
 GATEWAY_PORT="${EXCAVATOR_GATEWAY_PORT:-8765}"
 RECEIVER_PORT="${EXCAVATOR_REMOTE_ACTION_PORT:-8770}"
+TRANSITION_SESSION_DIR="${EXCAVATOR_TRANSITION_SESSION_DIR:-}"
+TRANSITION_CONTROL_PORT="${EXCAVATOR_TRANSITION_CONTROL_PORT:-8771}"
+TRANSITION_CONTROL_BIND_HOST="${EXCAVATOR_TRANSITION_CONTROL_BIND_HOST:-0.0.0.0}"
 CAN_IF="${EXCAVATOR_CAN_IF:-can2}"
 IMU_IF="${EXCAVATOR_IMU_IF:-can5}"
 CAN_BITRATE="${EXCAVATOR_CAN_BITRATE:-250000}"
@@ -124,6 +127,8 @@ Common environment overrides:
   EXCAVATOR_GMSL_PREPROCESS_BIN=/media/mundane/D/Excavator_real_stack/tools/gmsl_realtime_capture/build/gmsl_realtime_preprocess_probe
   EXCAVATOR_GMSL_GATEWAY_CAMERAS=video4=excavator_gmsl_video4,video5=excavator_gmsl_video5,video6=excavator_gmsl_video6,video7=excavator_gmsl_video7
   EXCAVATOR_RECEIVER_INPUT=remote
+  EXCAVATOR_TRANSITION_SESSION_DIR=/media/mundane/EXTERNAL_USB/real_transition_raw_v1/session_<id>
+  EXCAVATOR_TRANSITION_CONTROL_PORT=8771
   EXCAVATOR_RECEIVER_RECORD_MODE=config       # config | record | no-record
   EXCAVATOR_POLICY_OUTPUT_MODE=control        # optional for policy/policy_remote
   EXCAVATOR_POLICY_ACTION_SCALE=1.0           # optional for policy/policy_remote
@@ -469,6 +474,9 @@ start_stack() {
   require_port_free "${GATEWAY_PORT}" gateway
   if [[ "${no_receiver}" != "1" ]]; then
     require_port_free "${RECEIVER_PORT}" receiver
+    if [[ -n "${TRANSITION_SESSION_DIR}" ]]; then
+      require_port_free "${TRANSITION_CONTROL_PORT}" transition-task
+    fi
   fi
 
   prepare_start "${no_camera}"
@@ -485,6 +493,7 @@ start_stack() {
     printf 'hardware\n' >"${IMU_MODE_FILE}"
   fi
   export ROOT_DIR CONTROL_HOST CONTROL_PORT GATEWAY_HOST GATEWAY_PORT RECEIVER_PORT
+  export TRANSITION_SESSION_DIR TRANSITION_CONTROL_PORT TRANSITION_CONTROL_BIND_HOST
   export CAN_IF IMU_IF IMU_RAW_CAN_LOG_IF DATASET_DIR CONFIG_PATH RECEIVER_INPUT RECEIVER_RECORD_MODE
   export EXCAVATOR_NO_IMU="${no_imu}"
   export EXCAVATOR_IMU_PLACEHOLDER="${no_imu}"
@@ -642,6 +651,13 @@ start_stack() {
       if [[ -n "${TEST_LOG_DIR}" ]]; then
         extra_args+=(--test-log-dir "${TEST_LOG_DIR}")
       fi
+      if [[ -n "${TRANSITION_SESSION_DIR}" ]]; then
+        extra_args+=(
+          --transition-session-dir "${TRANSITION_SESSION_DIR}"
+          --transition-control-port "${TRANSITION_CONTROL_PORT}"
+          --transition-control-bind-host "${TRANSITION_CONTROL_BIND_HOST}"
+        )
+      fi
       exec python -m testbed.cli.record_real \
         --config "${CONFIG_PATH}" \
         --data-side slave \
@@ -661,6 +677,9 @@ start_stack() {
         "${extra_args[@]}"
     '
     wait_for_port "${GATEWAY_HOST}" "${RECEIVER_PORT}" receiver
+    if [[ -n "${TRANSITION_SESSION_DIR}" ]]; then
+      wait_for_port "127.0.0.1" "${TRANSITION_CONTROL_PORT}" transition-task
+    fi
   fi
 
   log "started. log dir: $(log_dir)"
@@ -702,6 +721,10 @@ status_stack() {
     pids="$(port_pids "${name#*:}" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
     printf 'port %-16s %s\n' "${name}" "${pids:-free}"
   done
+  if [[ -n "${TRANSITION_SESSION_DIR}" ]]; then
+    pids="$(port_pids "${TRANSITION_CONTROL_PORT}" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+    printf 'port %-16s %s\n' "transition-task:${TRANSITION_CONTROL_PORT}" "${pids:-free}"
+  fi
   if findmnt "${USB_MOUNT}" >/dev/null 2>&1; then
     printf 'usb mounted: %s\n' "${USB_MOUNT}"
   else

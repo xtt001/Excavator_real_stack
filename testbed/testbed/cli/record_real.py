@@ -679,6 +679,27 @@ def main(prog: str = "tb-record-real") -> None:
         default=None,
         help="Override test-log FPV capture interval without changing the deployment config.",
     )
+    parser.add_argument(
+        "--transition-session-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Enable expert real-transition recording and use this pre-generated "
+            "session directory. The directory must contain sequence_manifest.json, "
+            "split_manifest.json, and home_side_contract.json."
+        ),
+    )
+    parser.add_argument(
+        "--transition-control-port",
+        type=int,
+        default=None,
+        help="Override real_transition.control.port (default 8771).",
+    )
+    parser.add_argument(
+        "--transition-control-bind-host",
+        default=None,
+        help="Override real_transition.control.bind_host.",
+    )
     args = parser.parse_args()
     if args.live_action_line or args.qc_dashboard:
         logging.getLogger().setLevel(logging.ERROR)
@@ -697,6 +718,7 @@ def main(prog: str = "tb-record-real") -> None:
     receiver_health_cfg = receiver_cfg.setdefault("health", {})
     receiver_online_qc_cfg = receiver_cfg.setdefault("online_qc", {})
     teleop_meta_cfg = teleop_cfg.setdefault("metadata", {})
+    transition_cfg = cfg.setdefault("real_transition", {})
 
     from testbed.cli.data_side import (
         apply_data_side_config,
@@ -750,6 +772,17 @@ def main(prog: str = "tb-record-real") -> None:
         test_log_cfg = teleop_cfg.setdefault("test_log", {})
         test_log_cfg["image_interval_steps"] = int(
             args.test_log_image_interval_steps
+        )
+    if args.transition_session_dir is not None:
+        transition_cfg["enabled"] = True
+        transition_cfg["session_dir"] = str(args.transition_session_dir)
+    if args.transition_control_port is not None:
+        transition_cfg.setdefault("control", {})["port"] = int(
+            args.transition_control_port
+        )
+    if args.transition_control_bind_host is not None:
+        transition_cfg.setdefault("control", {})["bind_host"] = str(
+            args.transition_control_bind_host
         )
     if args.operator_id is not None:
         teleop_meta_cfg["operator_id"] = args.operator_id
@@ -909,6 +942,57 @@ def main(prog: str = "tb-record-real") -> None:
     base_meta["runtime_argv"] = list(sys.argv)
     base_meta["runtime_pid"] = int(os.getpid())
 
+    transition_runtime = None
+    transition_server = None
+    if bool(transition_cfg.get("enabled", False)):
+        if input_device != "remote":
+            raise ValueError(
+                "expert real-transition recording requires teleop.input=remote; "
+                "policy and policy_remote are not allowed"
+            )
+        if not recording_enabled or not wait_for_record_start:
+            raise ValueError(
+                "expert real-transition recording requires recording.enabled=true "
+                "and recording.wait_for_start=true"
+            )
+        if go_home_config is not None:
+            raise ValueError(
+                "expert real-transition recording requires recording.go_home.enabled=false"
+            )
+        from testbed.tasks.real_transition_runtime import (
+            DEFAULT_TRANSITION_CONTROL_PORT,
+            TransitionTaskRuntime,
+            TransitionTaskServer,
+        )
+
+        transition_runtime = TransitionTaskRuntime.from_mapping(
+            transition_cfg,
+            config_dir=args.config.resolve().parent,
+            resolved_record_config_yaml=record_config_yaml,
+            repo_root=Path(__file__).resolve().parents[3],
+            session_metadata={
+                "machine_id": str(teleop_meta_cfg.get("machine_id", "")),
+                "operator_id": str(teleop_meta_cfg.get("operator_id", "")),
+            },
+        )
+        expected_session_id = str(teleop_meta_cfg.get("session_id", "")).strip()
+        actual_session_id = str(transition_runtime.status()["session_id"])
+        if expected_session_id and expected_session_id != actual_session_id:
+            raise ValueError(
+                "teleop.metadata.session_id does not match the frozen transition "
+                f"manifest: {expected_session_id!r} != {actual_session_id!r}"
+            )
+        control_cfg = dict(transition_cfg.get("control", {}) or {})
+        transition_server = TransitionTaskServer(
+            runtime=transition_runtime,
+            bind_host=str(control_cfg.get("bind_host", "0.0.0.0")),
+            port=int(control_cfg.get("port", DEFAULT_TRANSITION_CONTROL_PORT)),
+        )
+        transition_server.start()
+        base_meta["real_transition_enabled"] = 1
+        base_meta["real_transition_session_id"] = actual_session_id
+        base_meta["real_transition_condition_schema"] = "real_transition_condition_v1"
+
     log.info(
         "Real v1 config: data_side=%s backend=%s state_reader=%s input=%s "
         "episodes=%d max_steps=%d output=%s",
@@ -1037,6 +1121,8 @@ def main(prog: str = "tb-record-real") -> None:
         return path
 
     def _shutdown() -> None:
+        if transition_server is not None:
+            transition_server.close()
         try:
             action_source.close()
         except Exception:
@@ -1163,6 +1249,24 @@ def main(prog: str = "tb-record-real") -> None:
                         and record_session is None
                     ):
                         _, meta = _episode_metadata(episode_idx)
+                        if transition_runtime is not None:
+                            transition_status = transition_runtime.status()
+                            meta.update(
+                                {
+                                    "real_transition_run_id": str(
+                                        transition_status.get("run_id") or ""
+                                    ),
+                                    "real_transition_block_id": str(
+                                        transition_status.get("block_id") or ""
+                                    ),
+                                    "real_transition_split": str(
+                                        transition_status.get("split") or ""
+                                    ),
+                                    "real_transition_template_id": str(
+                                        transition_status.get("template_id") or ""
+                                    ),
+                                }
+                            )
                         record_session = RecordSession(
                             recorder_cls=EpisodeRecorder,
                             dataset_dir=dataset_dir,
@@ -1170,7 +1274,14 @@ def main(prog: str = "tb-record-real") -> None:
                             episode_idx=episode_idx,
                             metadata=meta,
                             camera_names=camera_names,
+                            save_path=(
+                                transition_runtime.active_raw_path
+                                if transition_runtime is not None
+                                else None
+                            ),
                         )
+                        if transition_runtime is not None:
+                            transition_runtime.attach_recording(episode_idx=episode_idx)
                         receiver_mode = "recording"
                         record_start_pending = False
                         log.info("Record session episode %d starts on this frame.", episode_idx)
@@ -1391,7 +1502,33 @@ def main(prog: str = "tb-record-real") -> None:
                         log.info("Receiver health recovered; mode=armed.")
                         live_line.message("mode=armed health=OK")
 
-                    if recording_enabled and wait_for_record_start and record_start_requested:
+                    if transition_runtime is not None:
+                        transition_runtime.update_receiver_state(
+                            mode=receiver_mode,
+                            health_ok=(
+                                receiver_health.ok
+                                and not _online_qc_blocks_record_start(
+                                    online_qc_snapshot
+                                )
+                            ),
+                        )
+                        if transition_runtime.consume_record_start_request():
+                            if receiver_mode != "armed" or record_session is not None:
+                                raise RuntimeError(
+                                    "transition start was accepted outside the armed state"
+                                )
+                            record_start_pending = True
+                            log.info(
+                                "Transition task requested recorder start for episode %d.",
+                                episode_idx,
+                            )
+
+                    if (
+                        transition_runtime is None
+                        and recording_enabled
+                        and wait_for_record_start
+                        and record_start_requested
+                    ):
                         if receiver_mode == "armed" and record_session is None:
                             if receiver_health.ok and not _online_qc_blocks_record_start(
                                 online_qc_snapshot
@@ -1465,11 +1602,21 @@ def main(prog: str = "tb-record-real") -> None:
                                 home_status=home_status,
                                 message="saving_failed_health_record",
                             )
+                            if transition_runtime is not None:
+                                transition_runtime.abort_on_latest_step(
+                                    reason=str(receiver_health.error_code),
+                                    safety_stop=True,
+                                )
                             failed_path = record_session.save_failed(
                                 error_code=receiver_health.error_code,
                                 error_time_ns=error_time_ns,
                                 stop_reason=stop_reason,
                             )
+                            if transition_runtime is not None and failed_path is not None:
+                                transition_runtime.seal_saved_run(
+                                    raw_path=failed_path,
+                                    stop_reason=stop_reason,
+                                )
                             save_status = {
                                 "state": "failed",
                                 "episode_idx": int(episode_idx),
@@ -1555,6 +1702,14 @@ def main(prog: str = "tb-record-real") -> None:
                             home_status=home_status,
                             message="saving_failed_online_qc_record",
                         )
+                        if transition_runtime is not None:
+                            transition_runtime.abort_on_latest_step(
+                                reason=str(
+                                    online_qc_snapshot.error_code
+                                    or "online_qc_failed"
+                                ),
+                                safety_stop=False,
+                            )
                         failed_path = record_session.save_failed(
                             error_code=str(
                                 online_qc_snapshot.error_code or "online_qc_failed"
@@ -1562,6 +1717,11 @@ def main(prog: str = "tb-record-real") -> None:
                             error_time_ns=error_time_ns,
                             stop_reason="online_qc_failed",
                         )
+                        if transition_runtime is not None and failed_path is not None:
+                            transition_runtime.seal_saved_run(
+                                raw_path=failed_path,
+                                stop_reason="online_qc_failed",
+                            )
                         save_status = {
                             "state": "failed",
                             "episode_idx": int(episode_idx),
@@ -1790,18 +1950,115 @@ def main(prog: str = "tb-record-real") -> None:
                         step_diagnostics["go_home_start_reject_reason"] = (
                             go_home_start_reject_reason
                         )
+                        record_step_id = int(obs.get("step_id", local_step))
+                        record_step_ns = _record_step_timestamp_ns(
+                            obs, fallback=action_send_ns
+                        )
                         record_session.record_step(
                             obs=obs,
                             action=safe_action,
                             reward=0.0,
-                            step_id=int(obs.get("step_id", local_step)),
-                            step_ns=_record_step_timestamp_ns(
-                                obs, fallback=action_send_ns
-                            ),
+                            step_id=record_step_id,
+                            step_ns=record_step_ns,
                             action_src_type=action_info.source_type,
                             action_src_id=action_info.source_id,
                             diagnostics=step_diagnostics,
                         )
+                        if transition_runtime is not None:
+                            transition_runtime.update_recorded_step(
+                                step_id=record_step_id,
+                                step_ns=record_step_ns,
+                            )
+                            transition_stop = transition_runtime.consume_stop_request()
+                            if transition_stop is None and len(record_session) >= max_steps:
+                                transition_runtime.abort_on_latest_step(
+                                    reason="four_cycle_run_timeout",
+                                    safety_stop=False,
+                                )
+                                transition_stop = (
+                                    transition_runtime.consume_stop_request()
+                                )
+                            if transition_stop is not None:
+                                _hold_remote_control_zero(remote_control_loop)
+                                _force_zero_control(obs)
+                                receiver_mode = "saving"
+                                saved_steps = len(record_session)
+                                save_started_ns = time.time_ns()
+                                final_qc_snapshot = None
+                                if transition_stop.success:
+                                    (
+                                        saved_path,
+                                        saved_success,
+                                        final_qc_snapshot,
+                                    ) = _save_record_session_with_online_qc_final(
+                                        record_session,
+                                        online_qc_evaluator=online_qc_evaluator,
+                                        metadata_updates={
+                                            "record_stop_reason": transition_stop.stop_reason,
+                                        },
+                                    )
+                                else:
+                                    saved_path = record_session.save_failed(
+                                        error_code=transition_stop.stop_reason,
+                                        error_time_ns=time.time_ns(),
+                                        stop_reason=transition_stop.stop_reason,
+                                    )
+                                    saved_success = False
+                                if saved_path is None:
+                                    raise RuntimeError(
+                                        "transition recorder stopped without a raw HDF5 file"
+                                    )
+                                run_manifest = transition_runtime.seal_saved_run(
+                                    raw_path=saved_path,
+                                    stop_reason=transition_stop.stop_reason,
+                                )
+                                save_status = {
+                                    "state": (
+                                        "success"
+                                        if transition_stop.success and saved_success
+                                        else "failed"
+                                    ),
+                                    "episode_idx": int(episode_idx),
+                                    "steps": int(saved_steps),
+                                    "started_ns": int(save_started_ns),
+                                    "finished_ns": int(time.time_ns()),
+                                    "path": str(saved_path),
+                                    "success": int(
+                                        transition_stop.success and saved_success
+                                    ),
+                                    "error_code": (
+                                        ""
+                                        if transition_stop.success and saved_success
+                                        else transition_stop.stop_reason
+                                    ),
+                                    "transition_run_id": str(
+                                        run_manifest.get("run_id", "")
+                                    ),
+                                }
+                                if transition_stop.success and saved_success:
+                                    saved += 1
+                                    log.info(
+                                        "Saved sealed transition run %s: %d steps -> %s",
+                                        run_manifest.get("run_id", ""),
+                                        saved_steps,
+                                        saved_path,
+                                    )
+                                else:
+                                    log.warning(
+                                        "Saved sealed failed transition run %s: reason=%s path=%s",
+                                        run_manifest.get("run_id", ""),
+                                        transition_stop.stop_reason,
+                                        saved_path,
+                                    )
+                                record_session = None
+                                episode_idx += 1
+                                guard.reset()
+                                _release_remote_control(remote_control_loop)
+                                receiver_mode = (
+                                    "complete" if saved >= num_episodes else "armed"
+                                )
+                                record_start_pending = False
+                                break
                         if (
                             online_qc_snapshot is not None
                             and bool(getattr(online_qc_snapshot, "train_exclude", False))
@@ -2163,11 +2420,22 @@ def main(prog: str = "tb-record-real") -> None:
 
             if abort or saved >= num_episodes:
                 _stop_control_output(stop_reason=_runtime_stop_reason())
+            if transition_runtime is not None and record_session is not None:
+                transition_runtime.abort_on_latest_step(
+                    reason="interrupted" if abort else "recording_discard_requested",
+                    safety_stop=False,
+                )
+                discard = False
             interrupt_path = _save_interrupt_partial(
                 record_session,
                 discard=discard,
                 error_time_ns=time.time_ns(),
             )
+            if transition_runtime is not None and interrupt_path is not None:
+                transition_runtime.seal_saved_run(
+                    raw_path=interrupt_path,
+                    stop_reason="interrupted" if abort else "recording_discard_requested",
+                )
             if interrupt_path is not None:
                 live_line.message(f"failed steps={len(record_session)} path={interrupt_path}")
                 episode_idx += 1
@@ -2260,7 +2528,11 @@ def _build_control_pump_client(real_cfg: dict[str, Any], pump_cfg: dict[str, Any
     return _build_bridge_client(real_cfg, "bridge_tcp", "mock")
 
 
-def _load_yaml_config(path: Path) -> dict[str, Any]:
+def _load_yaml_config(
+    path: Path,
+    *,
+    _stack: tuple[Path, ...] = (),
+) -> dict[str, Any]:
     try:
         import yaml
     except ImportError as exc:
@@ -2269,8 +2541,35 @@ def _load_yaml_config(path: Path) -> dict[str, Any]:
             "or use the adapter/unit tests for no-dependency checks."
         ) from exc
 
+    path = path.resolve()
+    if path in _stack:
+        chain = " -> ".join(str(item) for item in (*_stack, path))
+        raise ValueError(f"config extends cycle: {chain}")
     with open(path) as f:
-        return dict(yaml.safe_load(f) or {})
+        value = yaml.safe_load(f) or {}
+    if not isinstance(value, dict):
+        raise ValueError(f"config must decode to a mapping: {path}")
+    overlay = dict(value)
+    base_value = overlay.pop("extends", None)
+    if base_value is None:
+        return overlay
+    if not isinstance(base_value, str) or not base_value.strip():
+        raise ValueError(f"config extends must be a non-empty path string: {path}")
+    base_path = Path(base_value).expanduser()
+    if not base_path.is_absolute():
+        base_path = path.parent / base_path
+    base = _load_yaml_config(base_path, _stack=(*_stack, path))
+    return _deep_merge_config(base, overlay)
+
+
+def _deep_merge_config(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in overlay.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge_config(dict(merged[key]), value)
+        else:
+            merged[key] = value
+    return merged
 
 
 def _dump_yaml_config(cfg: dict[str, Any]) -> str:
@@ -2499,10 +2798,12 @@ class RecordSession:
         episode_idx: int,
         metadata: dict[str, Any],
         camera_names: list[str],
+        save_path: Path | None = None,
     ) -> None:
         self.episode_idx = int(episode_idx)
         self.dataset_dir = Path(dataset_dir)
         self.failed_dir = Path(failed_dir)
+        self.save_path = Path(save_path) if save_path is not None else None
         self.recorder = recorder_cls(
             output_dir=self.dataset_dir,
             episode_idx=self.episode_idx,
@@ -2533,6 +2834,7 @@ class RecordSession:
     def save_success(self, *, metadata_updates: dict[str, Any] | None = None) -> Path:
         return self.recorder.save(
             success=True,
+            path=self.save_path,
             metadata_updates=metadata_updates,
         )
 
@@ -2547,7 +2849,9 @@ class RecordSession:
         if len(self.recorder) == 0:
             return None
         stamp = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%S.%fZ")
-        path = self.failed_dir / f"episode_{self.episode_idx}_failed_{stamp}.hdf5"
+        path = self.save_path or (
+            self.failed_dir / f"episode_{self.episode_idx}_failed_{stamp}.hdf5"
+        )
         updates = {
             "record_stop_reason": stop_reason,
             "record_error_code": str(error_code),

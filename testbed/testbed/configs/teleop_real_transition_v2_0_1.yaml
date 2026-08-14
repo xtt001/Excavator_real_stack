@@ -1,0 +1,44 @@
+# Expert-only continuous four-cycle recording profile for v2.0.1.
+#
+# The session directory is intentionally not hard-coded. Pass the frozen field
+# directory with --transition-session-dir (the field wrapper does this). This
+# profile never loads a policy and disables go-home during a continuous run.
+extends: teleop_real_v1.yaml
+
+teleop:
+  input: remote
+  num_episodes: 24
+  metadata:
+    session_id: ""
+    notes: "v2.0.1 expert real-transition recording"
+  joystick:
+    record_start_button: null
+    policy_start_button: null
+    go_home_button: null
+  recording:
+    enabled: true
+    wait_for_start: true
+    go_home:
+      enabled: false
+
+task:
+  task_name: real_transition_expert_v2_0_1
+  dataset_dir: /media/mundane/EXTERNAL_USB/real_transition_raw_v1
+  # Four continuous cycles have a hard 4 minute recording ceiling at 50 Hz.
+  max_steps: 12000
+  param_version: real_transition_v2_0_1
+
+real_transition:
+  enabled: true
+  # Filled by --transition-session-dir on the field machine.
+  session_dir: ""
+  sequence_manifest: ""
+  split_manifest: ""
+  home_side_contract: ""
+  control:
+    bind_host: "0.0.0.0"
+    port: 8771
+  time_limits:
+    cycle_review_s: 45.0
+    cycle_stop_s: 60.0
+    run_stop_s: 240.0

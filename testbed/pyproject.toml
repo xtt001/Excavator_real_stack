@@ -53,6 +53,8 @@ tb-repair-bucket-qpos = "testbed.cli.repair_bucket_qpos:main"
 tb-build-20hz-dataset = "testbed.cli.build_20hz_dataset:main"
 tb-offline-policy-eval = "testbed.cli.offline_policy_eval:main"
 tb-build-online-qc-reference = "testbed.cli.build_online_qc_reference:main"
+tb-real-transition = "testbed.cli.real_transition:main"
+tb-real-transition-control = "testbed.cli.real_transition_control:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
