@@ -20,8 +20,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         prog="tb-real-transition",
         description=(
-            "Prepare immutable P0/P1 recording plans and verify sealed "
-            "real-transition run packages."
+            "Prepare immutable balanced multi-sequence recording plans and verify "
+            "sealed real-transition run packages."
         ),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)

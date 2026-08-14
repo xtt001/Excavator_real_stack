@@ -15,9 +15,18 @@ from testbed.tasks.home_side_contract import (
     validate_home_side_contract,
 )
 from testbed.tasks.real_transition import (
+    ATOMIC_TRANSITIONS,
+    DATA_CONTRACT_VERSION,
+    LEGACY_DATA_CONTRACT_VERSION,
+    LEGACY_RUN_MANIFEST_SCHEMA,
+    LEGACY_SEQUENCE_MANIFEST_SCHEMA,
+    LEGACY_TASK_EVENT_SCHEMA,
     REQUIRED_GOAL_ACK_SOURCES,
+    RUN_MANIFEST_SCHEMA,
+    SEQUENCE_MANIFEST_SCHEMA,
     TransitionContractError,
     TransitionRunPackage,
+    TransitionRunSpec,
     build_session_manifests,
     find_run_spec,
     prepare_session_directory,
@@ -50,7 +59,11 @@ class RealTransitionPlanTest(unittest.TestCase):
         self.assertEqual(
             config["task"]["camera_names"], ["video4", "video5", "video6", "video7"]
         )
-        self.assertEqual(config["task"]["max_steps"], 12000)
+        self.assertEqual(config["task"]["max_steps"], 15000)
+        self.assertEqual(
+            config["real_transition"]["time_limits"]["run_stop_s_per_cycle"],
+            60.0,
+        )
         self.assertEqual(config["receiver"]["health"]["mode"], "strict")
 
     def test_plan_is_deterministic_balanced_and_split_by_block(self) -> None:
@@ -66,20 +79,91 @@ class RealTransitionPlanTest(unittest.TestCase):
         )
         self.assertEqual(first_sequence, second_sequence)
         self.assertEqual(first_split, second_split)
+        self.assertEqual(first_sequence["schema"], SEQUENCE_MANIFEST_SCHEMA)
+        self.assertEqual(first_sequence["data_contract_version"], DATA_CONTRACT_VERSION)
+        summary = summarize_sequence_manifest(first_sequence)
         self.assertEqual(
-            summarize_sequence_manifest(first_sequence),
+            summary["blocks"],
+            {"locked_test": 1, "train": 4, "validation": 1},
+        )
+        self.assertEqual(
+            summary["runs"],
+            {"locked_test": 4, "train": 16, "validation": 4},
+        )
+        self.assertEqual(
+            summary["cycles"],
+            {"locked_test": 16, "train": 64, "validation": 16},
+        )
+        self.assertEqual(summary["cycle_lengths"], {"3": 8, "4": 8, "5": 8})
+        self.assertEqual(
+            summary["transitions"],
+            {transition: 24 for transition in ATOMIC_TRANSITIONS},
+        )
+        self.assertEqual(
+            summary["transitions_by_priority_tier"],
             {
-                "blocks": {"locked_test": 1, "train": 4, "validation": 1},
-                "runs": {"locked_test": 4, "train": 16, "validation": 4},
-                "cycles": {"locked_test": 16, "train": 64, "validation": 16},
-                "transitions": {
-                    "A->A": 24,
-                    "A->B": 24,
-                    "B->A": 24,
-                    "B->B": 24,
+                "minimum_64_cycle": {
+                    transition: 16 for transition in ATOMIC_TRANSITIONS
+                },
+                "train_expansion_96_cycle": {
+                    transition: 8 for transition in ATOMIC_TRANSITIONS
                 },
             },
         )
+        self.assertEqual(summary["unique_sequence_count"], 24)
+        self.assertEqual(
+            summary["matched_start_pairs_by_split"],
+            {"locked_test": 2, "train": 8, "validation": 2},
+        )
+        self.assertEqual(
+            summary["pair_first_targets_by_balance_group"],
+            {
+                group: {
+                    "A": {"A": 1, "B": 1},
+                    "B": {"A": 1, "B": 1},
+                }
+                for group in ("evaluation", "minimum_train", "train_expansion")
+            },
+        )
+        all_sequences = [
+            tuple(run["sequence"])
+            for block in first_sequence["blocks"]
+            for run in block["runs"]
+        ]
+        self.assertEqual(len(set(all_sequences)), 24)
+        self.assertNotIn(("A", "B", "B", "A", "A"), all_sequences)
+        self.assertNotIn(("B", "A", "A", "B", "B"), all_sequences)
+        for block in first_sequence["blocks"]:
+            runs = block["runs"]
+            self.assertEqual(
+                {
+                    f"{run['initial_side']}->{run['scripted_targets'][0]}"
+                    for run in runs
+                },
+                set(ATOMIC_TRANSITIONS),
+            )
+            for cycle_index in range(3):
+                self.assertEqual(
+                    sorted(run["scripted_targets"][cycle_index] for run in runs),
+                    ["A", "A", "B", "B"],
+                )
+            pair_ids = {run["matched_start_pair_id"] for run in runs}
+            self.assertEqual(len(pair_ids), 2)
+            for pair_id in pair_ids:
+                members = [
+                    run for run in runs if run["matched_start_pair_id"] == pair_id
+                ]
+                self.assertEqual(
+                    {run["matched_start_pair_member_rank"] for run in members},
+                    {0, 1},
+                )
+                self.assertEqual(
+                    abs(
+                        members[0]["run_rank_in_block"]
+                        - members[1]["run_rank_in_block"]
+                    ),
+                    1,
+                )
         core_blocks = [
             block
             for block in first_sequence["blocks"]
@@ -90,6 +174,38 @@ class RealTransitionPlanTest(unittest.TestCase):
             sorted(block["split"] for block in core_blocks),
             ["locked_test", "train", "train", "validation"],
         )
+
+        other_sequence, _ = build_session_manifests(
+            session_id="field_20260813",
+            seed=20260814,
+            created_at_utc="2026-08-13T00:00:00Z",
+        )
+        self.assertNotEqual(
+            [
+                run["sequence_id"]
+                for block in first_sequence["blocks"]
+                for run in block["runs"]
+            ],
+            [
+                run["sequence_id"]
+                for block in other_sequence["blocks"]
+                for run in block["runs"]
+            ],
+        )
+
+    def test_core_run_contract_accepts_seven_cycles(self) -> None:
+        spec = TransitionRunSpec(
+            session_id="free01",
+            block_id="b01",
+            run_id="b01_r01",
+            split="train",
+            sequence_id="L7_ABAABBAB",
+            collection_rank=0,
+            run_rank_in_block=0,
+            sequence=tuple("ABAABBAB"),
+        )
+        spec.validate()
+        self.assertEqual(spec.cycle_count, 7)
 
     def test_prepare_is_idempotent_but_rejects_changed_frozen_plan(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -153,32 +269,126 @@ class RealTransitionRunPackageTest(unittest.TestCase):
                 self.assertEqual(saved_path, raw_path)
                 self.assertTrue(raw_path.is_file())
 
-    def test_four_cycle_round_trip_and_checksum_verification(self) -> None:
+    def test_variable_cycle_round_trip_and_checksum_verification(self) -> None:
+        sequence, _ = build_session_manifests(
+            session_id="s01",
+            seed=11,
+            created_at_utc="2026-08-13T00:00:00Z",
+        )
+        specs_by_length = {}
+        for block in sequence["blocks"]:
+            for run in block["runs"]:
+                spec = find_run_spec(sequence, run["run_id"])
+                specs_by_length.setdefault(spec.cycle_count, spec)
+
+        for cycle_count in (3, 4, 5):
+            with self.subTest(
+                cycle_count=cycle_count
+            ), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                spec = specs_by_length[cycle_count]
+                run_dir = root / f"block_{spec.block_id}" / f"run_{spec.run_id}"
+                package = TransitionRunPackage(run_dir=run_dir, run_spec=spec)
+                n_rows = 2 + cycle_count * 7
+                self._write_raw(run_dir / "raw.hdf5", n_rows=n_rows)
+                package.start_run(step_id=0, step_ns=self._step_ns(0))
+                package.mark_initial_ready(step_id=1, step_ns=self._step_ns(1))
+                last_step = 1
+                for cycle_index in range(cycle_count):
+                    base = 2 + cycle_index * 7
+                    package.commit_next_goal(
+                        step_id=base,
+                        step_ns=self._step_ns(base),
+                        commit_ack_sources=REQUIRED_GOAL_ACK_SOURCES,
+                        expected_return_swing_sign=(-1 if cycle_index % 2 else 1),
+                    )
+                    package.mark_dump_end(
+                        step_id=base + 3,
+                        step_ns=self._step_ns(base + 3),
+                    )
+                    package.mark_target_ready(
+                        step_id=base + 6,
+                        step_ns=self._step_ns(base + 6),
+                        realized_target_side=spec.targets[cycle_index],
+                    )
+                    last_step = base + 6
+                package.complete_run(
+                    step_id=last_step,
+                    step_ns=self._step_ns(last_step),
+                )
+
+                sequence_path = root / "sequence_manifest.json"
+                sequence_path.write_text(
+                    json.dumps(sequence, sort_keys=True) + "\n", encoding="utf-8"
+                )
+                home_contract = root / "home_side_contract.json"
+                home_contract.write_text(
+                    '{"schema":"home_side_contract_v1"}\n', encoding="utf-8"
+                )
+                resolved = root / "resolved_record_config.yaml"
+                resolved.write_text("task: real_transition\n", encoding="utf-8")
+                manifest = package.seal(
+                    git_commit="a" * 40,
+                    resolved_config_sha256=sha256_file(resolved),
+                    owner_artifacts={
+                        "sequence_manifest": sequence_path,
+                        "home_side_contract": home_contract,
+                        "resolved_record_config": resolved,
+                    },
+                    field_context={"workface_reset_id": "wf01"},
+                )
+                self.assertEqual(manifest["schema"], RUN_MANIFEST_SCHEMA)
+                self.assertEqual(manifest["status"], "complete")
+                self.assertEqual(manifest["completed_cycles"], cycle_count)
+                self.assertEqual(manifest["realized_targets"], list(spec.targets))
+
+                report = verify_run_package(run_dir)
+                self.assertEqual(report["status"], "PASS")
+                self.assertEqual(
+                    report["event_summary"]["goal_commits"], cycle_count
+                )
+                self.assertEqual(
+                    report["alignment"]["n_events"], 3 * cycle_count + 3
+                )
+
+                with (run_dir / "task_events.jsonl").open(
+                    "a", encoding="utf-8"
+                ) as handle:
+                    handle.write("{}\n")
+                with self.assertRaisesRegex(
+                    TransitionContractError, "checksum mismatch"
+                ):
+                    verify_run_package(run_dir)
+
+    def test_legacy_four_cycle_package_remains_verifiable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            sequence, _ = build_session_manifests(
-                session_id="s01",
-                seed=11,
-                created_at_utc="2026-08-13T00:00:00Z",
+            spec = TransitionRunSpec(
+                session_id="legacy01",
+                block_id="b01",
+                run_id="b01_r01",
+                split="train",
+                sequence_id="legacy_P0",
+                collection_rank=0,
+                run_rank_in_block=0,
+                sequence=("A", "B", "B", "A", "A"),
+                manifest_schema=LEGACY_SEQUENCE_MANIFEST_SCHEMA,
+                data_contract_version=LEGACY_DATA_CONTRACT_VERSION,
+                task_event_schema=LEGACY_TASK_EVENT_SCHEMA,
+                run_manifest_schema=LEGACY_RUN_MANIFEST_SCHEMA,
+                legacy_template_id="P0",
             )
-            spec = next(
-                find_run_spec(sequence, run["run_id"])
-                for block in sequence["blocks"]
-                for run in block["runs"]
-                if run["template_id"] == "P0"
-            )
-            run_dir = root / f"block_{spec.block_id}" / f"run_{spec.run_id}"
-            package = TransitionRunPackage(run_dir=run_dir, run_spec=spec)
-            self._write_raw(run_dir / "raw.hdf5", n_rows=32)
+            package = TransitionRunPackage(run_dir=root / "run", run_spec=spec)
+            self._write_raw(package.raw_path, n_rows=30)
             package.start_run(step_id=0, step_ns=self._step_ns(0))
             package.mark_initial_ready(step_id=1, step_ns=self._step_ns(1))
+            last_step = 1
             for cycle_index in range(4):
                 base = 2 + cycle_index * 7
                 package.commit_next_goal(
                     step_id=base,
                     step_ns=self._step_ns(base),
                     commit_ack_sources=REQUIRED_GOAL_ACK_SOURCES,
-                    expected_return_swing_sign=(-1 if cycle_index % 2 else 1),
                 )
                 package.mark_dump_end(
                     step_id=base + 3,
@@ -188,40 +398,19 @@ class RealTransitionRunPackageTest(unittest.TestCase):
                     step_id=base + 6,
                     step_ns=self._step_ns(base + 6),
                 )
-            package.complete_run(step_id=30, step_ns=self._step_ns(30))
-
-            sequence_path = root / "sequence_manifest.json"
-            sequence_path.write_text(
-                json.dumps(sequence, sort_keys=True) + "\n", encoding="utf-8"
+                last_step = base + 6
+            package.complete_run(
+                step_id=last_step,
+                step_ns=self._step_ns(last_step),
             )
-            home_contract = root / "home_side_contract.json"
-            home_contract.write_text(
-                '{"schema":"home_side_contract_v1"}\n', encoding="utf-8"
+            owner = root / "owner.json"
+            owner.write_text("{}\n", encoding="utf-8")
+            package.seal(
+                git_commit="b" * 40,
+                resolved_config_sha256="c" * 64,
+                owner_artifacts={"owner": owner},
             )
-            resolved = root / "resolved_record_config.yaml"
-            resolved.write_text("task: real_transition\n", encoding="utf-8")
-            manifest = package.seal(
-                git_commit="a" * 40,
-                resolved_config_sha256=sha256_file(resolved),
-                owner_artifacts={
-                    "sequence_manifest": sequence_path,
-                    "home_side_contract": home_contract,
-                    "resolved_record_config": resolved,
-                },
-                field_context={"workface_reset_id": "wf01"},
-            )
-            self.assertEqual(manifest["status"], "complete")
-            self.assertEqual(manifest["completed_cycles"], 4)
-
-            report = verify_run_package(run_dir)
-            self.assertEqual(report["status"], "PASS")
-            self.assertEqual(report["event_summary"]["goal_commits"], 4)
-            self.assertEqual(report["alignment"]["n_events"], 15)
-
-            with (run_dir / "task_events.jsonl").open("a", encoding="utf-8") as handle:
-                handle.write("{}\n")
-            with self.assertRaisesRegex(TransitionContractError, "checksum mismatch"):
-                verify_run_package(run_dir)
+            self.assertEqual(verify_run_package(package.run_dir)["status"], "PASS")
 
     def test_seal_rejects_event_time_not_present_in_hdf5(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -327,9 +516,22 @@ class RealTransitionRuntimeTest(unittest.TestCase):
                 run_stop_s=1.0,
             )
             runtime.update_receiver_state(mode="armed", health_ok=True)
+            with self.assertRaisesRegex(
+                TransitionContractError, "requires workface_action"
+            ):
+                runtime.handle_command(
+                    "start-run",
+                    {"field_context": {"workface_reset_id": "wf01"}},
+                )
+            self.assertFalse(any(session_dir.glob("block_*")))
             runtime.handle_command(
                 "start-run",
-                {"field_context": {"workface_reset_id": "wf01"}},
+                {
+                    "field_context": {
+                        "workface_reset_id": "wf01",
+                        "workface_action": "restore",
+                    }
+                },
             )
             runtime.handle_command("initial-ready")
             self.assertTrue(runtime.consume_record_start_request())
@@ -388,10 +590,16 @@ class RealTransitionRuntimeTest(unittest.TestCase):
                         "field_context": {
                             "workface_reset_id": "wf01",
                             "workface_action": "restore",
+                            "planned_sequence_id": "must_not_override_manifest",
                         }
                     },
                 )
                 self.assertTrue(started["active"])
+                cycle_count = int(started["planned_cycle_count"])
+                self.assertIn(cycle_count, {3, 4, 5})
+                self.assertEqual(
+                    started["time_limits_s"]["run_stop"], 60.0 * cycle_count
+                )
                 self.assertFalse(runtime.consume_record_start_request())
                 send_transition_command(
                     host="127.0.0.1",
@@ -400,7 +608,8 @@ class RealTransitionRuntimeTest(unittest.TestCase):
                 )
                 self.assertTrue(runtime.consume_record_start_request())
                 runtime.attach_recording(episode_idx=0)
-                for step in range(32):
+                n_rows = 2 + cycle_count * 7
+                for step in range(n_rows):
                     runtime.update_recorded_step(
                         step_id=step,
                         step_ns=RealTransitionRunPackageTest._step_ns(step),
@@ -409,24 +618,26 @@ class RealTransitionRuntimeTest(unittest.TestCase):
                     if cycle_offset >= 0:
                         within = cycle_offset % 7
                         cycle = cycle_offset // 7
-                        if cycle < 4 and within == 0:
+                        if cycle < cycle_count and within == 0:
                             send_transition_command(
                                 host="127.0.0.1",
                                 port=server.port,
                                 command="commit-goal",
                                 payload={"display_ack": True},
                             )
-                        elif cycle < 4 and within == 3:
+                        elif cycle < cycle_count and within == 3:
                             send_transition_command(
                                 host="127.0.0.1",
                                 port=server.port,
                                 command="dump-end",
                             )
-                        elif cycle < 4 and within == 6:
+                        elif cycle < cycle_count and within == 6:
+                            target = runtime.status()["next_target_side"]
                             send_transition_command(
                                 host="127.0.0.1",
                                 port=server.port,
                                 command="target-ready",
+                                payload={"realized_target_side": target},
                             )
                 stop = runtime.consume_stop_request()
                 self.assertIsNotNone(stop)
@@ -434,17 +645,78 @@ class RealTransitionRuntimeTest(unittest.TestCase):
                 self.assertTrue(stop.success)
                 RealTransitionRunPackageTest._write_raw(
                     runtime.active_raw_path,
-                    n_rows=32,
+                    n_rows=n_rows,
                 )
                 manifest = runtime.seal_saved_run(
                     raw_path=runtime.active_raw_path,
                     stop_reason=stop.stop_reason,
                 )
                 self.assertEqual(manifest["status"], "complete")
+                self.assertEqual(
+                    manifest["field_context"]["planned_sequence_id"],
+                    manifest["sequence_id"],
+                )
                 run_dir = Path(started["raw_path"]).parent
                 self.assertEqual(verify_run_package(run_dir)["status"], "PASS")
             finally:
                 server.close()
+
+    def test_realized_target_mismatch_aborts_without_consuming_next_goal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            prepared = prepare_session_directory(
+                output_root=root,
+                session_id="mismatch01",
+                seed=19,
+                created_at_utc="2026-08-13T00:00:00Z",
+            )
+            session_dir = Path(prepared["session_dir"])
+            home_contract = session_dir / "home_side_contract.json"
+            _write_valid_home_contract(home_contract)
+            runtime = TransitionTaskRuntime(
+                session_dir=session_dir,
+                sequence_manifest_path=prepared["sequence_manifest"],
+                split_manifest_path=prepared["split_manifest"],
+                home_side_contract_path=home_contract,
+                resolved_record_config_yaml="task: real_transition\n",
+                git_commit="f" * 40,
+            )
+            runtime.update_receiver_state(mode="armed", health_ok=True)
+            runtime.handle_command(
+                "start-run",
+                {
+                    "field_context": {
+                        "workface_reset_id": "wf01",
+                        "workface_action": "restore",
+                    }
+                },
+            )
+            runtime.handle_command("initial-ready")
+            self.assertTrue(runtime.consume_record_start_request())
+            runtime.attach_recording(episode_idx=0)
+            runtime.update_recorded_step(
+                step_id=0,
+                step_ns=RealTransitionRunPackageTest._step_ns(0),
+            )
+            runtime.handle_command("commit-goal", {"display_ack": True})
+            runtime.update_recorded_step(
+                step_id=1,
+                step_ns=RealTransitionRunPackageTest._step_ns(1),
+            )
+            runtime.handle_command("dump-end")
+            expected = runtime.status()["next_target_side"]
+            realized = "B" if expected == "A" else "A"
+            result = runtime.handle_command(
+                "target-ready",
+                {"realized_target_side": realized},
+            )
+            self.assertEqual(result["phase"], "aborted")
+            self.assertEqual(result["completed_cycles"], 0)
+            stop = runtime.consume_stop_request()
+            self.assertIsNotNone(stop)
+            assert stop is not None
+            self.assertFalse(stop.success)
+            self.assertEqual(stop.stop_reason, "realized_target_mismatch")
 
 
 class HomeSideContractTest(unittest.TestCase):

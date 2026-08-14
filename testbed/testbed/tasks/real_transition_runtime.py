@@ -20,7 +20,10 @@ from typing import Any
 
 from testbed.tasks.home_side_contract import validate_home_side_contract
 from testbed.tasks.real_transition import (
+    CONDITION_SCHEMA,
+    DATA_CONTRACT_VERSION,
     REQUIRED_GOAL_ACK_SOURCES,
+    SEQUENCE_MANIFEST_SCHEMA,
     TransitionContractError,
     TransitionRunPackage,
     TransitionRunSpec,
@@ -62,7 +65,8 @@ class TransitionTaskRuntime:
         session_metadata: Mapping[str, Any] | None = None,
         cycle_review_s: float = 45.0,
         cycle_stop_s: float = 60.0,
-        run_stop_s: float = 240.0,
+        run_stop_s: float | None = None,
+        run_stop_s_per_cycle: float = 60.0,
     ) -> None:
         self.session_dir = Path(session_dir).resolve()
         self.sequence_manifest_path = Path(sequence_manifest_path).resolve()
@@ -71,13 +75,26 @@ class TransitionTaskRuntime:
         self.git_commit = str(git_commit)
         self.cycle_review_s = float(cycle_review_s)
         self.cycle_stop_s = float(cycle_stop_s)
-        self.run_stop_s = float(run_stop_s)
-        if not (0.0 < self.cycle_review_s < self.cycle_stop_s <= self.run_stop_s):
+        self.run_stop_s = None if run_stop_s is None else float(run_stop_s)
+        self.run_stop_s_per_cycle = float(run_stop_s_per_cycle)
+        if not (0.0 < self.cycle_review_s < self.cycle_stop_s):
             raise TransitionContractError(
-                "transition time limits must satisfy 0 < cycle_review < cycle_stop <= run_stop"
+                "transition time limits must satisfy 0 < cycle_review < cycle_stop"
+            )
+        if self.run_stop_s is not None and self.run_stop_s < self.cycle_stop_s:
+            raise TransitionContractError(
+                "explicit run_stop_s must be at least cycle_stop_s"
+            )
+        if self.run_stop_s_per_cycle < self.cycle_stop_s:
+            raise TransitionContractError(
+                "run_stop_s_per_cycle must be at least cycle_stop_s"
             )
         self._lock = threading.RLock()
         self._manifest = load_sequence_manifest(self.sequence_manifest_path)
+        if self._manifest.get("schema") != SEQUENCE_MANIFEST_SCHEMA:
+            raise TransitionContractError(
+                "legacy P0/P1 sequence manifests are read-only; prepare a v2 session"
+            )
         self._split_manifest = load_split_manifest(
             self.split_manifest_path,
             sequence_manifest=self._manifest,
@@ -178,7 +195,14 @@ class TransitionTaskRuntime:
             session_metadata=session_metadata,
             cycle_review_s=float(time_limits.get("cycle_review_s", 45.0)),
             cycle_stop_s=float(time_limits.get("cycle_stop_s", 60.0)),
-            run_stop_s=float(time_limits.get("run_stop_s", 240.0)),
+            run_stop_s=(
+                None
+                if time_limits.get("run_stop_s") is None
+                else float(time_limits["run_stop_s"])
+            ),
+            run_stop_s_per_cycle=float(
+                time_limits.get("run_stop_s_per_cycle", 60.0)
+            ),
         )
 
     @property
@@ -334,7 +358,8 @@ class TransitionTaskRuntime:
             elif command == "commit-goal":
                 if not bool(payload.get("display_ack", False)):
                     raise TransitionContractError(
-                        "commit-goal requires display_ack=true after the target is visible"
+                        "commit-goal requires display_ack=true after the target "
+                        "is visible"
                     )
                 step_id, step_ns = self._require_latest_step()
                 sign_value = payload.get("expected_return_swing_sign")
@@ -357,18 +382,39 @@ class TransitionTaskRuntime:
                 )
             elif command == "target-ready":
                 step_id, step_ns = self._require_latest_step()
-                event = package.mark_target_ready(
-                    step_id=step_id,
-                    step_ns=step_ns,
-                    notes=str(payload.get("notes", "")),
-                )
+                realized_target_side = str(
+                    payload.get("realized_target_side", "")
+                ).strip()
+                if realized_target_side not in {"A", "B"}:
+                    raise TransitionContractError(
+                        "target-ready requires realized_target_side A or B"
+                    )
+                if realized_target_side != package.next_target_side:
+                    event = package.abort_run(
+                        step_id=step_id,
+                        step_ns=step_ns,
+                        reason="realized_target_mismatch",
+                        safety_stop=False,
+                        realized_target_side=realized_target_side,
+                    )
+                    self._stop_request = TransitionStopRequest(
+                        success=False,
+                        stop_reason="realized_target_mismatch",
+                    )
+                else:
+                    event = package.mark_target_ready(
+                        step_id=step_id,
+                        step_ns=step_ns,
+                        realized_target_side=realized_target_side,
+                        notes=str(payload.get("notes", "")),
+                    )
                 self._goal_commit_step_ns = None
                 self._timing_warning = ""
                 if package.phase == "cycles_complete":
                     package.complete_run(step_id=step_id, step_ns=step_ns)
                     self._stop_request = TransitionStopRequest(
                         success=True,
-                        stop_reason="four_cycles_complete",
+                        stop_reason="planned_cycles_complete",
                     )
             elif command == "intervention":
                 step_id, step_ns = self._require_latest_step()
@@ -411,8 +457,24 @@ class TransitionTaskRuntime:
                 "run_id": spec.run_id if spec is not None else None,
                 "block_id": spec.block_id if spec is not None else None,
                 "split": spec.split if spec is not None else None,
-                "template_id": spec.template_id if spec is not None else None,
+                "sequence_id": spec.sequence_id if spec is not None else None,
+                "legacy_template_id": (
+                    spec.legacy_template_id if spec is not None else None
+                ),
+                "matched_start_pair_id": (
+                    spec.matched_start_pair_id if spec is not None else None
+                ),
+                "paired_run_id": spec.paired_run_id if spec is not None else None,
+                "matched_start_pair_member_rank": (
+                    spec.matched_start_pair_member_rank
+                    if spec is not None
+                    else None
+                ),
                 "initial_side": spec.initial_side if spec is not None else None,
+                "planned_cycle_count": spec.cycle_count if spec is not None else None,
+                "planned_sequence": (
+                    list(spec.sequence) if spec is not None else None
+                ),
                 "phase": package.phase if package is not None else "idle",
                 "completed_cycles": package.cycle_index if package is not None else 0,
                 "next_target_side": (
@@ -433,14 +495,26 @@ class TransitionTaskRuntime:
                 "time_limits_s": {
                     "cycle_review": self.cycle_review_s,
                     "cycle_stop": self.cycle_stop_s,
-                    "run_stop": self.run_stop_s,
+                    "run_stop": (
+                        self._effective_run_stop_s(spec) if spec is not None else None
+                    ),
+                    "run_stop_per_cycle": self.run_stop_s_per_cycle,
+                    "max_planned_run_stop": max(
+                        self._effective_run_stop_s(run_spec)
+                        for run_spec in self._run_specs
+                    ),
                 },
+                "planned_run_count": len(self._run_specs),
+                "max_planned_cycle_count": max(
+                    run_spec.cycle_count for run_spec in self._run_specs
+                ),
             }
 
     def _start_run(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         if self._active_package is not None:
+            active_run_id = self._active_spec.run_id if self._active_spec else "?"
             raise TransitionContractError(
-                f"run {self._active_spec.run_id if self._active_spec else '?'} is already active"
+                f"run {active_run_id} is already active"
             )
         if self._receiver_mode != "armed":
             raise TransitionContractError(
@@ -454,11 +528,20 @@ class TransitionTaskRuntime:
             if requested_run_id
             else self._next_available_run()
         )
+        field_context = _validated_field_context(payload.get("field_context"))
         run_dir = self.session_dir / f"block_{spec.block_id}" / f"run_{spec.run_id}"
         package = TransitionRunPackage(run_dir=run_dir, run_spec=spec)
         self._active_spec = spec
         self._active_package = package
-        self._field_context = dict(payload.get("field_context", {}) or {})
+        self._field_context = field_context
+        self._field_context["planned_matched_start_pair_id"] = (
+            spec.matched_start_pair_id
+        )
+        self._field_context["planned_matched_start_pair_member_rank"] = (
+            spec.matched_start_pair_member_rank
+        )
+        self._field_context["planned_sequence_id"] = spec.sequence_id
+        self._field_context["planned_cycle_count"] = spec.cycle_count
         self._record_start_requested = False
         self._pending_initial_ready_notes = None
         self._stop_request = None
@@ -470,7 +553,8 @@ class TransitionTaskRuntime:
         self._timing_warning = ""
         result = self.status()
         result["message"] = (
-            "run selected; place the machine at initial_side, then send initial-ready"
+            "run selected; place the machine at initial_side, then send initial-ready; "
+            "targets are already frozen and must not be changed from field observations"
         )
         return result
 
@@ -511,13 +595,16 @@ class TransitionTaskRuntime:
         self._stop_request = None
         self._last_step_id = None
         self._last_step_ns = None
+        self._run_start_step_ns = None
+        self._goal_commit_step_ns = None
+        self._timing_warning = ""
 
     def _write_session_manifest(self, metadata: Mapping[str, Any]) -> Path:
         path = self.session_dir / "session_manifest.json"
         payload = {
-            "schema": "real_transition_session_manifest_v1",
-            "data_contract_version": "real_transition_raw_v1",
-            "condition_schema": "real_transition_condition_v1",
+            "schema": "real_transition_session_manifest_v2",
+            "data_contract_version": DATA_CONTRACT_VERSION,
+            "condition_schema": CONDITION_SCHEMA,
             "session_id": str(self._manifest["session_id"]),
             "prepared_at_utc": str(self._manifest.get("created_at_utc", "")),
             "recording_mode": "expert_teleop_only",
@@ -536,6 +623,7 @@ class TransitionTaskRuntime:
                 "resolved_record_config.yaml": self.resolved_config_sha256,
             },
             "raw_package_mutation_policy": "append_until_seal_then_immutable",
+            "sequence_mode": "seeded_balanced_frozen_multisequence",
         }
         write_immutable_text(
             path,
@@ -551,18 +639,24 @@ class TransitionTaskRuntime:
 
     def _evaluate_time_limits(self, *, step_id: int, step_ns: int) -> None:
         package = self._active_package
-        if package is None or package.phase in {"complete", "aborted", "sealed"}:
+        spec = self._active_spec
+        if (
+            package is None
+            or spec is None
+            or package.phase in {"complete", "aborted", "sealed"}
+        ):
             return
         run_elapsed = self._elapsed_s(self._run_start_step_ns, now_ns=step_ns)
-        if run_elapsed is not None and run_elapsed >= self.run_stop_s:
+        run_stop_s = self._effective_run_stop_s(spec)
+        if run_elapsed is not None and run_elapsed >= run_stop_s:
             package.abort_run(
                 step_id=step_id,
                 step_ns=step_ns,
-                reason="four_cycle_run_timeout",
+                reason="run_timeout",
             )
             self._stop_request = TransitionStopRequest(
                 success=False,
-                stop_reason="four_cycle_run_timeout",
+                stop_reason="run_timeout",
             )
             self._timing_warning = "run_stop"
             return
@@ -582,6 +676,11 @@ class TransitionTaskRuntime:
             self._timing_warning = "cycle_stop"
         elif cycle_elapsed >= self.cycle_review_s:
             self._timing_warning = "cycle_review"
+
+    def _effective_run_stop_s(self, spec: TransitionRunSpec) -> float:
+        if self.run_stop_s is not None:
+            return self.run_stop_s
+        return self.run_stop_s_per_cycle * spec.cycle_count
 
     def _elapsed_s(
         self,
@@ -793,6 +892,22 @@ def _resolve_optional_path(value: Any, *, default: Path, config_dir: Path) -> Pa
     return (config_dir / path).resolve() if not path.is_absolute() else path.resolve()
 
 
+def _validated_field_context(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise TransitionContractError(
+            "start-run requires a field_context object"
+        )
+    context = dict(value)
+    for field in ("workface_reset_id", "workface_action"):
+        text = str(context.get(field, "")).strip()
+        if not text:
+            raise TransitionContractError(
+                f"start-run field_context requires {field}"
+            )
+        context[field] = text
+    return context
+
+
 def _required_text(payload: Mapping[str, Any], field: str) -> str:
     value = str(payload.get(field, "")).strip()
     if not value:
@@ -810,6 +925,7 @@ def _git_commit(repo_root: Path) -> str:
     )
     if result.returncode != 0:
         raise TransitionContractError(
-            f"cannot resolve git commit for transition provenance: {result.stderr.strip()}"
+            "cannot resolve git commit for transition provenance: "
+            f"{result.stderr.strip()}"
         )
     return result.stdout.strip()

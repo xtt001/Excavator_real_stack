@@ -1,4 +1,4 @@
-# Expert-only continuous four-cycle recording profile for v2.0.1.
+# Expert-only continuous multi-sequence recording profile for v2.0.1.
 #
 # The session directory is intentionally not hard-coded. Pass the frozen field
 # directory with --transition-session-dir (the field wrapper does this). This
@@ -23,10 +23,11 @@ teleop:
 
 task:
   task_name: real_transition_expert_v2_0_1
-  dataset_dir: /media/mundane/EXTERNAL_USB/real_transition_raw_v1
-  # Four continuous cycles have a hard 4 minute recording ceiling at 50 Hz.
-  max_steps: 12000
-  param_version: real_transition_v2_0_1
+  dataset_dir: /media/mundane/EXTERNAL_USB/real_transition_raw_v2
+  # The current authorized profile has at most five cycles. The runtime applies
+  # the per-cycle timeout; this 50 Hz step ceiling is the matching final guard.
+  max_steps: 15000
+  param_version: real_transition_multisequence_v2_0_1
 
 real_transition:
   enabled: true
@@ -41,4 +42,4 @@ real_transition:
   time_limits:
     cycle_review_s: 45.0
     cycle_stop_s: 60.0
-    run_stop_s: 240.0
+    run_stop_s_per_cycle: 60.0

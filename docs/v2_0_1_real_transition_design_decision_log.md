@@ -1,20 +1,21 @@
 ---
-type: design-decision-log
+type: discussion-record
 project: Excavator Real Stack
 version: v2.0.1-real-transition
-status: accepted-for-current-prototype
+status: closed-with-final-scope-decision
 created: 2026-08-12
-updated: 2026-08-12
-execution_authority: docs/v2_0_1_real_transition_data_definition_and_recording_plan.md
+updated: 2026-08-14
+final_conclusion: docs/v2_0_1_real_transition_final_conclusion.md
+execution_authority: recording-sequence-implemented-offline-no-field-authority
 ---
 
-# v2.0.1 Real Transition 设计取舍记录
+# v2.0.1 Real Transition 讨论与设计取舍记录
 
 ## 1. 文件用途
 
-本文只记录 v2.0.1 方案形成过程中评估过的替代方案、否决理由和重新讨论条件。它不是现场任务卡、数据合同或执行依据。
+本文记录 v2.0.1 方案形成过程中的问题、替代方案、取舍和收敛过程。它不是现场任务卡、数据合同或执行依据。
 
-数采、处理、训练和验收均以《v2.0.1 Real Transition 数据定义与数据录制计划》为准。两份文件发生冲突时，以主计划为准。
+最终任务边界见《[v2.0.1 Real Transition 最终结论](v2_0_1_real_transition_final_conclusion.md)》。当前 sequence 和首次数采 profile 见《[实验执行序列设计](v2_0_1_real_transition_experiment_sequence_design.md)》。原《数据定义与数据录制计划》保留为旧版四-cycle P0/P1 基线记录，不再拥有新任务的执行权。
 
 ## 2. 已接受的设计
 
@@ -25,6 +26,8 @@ execution_authority: docs/v2_0_1_real_transition_data_definition_and_recording_p
 qpos、qvel 支持范围和视觉参考用于判断样本是否落在本批数据支持内，不用于把师傅拉到某个固定角度。
 
 ### D-02 ACT 学四种 transition，脚本 planner 决定顺序
+
+这是 2026-08-12 形成的首版实现决定。其中“ACT 学四种 transition”仍然有效，“每条 run 固定四个 cycle、只用 P0/P1”已被后续决策取代。
 
 首批数据平衡覆盖 `A→A`、`A→B`、`B→A`、`B→B`。每条 run 连续完成四个 cycle，用来分别观察原子 transition 和多铲组合。
 
@@ -46,7 +49,7 @@ qpos、qvel 支持范围和视觉参考用于判断样本是否落在本批数�
 
 ### D-05 原始数据连续录制，训练数据离线切分
 
-现场按完整四铲 run 保存原始数据；ready-to-ready cycle 在离线复核后生成。policy 和 temporal aggregation 只在 run 开始重置，cycle 边界只更新目标 lifecycle。
+现场按完整连续 run 保存原始数据；ready-to-ready cycle 在离线复核后生成。旧版 run 固定四铲，最终结论将 run 长度收敛为 3–5 个 cycle。policy 和 temporal aggregation 只在 run 开始重置，cycle 边界只更新目标 lifecycle。
 
 这一设计保留真实的多铲衔接，同时允许边界、condition 和 action mask 独立审计。
 
@@ -106,6 +109,59 @@ cycle 间重置会把连续四铲变成四次独立演示，无法验证真实�
 
 固定 P0/P1 只属于上层任务程序。ACT 训练文件按 cycle 独立切分，policy 输入明确排除模板 ID、cycle index 和后续目标。固定循环是否成功只证明 composition；condition 是否被使用，仍由 B0/B1/B2 和同一 observation 下切换 target side 的干预判断。
 
-## 4. 决策边界
+## 4. 首版决策边界
 
 上述取舍只对 v2.0.1 小批量真机 transition 原型有效。原型通过后扩大目标范围时，应根据新增任务重新评估目标坐标系、planner 顺序、感知输入和数据覆盖，不能把本轮左右二分类成功外推为任意位置或跨场地能力。
+
+## 5. 2026-08-14 后续讨论记录
+
+### 5.1 精确落点不是当前真机目标
+
+讨论过从 A/B 粗分类过渡到细网格、连续角度和地面投影坐标。结论是，作业精度应由上层任务真实需要决定。如果 ACT 的落点波动不改变下一步的安全性、可达性和物理效果，继续追求点位精度不会自动增加系统价值。
+
+当前真机原型只要求返回正确 A/B 区域，并准确记录实际结果。精确坐标、近远维度和自适应分辨率不进入本轮真机范围。
+
+### 5.2 仿真已经验证过离散 condition 机制
+
+仿真中已有离散区域 condition、目标干预和连续组合证据。真机不再完整重复网格研究，只保留最小的真实域迁移 Gate：确认真实视觉、液压响应、物理效果和连续 lifecycle 下，四种原子 cycle 仍能被外部目标调用。
+
+### 5.3 混合闭环是长期仿真方向
+
+讨论中提出将感知、作业地图、任务规划、局部路径、几何控制、Conditioned ACT 和结果反馈组成系统级闭环。这条路线比让单一 ACT 承担所有智能更适合长期工程目标。
+
+该方向先在仿真中探索。本轮真机不接入作业地图、感知规划、路径规划、混合控制路由或上层自主决策。仿真和真机未来通过稳定的 goal、capability 和 execution-result 接口汇合。
+
+### 5.4 真机任务收敛为四种原子 cycle
+
+最终术语不再使用“stay/switch 两种原子 cycle”。`stay` 和 `switch` 只是对称语义分组，真正的原子 cycle 有四种：
+
+1. `AA`：从 A ready 开始挖，完成后回到 A ready；
+2. `AB`：从 A ready 开始挖，完成后回到 B ready；
+3. `BA`：从 B ready 开始挖，完成后回到 A ready；
+4. `BB`：从 B ready 开始挖，完成后回到 B ready。
+
+单条真机 run 连续组合 3–5 个 cycle。前一 cycle 的 realized target 是后一 cycle 的 current side，中间不人工摆位、不重置 policy。上层脚本只逐 cycle 提交下一目标 A/B，不让 ACT 预测顺序。
+
+P0/P1 保留为旧版四-cycle 实现和可选诊断序列，不再代表最终任务定义，也不能单独支持“可组合执行”结论。
+
+### 5.5 固定顺序可能把地形变成目标捷径
+
+如果每条 run 都使用同一目标顺序，凹坑形态、土面新旧和 cycle 位置会与下一目标稳定绑定。模型即使忽略 condition，也可能通过当前画面猜出目标。训练时删除 template ID 和 cycle index 不能消除视觉中的这种关联。
+
+最终采用 seeded 多序列方案。目标在录制前生成并冻结，生成器不读取现场地形。首批 24 条 run 全部使用不同 sequence，并按长度、原子 transition、初始侧和前三个 cycle 位置平衡。P0/P1 从正式序列池中移除，只保留为诊断样例。
+
+讨论中还发现，只平衡 matched-start pair 内的 A/B 数量仍有漏洞。如果 A 目标总是 pair 中第一条，较新的土面仍可能预测 A。最终实现把 pair 的先后也纳入对消：在最小 train、train expansion、evaluation 三组中，每个初始侧都有一次 A 先和一次 B 先。
+
+sequence 平衡只能降低捷径，不能证明 condition 被使用。录制后仍要审计 target 与 cycle index、pair rank、workface/reset 和视觉地形特征的关联，并用 B0/B1/B2 与相同 observation 的目标干预做因果验证。
+
+### 5.6 3–5 是首次数采 profile，不是执行能力上限
+
+3、4、5 cycle 用于首批数据的长度覆盖和工程配额。底层 run spec、事件状态机和 package 改为接受任意正整数长度的有限目标序列。以后增加 6 次以上组合时，需要发布新的 collection profile、配额和 manifest 授权校验，不需要重写状态机。
+
+当前 profile 为 24 条 run、96 cycle。3/4/5 cycle run 各 8 条，四种原子 transition 各 24 个。前四个 block 组成 64-cycle 最小闭环包，后两个 train block 是 32-cycle expansion。数量用于首轮原型，不代表统计充分。
+
+## 6. 最终收敛
+
+本轮真机只研究一件事：在固定真机 context 和 A/B 区域下，Conditioned ACT 能否学会 `AA/AB/BA/BB` 四种完整 ready-to-ready 原子 cycle，并按外部逐-cycle 目标连续组合。本次录制和验收 profile 使用 3–5 次，底层执行合同不限制未来长度。
+
+新任务的权威表述和验收边界见《[v2.0.1 Real Transition 最终结论](v2_0_1_real_transition_final_conclusion.md)》。当前 sequence 数量、平衡和执行规则见《[实验执行序列设计](v2_0_1_real_transition_experiment_sequence_design.md)》。

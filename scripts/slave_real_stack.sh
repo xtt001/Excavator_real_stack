@@ -127,7 +127,7 @@ Common environment overrides:
   EXCAVATOR_GMSL_PREPROCESS_BIN=/media/mundane/D/Excavator_real_stack/tools/gmsl_realtime_capture/build/gmsl_realtime_preprocess_probe
   EXCAVATOR_GMSL_GATEWAY_CAMERAS=video4=excavator_gmsl_video4,video5=excavator_gmsl_video5,video6=excavator_gmsl_video6,video7=excavator_gmsl_video7
   EXCAVATOR_RECEIVER_INPUT=remote
-  EXCAVATOR_TRANSITION_SESSION_DIR=/media/mundane/EXTERNAL_USB/real_transition_raw_v1/session_<id>
+  EXCAVATOR_TRANSITION_SESSION_DIR=/media/mundane/EXTERNAL_USB/real_transition_raw_v2/session_<id>
   EXCAVATOR_TRANSITION_CONTROL_PORT=8771
   EXCAVATOR_RECEIVER_RECORD_MODE=config       # config | record | no-record
   EXCAVATOR_POLICY_OUTPUT_MODE=control        # optional for policy/policy_remote

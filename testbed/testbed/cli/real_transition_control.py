@@ -17,7 +17,9 @@ from testbed.tasks.real_transition_runtime import (
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="tb-real-transition-control",
-        description="Select frozen runs and mark transition events; never sends actions.",
+        description=(
+            "Select frozen runs and mark transition events; never sends actions."
+        ),
     )
     parser.add_argument("--host", required=True, help="Slave receiver host/IP.")
     parser.add_argument("--port", type=int, default=DEFAULT_TRANSITION_CONTROL_PORT)
@@ -46,6 +48,12 @@ def main() -> None:
     dump = subparsers.add_parser("dump-end")
     dump.add_argument("--notes", default="")
     ready = subparsers.add_parser("target-ready")
+    ready.add_argument(
+        "--realized-side",
+        choices=["A", "B"],
+        required=True,
+        help="Operator-confirmed realized ready side; mismatch aborts the run.",
+    )
     ready.add_argument("--notes", default="")
     intervention = subparsers.add_parser("intervention")
     intervention.add_argument("--reason", required=True)
@@ -96,7 +104,16 @@ def main() -> None:
                     "notes": args.notes,
                 },
             )
-        elif args.command in {"initial-ready", "dump-end", "target-ready"}:
+        elif args.command == "target-ready":
+            result = _send(
+                args,
+                args.command,
+                {
+                    "realized_target_side": args.realized_side,
+                    "notes": args.notes,
+                },
+            )
+        elif args.command in {"initial-ready", "dump-end"}:
             result = _send(
                 args,
                 args.command,

@@ -2,14 +2,18 @@
 type: data-contract-and-recording-plan
 project: Excavator Real Stack
 version: v2.0.1-real-transition
-status: implementation-baseline-with-field-calibration-overrides
+status: superseded-four-cycle-implementation-baseline
 created: 2026-08-12
-updated: 2026-08-13
-scope: real-machine-transition-prototype
+updated: 2026-08-14
+scope: historical-four-cycle-p0-p1-implementation-baseline
 decision_log: docs/v2_0_1_real_transition_design_decision_log.md
+superseded_by: docs/v2_0_1_real_transition_final_conclusion.md
+active_sequence_plan: docs/v2_0_1_real_transition_experiment_sequence_design.md
 ---
 
 # v2.0.1 Real Transition 数据定义与数据录制计划
+
+> **状态说明（2026-08-14）**：本文保留为 commit `a64e5d1` 的旧版“P0/P1、每条固定四个 cycle”录制基线。当前工作分支已实现 multi-sequence v2；有效范围和数量见《[v2.0.1 Real Transition 最终结论](v2_0_1_real_transition_final_conclusion.md)》与《[实验执行序列设计](v2_0_1_real_transition_experiment_sequence_design.md)》。本文不再是新 session 的执行依据。
 
 ## 0. 一页结论
 
@@ -1107,7 +1111,9 @@ v2.0.0 SimVerify 树中的 `testbed/testbed/configs/simverify_sector_geometry_ph
 
 上述文件只证明仓库内已有的数据和运行边界。它们不证明当前现场 Jetson 已部署同一 commit，也不证明相机、CAN、IMU、时钟或 N5 bundle 当天可用。这些状态必须在数采前用 resolved config、运行日志和 checksum 现场确认。
 
-`real_transition_condition_v1`、A/B sequencer、在线 task event、离线 cycle annotation、condition warm-start 和 goal lifecycle 是 v2.0.1 计划新增能力，当前代码不应被视为已经满足这些合同。N5 完成真机整铲是本计划使用的既有实验前提，本次文档工作没有连接真机或重复该验证。
+commit `a64e5d1` 实现了旧版 A/B sequencer、P0/P1 四-cycle manifest、home-side contract 生成、在线 task event、录制控制服务、raw HDF5 对齐、run package 封存和 checksum 验证。当前 `fs/v2.0.1` 工作分支已在此基础上实现 seeded multi-sequence v2、可变 cycle runtime、配对顺序对消和 realized-target mismatch fail-closed。旧版 v1 只保留只读验证，不能启动新录制。
+
+离线 cycle annotation/materializer、`real_transition_condition_v1` 训练数组、B0/B1/B2 训练对照、N5 condition warm-start 和真机 conditioned-policy goal lifecycle 仍未实现。因此当前代码只能作为旧版专家数据录制支架，不能训练或执行本轮目标中的 Conditioned ACT。N5 完成真机整铲是本计划使用的既有实验前提，本次文档修订没有连接真机或重复该验证。
 
 ## 附录 B. Historical baseline 的数据依据
 

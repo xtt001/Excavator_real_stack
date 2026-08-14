@@ -12,6 +12,7 @@ import argparse
 import datetime
 import json
 import logging
+import math
 import os
 import shutil
 import signal
@@ -976,11 +977,23 @@ def main(prog: str = "tb-record-real") -> None:
             },
         )
         expected_session_id = str(teleop_meta_cfg.get("session_id", "")).strip()
-        actual_session_id = str(transition_runtime.status()["session_id"])
+        transition_status = transition_runtime.status()
+        actual_session_id = str(transition_status["session_id"])
         if expected_session_id and expected_session_id != actual_session_id:
             raise ValueError(
                 "teleop.metadata.session_id does not match the frozen transition "
                 f"manifest: {expected_session_id!r} != {actual_session_id!r}"
+            )
+        max_planned_run_stop_s = float(
+            transition_status["time_limits_s"]["max_planned_run_stop"]
+        )
+        required_transition_steps = int(
+            math.ceil(max_planned_run_stop_s * record_hz)
+        )
+        if max_steps < required_transition_steps:
+            raise ValueError(
+                "task.max_steps is too small for the longest frozen transition run: "
+                f"{max_steps} < {required_transition_steps}"
             )
         control_cfg = dict(transition_cfg.get("control", {}) or {})
         transition_server = TransitionTaskServer(
@@ -1262,8 +1275,18 @@ def main(prog: str = "tb-record-real") -> None:
                                     "real_transition_split": str(
                                         transition_status.get("split") or ""
                                     ),
-                                    "real_transition_template_id": str(
-                                        transition_status.get("template_id") or ""
+                                    "real_transition_sequence_id": str(
+                                        transition_status.get("sequence_id") or ""
+                                    ),
+                                    "real_transition_cycle_count": int(
+                                        transition_status.get("planned_cycle_count")
+                                        or 0
+                                    ),
+                                    "real_transition_matched_start_pair_id": str(
+                                        transition_status.get(
+                                            "matched_start_pair_id"
+                                        )
+                                        or ""
                                     ),
                                 }
                             )
@@ -1972,7 +1995,7 @@ def main(prog: str = "tb-record-real") -> None:
                             transition_stop = transition_runtime.consume_stop_request()
                             if transition_stop is None and len(record_session) >= max_steps:
                                 transition_runtime.abort_on_latest_step(
-                                    reason="four_cycle_run_timeout",
+                                    reason="recording_step_limit",
                                     safety_stop=False,
                                 )
                                 transition_stop = (
