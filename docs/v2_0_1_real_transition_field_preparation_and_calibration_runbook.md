@@ -326,7 +326,8 @@ cd /media/mundane/D/Excavator_real_stack
 - bridge、GMSL、gateway 为 running；
 - `8765/8766` 有监听，`8770/8771` 空闲；
 - 四个 GMSL SHM 均存在；
-- IMU raw addr `0,1,2,3` 全部出现；
+- 当前道远链 IMU ID `0x121,0x122,0x123,0x124` 全部出现，探针的
+  `missing_daoyuan_ids` 为空；
 - `can2/can5` 没有 BUS-OFF。
 
 随后记录至少 60 秒 qpos/qvel：

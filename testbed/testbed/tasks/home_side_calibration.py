@@ -374,7 +374,7 @@ def _capture_window(
                 )
             for camera in expected_cameras:
                 image_sample = state.images[camera]
-                image = np.asarray(image_sample.payload, dtype=np.uint8)
+                image = _camera_image_from_payload(image_sample.payload, camera=camera)
                 if image.ndim != 3 or image.shape[-1] not in {1, 3, 4}:
                     raise TransitionContractError(
                         f"camera {camera} has invalid image shape {image.shape}"
@@ -432,6 +432,34 @@ def _capture_window(
         "latest_images": latest_images,
         "latest_image_means": latest_image_means,
     }
+
+
+def _camera_image_from_payload(payload: Any, *, camera: str) -> np.ndarray:
+    if isinstance(payload, Mapping) and str(payload.get("encoding", "")) == "jpeg":
+        data = payload.get("data", payload.get("bytes", b""))
+        if isinstance(data, (bytes, bytearray, memoryview)):
+            encoded = np.frombuffer(bytes(data), dtype=np.uint8)
+        else:
+            encoded = np.asarray(data, dtype=np.uint8).reshape(-1)
+        if encoded.size == 0:
+            raise TransitionContractError(f"camera {camera} returned an empty JPEG")
+        try:
+            import cv2
+
+            bgr = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+        except Exception as exc:
+            raise TransitionContractError(
+                f"camera {camera} JPEG decode failed: {exc}"
+            ) from exc
+        if bgr is None:
+            raise TransitionContractError(f"camera {camera} JPEG decode returned no image")
+        return np.ascontiguousarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+    if isinstance(payload, Mapping):
+        if "image" in payload:
+            payload = payload["image"]
+        elif "frame" in payload:
+            payload = payload["frame"]
+    return np.asarray(payload, dtype=np.uint8)
 
 
 def _write_rgb_jpeg(path: Path, image: np.ndarray, *, quality: int) -> None:

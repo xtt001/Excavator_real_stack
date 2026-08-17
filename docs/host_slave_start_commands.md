@@ -667,23 +667,18 @@ ssh slave-jetson \
    ./scripts/imu_can_probe.py --interface can5 --duration-s 3 --require-four'
 ```
 
-正常时应同时看到 raw addr `0,1,2,3`，并且命令退出码为 `0`：
+当前道远链正常时应同时看到 `0x121..0x124`，并且命令退出码为 `0`：
 
 ```json
 "up": true,
-"raw_addr_counts": {
-  "0": 900,
-  "1": 900,
-  "2": 900,
-  "3": 900
-},
-"missing_raw_addr_0_to_3": []
+"detected_protocols": ["daoyuan_chain"],
+"missing_daoyuan_ids": []
 ```
 
-如果输出里的 `missing_raw_addr_0_to_3` 非空，或命令退出码非 `0`，说明至少一个
-IMU 地址没有在 `can5` 上持续发帧。先处理 IMU 地址/协议/CAN 接线/供电问题，再录训练数据。
-`captured_frames` 表示监听窗口内总 CAN 帧数，`imu_highspeed_ch1_frames` 表示其中被识别为
-IMU 高速 ch1 协议的帧数，`cmd_counts_by_raw_addr` 可用于看每个 IMU 地址的各类分包是否齐全。
+如果输出里的 `missing_daoyuan_ids` 非空，或命令退出码非 `0`，说明至少一个
+道远链 IMU 没有在 `can5` 上持续发帧。探针同时保留旧 high-speed ch1 协议兼容；旧协议
+使用 `missing_raw_addr_0_to_3`、`imu_highspeed_ch1_frames` 和
+`cmd_counts_by_raw_addr` 字段。`captured_frames` 表示监听窗口内总 CAN 帧数。
 
 IMU/qvel 只读日志。用于检查上电后陀螺仪原始值、bridge 返回的 qvel，以及 qpos
 差分得到的 qvel 是否一致。这个脚本不启动 receiver/sender，也不发送动作；正式现场

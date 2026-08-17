@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only IMU CAN address probe for the excavator high-speed ch1 protocol."""
+"""Read-only IMU CAN probe for the supported excavator IMU protocols."""
 
 from __future__ import annotations
 
@@ -11,6 +11,14 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+
+DAOYUAN_IMU_IDS = {
+    0x121: "boom",
+    0x122: "bucket",
+    0x123: "swing",
+    0x124: "stick",
+}
 
 
 def _can_interfaces() -> list[str]:
@@ -73,6 +81,8 @@ def _capture_ids(interface: str, duration_s: float) -> list[int]:
 def _summarize_interface(interface: str, duration_s: float) -> dict[str, object]:
     up = _interface_is_up(interface)
     ids = _capture_ids(interface, duration_s) if up else []
+    daoyuan_ids = [can_id for can_id in ids if can_id in DAOYUAN_IMU_IDS]
+    daoyuan_counts = collections.Counter(daoyuan_ids)
     imu_ids = [
         can_id
         for can_id in ids
@@ -92,6 +102,27 @@ def _summarize_interface(interface: str, duration_s: float) -> dict[str, object]
         "interface": interface,
         "up": up,
         "captured_frames": len(ids),
+        "detected_protocols": [
+            protocol
+            for protocol, present in (
+                ("daoyuan_chain", bool(daoyuan_ids)),
+                ("highspeed_ch1", bool(imu_ids)),
+            )
+            if present
+        ],
+        "daoyuan_chain_frames": len(daoyuan_ids),
+        "daoyuan_chain_ids": {
+            f"0x{can_id:03X}": {
+                "joint": DAOYUAN_IMU_IDS[can_id],
+                "frames": int(daoyuan_counts.get(can_id, 0)),
+            }
+            for can_id in sorted(DAOYUAN_IMU_IDS)
+        },
+        "missing_daoyuan_ids": [
+            f"0x{can_id:03X}"
+            for can_id in sorted(DAOYUAN_IMU_IDS)
+            if int(daoyuan_counts.get(can_id, 0)) == 0
+        ],
         "imu_highspeed_ch1_frames": len(imu_ids),
         "imu_highspeed_ch1_ids": {
             f"0x{can_id:03X}": int(count) for can_id, count in sorted(id_counts.items())
@@ -115,7 +146,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--require-four",
         action="store_true",
-        help="Return non-zero unless raw addresses 0,1,2,3 are all observed.",
+        help="Return non-zero unless all four devices of a supported IMU protocol are observed.",
     )
     return parser.parse_args()
 
@@ -149,8 +180,16 @@ def main() -> int:
     if args.require_four:
         ok = any(
             item["up"]
-            and not item["missing_raw_addr_0_to_3"]
-            and int(item["imu_highspeed_ch1_frames"]) > 0
+            and (
+                (
+                    not item["missing_daoyuan_ids"]
+                    and int(item["daoyuan_chain_frames"]) > 0
+                )
+                or (
+                    not item["missing_raw_addr_0_to_3"]
+                    and int(item["imu_highspeed_ch1_frames"]) > 0
+                )
+            )
             for item in result["interfaces"]
         )
         return 0 if ok else 1

@@ -13,6 +13,7 @@ from testbed.backends.real.bridge import InProcessMockBridgeClient
 from testbed.cli.record_real import RecordSession, _load_yaml_config
 from testbed.data.recorder import EpisodeRecorder
 from testbed.tasks.home_side_calibration import (
+    _camera_image_from_payload,
     capture_home_calibration_window,
     initialise_home_calibration,
 )
@@ -769,6 +770,26 @@ class HomeSideContractTest(unittest.TestCase):
 
 
 class HomeSideCalibrationCaptureTest(unittest.TestCase):
+    def test_gateway_jpeg_payload_is_decoded_to_rgb(self) -> None:
+        import cv2
+
+        rgb = np.zeros((24, 32, 3), dtype=np.uint8)
+        rgb[..., 0] = 220
+        rgb[..., 1] = 80
+        rgb[..., 2] = 20
+        ok, encoded = cv2.imencode(
+            ".jpg", cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+        )
+        self.assertTrue(ok)
+
+        decoded = _camera_image_from_payload(
+            {"encoding": "jpeg", "data": encoded}, camera="video4"
+        )
+
+        self.assertEqual(decoded.shape, rgb.shape)
+        self.assertGreater(float(decoded[..., 0].mean()), 200.0)
+        self.assertLess(float(decoded[..., 2].mean()), 40.0)
+
     def test_initialise_and_capture_read_only_four_camera_window(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
