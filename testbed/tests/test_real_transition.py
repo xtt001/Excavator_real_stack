@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import socket
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,8 +9,13 @@ from pathlib import Path
 import h5py
 import numpy as np
 
+from testbed.backends.real.bridge import InProcessMockBridgeClient
 from testbed.cli.record_real import RecordSession, _load_yaml_config
 from testbed.data.recorder import EpisodeRecorder
+from testbed.tasks.home_side_calibration import (
+    capture_home_calibration_window,
+    initialise_home_calibration,
+)
 from testbed.tasks.home_side_contract import (
     build_home_side_contract,
     validate_home_side_contract,
@@ -762,6 +768,92 @@ class HomeSideContractTest(unittest.TestCase):
                 build_home_side_contract(calibration, source_base_dir=root)
 
 
+class HomeSideCalibrationCaptureTest(unittest.TestCase):
+    def test_initialise_and_capture_read_only_four_camera_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source.yaml"
+            source.write_text(
+                "teleop:\n"
+                "  recording:\n"
+                "    go_home:\n"
+                "      home_pose_rad: [0.0, 0.1, -0.2, 0.3]\n",
+                encoding="utf-8",
+            )
+            calibration = root / "home_calibration_samples.json"
+            initial = initialise_home_calibration(
+                output_path=calibration,
+                context_version="ctx01",
+                resolved_by="field_engineer",
+                physical_left_qpos_sign=1,
+                source_config=source,
+                source_value_path="teleop.recording.go_home.home_pose_rad",
+                created_at_utc="2026-08-17T00:00:00Z",
+            )
+            self.assertEqual(initial["accepted_window_counts"]["home"], 0)
+            self.assertTrue(Path(initial["home_source_snapshot"]).is_file())
+
+            result = capture_home_calibration_window(
+                calibration_path=calibration,
+                side="home",
+                reference_id="home_00",
+                confirm_visual=True,
+                confirm_no_software_action_source=True,
+                receiver_port=_unused_tcp_port(),
+                client_factory=lambda: InProcessMockBridgeClient(
+                    camera_names=("video4", "video5", "video6", "video7"),
+                ),
+            )
+            self.assertEqual(result["status"], "PASS")
+            self.assertEqual(result["accepted_window_counts"]["home"], 1)
+            payload = json.loads(calibration.read_text(encoding="utf-8"))
+            self.assertEqual(payload["samples"][0]["reference_id"], "home_00")
+            self.assertEqual(payload["samples"][0]["commanded_action_abs_max"], 0.0)
+            for camera in ("video4", "video5", "video6", "video7"):
+                self.assertTrue(
+                    (root / "calibration_visuals" / "home_00" / f"{camera}.jpg").is_file()
+                )
+
+    def test_capture_refuses_when_receiver_port_is_listening(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source.yaml"
+            source.write_text("home_pose_rad: [0, 0, 0, 0]\n", encoding="utf-8")
+            calibration = root / "calibration.json"
+            initialise_home_calibration(
+                output_path=calibration,
+                context_version="ctx01",
+                resolved_by="field_engineer",
+                physical_left_qpos_sign=1,
+                source_config=source,
+                source_value_path="home_pose_rad",
+            )
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+                listener.bind(("127.0.0.1", 0))
+                listener.listen()
+                receiver_port = int(listener.getsockname()[1])
+                with self.assertRaisesRegex(
+                    TransitionContractError,
+                    "receiver port .* is listening",
+                ):
+                    capture_home_calibration_window(
+                        calibration_path=calibration,
+                        side="home",
+                        reference_id="home_00",
+                        confirm_visual=True,
+                        confirm_no_software_action_source=True,
+                        receiver_port=receiver_port,
+                        client_factory=lambda: InProcessMockBridgeClient(
+                            camera_names=(
+                                "video4",
+                                "video5",
+                                "video6",
+                                "video7",
+                            ),
+                        ),
+                    )
+
+
 def _write_valid_home_contract(path: Path) -> None:
     contract = build_home_side_contract(
         _valid_home_calibration(path.parent),
@@ -771,6 +863,12 @@ def _write_valid_home_contract(path: Path) -> None:
         json.dumps(contract, ensure_ascii=False, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+
+
+def _unused_tcp_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
 
 
 def _valid_home_calibration(root: Path) -> dict[str, object]:

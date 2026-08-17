@@ -9,11 +9,14 @@ scope: historical-four-cycle-p0-p1-implementation-baseline
 decision_log: docs/v2_0_1_real_transition_design_decision_log.md
 superseded_by: docs/v2_0_1_real_transition_final_conclusion.md
 active_sequence_plan: docs/v2_0_1_real_transition_experiment_sequence_design.md
+field_preparation: docs/v2_0_1_real_transition_field_preparation_and_calibration_runbook.md
 ---
 
 # v2.0.1 Real Transition 数据定义与数据录制计划
 
 > **状态说明（2026-08-14）**：本文保留为 commit `a64e5d1` 的旧版“P0/P1、每条固定四个 cycle”录制基线。当前工作分支已实现 multi-sequence v2；有效范围和数量见《[v2.0.1 Real Transition 最终结论](v2_0_1_real_transition_final_conclusion.md)》与《[实验执行序列设计](v2_0_1_real_transition_experiment_sequence_design.md)》。本文不再是新 session 的执行依据。
+
+> 当前上机同步、只读检查和 home/A/B 标定入口见《[真机测试与标定准备手册](v2_0_1_real_transition_field_preparation_and_calibration_runbook.md)》；不要从本文旧 P0/P1 示例反推现场命令。
 
 ## 0. 一页结论
 

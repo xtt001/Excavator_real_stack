@@ -19,8 +19,8 @@ the nearest frame to a target timestamp without accumulating old frames.
 Build on the Jetson:
 
 ```bash
-cmake -S tools/gmsl_realtime_capture -B build/gmsl_realtime_capture
-cmake --build build/gmsl_realtime_capture -j
+cmake -S tools/gmsl_realtime_capture -B tools/gmsl_realtime_capture/build
+cmake --build tools/gmsl_realtime_capture/build -j
 ```
 
 When CUDA and Jetson multimedia headers are available, the build also produces
@@ -39,7 +39,7 @@ Run a short capture:
 ```bash
 mkdir -p artifacts/gmsl_realtime_capture
 
-build/gmsl_realtime_capture/gmsl_realtime_capture \
+tools/gmsl_realtime_capture/build/gmsl_realtime_capture \
   --camera video4=/dev/video4 \
   --camera video5=/dev/video5 \
   --camera video6=/dev/video6 \
@@ -56,7 +56,7 @@ build/gmsl_realtime_capture/gmsl_realtime_capture \
 Run the phase-1 acceptance length:
 
 ```bash
-build/gmsl_realtime_capture/gmsl_realtime_capture \
+tools/gmsl_realtime_capture/build/gmsl_realtime_capture \
   --camera video4=/dev/video4 \
   --camera video5=/dev/video5 \
   --camera video6=/dev/video6 \
@@ -115,7 +115,7 @@ count, sequence, timestamp interval, and cross-camera skew.
 Run the fused UYVY preprocess path without CPU frame copies:
 
 ```bash
-build/gmsl_realtime_capture/gmsl_realtime_preprocess_probe \
+tools/gmsl_realtime_capture/build/gmsl_realtime_preprocess_probe \
   --preprocess-manifest configs/camera_calibration/gmsl_h190ta_four_camera/preprocess_manifest.json \
   --manifest configs/camera_intrinsics/gmsl_h190ta/manifest.json \
   --frames 300 \

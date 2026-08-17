@@ -2,13 +2,14 @@
 type: experiment-execution-sequence-design
 project: Excavator Real Stack
 version: v2.0.1-real-transition-sequence-v2
-status: implemented-offline-verified-not-field-authorized
+status: implemented-offline-verified-field-prep-published-not-field-validated
 created: 2026-08-14
 updated: 2026-08-14
 scope_authority: sequence-and-recording-profile
 field_execution_authority: false
 final_conclusion: docs/v2_0_1_real_transition_final_conclusion.md
 implementation: testbed/testbed/tasks/real_transition.py
+field_preparation: docs/v2_0_1_real_transition_field_preparation_and_calibration_runbook.md
 ---
 
 # v2.0.1 Real Transition 实验执行序列设计
@@ -164,3 +165,5 @@ sequence 平衡只是第一层控制。录制后还要按完整 source block 检
 - conditioned-policy 真机 goal router 和分级 Gate。
 
 因此，当前代码可以离线生成和检查新的录制计划，也具备专家录制支架。它还不能训练或执行最终的 Conditioned ACT，本文也不是上机授权。
+
+真机同步、只读传感器检查、home/A/B 稳定窗采集和合同冻结按《[v2.0.1 真机测试与标定准备手册](v2_0_1_real_transition_field_preparation_and_calibration_runbook.md)》执行。该手册只授权准备阶段，不改变本文的正式录制证据边界。

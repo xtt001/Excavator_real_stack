@@ -81,14 +81,17 @@ def build_home_side_contract(
             "home_reference.home_pose_rad does not match its source_config value"
         )
 
-    ready_candidate = _resolve_ready_candidate(calibration)
+    ready_candidate = resolve_home_calibration_ready_candidate(calibration)
     samples_value = calibration.get("samples", ())
     if not isinstance(samples_value, Sequence) or isinstance(
         samples_value, (str, bytes)
     ):
         raise TransitionContractError("calibration samples must be a list")
     samples = [
-        _parse_sample(sample, ready_candidate=ready_candidate)
+        validate_home_calibration_sample(
+            sample,
+            ready_candidate=ready_candidate,
+        )
         for sample in samples_value
     ]
     ids = [sample["reference_id"] for sample in samples]
@@ -289,7 +292,11 @@ def validate_home_side_contract(contract: Mapping[str, Any]) -> None:
             )
 
 
-def _resolve_ready_candidate(calibration: Mapping[str, Any]) -> dict[str, Any]:
+def resolve_home_calibration_ready_candidate(
+    calibration: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Resolve the ready-window thresholds used by field sample capture."""
+
     raw = dict(READY_BASELINE)
     override = calibration.get("ready_candidate", {})
     if override:
@@ -348,11 +355,13 @@ def _resolve_ready_candidate(calibration: Mapping[str, Any]) -> dict[str, Any]:
     return resolved
 
 
-def _parse_sample(
+def validate_home_calibration_sample(
     value: Any,
     *,
     ready_candidate: Mapping[str, Any],
 ) -> dict[str, Any]:
+    """Validate one accepted field window and return its derived statistics."""
+
     if not isinstance(value, Mapping):
         raise TransitionContractError("each calibration sample must be an object")
     reference_id = _required_text(value, "reference_id")

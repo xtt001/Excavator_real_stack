@@ -259,7 +259,7 @@ tb-receiver-real \
 - 真实相机低延迟链路；当前 C++ bridge 的 `fpv` 仍是 smoke-test 占位图，不能用于训练。
 - OEM 遥控器读取；如果演示必须来自厂家遥控器，还需要实现遥控器 command stream。
 
-详细现场流程见 [docs/host_slave_start_commands.md](docs/host_slave_start_commands.md)。
+通用现场流程见 [docs/host_slave_start_commands.md](docs/host_slave_start_commands.md)。v2.0.1 Real Transition 上机准备、GitHub 双机同步和 home/A/B 标定见 [docs/v2_0_1_real_transition_field_preparation_and_calibration_runbook.md](docs/v2_0_1_real_transition_field_preparation_and_calibration_runbook.md)。
 
 ## 已讨论需求与当前决策
 
@@ -407,4 +407,5 @@ tb-receiver-real \
 
 ```text
 docs/host_slave_start_commands.md
+docs/v2_0_1_real_transition_field_preparation_and_calibration_runbook.md
 ```

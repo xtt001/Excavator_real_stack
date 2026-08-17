@@ -108,7 +108,7 @@ def _summarize_interface(interface: str, duration_s: float) -> dict[str, object]
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--interface", default="", help="One SocketCAN interface, e.g. can3.")
+    parser.add_argument("--interface", default="", help="One SocketCAN interface, e.g. can5.")
     parser.add_argument("--all", action="store_true", help="Probe every canX interface.")
     parser.add_argument("--duration-s", type=float, default=3.0)
     parser.add_argument("--output", type=Path, default=None, help="Optional JSON output path.")
@@ -129,7 +129,7 @@ def main() -> int:
     if args.all:
         interfaces = _can_interfaces()
     else:
-        interfaces = [args.interface or "can3"]
+        interfaces = [args.interface or "can5"]
     if not interfaces:
         raise RuntimeError("no canX interfaces found")
 

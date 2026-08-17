@@ -2,12 +2,13 @@
 type: final-scope-decision
 project: Excavator Real Stack
 version: v2.0.1-real-transition-scope-v2
-status: accepted-recording-sequence-code-aligned-training-runtime-pending
+status: accepted-recording-sequence-field-prep-code-aligned-not-field-validated
 created: 2026-08-14
 updated: 2026-08-14
 discussion_record: docs/v2_0_1_real_transition_design_decision_log.md
 previous_implementation_plan: docs/v2_0_1_real_transition_data_definition_and_recording_plan.md
 sequence_design: docs/v2_0_1_real_transition_experiment_sequence_design.md
+field_preparation: docs/v2_0_1_real_transition_field_preparation_and_calibration_runbook.md
 scope_authority: true
 field_execution_authority: false
 ---
@@ -124,7 +125,7 @@ Ready_i
 
 | 能力 | 当前 `fs/v2.0.1` | 对最终任务的意义 |
 |---|---|---|
-| A/B home-side contract | 已实现生成与校验 | 可作为新任务基础，仍需当天真机标定 |
+| A/B home-side contract | 已实现只读采集、生成与校验 | 可作为新任务基础，仍需当天真机标定 |
 | 专家 raw run 录制、task event、HDF5 对齐和封存 | 已实现 | 主体可复用 |
 | sequence manifest | 已升级为 seeded 多序列 v2 | 24 条唯一序列、96 cycle 和平衡约束已离线验证 |
 | 专家录制 runtime | 已按 manifest 长度执行 | 支持可变 cycle 数、动态超时和 realized-target mismatch fail-closed |
@@ -134,4 +135,4 @@ Ready_i
 | 真机 conditioned-policy goal router/lifecycle | 未实现 | 不能闭环执行四种原子 cycle |
 | 真机验证 | 未进行 | 不能声称现场可用 |
 
-因此，sequence 和专家录制支架已经与最终任务对齐，但离线数据链、训练链和 conditioned-policy runtime 仍未完成。当前电脑没有连接现场 Jetson，录制流程也没有经过当天传感器、标定和操作员预演。本文是任务范围权威，不是现场执行授权。
+因此，sequence、标定采集入口和专家录制支架已经与最终任务对齐，但离线数据链、训练链和 conditioned-policy runtime 仍未完成。当前电脑没有连接现场 Jetson，录制流程也没有经过当天传感器、标定和操作员预演。上机前按《[真机测试与标定准备手册](v2_0_1_real_transition_field_preparation_and_calibration_runbook.md)》逐项产生现场证据。本文是任务范围权威，不是正式录制授权。

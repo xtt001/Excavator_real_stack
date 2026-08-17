@@ -3,6 +3,8 @@
 本文作为当前现场主从分体测试和录制的主文档，集中记录应启动的命令、链路检查、
 QC 和停止顺序。历史 runbook/checklist 已并入本页。
 
+> **v2.0.1 Real Transition**：上机准备和 home/A/B 标定先执行《[v2.0.1 真机测试与标定准备手册](v2_0_1_real_transition_field_preparation_and_calibration_runbook.md)》。该阶段使用 `--no-receiver`，不要套用本页普通录制的 `--policy-remote`、按钮录制或模型控制步骤。正式 transition 录制只使用专用 wrapper 和 transition control。
+
 ## 现场常用命令集合（置顶）
 
 下面按现场启动顺序整理。`start`、IMU 日志、eye 预览发布、主端 sender 和主端 GUI
@@ -331,17 +333,17 @@ gateway 或 HDF5 录制。它只在 SHM 序号变化时编码新帧，默认以 
 candump -ta can2,18F021F6:1FFFFFFF
 ```
 
-另开一个从端终端检查 `can3` 上 4 个 IMU 是否都在线：
+另开一个从端终端检查当前默认 `can5` 上 4 个 IMU 是否都在线：
 
 ```bash
 cd /media/mundane/D/Excavator_real_stack
-./scripts/imu_can_probe.py --interface can3 --duration-s 3 --require-four
+./scripts/imu_can_probe.py --interface can5 --duration-s 3 --require-four
 ```
 
-如果 IMU 掉线，优先抓 `can3` 的原始日志：
+如果 IMU 掉线，优先抓 `can5` 的原始日志：
 
 ```bash
-timeout 60s candump -ta can3,0:0,#FFFFFFFF > /tmp/can3_imu_$(date +%Y%m%d_%H%M%S).log
+timeout 60s candump -ta can5,0:0,#FFFFFFFF > /tmp/can5_imu_$(date +%Y%m%d_%H%M%S).log
 ```
 
 如果怀疑现场接线或脚本使用了 `can2`，先查 `can2` 状态：
@@ -650,11 +652,11 @@ export MAX_STEPS=400
 未重新验证前切回 `closed_loop_velocity_scalar`：该模式在摇杆零输入时仍会用 IMU qvel
 跑底层速度 PID，可能导致 boom 在无摇杆输入时自运动。
 
-IMU 四个传感器地址检查。这个检查是只读的，只监听 `can3` 上的 IMU 高速帧，
+IMU 四个传感器地址检查。这个检查是只读的，只监听当前默认 `can5` 上的 IMU 高速帧，
 不会向机器下发控制命令。
 
 ```bash
-./scripts/imu_can_probe.py --interface can3 --duration-s 3 --require-four
+./scripts/imu_can_probe.py --interface can5 --duration-s 3 --require-four
 ```
 
 从主端一键检查从端 Jetson：
@@ -662,7 +664,7 @@ IMU 四个传感器地址检查。这个检查是只读的，只监听 `can3` �
 ```bash
 ssh slave-jetson \
   'cd /media/mundane/D/Excavator_real_stack && \
-   ./scripts/imu_can_probe.py --interface can3 --duration-s 3 --require-four'
+   ./scripts/imu_can_probe.py --interface can5 --duration-s 3 --require-four'
 ```
 
 正常时应同时看到 raw addr `0,1,2,3`，并且命令退出码为 `0`：
@@ -679,7 +681,7 @@ ssh slave-jetson \
 ```
 
 如果输出里的 `missing_raw_addr_0_to_3` 非空，或命令退出码非 `0`，说明至少一个
-IMU 地址没有在 `can3` 上持续发帧。先处理 IMU 地址/协议/CAN 接线/供电问题，再录训练数据。
+IMU 地址没有在 `can5` 上持续发帧。先处理 IMU 地址/协议/CAN 接线/供电问题，再录训练数据。
 `captured_frames` 表示监听窗口内总 CAN 帧数，`imu_highspeed_ch1_frames` 表示其中被识别为
 IMU 高速 ch1 协议的帧数，`cmd_counts_by_raw_addr` 可用于看每个 IMU 地址的各类分包是否齐全。
 

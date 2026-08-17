@@ -8,6 +8,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from testbed.tasks.home_side_calibration import (
+    capture_home_calibration_window,
+    initialise_home_calibration,
+)
 from testbed.tasks.home_side_contract import write_home_side_contract
 from testbed.tasks.real_transition import (
     TransitionContractError,
@@ -52,6 +56,57 @@ def main() -> None:
     home.add_argument("--calibration", type=Path, required=True)
     home.add_argument("--output", type=Path, required=True)
 
+    init_home = subparsers.add_parser(
+        "init-home-calibration",
+        help="Create a portable field calibration input and home-config snapshot.",
+    )
+    init_home.add_argument("--output", type=Path, required=True)
+    init_home.add_argument("--context-version", required=True)
+    init_home.add_argument("--resolved-by", required=True)
+    init_home.add_argument(
+        "--physical-left-qpos-sign",
+        type=int,
+        choices=[-1, 1],
+        required=True,
+    )
+    init_home.add_argument("--source-config", type=Path, required=True)
+    init_home.add_argument("--source-value-path", required=True)
+    init_home.add_argument(
+        "--expected-cameras",
+        default="video4,video5,video6,video7",
+        help="Comma-separated camera names required in every accepted window.",
+    )
+
+    capture_home = subparsers.add_parser(
+        "capture-home-window",
+        help=(
+            "Read one stable home/A/B window from the local slave gateway; "
+            "never sends actions."
+        ),
+    )
+    capture_home.add_argument("--calibration", type=Path, required=True)
+    capture_home.add_argument("--side", choices=["home", "A", "B"], required=True)
+    capture_home.add_argument("--reference-id", required=True)
+    capture_home.add_argument("--host", default="127.0.0.1")
+    capture_home.add_argument("--port", type=int, default=8765)
+    capture_home.add_argument("--receiver-port", type=int, default=8770)
+    capture_home.add_argument("--duration-s", type=float, default=0.5)
+    capture_home.add_argument("--rate-hz", type=float, default=20.0)
+    capture_home.add_argument("--timeout-s", type=float, default=2.0)
+    capture_home.add_argument("--jpeg-quality", type=int, default=90)
+    capture_home.add_argument(
+        "--confirm-visual",
+        action="store_true",
+        required=True,
+        help="Confirm that the operator visually checked this ready pose.",
+    )
+    capture_home.add_argument(
+        "--confirm-no-software-action-source",
+        action="store_true",
+        required=True,
+        help="Confirm that no sender/receiver/policy action source is active.",
+    )
+
     args = parser.parse_args()
     try:
         if args.command == "prepare-session":
@@ -68,10 +123,37 @@ def main() -> None:
                 calibration_path=args.calibration,
                 output_path=args.output,
             )
+        elif args.command == "init-home-calibration":
+            result = initialise_home_calibration(
+                output_path=args.output,
+                context_version=args.context_version,
+                resolved_by=args.resolved_by,
+                physical_left_qpos_sign=args.physical_left_qpos_sign,
+                source_config=args.source_config,
+                source_value_path=args.source_value_path,
+                expected_cameras=args.expected_cameras,
+            )
+        elif args.command == "capture-home-window":
+            result = capture_home_calibration_window(
+                calibration_path=args.calibration,
+                side=args.side,
+                reference_id=args.reference_id,
+                confirm_visual=args.confirm_visual,
+                confirm_no_software_action_source=(
+                    args.confirm_no_software_action_source
+                ),
+                host=args.host,
+                port=args.port,
+                receiver_port=args.receiver_port,
+                duration_s=args.duration_s,
+                rate_hz=args.rate_hz,
+                timeout_s=args.timeout_s,
+                jpeg_quality=args.jpeg_quality,
+            )
         else:  # pragma: no cover - argparse enforces the choices.
             parser.error(f"unsupported command {args.command!r}")
             return
-    except TransitionContractError as exc:
+    except (OSError, TransitionContractError) as exc:
         _print_json({"status": "FAIL", "error": str(exc)})
         raise SystemExit(2) from exc
     _print_json(result)
