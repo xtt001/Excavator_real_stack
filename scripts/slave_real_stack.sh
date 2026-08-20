@@ -65,6 +65,8 @@ GMSL_BUFFERS="${EXCAVATOR_GMSL_BUFFERS:-8}"
 STARTUP_TIMEOUT_S="${EXCAVATOR_STARTUP_TIMEOUT_S:-45}"
 RECEIVER_STOP_TIMEOUT_S="${EXCAVATOR_RECEIVER_STOP_TIMEOUT_S:-${EXCAVATOR_RECORDER_STOP_TIMEOUT_S:-180}}"
 EXCAVATOR_SKIP_PIP_INSTALL="${EXCAVATOR_SKIP_PIP_INSTALL:-1}"
+JETSON_NVP_MODEL_ID="${EXCAVATOR_JETSON_NVP_MODEL_ID:-0}"
+JETSON_PERFORMANCE_ACCESS_READY=0
 
 if [[ "${CAMERA_STACK}" == "gmsl" ]]; then
   SERVICES=(canraw bridge gmsl gateway receiver)
@@ -132,11 +134,12 @@ Common environment overrides:
   EXCAVATOR_RECEIVER_RECORD_MODE=config       # config | record | no-record
   EXCAVATOR_POLICY_OUTPUT_MODE=control        # optional for policy/policy_remote
   EXCAVATOR_POLICY_ACTION_SCALE=1.0           # optional for policy/policy_remote
-  EXCAVATOR_TEST_LOG_DIR=/media/mundane/EXTERNAL_USB/policy_control_tests
+  EXCAVATOR_TEST_LOG_DIR=/media/mundane/EXTERNAL_USB/policy_control_tests  # optional; enables verbose per-step trace
   EXCAVATOR_TORCHINDUCTOR_CACHE_DIR=/media/mundane/D/Excavator_real_stack/artifacts/torchinductor_cache
   EXCAVATOR_NUM_EPISODES=1000000
   EXCAVATOR_RECEIVER_STOP_TIMEOUT_S=180
   EXCAVATOR_SKIP_PIP_INSTALL=1
+  EXCAVATOR_JETSON_NVP_MODEL_ID=0           # MAXN on the field Jetson; startup fails if clocks are not locked
   EXCAVATOR_LOG_VIEW=dashboard              # dashboard | plain
 
 Compatibility:
@@ -178,7 +181,7 @@ apply_policy_remote_profile() {
   POLICY_OUTPUT_MODE="${EXCAVATOR_POLICY_OUTPUT_MODE:-}"
   POLICY_ACTION_SCALE="${EXCAVATOR_POLICY_ACTION_SCALE:-}"
   DATASET_DIR="${EXCAVATOR_DATASET_DIR:-${USB_MOUNT}/real_teleop_v1}"
-  TEST_LOG_DIR="${EXCAVATOR_TEST_LOG_DIR:-${USB_MOUNT}/policy_control_tests}"
+  TEST_LOG_DIR="${EXCAVATOR_TEST_LOG_DIR:-}"
   NUM_EPISODES="${EXCAVATOR_NUM_EPISODES:-1000000}"
   MAX_STEPS="${EXCAVATOR_MAX_STEPS:-50000}"
 }
@@ -439,6 +442,64 @@ setup_can() {
   fi
 }
 
+require_jetson_performance_access() {
+  if [[ "${JETSON_PERFORMANCE_ACCESS_READY}" == "1" ]]; then
+    return 0
+  fi
+  command -v nvpmodel >/dev/null 2>&1 \
+    || die "nvpmodel not found; refusing to start the real bridge without MAXN"
+  command -v jetson_clocks >/dev/null 2>&1 \
+    || die "jetson_clocks not found; refusing to start the real bridge without locked clocks"
+  sudo -v \
+    || die "sudo authentication is required before the real bridge can be started"
+  JETSON_PERFORMANCE_ACCESS_READY=1
+}
+
+setup_jetson_performance() {
+  local power_report clock_report
+  local cpu_dir cpu_min cpu_max cpu_cur cpu_count=0
+  local gpu_dir gpu_min gpu_max gpu_cur
+  local -a gpu_dirs
+
+  require_jetson_performance_access
+  log "applying Jetson MAXN mode=${JETSON_NVP_MODEL_ID} and locked clocks"
+  sudo nvpmodel -m "${JETSON_NVP_MODEL_ID}"
+  sudo jetson_clocks
+
+  power_report="$(nvpmodel -q)"
+  grep -Fqx 'NV Power Mode: MAXN' <<<"${power_report}" \
+    || die "Jetson performance preflight failed: nvpmodel is not MAXN"
+  [[ "$(tail -n 1 <<<"${power_report}")" == "${JETSON_NVP_MODEL_ID}" ]] \
+    || die "Jetson performance preflight failed: active nvpmodel id does not match ${JETSON_NVP_MODEL_ID}"
+
+  for cpu_dir in /sys/devices/system/cpu/cpu[0-9]*/cpufreq; do
+    [[ -d "${cpu_dir}" ]] || continue
+    cpu_count=$((cpu_count + 1))
+    cpu_min="$(<"${cpu_dir}/scaling_min_freq")"
+    cpu_max="$(<"${cpu_dir}/scaling_max_freq")"
+    cpu_cur="$(<"${cpu_dir}/scaling_cur_freq")"
+    [[ "${cpu_min}" == "${cpu_max}" && "${cpu_cur}" == "${cpu_max}" ]] \
+      || die "Jetson performance preflight failed: ${cpu_dir} is not locked (min=${cpu_min} cur=${cpu_cur} max=${cpu_max})"
+  done
+  (( cpu_count > 0 )) \
+    || die "Jetson performance preflight failed: no CPU cpufreq state found"
+
+  gpu_dirs=(/sys/class/devfreq/*gpu*)
+  [[ -e "${gpu_dirs[0]}" ]] \
+    || die "Jetson performance preflight failed: GPU devfreq state not found"
+  gpu_dir="${gpu_dirs[0]}"
+  gpu_min="$(<"${gpu_dir}/min_freq")"
+  gpu_max="$(<"${gpu_dir}/max_freq")"
+  gpu_cur="$(<"${gpu_dir}/cur_freq")"
+  [[ "${gpu_min}" == "${gpu_max}" && "${gpu_cur}" == "${gpu_max}" ]] \
+    || die "Jetson performance preflight failed: GPU is not locked (min=${gpu_min} cur=${gpu_cur} max=${gpu_max})"
+
+  clock_report="$(sudo jetson_clocks --show)"
+  grep -Eq '^EMC .*FreqOverride=1([[:space:]]|$)' <<<"${clock_report}" \
+    || die "Jetson performance preflight failed: EMC frequency override is not active"
+  log "Jetson performance preflight OK: MAXN mode=${JETSON_NVP_MODEL_ID} CPUs=${cpu_count} cpu_khz=${cpu_max} gpu_hz=${gpu_max} EMC override=1"
+}
+
 prepare_start() {
   local no_camera="${1:-0}"
   local run_id log_dir_path
@@ -467,6 +528,7 @@ start_stack() {
   local imu_mode=hardware
 
   if [[ "${force}" == "1" ]]; then
+    require_jetson_performance_access
     stop_stack 1
   fi
 
@@ -479,6 +541,7 @@ start_stack() {
     fi
   fi
 
+  setup_jetson_performance
   prepare_start "${no_camera}"
   if [[ "${no_camera}" == "1" ]]; then
     printf 'none\n' >"${CAMERA_MODE_FILE}"
@@ -1103,6 +1166,7 @@ main() {
       stop_stack "${force}"
       ;;
     restart)
+      require_jetson_performance_access
       stop_stack "${force}"
       start_stack 0 "${no_camera}" "${no_imu}" "${no_receiver}" "${skip_usb}" "${skip_can}" "${skip_pip}"
       ;;

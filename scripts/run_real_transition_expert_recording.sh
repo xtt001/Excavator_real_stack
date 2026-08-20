@@ -14,7 +14,7 @@ if [[ "${SESSION_DIR}" != /* ]]; then
   printf '[real-transition] session directory must be absolute: %s\n' "${SESSION_DIR}" >&2
   exit 2
 fi
-for name in sequence_manifest.json split_manifest.json home_side_contract.json; do
+for name in sequence_manifest.json split_manifest.json ready_contract.json; do
   if [[ ! -f "${SESSION_DIR}/${name}" ]]; then
     printf '[real-transition] missing required artifact: %s/%s\n' \
       "${SESSION_DIR}" "${name}" >&2

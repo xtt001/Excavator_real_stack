@@ -3,7 +3,7 @@
 本文作为当前现场主从分体测试和录制的主文档，集中记录应启动的命令、链路检查、
 QC 和停止顺序。历史 runbook/checklist 已并入本页。
 
-> **v2.0.1 Real Transition**：上机准备和 home/A/B 标定先执行《[v2.0.1 真机测试与标定准备手册](v2_0_1_real_transition_field_preparation_and_calibration_runbook.md)》。该阶段使用 `--no-receiver`，不要套用本页普通录制的 `--policy-remote`、按钮录制或模型控制步骤。正式 transition 录制只使用专用 wrapper 和 transition control。
+> **v2.0.1 Real Transition**：上机准备和规则型 ready 合同先执行《[v2.0.1 真机测试与标定准备手册](v2_0_1_real_transition_field_preparation_and_calibration_runbook.md)》。不再执行 home/A/B 各 10 次固定标定。准备阶段使用 `--no-receiver`，不要套用本页普通录制的 `--policy-remote`、按钮录制或模型控制步骤。正式 transition 录制只使用专用 wrapper 和 transition control，并先停止旧版 `policy_remote` receiver 释放 `8770`。
 
 ## 现场常用命令集合（置顶）
 
@@ -281,12 +281,22 @@ cd /media/mundane/D/Excavator_real_stack
 ./scripts/slave_real_stack.sh run --force --policy-remote
 ```
 
+该命令现在会在启动任何 bridge/receiver 服务之前自动执行 Jetson 性能预检：切换到
+`MAXN`（`nvpmodel -m 0`）、执行 `jetson_clocks`，再验证全部 CPU 与 GPU 已锁到最高频、
+EMC frequency override 已生效。预检需要 `sudo`，终端出现密码提示时正常输入从端密码即可；
+脚本不会保存密码。任一检查失败时会直接终止启动，不允许真机 bridge/receiver 在降频状态下
+静默运行。整机重启后无需再手工补执行锁频命令，仍使用上面同一条启动命令。
+
 这个终端同时托管底层链路和唯一的 `policy_remote` receiver。按一次 `Ctrl+C`
 会先停止 receiver，再停止 gateway、相机链路和 bridge。
 `--policy-remote` 会自动使用 `policy_real_gmsl_fourcam_g49_n5_control_v1.yaml` 和
 `real_gmsl_fourcam_g49_n5_v1` bundle；命令本身不变。receiver 启动时保持手动模式，
 按主端手柄按钮 `4` 才切到 N5 live control，再按一次回到手动。N5 policy 按训练时基
 20 Hz 更新，control pump 保持 50 Hz，动作缩放为四轴 `1.0`。
+
+常驻 `--policy-remote` 默认关闭逐步 `steps.jsonl`/相机 test trace，避免空闲时重复写入
+完整 IMU 和策略诊断。需要 shadow 或专项控制证据时，使用对应诊断脚本，或显式设置
+`EXCAVATOR_TEST_LOG_DIR` 后再启动；正式 HDF5 录制不受此开关影响。
 
 当前配置不启用 N5 的自动 go-home 输出：模型不会主动产生 `go_home_requested`。
 按钮 `3` 的人工 go-home 仍保留，使用现有已标定的 `GoHomeController`。
@@ -429,9 +439,18 @@ cd ~/Excavator_real_stack
 
 界面统一显示 video4 / eye_left 预览、sender/receiver/bridge/control ACK、四路 IMU
 在线/姿态有效性/帧龄/丢包、录制 episode/步数、HDF5 写入结果和文件大小、外置盘
-挂载及剩余空间、在线 QC、最近状态事件。状态链路为
+挂载及剩余空间、在线 QC、最近状态事件，以及当前 `action_age`。`action_age` 定义为
+receiver 当前状态时刻减去当前动作的采样时刻；policy 复用旧帧动作时该值会增长，
+因此它表示动作新鲜度，不等同于 bridge 单次发送耗时。GUI 不再计算或显示滚动
+P50/P95，也不把旧动作年龄标成 `sample→ACK` 控制延迟。状态链路为
 `receiver -> 8770 同一 TCP 回包 -> sender -> localhost UDP 8781 -> GUI`；界面本身
 不连接 `8770`、不发送 action、不触发录制，也不负责真机急停。
+
+顶部 `SENDER AGE / RECEIVER AGE / BRIDGE AGE / VIDEO4 AGE` 是各状态或帧距 GUI
+当前时刻的 freshness，不是推理/控制耗时。sender 到 GUI 的镜像默认限频 10 Hz，
+所以 `SENDER AGE` 在 `0–100 ms` 内变化正常；receiver 状态再经过 20 Hz 主循环和
+10 Hz 镜像转发，`RECEIVER AGE` 偶尔约 `100–150 ms` 也不表示控制阻塞。健康判定
+仍使用各自 freshness 门槛，`CONTROL ACK` 单独表示 controller 回执。
 
 顶部醒目区固定显示“已录制条数 / 正在录制 / 正在保存 / 正在回位”四张大卡片。
 “已录制条数”按从端数据目录中实际存在的合法 `episode_<N>.hdf5` 成功文件计数，
@@ -448,6 +467,11 @@ cd ~/Excavator_real_stack
 ```bash
 ./scripts/start_host_dashboard.sh --always-on-top
 ```
+
+主端当前是 GNOME Wayland；原生 Wayland 客户端的 Qt `WindowStaysOnTopHint` 会被
+Mutter 忽略。dashboard 在检测到 Wayland 且存在 `DISPLAY` 时会自动使用 XWayland
+`xcb` 后端，使复选框对应到 `_NET_WM_STATE_ABOVE`。这只改变 GUI 窗口后端，不改变
+ROS 视频、8781 状态镜像或任何控制进程。
 
 video4 的 ROS 接收、JPEG 解码和 Qt 显示相互独立；三段之间都只保留最新帧，因此
 GUI 卡顿或窗口缩放时不会排队回放旧画面。GUI 启动时即使主从网卡或 Jetson 暂时

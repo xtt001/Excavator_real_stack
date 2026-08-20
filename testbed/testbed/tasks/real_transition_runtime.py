@@ -13,12 +13,18 @@ import socket
 import subprocess
 import threading
 import time
+from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from testbed.tasks.home_side_contract import validate_home_side_contract
+import numpy as np
+
+from testbed.tasks.home_side_contract import (
+    classify_ready_swing_qpos,
+    validate_rule_ready_contract,
+)
 from testbed.tasks.real_transition import (
     CONDITION_SCHEMA,
     DATA_CONTRACT_VERSION,
@@ -59,7 +65,7 @@ class TransitionTaskRuntime:
         session_dir: Path | str,
         sequence_manifest_path: Path | str,
         split_manifest_path: Path | str,
-        home_side_contract_path: Path | str,
+        ready_contract_path: Path | str,
         resolved_record_config_yaml: str,
         git_commit: str,
         session_metadata: Mapping[str, Any] | None = None,
@@ -71,7 +77,7 @@ class TransitionTaskRuntime:
         self.session_dir = Path(session_dir).resolve()
         self.sequence_manifest_path = Path(sequence_manifest_path).resolve()
         self.split_manifest_path = Path(split_manifest_path).resolve()
-        self.home_side_contract_path = Path(home_side_contract_path).resolve()
+        self.ready_contract_path = Path(ready_contract_path).resolve()
         self.git_commit = str(git_commit)
         self.cycle_review_s = float(cycle_review_s)
         self.cycle_stop_s = float(cycle_stop_s)
@@ -108,21 +114,22 @@ class TransitionTaskRuntime:
             )
         for name, path in (
             ("split_manifest", self.split_manifest_path),
-            ("home_side_contract", self.home_side_contract_path),
+            ("ready_contract", self.ready_contract_path),
         ):
             if not path.is_file():
                 raise TransitionContractError(f"{name} does not exist: {path}")
         try:
-            home_contract = json.loads(
-                self.home_side_contract_path.read_text(encoding="utf-8")
+            ready_contract = json.loads(
+                self.ready_contract_path.read_text(encoding="utf-8")
             )
         except (OSError, json.JSONDecodeError) as exc:
             raise TransitionContractError(
-                f"cannot read home-side contract {self.home_side_contract_path}: {exc}"
+                f"cannot read ready contract {self.ready_contract_path}: {exc}"
             ) from exc
-        if not isinstance(home_contract, dict):
-            raise TransitionContractError("home-side contract root must be an object")
-        validate_home_side_contract(home_contract)
+        if not isinstance(ready_contract, dict):
+            raise TransitionContractError("ready contract root must be an object")
+        validate_rule_ready_contract(ready_contract)
+        self._ready_contract = ready_contract
         self.resolved_config_path = write_immutable_text(
             self.session_dir / "resolved_record_config.yaml",
             resolved_record_config_yaml,
@@ -136,6 +143,7 @@ class TransitionTaskRuntime:
         self._recording_attached = False
         self._record_start_requested = False
         self._pending_initial_ready_notes: str | None = None
+        self._pending_initial_ready_evidence: dict[str, Any] | None = None
         self._stop_request: TransitionStopRequest | None = None
         self._active_spec: TransitionRunSpec | None = None
         self._active_package: TransitionRunPackage | None = None
@@ -146,6 +154,7 @@ class TransitionTaskRuntime:
         self._run_start_step_ns: int | None = None
         self._goal_commit_step_ns: int | None = None
         self._timing_warning = ""
+        self._ready_samples: deque[tuple[int, np.ndarray, np.ndarray]] = deque()
 
     @classmethod
     def from_mapping(
@@ -179,9 +188,9 @@ class TransitionTaskRuntime:
             default=session_dir / "split_manifest.json",
             config_dir=config_dir,
         )
-        home_path = _resolve_optional_path(
-            config.get("home_side_contract"),
-            default=session_dir / "home_side_contract.json",
+        ready_path = _resolve_optional_path(
+            config.get("ready_contract"),
+            default=session_dir / "ready_contract.json",
             config_dir=config_dir,
         )
         time_limits = dict(config.get("time_limits", {}) or {})
@@ -189,7 +198,7 @@ class TransitionTaskRuntime:
             session_dir=session_dir,
             sequence_manifest_path=sequence_path,
             split_manifest_path=split_path,
-            home_side_contract_path=home_path,
+            ready_contract_path=ready_path,
             resolved_record_config_yaml=resolved_record_config_yaml,
             git_commit=_git_commit(repo_root),
             session_metadata=session_metadata,
@@ -221,6 +230,46 @@ class TransitionTaskRuntime:
         with self._lock:
             self._receiver_mode = str(mode)
             self._receiver_health_ok = bool(health_ok)
+
+    def update_ready_observation(
+        self,
+        *,
+        step_ns: int,
+        qpos: Any,
+        qvel: Any,
+    ) -> None:
+        """Update the live rolling window used by initial/target-ready gates."""
+
+        stamp = int(step_ns)
+        qpos_array = np.asarray(qpos, dtype=np.float64).reshape(-1)
+        qvel_array = np.asarray(qvel, dtype=np.float64).reshape(-1)
+        if stamp <= 0:
+            raise TransitionContractError("ready observation timestamp must be positive")
+        if qpos_array.shape != (4,) or qvel_array.shape != (4,):
+            raise TransitionContractError("ready observation qpos/qvel must have shape (4,)")
+        if not np.all(np.isfinite(qpos_array)) or not np.all(np.isfinite(qvel_array)):
+            raise TransitionContractError("ready observation qpos/qvel must be finite")
+        with self._lock:
+            if self._ready_samples and stamp <= self._ready_samples[-1][0]:
+                if stamp == self._ready_samples[-1][0]:
+                    self._ready_samples[-1] = (
+                        stamp,
+                        qpos_array.copy(),
+                        qvel_array.copy(),
+                    )
+                    return
+                self._ready_samples.clear()
+            self._ready_samples.append(
+                (stamp, qpos_array.copy(), qvel_array.copy())
+            )
+            retention_ns = int(
+                4.0
+                * float(self._ready_contract["swing_axis"]["stable_window_s"])
+                * 1_000_000_000
+            )
+            cutoff = stamp - retention_ns
+            while self._ready_samples and self._ready_samples[0][0] < cutoff:
+                self._ready_samples.popleft()
 
     def consume_record_start_request(self) -> bool:
         with self._lock:
@@ -267,8 +316,10 @@ class TransitionTaskRuntime:
                         step_id=step_id,
                         step_ns=step_ns,
                         notes=self._pending_initial_ready_notes,
+                        ready_evidence=self._pending_initial_ready_evidence,
                     )
                     self._pending_initial_ready_notes = None
+                    self._pending_initial_ready_evidence = None
             self._evaluate_time_limits(step_id=step_id, step_ns=step_ns)
 
     def consume_stop_request(self) -> TransitionStopRequest | None:
@@ -318,7 +369,7 @@ class TransitionTaskRuntime:
                 owner_artifacts={
                     "sequence_manifest": self.sequence_manifest_path,
                     "split_manifest": self.split_manifest_path,
-                    "home_side_contract": self.home_side_contract_path,
+                    "ready_contract": self.ready_contract_path,
                     "resolved_record_config": self.resolved_config_path,
                     "session_manifest": self.session_manifest_path,
                 },
@@ -340,8 +391,13 @@ class TransitionTaskRuntime:
                 return self._start_run(payload)
             package = self._require_active_package()
             if command == "initial-ready":
+                ready_evidence = self._require_ready_evidence(
+                    expected_side=package.run_spec.initial_side,
+                    payload=payload,
+                )
                 if package.phase == "new" and not self._recording_attached:
                     self._pending_initial_ready_notes = str(payload.get("notes", ""))
+                    self._pending_initial_ready_evidence = ready_evidence
                     self._record_start_requested = True
                     result = self.status()
                     result["message"] = (
@@ -354,6 +410,7 @@ class TransitionTaskRuntime:
                     step_id=step_id,
                     step_ns=step_ns,
                     notes=str(payload.get("notes", "")),
+                    ready_evidence=ready_evidence,
                 )
             elif command == "commit-goal":
                 if not bool(payload.get("display_ack", False)):
@@ -382,13 +439,12 @@ class TransitionTaskRuntime:
                 )
             elif command == "target-ready":
                 step_id, step_ns = self._require_latest_step()
-                realized_target_side = str(
-                    payload.get("realized_target_side", "")
-                ).strip()
-                if realized_target_side not in {"A", "B"}:
-                    raise TransitionContractError(
-                        "target-ready requires realized_target_side A or B"
-                    )
+                ready_evidence = self._require_ready_evidence(
+                    expected_side=None,
+                    payload=payload,
+                )
+                realized_target_side = str(ready_evidence["actual_side"])
+                ready_evidence["expected_side"] = package.next_target_side
                 if realized_target_side != package.next_target_side:
                     event = package.abort_run(
                         step_id=step_id,
@@ -407,6 +463,7 @@ class TransitionTaskRuntime:
                         step_ns=step_ns,
                         realized_target_side=realized_target_side,
                         notes=str(payload.get("notes", "")),
+                        ready_evidence=ready_evidence,
                     )
                 self._goal_commit_step_ns = None
                 self._timing_warning = ""
@@ -492,6 +549,7 @@ class TransitionTaskRuntime:
                 "cycle_elapsed_s": self._elapsed_s(self._goal_commit_step_ns),
                 "run_elapsed_s": self._elapsed_s(self._run_start_step_ns),
                 "timing_warning": self._timing_warning,
+                "ready_state": self._ready_state_snapshot(),
                 "time_limits_s": {
                     "cycle_review": self.cycle_review_s,
                     "cycle_stop": self.cycle_stop_s,
@@ -509,6 +567,130 @@ class TransitionTaskRuntime:
                     run_spec.cycle_count for run_spec in self._run_specs
                 ),
             }
+
+    def _ready_state_snapshot(self) -> dict[str, Any]:
+        swing = self._ready_contract["swing_axis"]
+        end_limit = (
+            self._last_step_ns
+            if self._recording_attached and self._last_step_ns is not None
+            else None
+        )
+        samples = [
+            sample
+            for sample in self._ready_samples
+            if end_limit is None or sample[0] <= end_limit
+        ]
+        base = {
+            "contract_schema": self._ready_contract["schema"],
+            "window_required_s": float(swing["stable_window_s"]),
+            "swing_qvel_limit_rad_s": float(
+                swing["swing_qvel_abs_max_rad_s"]
+            ),
+            "sample_count": 0,
+            "window_duration_s": 0.0,
+            "window_complete": False,
+            "sample_gap_ok": False,
+            "swing_stable": False,
+            "clean_side_window": False,
+            "actual_side": "unknown",
+            "blockers": [],
+        }
+        if not samples:
+            base["blockers"] = ["no_ready_observations"]
+            return base
+        latest_ns = int(samples[-1][0])
+        window_ns = int(float(swing["stable_window_s"]) * 1_000_000_000)
+        window = [sample for sample in samples if sample[0] >= latest_ns - window_ns]
+        timestamps = np.asarray([sample[0] for sample in window], dtype=np.int64)
+        qpos = np.stack([sample[1] for sample in window])
+        qvel = np.stack([sample[2] for sample in window])
+        duration_s = float((timestamps[-1] - timestamps[0]) / 1_000_000_000.0)
+        max_gap_s = (
+            float(np.max(np.diff(timestamps)) / 1_000_000_000.0)
+            if len(timestamps) > 1
+            else None
+        )
+        classifications = [
+            classify_ready_swing_qpos(self._ready_contract, value)
+            for value in qpos[:, 0]
+        ]
+        actual_side = classifications[-1]
+        window_complete = duration_s + 1e-9 >= float(swing["stable_window_s"])
+        sample_gap_ok = max_gap_s is not None and max_gap_s <= float(
+            swing["max_sample_gap_s"]
+        )
+        swing_qvel_abs_max = float(np.max(np.abs(qvel[:, 0])))
+        swing_stable = swing_qvel_abs_max <= float(
+            swing["swing_qvel_abs_max_rad_s"]
+        )
+        clean_side_window = actual_side in {"A", "B"} and all(
+            value == actual_side for value in classifications
+        )
+        blockers = []
+        if not window_complete:
+            blockers.append("swing_window_too_short")
+        if not sample_gap_ok:
+            blockers.append("swing_window_sample_gap")
+        if not swing_stable:
+            blockers.append("swing_not_stable")
+        if not clean_side_window:
+            blockers.append(f"swing_side_{actual_side}")
+        return {
+            **base,
+            "sample_count": int(len(window)),
+            "window_start_ns": int(timestamps[0]),
+            "window_end_ns": int(timestamps[-1]),
+            "window_duration_s": duration_s,
+            "window_complete": window_complete,
+            "max_sample_gap_s": max_gap_s,
+            "sample_gap_ok": sample_gap_ok,
+            "swing_qpos_current_rad": float(qpos[-1, 0]),
+            "swing_qpos_window_min_rad": float(np.min(qpos[:, 0])),
+            "swing_qpos_window_max_rad": float(np.max(qpos[:, 0])),
+            "swing_qvel_abs_max_rad_s": swing_qvel_abs_max,
+            "swing_stable": swing_stable,
+            "clean_side_window": clean_side_window,
+            "actual_side": actual_side,
+            "non_swing_qpos_current_rad": qpos[-1, 1:].tolist(),
+            "non_swing_qvel_abs_max_rad_s": np.max(
+                np.abs(qvel[:, 1:]), axis=0
+            ).tolist(),
+            "non_swing_axes_gate_ready": False,
+            "blockers": blockers,
+        }
+
+    def _require_ready_evidence(
+        self,
+        *,
+        expected_side: str | None,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        if payload.get("bucket_clear_confirmed") is not True:
+            raise TransitionContractError(
+                "ready requires bucket_clear_confirmed=true"
+            )
+        if payload.get("operator_confirmed") is not True:
+            raise TransitionContractError(
+                "ready requires operator_confirmed=true"
+            )
+        evidence = self._ready_state_snapshot()
+        blockers = list(evidence.get("blockers", ()))
+        if blockers:
+            raise TransitionContractError(
+                "ready contract blocked: " + ", ".join(blockers)
+            )
+        actual_side = str(evidence["actual_side"])
+        if expected_side is not None and actual_side != expected_side:
+            raise TransitionContractError(
+                f"actual ready side {actual_side} does not match expected {expected_side}"
+            )
+        evidence["expected_side"] = expected_side
+        evidence["bucket_clear_confirmed"] = True
+        evidence["operator_confirmed"] = True
+        evidence["ready_contract_sha256"] = self._ready_contract[
+            "contract_sha256"
+        ]
+        return evidence
 
     def _start_run(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         if self._active_package is not None:
@@ -544,6 +726,7 @@ class TransitionTaskRuntime:
         self._field_context["planned_cycle_count"] = spec.cycle_count
         self._record_start_requested = False
         self._pending_initial_ready_notes = None
+        self._pending_initial_ready_evidence = None
         self._stop_request = None
         self._recording_attached = False
         self._last_step_id = None
@@ -592,6 +775,7 @@ class TransitionTaskRuntime:
         self._recording_attached = False
         self._record_start_requested = False
         self._pending_initial_ready_notes = None
+        self._pending_initial_ready_evidence = None
         self._stop_request = None
         self._last_step_id = None
         self._last_step_ns = None
@@ -619,7 +803,7 @@ class TransitionTaskRuntime:
             "artifacts": {
                 "sequence_manifest.json": sha256_file(self.sequence_manifest_path),
                 "split_manifest.json": sha256_file(self.split_manifest_path),
-                "home_side_contract.json": sha256_file(self.home_side_contract_path),
+                "ready_contract.json": sha256_file(self.ready_contract_path),
                 "resolved_record_config.yaml": self.resolved_config_sha256,
             },
             "raw_package_mutation_policy": "append_until_seal_then_immutable",

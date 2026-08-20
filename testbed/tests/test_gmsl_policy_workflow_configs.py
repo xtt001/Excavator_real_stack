@@ -130,6 +130,11 @@ def test_g49_n5_runtime_configs_enable_strict_fp32_compiled_inference() -> None:
         # A second immediate producer can outrun the 50 Hz low-level consumer.
         assert cfg["real"]["control_pump"]["send_immediately_on_update"] is False
 
+    control_cfg = _load_yaml(
+        CONFIG_DIR / "policy_real_gmsl_fourcam_g49_n5_control_v1.yaml"
+    )
+    assert control_cfg["teleop"]["test_log"]["enabled"] is False
+
 
 def test_teleop_recording_config_declares_gmsl_online_qc_primary_camera() -> None:
     cfg = _load_yaml(CONFIG_DIR / "teleop_real_v1.yaml")

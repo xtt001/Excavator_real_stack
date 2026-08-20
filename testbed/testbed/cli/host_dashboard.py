@@ -1,15 +1,26 @@
-"""Read-only PyQt5 operations dashboard for the host-side real stack."""
+"""Host operations dashboard and audited v2 transition event controls."""
 
 from __future__ import annotations
 
 import argparse
 import math
+import os
 import signal
 import socket
 import threading
 import time
 from pathlib import Path
 from typing import Any
+
+# GNOME/Mutter intentionally ignores client-requested always-on-top for native
+# Wayland windows.  Run this operations dashboard through XWayland so the
+# standard _NET_WM_STATE_ABOVE hint is enforceable.  Explicit test/headless
+# platform choices (for example offscreen) remain untouched.
+if (
+    os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland"
+    and os.environ.get("DISPLAY")
+):
+    os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
@@ -19,6 +30,8 @@ from testbed.host_status import (
     HostStatusProtocolError,
     decode_host_status,
 )
+from testbed.config_loader import load_yaml_config
+from testbed.transition_control_client import send_transition_command
 
 
 AXIS_NAMES = ("回转", "动臂", "斗杆", "铲斗")
@@ -33,6 +46,8 @@ class DashboardSignals(QtCore.QObject):
     status_received = QtCore.pyqtSignal(object)
     status_error = QtCore.pyqtSignal(str)
     video_error = QtCore.pyqtSignal(str)
+    transition_result = QtCore.pyqtSignal(object)
+    transition_error = QtCore.pyqtSignal(str)
 
 
 class StatusReceiverThread(threading.Thread):
@@ -209,7 +224,7 @@ class StatusBadge(QtWidgets.QLabel):
 class ProminentStateCard(QtWidgets.QFrame):
     def __init__(self, title: str) -> None:
         super().__init__()
-        self.setMinimumHeight(94)
+        self.setMinimumHeight(80)
         self.setSizePolicy(
             QtWidgets.QSizePolicy.Expanding,
             QtWidgets.QSizePolicy.Fixed,
@@ -247,7 +262,7 @@ class ImuCard(QtWidgets.QFrame):
     def __init__(self, index: int) -> None:
         super().__init__()
         self.index = int(index)
-        self.setMinimumHeight(105)
+        self.setMinimumHeight(90)
         self.setFrameShape(QtWidgets.QFrame.StyledPanel)
         layout = QtWidgets.QVBoxLayout(self)
         self.title = QtWidgets.QLabel(f"IMU {index}")
@@ -312,6 +327,7 @@ class HostDashboard(QtWidgets.QMainWindow):
         self.last_event_key: tuple[Any, ...] | None = None
         self.last_status_error = ""
         self.last_video_error = ""
+        self.transition_busy = False
         self.record_hz = float(config.get("record_hz", 0.0) or 0.0)
         self.max_steps = int(config.get("max_steps", 0) or 0)
 
@@ -327,6 +343,8 @@ class HostDashboard(QtWidgets.QMainWindow):
         self.signals.status_received.connect(self._on_status)
         self.signals.status_error.connect(self._on_status_error)
         self.signals.video_error.connect(self._on_video_error)
+        self.signals.transition_result.connect(self._on_transition_result)
+        self.signals.transition_error.connect(self._on_transition_error)
         self.status_thread = StatusReceiverThread(
             self.signals,
             host=str(args.status_host),
@@ -357,10 +375,10 @@ class HostDashboard(QtWidgets.QMainWindow):
         self.badges = {
             name: StatusBadge(title)
             for name, title in (
-                ("sender", "SENDER"),
-                ("receiver", "RECEIVER"),
-                ("bridge", "BRIDGE"),
-                ("camera", "VIDEO4"),
+                ("sender", "SENDER AGE"),
+                ("receiver", "RECEIVER AGE"),
+                ("bridge", "BRIDGE AGE"),
+                ("camera", "VIDEO4 AGE"),
                 ("control", "CONTROL"),
             )
         }
@@ -390,6 +408,56 @@ class HostDashboard(QtWidgets.QMainWindow):
         )
         root.addWidget(self.alert_label)
 
+        transition_group = QtWidgets.QGroupBox(
+            "v2.0.1 连续录制（事件控制，不生成摇杆动作）"
+        )
+        transition_layout = QtWidgets.QVBoxLayout(transition_group)
+        transition_layout.setSpacing(5)
+        self.transition_state = QtWidgets.QLabel("等待 v2 receiver 状态")
+        self.transition_state.setWordWrap(True)
+        self.transition_state.setStyleSheet(
+            "font-size:16px; font-weight:800; padding:5px; "
+            "background:#11181d; border-radius:5px;"
+        )
+        transition_layout.addWidget(self.transition_state)
+
+        action_row = QtWidgets.QHBoxLayout()
+        self.workface_reset_id = QtWidgets.QLineEdit()
+        self.workface_reset_id.setPlaceholderText("必填，例如 wf_001")
+        self.workface_action = QtWidgets.QLineEdit()
+        self.workface_action.setPlaceholderText("必填，例如 fresh_strip")
+        action_row.addWidget(QtWidgets.QLabel("reset ID"))
+        action_row.addWidget(self.workface_reset_id, stretch=2)
+        action_row.addWidget(QtWidgets.QLabel("工作面处理"))
+        action_row.addWidget(self.workface_action, stretch=2)
+        self.transition_primary_command = ""
+        self.transition_primary_button = QtWidgets.QPushButton("等待下一步")
+        self.transition_primary_button.setMinimumWidth(220)
+        self.transition_primary_button.setStyleSheet(
+            "font-size:15px; font-weight:800; padding:6px;"
+        )
+        self.transition_primary_button.clicked.connect(
+            self._transition_primary_action
+        )
+        action_row.addWidget(self.transition_primary_button)
+        self.transition_abort_button = QtWidgets.QPushButton("ABORT")
+        self.transition_abort_button.clicked.connect(self._transition_abort)
+        action_row.addWidget(self.transition_abort_button)
+        self.transition_safety_button = QtWidgets.QPushButton("软件安全停止")
+        self.transition_safety_button.setStyleSheet(
+            "font-weight:800; color:#ff6b6b;"
+        )
+        self.transition_safety_button.setToolTip(
+            "只提交软件事件，不能替代驾驶室急停、熄火或先导关闭"
+        )
+        self.transition_safety_button.clicked.connect(
+            self._transition_safety_stop
+        )
+        action_row.addWidget(self.transition_safety_button)
+        transition_layout.addLayout(action_row)
+        root.addWidget(transition_group)
+        self._update_transition_panel({})
+
         summary = QtWidgets.QHBoxLayout()
         summary.setSpacing(8)
         self.prominent_cards = {
@@ -406,7 +474,7 @@ class HostDashboard(QtWidgets.QMainWindow):
         root.addLayout(summary)
 
         critical = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
-        critical.setMinimumHeight(170)
+        critical.setMinimumHeight(145)
         root.addWidget(critical)
 
         imu_group = QtWidgets.QGroupBox("四路 IMU 健康（必须全部 ONLINE）")
@@ -430,7 +498,7 @@ class HostDashboard(QtWidgets.QMainWindow):
         for axis_name in AXIS_NAMES:
             label = QtWidgets.QLabel(f"{axis_name}\n-")
             label.setAlignment(QtCore.Qt.AlignCenter)
-            label.setMinimumHeight(62)
+            label.setMinimumHeight(52)
             label.setStyleSheet(
                 "background:#11181d; border:1px solid #46535e; "
                 "border-radius:5px; padding:4px; font-family:monospace; "
@@ -467,11 +535,13 @@ class HostDashboard(QtWidgets.QMainWindow):
         self.record_text = self._info_box("录制状态")
         self.save_text = self._info_box("保存状态")
         self.storage_text = self._info_box("存储状态")
+        self.latency_text = self._info_box("实时延迟")
         self.control_text = self._info_box("控制与动作（只读）")
         for group, widget in (
             ("录制", self.record_text),
             ("HDF5 保存", self.save_text),
             ("外置盘", self.storage_text),
+            ("当前动作年龄", self.latency_text),
             ("控制链路", self.control_text),
         ):
             box = QtWidgets.QGroupBox(group)
@@ -569,6 +639,214 @@ class HostDashboard(QtWidgets.QMainWindow):
             f"配置来源：{source}"
         )
 
+    def _transition_start_run(self) -> None:
+        reset_id = self.workface_reset_id.text().strip()
+        action = self.workface_action.text().strip()
+        if not reset_id or not action:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "缺少工作面信息",
+                "开始 run 前必须填写工作面 reset ID 和工作面处理。",
+            )
+            return
+        self._send_transition_event(
+            "start-run",
+            {
+                "field_context": {
+                    "workface_reset_id": reset_id,
+                    "workface_action": action,
+                }
+            },
+        )
+
+    def _transition_primary_action(self) -> None:
+        handlers = {
+            "start-run": self._transition_start_run,
+            "initial-ready": self._transition_initial_ready,
+            "commit-goal": self._transition_goal,
+            "dump-end": self._transition_dump_end,
+            "target-ready": self._transition_target_ready,
+        }
+        handler = handlers.get(self.transition_primary_command)
+        if handler is not None:
+            handler()
+
+    def _confirm_ready(self, command: str) -> None:
+        self._send_transition_event(
+            command,
+            {
+                "bucket_clear_confirmed": True,
+                "operator_confirmed": True,
+            },
+        )
+
+    def _transition_initial_ready(self) -> None:
+        self._confirm_ready("initial-ready")
+
+    def _transition_goal(self) -> None:
+        self._send_transition_event("commit-goal", {"display_ack": True})
+
+    def _transition_dump_end(self) -> None:
+        self._send_transition_event("dump-end", {})
+
+    def _transition_target_ready(self) -> None:
+        self._confirm_ready("target-ready")
+
+    def _transition_abort(self) -> None:
+        reason, accepted = QtWidgets.QInputDialog.getText(
+            self, "终止当前 run", "请输入终止原因："
+        )
+        if accepted and reason.strip():
+            self._send_transition_event("abort", {"reason": reason.strip()})
+
+    def _transition_safety_stop(self) -> None:
+        reason, accepted = QtWidgets.QInputDialog.getText(
+            self,
+            "软件安全停止",
+            "先使用现场急停/熄火/先导关闭确保安全，再填写原因：",
+        )
+        if accepted and reason.strip():
+            self._send_transition_event(
+                "safety-stop", {"reason": reason.strip()}
+            )
+
+    def _current_transition_status(self) -> dict[str, Any]:
+        receiver = dict(self.latest_status.get("receiver", {}) or {})
+        return dict(receiver.get("real_transition", {}) or {})
+
+    def _send_transition_event(
+        self, command: str, payload: dict[str, Any]
+    ) -> None:
+        if self.transition_busy:
+            return
+        self.transition_busy = True
+        self._update_transition_panel(self._current_transition_status())
+        host = str(getattr(self.args, "transition_host", "192.168.100.1"))
+        port = int(getattr(self.args, "transition_port", 8771))
+        timeout_s = float(getattr(self.args, "transition_timeout_s", 3.0))
+
+        def worker() -> None:
+            try:
+                result = send_transition_command(
+                    host=host,
+                    port=port,
+                    timeout_s=timeout_s,
+                    command=command,
+                    payload=payload,
+                )
+            except Exception as exc:
+                self.signals.transition_error.emit(
+                    f"{command}: {type(exc).__name__}: {exc}"
+                )
+                return
+            result = dict(result)
+            result["_gui_command"] = command
+            self.signals.transition_result.emit(result)
+
+        threading.Thread(
+            target=worker,
+            name=f"host-dashboard-transition-{command}",
+            daemon=True,
+        ).start()
+
+    @QtCore.pyqtSlot(object)
+    def _on_transition_result(self, result: object) -> None:
+        payload = dict(result or {})
+        command = str(payload.pop("_gui_command", "event") or "event")
+        self.transition_busy = False
+        receiver = self.latest_status.setdefault("receiver", {})
+        if isinstance(receiver, dict):
+            receiver["real_transition"] = payload
+        self._append_event(
+            "V2 EVENT",
+            f"{command} accepted phase={payload.get('phase', '-')} "
+            f"run={payload.get('run_id', '-')}",
+        )
+        self._update_transition_panel(payload)
+
+    @QtCore.pyqtSlot(str)
+    def _on_transition_error(self, message: str) -> None:
+        self.transition_busy = False
+        self._append_event("V2 ERROR", message)
+        self._update_transition_panel(self._current_transition_status())
+        QtWidgets.QMessageBox.warning(self, "v2 事件提交失败", message)
+
+    def _update_transition_panel(self, transition: dict[str, Any]) -> None:
+        transition = dict(transition or {})
+        busy = bool(getattr(self, "transition_busy", False))
+        phase = str(transition.get("phase", "") or "")
+        ready = dict(transition.get("ready_state", {}) or {})
+        blockers = [str(item) for item in ready.get("blockers", []) or []]
+        actual_side = str(ready.get("actual_side", "unknown") or "unknown")
+        initial_side = str(transition.get("initial_side", "-") or "-")
+        target_side = str(transition.get("next_target_side", "-") or "-")
+        completed = _int(transition.get("completed_cycles"), 0)
+        planned = _int(transition.get("planned_cycle_count"), 0)
+        stable = bool(ready.get("swing_stable", False))
+        window_complete = bool(ready.get("window_complete", False))
+        run_id = str(transition.get("run_id", "-") or "-")
+        receiver_mode = str(transition.get("receiver_mode", "-") or "-")
+        health_ok = bool(transition.get("receiver_health_ok", False))
+
+        if not transition:
+            self.transition_state.setText(
+                "等待 v2 receiver 状态；普通 v1 receiver 不提供该面板数据"
+            )
+            color = GRAY
+        else:
+            blocker_text = ",".join(blockers) if blockers else "无"
+            busy_text = "  |  正在提交事件……" if busy else ""
+            self.transition_state.setText(
+                f"RUN {run_id}  |  phase={phase}  |  cycle={completed}/{planned}  |  "
+                f"initial={initial_side}  |  TARGET={target_side}  |  "
+                f"实际侧={actual_side}  |  swing稳定={_yes_no(stable)}  |  "
+                f"稳定窗={_yes_no(window_complete)}  |  blockers={blocker_text}{busy_text}"
+            )
+            color = GREEN if health_ok and not blockers else AMBER
+        self.transition_state.setStyleSheet(
+            "font-size:16px; font-weight:800; padding:5px; "
+            f"background:#11181d; border:2px solid {color}; border-radius:5px;"
+        )
+
+        ready_ok = (
+            window_complete
+            and stable
+            and bool(ready.get("clean_side_window", False))
+            and not blockers
+        )
+        primary = {
+            "idle": (
+                "start-run",
+                "开始 RUN",
+                receiver_mode == "armed" and health_ok,
+            ),
+            "new": (
+                "initial-ready",
+                f"确认 INITIAL READY {initial_side}",
+                ready_ok and actual_side == initial_side,
+            ),
+            "ready": (
+                "commit-goal",
+                f"确认目标 {target_side} / 开始本铲",
+                True,
+            ),
+            "goal_committed": ("dump-end", "标记 DUMP END", True),
+            "dump_marked": (
+                "target-ready",
+                f"确认 TARGET READY {target_side}",
+                ready_ok and actual_side == target_side,
+            ),
+        }.get(phase, ("", "等待下一步", False))
+        self.transition_primary_command = str(primary[0])
+        self.transition_primary_button.setText(str(primary[1]))
+        self.transition_primary_button.setEnabled(bool(primary[2]) and not busy)
+        may_stop = phase in {"started", "ready", "goal_committed", "dump_marked"}
+        self.transition_abort_button.setEnabled(may_stop and not busy)
+        self.transition_safety_button.setEnabled(may_stop and not busy)
+        context_enabled = phase == "idle" and not busy
+        self.workface_reset_id.setEnabled(context_enabled)
+        self.workface_action.setEnabled(context_enabled)
+
     @QtCore.pyqtSlot(object)
     def _on_status(self, status: object) -> None:
         self.latest_status = dict(status or {})
@@ -632,6 +910,8 @@ class HostDashboard(QtWidgets.QMainWindow):
         save = dict(receiver.get("save", {}) or {})
         storage = dict(receiver.get("storage", {}) or {})
         qc = dict(receiver.get("online_qc", {}) or {})
+        latency = dict(receiver.get("latency", {}) or {})
+        transition = dict(receiver.get("real_transition", {}) or {})
 
         mode = str(receiver.get("receiver_mode", "WAIT") or "WAIT").upper()
         episode = _int(receiver.get("episode_idx"), -1)
@@ -747,6 +1027,16 @@ class HostDashboard(QtWidgets.QMainWindow):
             f"dataset    {storage.get('path') or '-'}"
         )
 
+        action_age = _optional_finite_float(
+            latency.get("action_age_ms", latency.get("policy_action_age_ms"))
+        )
+        action_age_text = "--" if action_age is None else f"{action_age:.1f} ms"
+        self.latency_text.setText(
+            f"action_age  {action_age_text}\n"
+            f"source      {latency.get('action_source') or '-'}\n"
+            "定义        receiver 状态时刻 - 当前动作采样时刻"
+        )
+
         raw_action = _vector(receiver.get("policy_action"), 4)
         safe_action = _vector(receiver.get("policy_assisted_action"), 4)
         commanded = _vector(receiver.get("commanded_action"), 4)
@@ -773,6 +1063,7 @@ class HostDashboard(QtWidgets.QMainWindow):
                 _item(losses, index),
             )
         self._update_home_panel(dict(receiver.get("home", {}) or {}))
+        self._update_transition_panel(transition)
 
         warnings = qc.get("warning_codes") or []
         self.qc_text.setText(
@@ -875,7 +1166,9 @@ class HostDashboard(QtWidgets.QMainWindow):
                 f"background:{RED}; color:white; padding:7px; border-radius:5px; font-weight:700;"
             )
         else:
-            self.alert_label.setText("所有关键链路正常（GUI 只读，不参与控制）")
+            self.alert_label.setText(
+                "所有关键链路正常（GUI 不发送摇杆动作；v2 按钮只提交数据事件）"
+            )
             self.alert_label.setStyleSheet(
                 f"background:{GREEN}; color:#101820; padding:7px; border-radius:5px; font-weight:700;"
             )
@@ -920,9 +1213,7 @@ class HostDashboard(QtWidgets.QMainWindow):
 
 def _load_config(path: Path) -> dict[str, Any]:
     try:
-        import yaml
-
-        data = dict(yaml.safe_load(path.read_text(encoding="utf-8")) or {})
+        data = load_yaml_config(path)
     except Exception:
         return {
             "record_hz": 0.0,
@@ -975,7 +1266,9 @@ def _load_config(path: Path) -> dict[str, Any]:
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Read-only host operations dashboard.")
+    parser = argparse.ArgumentParser(
+        description="Host operations dashboard with v2 transition event controls."
+    )
     parser.add_argument(
         "--config",
         type=Path,
@@ -983,6 +1276,9 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--status-host", default=DEFAULT_HOST_STATUS_HOST)
     parser.add_argument("--status-port", type=int, default=DEFAULT_HOST_STATUS_PORT)
+    parser.add_argument("--transition-host", default="192.168.100.1")
+    parser.add_argument("--transition-port", type=int, default=8771)
+    parser.add_argument("--transition-timeout-s", type=float, default=3.0)
     parser.add_argument(
         "--video-topic",
         default="/excavator/eye/video4/image_raw/compressed",
@@ -1010,6 +1306,14 @@ def _float(value: Any, default: float) -> float:
         return float(value)
     except (TypeError, ValueError):
         return float(default)
+
+
+def _optional_finite_float(value: Any) -> float | None:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if math.isfinite(result) and result >= 0.0 else None
 
 
 def _int(value: Any, default: int) -> int:

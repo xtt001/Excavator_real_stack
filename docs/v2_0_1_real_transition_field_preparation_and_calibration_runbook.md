@@ -22,16 +22,17 @@ general_field_commands: host_slave_start_commands.md
 
 1. 主端和从端从 GitHub 取得同一份 `fs/v2.0.1`；
 2. 验证从端运行环境、底层二进制、外置盘、四路相机、CAN、IMU、qpos/qvel 和时间；
-3. 在不启动 receiver、sender 或 policy 的条件下，确认 swing 物理左右符号；
-4. 采集 home、A、B 各 10 个独立稳定窗口，并冻结 `home_side_contract.json`；
+3. 核对已由现场确认的 swing home、左右符号和安全范围；
+4. 使用现场已确认的 swing 规则自动冻结 `ready_contract.json`，不再采集
+   home/A/B 各 10 个固定窗口；
 5. 提前冻结首批 sequence/split，保存当天现场证据和 checksum；
 6. 判断是否具备进入专家连续录制的条件。
 
-本手册只授权准备、只读检查和人工看护下的 home/A/B 标定。它不会授权模型动作，也不会自动授权正式录制。任何传感器、版本、方向或安全状态不明确时，当天停在准备阶段。
+本手册只授权准备、只读检查和人工看护下的 v2 专家录制演练。它不会授权模型动作。任何传感器、版本、方向或安全状态不明确时，当天停在准备阶段。
 
 ## 1. 文档和代码边界
 
-- 本文负责 v2.0.1 Real Transition 的 GitHub 交付、准备顺序和 home/A/B 标定。
+- 本文负责 v2.0.1 Real Transition 的 GitHub 交付、准备顺序和规则型 ready 合同。
 - 通用主从链路、相机外参、GUI、单轴响应和停止命令以《[主从端启动命令速查](host_slave_start_commands.md)》为准。
 - 24 条 run、96 个 cycle 及其平衡规则以《[实验执行序列设计](v2_0_1_real_transition_experiment_sequence_design.md)》为准。
 - 任务范围以《[最终结论](v2_0_1_real_transition_final_conclusion.md)》为准。
@@ -188,11 +189,12 @@ export PYTHON="$PWD/.venv/bin/python"
 
 ```text
 prepare-session
-init-home-calibration
-capture-home-window
-build-home-contract
+build-ready-contract
 verify-run
 ```
+
+旧版 `init-home-calibration/capture-home-window/build-home-contract` 可以保留在帮助中，
+但不再是本轮入口。
 
 ### 3.2 生成目录不在 Git 中，需在从端编译
 
@@ -218,10 +220,10 @@ test -x tools/gmsl_realtime_capture/build/gmsl_realtime_preprocess_probe
 
 | 设备 | 本阶段职责 | 本阶段不启动 |
 |---|---|---|
-| 从端 Jetson | bridge、GMSL、gateway、只读状态、标定产物落盘 | receiver、policy |
+| 从端 Jetson | bridge、GMSL、gateway、只读状态、session 产物落盘 | policy |
 | 主端 | Git/SHA 核对、时间同步、现场记录 | sender、模型控制 |
 
-准备和 home/A/B 采集期间的端口状态：
+进入 v2 wrapper 之前的只读检查阶段端口状态：
 
 | 端口 | 期望 |
 |---:|---|
@@ -230,7 +232,8 @@ test -x tools/gmsl_realtime_capture/build/gmsl_realtime_preprocess_probe
 | `8770` | receiver 未监听 |
 | `8771` | transition control 未监听 |
 
-`capture-home-window` 只读取从端本机 `127.0.0.1:8765`。它会检查 `8770` 未监听，缺少四路相机、相机时间戳不前进、黑帧或稳定窗超限时直接拒绝样本。
+进入 v2 前必须停止旧 `policy_remote` receiver，确保 `8770` 释放；随后由 v2 wrapper
+启动唯一 expert receiver，并在 `8771` 提供 transition control。
 
 ## 5. 准备阶段的安全边界
 
@@ -239,8 +242,8 @@ test -x tools/gmsl_realtime_capture/build/gmsl_realtime_preprocess_probe
 - 现场急停、熄火、先导关闭和人工接管方式均可用；
 - 机器回转半径和铲斗活动范围内无人；
 - 通讯或显示中断时机手立即回中并停止；
-- 标定只用人工驾驶改变姿态，软件侧没有 sender、receiver 或 policy 动作源；
-- 每个稳定窗口开始前摇杆回中，机器已经停稳；
+- ready 确认只读取状态，不启动 policy 动作源；
+- 每次 ready 确认前摇杆回中，机器已经停稳且铲斗离土；
 - 任何轴方向、IMU、图像或 qpos 解释不一致时停止，不靠修改阈值放行。
 
 从端先清理仓库托管的旧进程，再检查端口：
@@ -252,7 +255,7 @@ cd /media/mundane/D/Excavator_real_stack
 ss -ltnp | grep -E ':(8765|8766|8770|8771)\b' || true
 ```
 
-此时四个端口都应为空。只有确认残留进程属于本仓库旧 stack 时，才执行 `./scripts/slave_real_stack.sh stop --force`。未知进程占用端口时先查明来源，不直接杀进程或开始标定。
+此时四个端口都应为空。只有确认残留进程属于本仓库旧 stack 时，才执行 `./scripts/slave_real_stack.sh stop --force`。未知进程占用端口时先查明来源，不直接杀进程或开始 v2。
 
 ## 6. 外置盘、时间和静态检查
 
@@ -364,164 +367,98 @@ export SESSION_ROOT="/media/mundane/EXTERNAL_USB/real_transition_raw_v2"
 export SESSION_DIR="${SESSION_ROOT}/session_${SESSION_ID}"
 test -f "${SESSION_DIR}/sequence_manifest.json"
 test -f "${SESSION_DIR}/split_manifest.json"
+test -f "${SESSION_DIR}/ready_contract.json"
 test -f "${SESSION_DIR}/preparation_manifest.json"
 ```
 
-`SESSION_ID` 和 `ctx01` 只是首个现场 context 的命名。相机位置、IMU 坐标、home 物理语义或作业区发生实质变化时，关闭当前 context，新建 session 和 contract。后续 session 使用新的、事先记录的 seed，不能复用 `20260817` 后再声称序列独立。
+`SESSION_ID` 是首个现场 context 的命名。相机位置、IMU 坐标、home 物理语义或作业区发生实质变化时，关闭当前 context，新建 session 和 contract。后续 session 使用新的、事先记录的 seed，不能复用 `20260817` 后再声称序列独立。
 
-## 9. 确认 swing 物理左右符号
+## 9. 已冻结的 swing 规则
 
-此步骤仍保持 `--no-receiver`，主端不启动 sender。
-
-1. 机手把机器置于可安全观察的 home 附近，停稳并记录 `q_home[0]`；
-2. 机手用原车人工控制向物理左侧移动一小段，停稳并记录 `q_left[0]`；
-3. 视觉确认运动方向确实是物理左侧；
-4. 计算最短角差：
+2026-08-17 现场已确认以下合同，不再要求移动机器重复机械极限、固定预姿态或
+home/A/B 各 10 次窗口：
 
 ```text
-delta_left = atan2(sin(q_left[0] - q_home[0]), cos(q_left[0] - q_home[0]))
-delta_left > 0  => physical_left_qpos_sign = +1
-delta_left < 0  => physical_left_qpos_sign = -1
+home swing qpos             = 0.000690 rad
+physical left qpos sign     = -1
+home tolerance              = 0.05 rad
+clean-ready minimum delta   = 0.08 rad
+safe swing qpos range       = [-0.3892, +0.4189] rad
+swing stable window         = 0.5 s
+swing qvel absolute limit   = 0.015 rad/s（全窗每一行均通过）
 ```
 
-符号确认的观测差建议达到 `abs(delta_left) >= 0.05 rad`，同时保持现场认为安全的位移。差值太小、跨角分支不清楚或视觉与 qpos 不一致时，符号未通过。不要根据摇杆 action 或历史配置猜符号。
+A 固定表示物理左侧，B 固定表示物理右侧。当前 swing qpos 相对 home 的最短角差
+小于 `-0.08 rad` 为 clean A，大于 `+0.08 rad` 为 clean B；home tolerance 与 clean
+阈值之间是 transition/review 区。安全范围外拒绝 ready。
 
-把最终符号、两次稳定 qpos、时间、机手和复核人写进当天现场记录。
+## 10. 自动生成并复核 ready contract
 
-## 10. 初始化 home/A/B 标定输入
-
-以下示例假设确认结果为 `+1`。若现场结果为 `-1`，只改 `LEFT_SIGN`，不要改代码默认值。
+第 8 节的 `prepare-session` 会同时生成不可变的 `ready_contract.json`，无需输入
+`home_calibration_samples.json`：
 
 ```bash
-cd /media/mundane/D/Excavator_real_stack
-export PYTHON="$PWD/.venv/bin/python"
-: "${SESSION_DIR:?先按第 8 节设置 SESSION_DIR}"
-
-export LEFT_SIGN=1
-export CONTEXT_VERSION="${SESSION_ID}"
-export OPERATOR_ID="field_engineer_01"
-
-"${PYTHON}" -m testbed.cli.real_transition init-home-calibration \
-  --output "${SESSION_DIR}/home_calibration_samples.json" \
-  --context-version "${CONTEXT_VERSION}" \
-  --resolved-by "${OPERATOR_ID}" \
-  --physical-left-qpos-sign "${LEFT_SIGN}" \
-  --source-config testbed/testbed/configs/teleop_real_v1.yaml \
-  --source-value-path teleop.recording.go_home.home_pose_rad \
-  --expected-cameras video4,video5,video6,video7
+test -f "${SESSION_DIR}/ready_contract.json"
+"${PYTHON}" -m testbed.cli.real_transition build-ready-contract \
+  --output "${SESSION_DIR}/ready_contract.json"
+sha256sum "${SESSION_DIR}/ready_contract.json"
 ```
 
-命令会把 home 配置原文复制到 session 内，再创建可追加的 calibration JSON。这样离开当前仓库绝对路径后仍能复核来源。配置里的 `home_pose_rad` 是命令参考；实际分类中线由 10 次独立回中解析。
+第二条命令是幂等复核；已有文件内容不同会拒绝覆盖。旧的
+`init-home-calibration/capture-home-window/build-home-contract` 仅保留用于读取旧实验，
+不属于本轮 v2 现场入口。
 
-## 11. 采集 30 个独立稳定窗口
+## 11. Ready 在线判据
 
-### 11.1 每个窗口的自动门槛
-
-`capture-home-window` 每次采 0.5 秒、名义 20 Hz，并检查：
-
-| 项目 | 门槛 |
-|---|---:|
-| software action source | receiver `8770` 未监听，并由实验员确认无 sender/policy |
-| 四路相机 | `video4..video7` 每路存在、时间戳前进、图像均值 `>5` |
-| 稳定时间 | `>=0.5 s` |
-| qvel 绝对值 | `<= [0.015, 0.015, 0.020, 0.020] rad/s` |
-| qpos 峰峰值 | 每轴 `<=0.005 rad` |
-| 视觉 | 实验员确认当前姿态和作业面可作为 ready |
-
-通过后才会把 qpos/qvel、status、四路 JPEG、时间戳和 provenance 追加到 calibration 文件。失败窗口不会进入 accepted 样本。
-
-### 11.2 单个命令
-
-机器停稳并完成视觉检查后执行：
-
-```bash
-"${PYTHON}" -m testbed.cli.real_transition capture-home-window \
-  --calibration "${SESSION_DIR}/home_calibration_samples.json" \
-  --side home \
-  --reference-id home_01 \
-  --host 127.0.0.1 \
-  --port 8765 \
-  --receiver-port 8770 \
-  --duration-s 0.5 \
-  --rate-hz 20 \
-  --confirm-visual \
-  --confirm-no-software-action-source
-```
-
-后续只改 `--side` 和 `--reference-id`，例如 `home_02..home_10`、`A_01..A_10`、`B_01..B_10`。
-
-不要写 shell 循环连续采 10 次。独立性要求如下：
-
-- home：每次先离开中线，再由机手重新回中、停稳、确认；
-- A/B：每次重新选择该侧自然可挖的 ready，覆盖当天实际会使用的位置变化；
-- 同一次停稳后的连续 10 个窗口不算 10 次独立参考；
-- A、B 是区域，不要求对准固定角度；
-- 每次命令成功后查看 JSON 输出中的计数和 qvel/qpos 峰峰值，再进行下一次。
-
-四路参考图保存在：
+`initial-ready` 和 `target-ready` 均采用同一规则：
 
 ```text
-${SESSION_DIR}/calibration_visuals/<reference_id>/video4.jpg
-${SESSION_DIR}/calibration_visuals/<reference_id>/video5.jpg
-${SESSION_DIR}/calibration_visuals/<reference_id>/video6.jpg
-${SESSION_DIR}/calibration_visuals/<reference_id>/video7.jpg
+当前 swing qpos 自动分类为脚本要求的 clean A/B
++ 最新连续 0.5 s 内每行 abs(swing_qvel) <= 0.015 rad/s
++ 铲斗离土由操作员显式确认
++ 操作员确认当前状态可作为 ready
 ```
 
-## 12. 生成和复核 home-side contract
+boom、stick、bucket 的 qpos 不设边界；三轴 qvel 的窗口最大值写入
+`ready_evidence`，但不阻止 ready。runtime 不再接受人工填写 realized A/B 作为分类
+依据；`target-ready` 使用当前 swing qpos 自动计算实际侧，实际侧与 scripted target
+不一致时立即 abort。
 
-30 个 accepted 窗口完成后执行：
+命令必须显式带两项确认：
 
 ```bash
-"${PYTHON}" -m testbed.cli.real_transition build-home-contract \
-  --calibration "${SESSION_DIR}/home_calibration_samples.json" \
-  --output "${SESSION_DIR}/home_side_contract.json"
+"${PYTHON}" -m testbed.cli.real_transition_control \
+  --host 192.168.100.1 initial-ready \
+  --confirm-bucket-clear --confirm-operator-ready
 
-sha256sum \
-  "${SESSION_DIR}/home_calibration_samples.json" \
-  "${SESSION_DIR}/home_side_contract.json"
+"${PYTHON}" -m testbed.cli.real_transition_control \
+  --host 192.168.100.1 target-ready \
+  --confirm-bucket-clear --confirm-operator-ready
 ```
 
-生成器按当天数据解析：
+## 12. HDF5 阈值证据
+
+`episode_111/112/113.hdf5` 的自然停止段用于复核 swing 阈值。规则不是“某一帧低于
+0.015”，而是“最新连续 0.5 秒全窗均低于或等于 0.015”。`episode_113` 的长自然
+停止段在忽略液压惯性衰减后，`abs(swing_qvel)` p95 约 `0.0066 rad/s`；超阈值点集中
+在停止命令后的衰减阶段。因此 `0.015 rad/s + 0.5 s 全窗` 能拒绝尚在滑行的 swing，
+同时允许真实静止噪声。
+
+其中 `episode_113.hdf5` 作为本次复现质量最好的主审计样本：共 1164 row、时长
+58.316 s；`action`、`observations/qpos`、`observations/qvel`、step/time 数组均为
+1164 row、全有限且 step/time 严格递增，`action` 与 `diagnostics/safe_action` 一致。
+四路 `video4..video7` 共 4656 帧，无空帧，全部可完整 JPEG 解码为 `216x384x3`；相机
+group valid 为 1143/1164，缺失的 21 row 全在启动前段，group skew 的 p50/p95/max
+约为 `0.593/1.735/9.353 ms`。控制行间隔 p50/p95/max 约为
+`50.073/51.248/76.438 ms`。文件 metadata 标记 `success=1`、`n_steps=1164`，由临时
+文件原子落盘，目录中无对应 `.tmp` 或 failed 残留。文件 SHA-256 为：
 
 ```text
-classification_deadband_rad = max(
-  0.05,
-  ceil_to_0.01(max(abs(center_repeat_error)) + 0.01)
-)
-
-clean_endpoint_min_abs_side_coordinate_rad =
-  classification_deadband_rad
-  + max(0.03, p95(abs(center_repeat_error)))
+4e41aebeff36118a78ab488c83b4cf0f8db02289205ed51b83a8eb9186d753b5
 ```
 
-历史下限为 deadband `0.05 rad`、clean endpoint `0.08 rad`。当天回中波动更大时数值只会增大。生成失败时不要手工缩小 deadband 或删除不方便的方向证据来凑通过。
-
-复核以下内容：
-
-```bash
-"${PYTHON}" - "${SESSION_DIR}/home_side_contract.json" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-p = Path(sys.argv[1])
-d = json.loads(p.read_text(encoding="utf-8"))
-print("context:", d["context_version"])
-print("home:", json.dumps(d["home_reference"], indent=2))
-print("counts:", d["parameter_resolution"]["observed_statistics"]["accepted_window_counts"])
-print("sides:", json.dumps(d["parameter_resolution"]["observed_statistics"]["sides"], indent=2))
-print("contract_sha256:", d["contract_sha256"])
-PY
-```
-
-通过条件：
-
-- home/A/B 均至少 10 个 accepted 窗口；
-- A 全部位于物理左侧 clean 支持，B 全部位于物理右侧 clean 支持；
-- 两侧最近支持点都越过 clean endpoint；
-- 四路参考图与 qpos 分类一致；
-- 没有放宽 ready 门槛的未审批 override；
-- contract 和源配置 snapshot 均有 SHA256。
+`episode_112` 的核心数组和四路图像也完整，但相机 group-valid 诊断全程为 false；因此
+默认不把它当作本次“完美复现”的基准样本。
 
 ## 13. 准备证据封存
 
@@ -551,15 +488,12 @@ PY
 | slave SHA |  |
 | GitHub remote SHA |  |
 | session id / seed |  |
-| context version |  |
 | operator / reviewer |  |
 | control CAN / IMU CAN | `can2` / `can5` |
 | camera devices | `video4..video7` |
-| physical-left qpos sign and evidence |  |
-| home/A/B accepted counts |  |
-| deadband / clean threshold |  |
+| ready contract SHA256 |  |
+| home / left sign / clean threshold | `0.000690 / -1 / 0.08 rad` |
 | USB free space / estimated requirement |  |
-| contract SHA256 |  |
 | preparation checksum result |  |
 
 ## 14. 是否进入正式录制
@@ -573,9 +507,8 @@ PY
 - [ ] `can2/can5` 正常，四个 IMU 地址齐全；
 - [ ] 四路相机设备、SHM、画面、时间戳和安装状态正常；
 - [ ] qpos/qvel 连续且坐标解释一致；
-- [ ] `physical_left_qpos_sign` 有视觉和 qpos 证据；
-- [ ] home/A/B 各 10 个独立窗口通过；
-- [ ] `home_side_contract.json` 生成、复核并封存；
+- [ ] `ready_contract.json` 已由 `prepare-session` 生成并校验；
+- [ ] live ready 状态显示自动 A/B、swing 稳定窗和两项人工确认；
 - [ ] sequence/split 已在看土面前冻结；
 - [ ] 机手、安全观察人、停止条件和 workface 方案已经确认。
 
@@ -588,7 +521,9 @@ EXCAVATOR_TRANSITION_SESSION_DIR="${SESSION_DIR}" \
   ./scripts/run_real_transition_expert_recording.sh
 ```
 
-这条命令会启动 receiver 和 transition control，因此不属于本文前面的只读标定阶段。主端必须使用 transition 配置启动手柄 sender，并由 `tb-real-transition-control` 提交 run/goal/marker。正式操作顺序应在首条 run 前单独做一次全员口头演练。
+这条命令会启动唯一 expert receiver 和 transition control。主端必须使用 transition
+配置启动手柄 sender，并由 `tb-real-transition-control` 提交 run/goal/marker。正式录制
+前先完成一次不挖土状态机演练。
 
 ## 15. 需要动作的测试单独审批
 

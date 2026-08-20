@@ -121,7 +121,8 @@ cycle 位置又固定对应某个目标
 - 3/4/5 cycle 的 run stop 默认分别为 180/240/300 s；
 - 录制上限为 15000 step，对应 50 Hz 下最长 300 s；
 - 每个目标仍需在 cycle 开始前提交；
-- `target-ready` 必须同时记录 realized side；
+- `initial-ready` 和 `target-ready` 必须同时记录铲斗离土、操作员确认和稳定窗证据；
+- realized side 由当前 swing qpos 自动计算并记录，不能人工输入；
 - realized side 与 scripted target 不一致时立即 abort，不消费下一目标；
 - `workface_reset_id` 和 `workface_action` 缺失时，run 在创建文件前被拒绝；
 - 计划 sequence、pair 和 member rank 由 runtime 写入 run package，现场输入不能覆盖这些字段。

@@ -140,7 +140,10 @@ teleop:
       runaway_error_factor: 1.5
 
   test_log:
-    enabled: true
+    # Disabled for the normal long-running receiver. Dedicated shadow/control
+    # trace scripts pass --test-log-dir explicitly when full per-step evidence
+    # is required.
+    enabled: false
     output_dir: /media/mundane/EXTERNAL_USB/policy_control_tests
     flush_every_steps: 20
     capture_images: true

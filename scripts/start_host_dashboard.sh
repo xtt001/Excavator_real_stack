@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 主端只读现场 GUI：video4 + receiver/IMU/录制/保存/QC/存储状态。
+# 主端现场 GUI：video4 + receiver/IMU/录制/QC + v2 数据事件控制。
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -79,8 +79,9 @@ STATUS_PORT="${EXCAVATOR_HOST_STATUS_PORT:-8781}"
 VIDEO_TOPIC="${EXCAVATOR_EYE_COMPRESSED_TOPIC:-/excavator/eye/video4/image_raw/compressed}"
 CONFIG="${EXCAVATOR_TELEOP_CONFIG:-${ROOT_DIR}/testbed/testbed/configs/teleop_real_v1.yaml}"
 
-echo "【主端只读 GUI】default_status=127.0.0.1:${STATUS_PORT} default_video=${VIDEO_TOPIC}"
-echo "  GUI 不连接 8770、不发送动作；关闭 GUI 不影响 sender/receiver。"
+echo "【主端现场 GUI】default_status=127.0.0.1:${STATUS_PORT} default_video=${VIDEO_TOPIC}"
+echo "  GUI 不连接 8770、不发送摇杆动作；v2 模式下只向 8771 提交数据事件。"
+echo "  Wayland 会自动通过 XWayland/xcb 启动，以保证‘保持窗口最前’由 Mutter 执行。"
 
 cd "${ROOT_DIR}"
 exec /usr/bin/python3 -m testbed.cli.host_dashboard \

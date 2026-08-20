@@ -12,7 +12,10 @@ from testbed.tasks.home_side_calibration import (
     capture_home_calibration_window,
     initialise_home_calibration,
 )
-from testbed.tasks.home_side_contract import write_home_side_contract
+from testbed.tasks.home_side_contract import (
+    write_home_side_contract,
+    write_rule_ready_contract,
+)
 from testbed.tasks.real_transition import (
     TransitionContractError,
     prepare_session_directory,
@@ -32,7 +35,10 @@ def main() -> None:
 
     prepare = subparsers.add_parser(
         "prepare-session",
-        help="Create deterministic sequence/split manifests without overwriting files.",
+        help=(
+            "Create deterministic sequence/split manifests and the fixed rule-based "
+            "ready contract without overwriting files."
+        ),
     )
     prepare.add_argument("--output-root", type=Path, required=True)
     prepare.add_argument("--session-id", required=True)
@@ -49,9 +55,15 @@ def main() -> None:
     )
     verify.add_argument("run_dir", type=Path)
 
+    ready = subparsers.add_parser(
+        "build-ready-contract",
+        help="Write the field-frozen v2 swing-only ready rule contract.",
+    )
+    ready.add_argument("--output", type=Path, required=True)
+
     home = subparsers.add_parser(
         "build-home-contract",
-        help="Resolve and freeze home/A/B support from accepted field windows.",
+        help="Legacy: resolve home/A/B support from accepted calibration windows.",
     )
     home.add_argument("--calibration", type=Path, required=True)
     home.add_argument("--output", type=Path, required=True)
@@ -118,6 +130,8 @@ def main() -> None:
             )
         elif args.command == "verify-run":
             result = verify_run_package(args.run_dir)
+        elif args.command == "build-ready-contract":
+            result = write_rule_ready_contract(args.output)
         elif args.command == "build-home-contract":
             result = write_home_side_contract(
                 calibration_path=args.calibration,

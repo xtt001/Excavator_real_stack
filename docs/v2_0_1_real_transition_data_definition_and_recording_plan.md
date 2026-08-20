@@ -60,10 +60,12 @@ v2.0.1 的目标是用一批可在一天内完成的真机数据，验证下面�
 
 | 项目 | 首轮基线 |
 |---|---:|
-| home 独立回中参考 | 10 次，每次稳定 0.5 s |
-| home 分类排除带 | `abs(home_side_coordinate_rad) <= 0.05 rad` |
+| home swing 中线 | `0.000690 rad` |
+| 左右符号 | qpos 减小为左，`LEFT_SIGN=-1` |
+| home 分类容差 | `abs(shortest_angle(swing-home)) <= 0.05 rad` |
 | clean endpoint 最小侧向裕量 | `0.08 rad` |
-| ready 稳定窗 | 0.5 s；action `<=0.05`；qvel `<= [0.015, 0.015, 0.020, 0.020] rad/s`；qpos 峰峰值 `<=0.005 rad` |
+| swing 安全范围 | `[-0.3892, +0.4189] rad` |
+| ready 稳定窗 | 连续 0.5 s 内 `abs(swing_qvel) <= 0.015 rad/s`；boom/stick/bucket 只记录、不阻断 |
 | clean goal 提前量 | `>=100 ms`；`50–100 ms` 复核；`<50 ms` 剔除 |
 | return candidate | `expected_return_swing_sign * swing_action >0.08`，连续 6 个 20 Hz row，确认后回溯 5 row |
 | 单 cycle 时间 | 45 s 复核，60 s 停止 |
@@ -121,27 +123,27 @@ v2.0.1 使用 SimVerify 已形成的 cycle、condition、split 和对照实验�
 | B0 / B1 / B2 | 用无目标、正确目标、错配目标区分基本动作和 condition 作用 |
 | endpoint 优先 | validation loss 只选 checkpoint，实际结论看目标终点和连续闭环 |
 
-### 2.2 Real calibration authority
+### 2.2 Ready rule authority
 
-`home_side_contract.json` 拥有当天 home swing 中线、左右符号、边界排除带、ready 阈值和 A/B 已示教支持范围。resolved real config 拥有 deadzone、动作幅值、时延、同步和相机合同。所有 cycle 目标均来自脚本 planner 在本 cycle 动作开始前生成的 `prospective command`。
+`ready_contract.json` 是本轮 ready 的唯一数值 owner。它由 `prepare-session` 自动生成，
+固定 home swing `0.000690 rad`、物理左侧符号 `-1`、home tolerance `0.05 rad`、
+clean-ready `0.08 rad`、安全范围 `[-0.3892,+0.4189] rad`，以及连续 `0.5 s`
+全窗 `abs(swing_qvel)<=0.015 rad/s`。不再从 home/A/B 各 10 个姿态窗口解析合同。
 
-本文给出的数值是 `historical_baseline`。现场允许在明确字段上产生 `field_resolved` 值，但必须同时保存基线值、当天观测统计、最终值、修改原因、责任人、时间和 checksum。优先级固定为：
-
-```text
-当天已冻结的 field_resolved 值
-> 本文 historical_baseline
-> 代码中的未标定候选值
-```
-
-现场覆盖只改变数值，不得暗中改变目标、标签、输入、动作或 split 语义。哪些修改可以只提升 context、annotation 或 dataset 版本，哪些必须提升数据合同版本，见第 17 节。
+resolved real config 继续拥有 deadzone、动作幅值、时延、同步和相机合同。所有 cycle
+目标均来自脚本 planner 在本 cycle 动作开始前生成的 `prospective command`。修改上述
+ready 常量必须生成新的合同/context，不能在运行中覆盖。
 
 ## 3. 名词和基本单元
 
 ### 3.1 Home 中线与 A/B 二分类
 
-当天获准使用的 `home_pose_rad[0]` 提供回中命令参考，10 次独立回中的实际稳定终点解析为 `home_swing_axis`；两者及其偏差都写入 home-side contract。`home_swing_axis` 只作为左右分类的角度中线；run 内不执行 go-home，其余三轴采用师傅自然、可重复的 ready 姿态。
+本轮 `home_swing_axis=0.000690 rad`，物理左侧 qpos 符号为 `-1`。该值只作为
+左右分类中线；run 内不执行 go-home，其余三轴允许采用师傅自然的任意离土预姿态。
 
-A 表示 home 中线左侧的已示教 ready 区域，B 表示右侧的已示教 ready 区域。A/B 没有固定目标角，也不要求师傅停在同一个 qpos 点。师傅在指定侧自然选择可挖位置，实际落点由 qpos、qvel 和视觉共同复核。
+A 表示 home 中线左侧的 clean ready 区域，B 表示右侧的 clean ready 区域。A/B
+没有固定目标角，也不要求师傅停在同一个 qpos 点；actual side 由当前 swing qpos 自动
+分类，不由人工填写。
 
 四种 transition 的物理语义为：
 
@@ -162,18 +164,18 @@ A/B 标识进入日志和 manifest。Policy 只接收脚本 planner 为当前 cy
 
 ### 3.2 Ready
 
-`Ready_i` 表示机器已经处于第 `i` 铲可以自然开始的位置和姿态。自动 detector 的首轮 candidate 必须连续 0.5 s 同时满足：
+`Ready_i` 表示机器已经处于第 `i` 铲可以自然开始的位置和姿态。在线合同必须满足：
 
 ```text
-max(abs(commanded_action[4])) <= 0.05
-abs(qvel[4]) <= [0.015, 0.015, 0.020, 0.020] rad/s
-peak_to_peak(qpos[4]) <= [0.005, 0.005, 0.005, 0.005] rad
-endpoint 位于目标侧 clean 区域和当天已示教支持范围内
+当前 swing qpos 位于脚本要求的 clean A/B，且在安全范围内
+最新连续 0.5 s 每行 abs(swing_qvel) <= 0.015 rad/s
+bucket_clear_confirmed = true
+operator_confirmed = true
 ```
 
-0.5 s 对应 10 个 20 Hz row 或名义 25 个 50 Hz source row。位置条件使用整个稳定窗，不用单帧 qpos；action 使用最终 `commanded_action`，并保留 raw、safe 和 commanded 三层供复核。
-
-candidate 成立后仍需由四路相机确认作业面、铲斗姿态和可继续挖掘状态，再由实验员确认 `Ready_i`。第一版自动 detector 只做 shadow 对照，不能独立决定训练边界、goal 提交或现场切换。当天数据只能收紧这些阈值；放宽阈值需要先有独立 shadow 统计和安全评审，并写入 field override。
+boom、stick、bucket 的 qpos 不设边界；其 qvel 窗口统计写入 `ready_evidence`，但不阻止
+ready。0.5 s 是按时间戳覆盖的全窗判据，不按单帧或固定行数替代。初始和目标 ready
+都必须由操作员分别确认铲斗离土和当前状态可继续作业。
 
 ### 3.3 Cycle
 
@@ -214,114 +216,56 @@ Ready_0 → Ready_1 → Ready_2 → Ready_3 → Ready_4
 
 ## 4. 真机目标定义
 
-### 4.1 Home-side contract
+### 4.1 Ready rule contract
 
-`home_side_contract.json` 使用 `real_home_side_contract_v1` schema，至少包含：
+`ready_contract.json` 使用 `real_transition_ready_rule_contract_v2` schema。它由
+`prepare-session` 按现场已确认的固定规则自动生成，至少包含：
 
 ```text
 schema
-context_version
-home_reference:
-  source_config
-  source_sha256
-  home_pose_rad[4]
-  home_swing_axis_rad
-  physical_left_qpos_sign       # -1 / +1
-  classification_deadband_rad
-  clean_endpoint_min_abs_side_coordinate_rad
-sides[2]:
-  side_id                       # A / B
-  physical_role                 # left_of_home / right_of_home
-  condition_code                # A=-1 / B=+1
-  demonstrated_side_coordinate_support_rad[2]
-  demonstrated_qpos_support[4][2]
-  ready_qvel_support[4][2]      # 每轴 [low, high]
-  ready_reference_ids
-  visual_reference_ids
-ready_candidate:
-  dwell_s
-  commanded_action_abs_max
-  qvel_abs_max[4]
-  qpos_peak_to_peak_max[4]
-  visual_confirmation_required
-calibration_source_ids
-parameter_resolution:
-  baseline_id
-  observed_statistics
-  field_overrides
-  resolved_at
-  resolved_by
+swing_axis:
+  axis_index                    # 0
+  home_rad                      # 0.000690
+  left_qpos_sign                # -1
+  home_tolerance_rad            # 0.05
+  clean_ready_min_abs_delta_rad # 0.08
+  safe_range_rad                # [-0.3892, +0.4189]
+  stable_window_s               # 0.5
+  stable_qvel_abs_max_rad_s     # 0.015
+  max_sample_gap_s              # 0.15
+requirements:
+  bucket_clear_confirmation_required
+  operator_confirmation_required
+  non_swing_qpos_bounds         # null
+  non_swing_qvel_gates_ready    # false
+evidence
 contract_sha256
 ```
 
-A/B 是区域标签，不生成目标中心。`demonstrated_*_support` 只描述本批示教和安全支持范围，用于 QC、OOD 判断和 endpoint 复核，不是师傅必须对准的目标点。所有 swing 分类都使用相对 home 的最短角误差。
-
-单轴 min/max 不能证明四轴联合姿态受支持。endpoint QC 除检查每轴范围外，还必须保留到最近 `ready_reference_id` 的距离和视觉复核结果；第一版不根据单轴包络自动外推新的联合 ready 区域。
-
-### 4.2 A/B 现场校准
-
-正式录制前，先确认当天 `home_pose_rad` 的来源、checksum 和物理朝向。师傅对 home 中线完成 10 次独立回中，每次重新离开再返回，并连续稳定 0.5 s。不能用一次停稳后的连续帧代替独立回中。随后在左侧 A 和右侧 B 各示范至少 10 个自然 ready；示范应覆盖该侧当天实际会使用的位置变化，不围绕单一固定偏移反复对点。
-
-定义物理右侧为正的 home-side 坐标：
+A/B 是相对 home 的区域标签，不是固定目标姿态。所有 swing 分类都使用最短角误差：
 
 ```text
-home_side_coordinate_rad(t) = -physical_left_qpos_sign * shortest_angle(
-    current_swing_rad(t) - home_swing_axis_rad
-)
+delta = shortest_angle(current_swing_rad - 0.000690)
 
-A: home_side_coordinate_rad < -classification_deadband_rad
-B: home_side_coordinate_rad > +classification_deadband_rad
-中间排除带: ambiguous
+delta < -0.08              : clean A / left
+-0.08 <= delta < -0.05     : transition / reject
+abs(delta) <= 0.05         : home / reject
++0.05 < delta <= +0.08     : transition / reject
+delta > +0.08              : clean B / right
+qpos outside safe range    : unsafe / reject
 ```
 
-每个 home 参考先计算 0.5 s 窗口内的 circular mean，再以 10 个窗口均值中“到其他样本的 shortest-angle 绝对距离之和最小”的样本作为 circular median 和 `home_swing_axis_rad`。定义每次独立回中的最短角偏差为 `center_repeat_error`，首轮解析规则为：
+### 4.2 Ready 在线判定
 
-```text
-classification_deadband_rad = max(
-    0.05,
-    ceil_to_0.01(max(abs(center_repeat_error)) + 0.01)
-)
+`initial-ready` 与 `target-ready` 使用同一门控。最近连续 0.5 s 的每个样本必须
+都在安全范围、属于同一个 clean A/B，且 `abs(swing_qvel)<=0.015 rad/s`；采样间隔
+不得超过 0.15 s。窗口末端自动得到 `actual_side`，并与 manifest 规定的 initial
+side 或 scripted target 核对，不能由人工输入侧别覆盖。
 
-clean_endpoint_min_abs_side_coordinate_rad =
-    classification_deadband_rad
-    + max(0.03, p95(abs(center_repeat_error)))
-```
-
-按历史数据，两者的初始值分别为 `0.05 rad` 和 `0.08 rad`。当天重复误差更大时只按公式增大，不为了凑 A/B 样本缩窄排除带。endpoint 分级固定为：
-
-```text
-abs(home_side_coordinate_rad) <= deadband                 : ambiguous / fail
-deadband < target-side margin < clean endpoint threshold : review
-target-side margin >= clean endpoint threshold            : clean candidate
-wrong sign or outside demonstrated support                : fail / unsupported
-```
-
-每次参考至少保存：
-
-- 四轴 qpos / qvel；
-- 四路相机；
-- 稳定时间窗；
-- workface、相机、机器和 context 配置标识；
-- 师傅确认的 A/B 标签。
-
-校准程序输出：
-
-- home swing 中线的重复波动和来源；
-- 真机 qpos 增大方向与物理左右的对应关系；
-- home 中线排除带；
-- A/B 各自的已示教 side-coordinate、qpos、qvel 和视觉支持范围；
-- 每个候选到最近联合 ready 参考的距离，不把单轴包络当作联合分布；
-- 其余三轴的自然 ready 分布；
-- qvel 稳定范围；
-- A/B 视觉参考；
-- 两组是否有清楚间隔；
-- endpoint 复核带和 unsupported 状态。
-
-数值阈值按上述基线和当天真机校准数据解析后冻结到 `home_side_contract.json`。A/B 两侧最近的 clean 支持边界必须分别达到 `-clean_endpoint_min_abs_side_coordinate_rad` 和 `+clean_endpoint_min_abs_side_coordinate_rad`；按首轮基线，两侧最近支持点至少相隔 `0.16 rad`。A/B 外边界只取当天被接受的示教范围，不从历史数据或单轴 min/max 向外扩张。
-
-home 来源无法确认、左右符号不明、排除带窄于解析结果、任一侧缺少可安全挖掘的 clean 支持，或视觉与 qpos 无法交叉确认时，Home-side Gate 失败，正式录制不开始。`physical_left_qpos_sign` 必须根据视觉和现场物理方向确认，不能从 command→qvel 响应符号代替推断。
-
-这组校准数据用于冻结二分类边界和首批数据支持范围，不用于定义固定目标角或声称到位概率。
+操作员还必须分别确认铲斗离土和整体 ready。boom、stick、bucket 的 qpos 不设边界，
+三轴 qvel 只写入 ready evidence 供复核，不阻止 ready。这样允许熟练操作员在 swing
+停稳前后自然完成大小臂和铲斗预姿态，同时避免把 home、过渡区、未停稳或实际侧不符
+误标为 ready。当前规则不再要求 home/A/B 各 10 个固定标定窗口。
 
 ### 4.3 Policy condition
 
@@ -487,7 +431,7 @@ candidate 生成规则固定为：
 每条 run 至少记录：
 
 - data-contract version、git commit 和 resolved config；
-- HDF5、事件文件、home-side contract、sequence manifest 的 SHA256；
+- HDF5、事件文件、ready contract、sequence manifest 的 SHA256；
 - machine、operator、session、block、run、workface/reset 标识；
 - 光照、天气、土面状态和明显遮挡的简短分类；
 - 初始 ready、计划四目标、在线 marker 和现场结果备注；
@@ -665,7 +609,7 @@ P1: B → A → A → B → B
 - 四铲 run 内不整理土、不 go-home、不人工重新摆位；
 - run 之间可以恢复土面或移动到新的相近工作条带；
 - 是否恢复、恢复方式和工作条带必须记录；
-- A/B home-side contract 在当天保持不变；
+- A/B ready rule contract 在本 session 保持不变；
 - 底盘位置、home swing 参考、swing 编码器零位、相机位姿或安全能力范围发生变化时，关闭当前 block，重新校准并生成新的 context/side-contract version。
 
 ### 8.4 数量不足时
@@ -682,11 +626,11 @@ P1: B → A → A → B → B
 
 1. 按当天现场 runbook 完成机器、急停、相机、CAN、IMU、磁盘和 recorder 检查。
 2. 固定相机、图像 transform、摇杆映射、deadzone、scale 和动作轴顺序。
-3. 确认当天 home swing 中线和左右符号，冻结 `home_side_contract.json`。
+3. 确认固定 home swing 中线、左右符号和安全范围，生成并冻结 `ready_contract.json`。
 4. 生成并冻结六个 block 的 sequence 和 split manifest。
 5. 确认目标界面不进入 policy 的四路训练相机画面。
 6. 确认原始 HDF5 与 task event 使用同一个可对齐时钟和 step id。
-7. 把当天 home-side contract、resolved record config、N5 bundle manifest 和各自 SHA256 写入 session manifest；任何一项不一致时不开始正式 run。
+7. 把 ready contract、resolved record config、N5 bundle manifest 和各自 SHA256 写入 session manifest；任何一项不一致时不开始正式 run。
 
 ### 9.2 每条 run
 
@@ -912,7 +856,7 @@ B0、B2 只用于离线和 shadow 诊断，不授权真机动作。进入真机�
 - 每个 clean cycle 都有 prospective goal；
 - 没有 cross-cycle action supervision；
 - 所有主文件 checksum、相机解码和数据 schema 通过；
-- A/B home-side contract 和 sequence manifest 已冻结。
+- A/B ready rule contract 和 sequence manifest 已冻结。
 
 ### 13.2 Retention Gate
 
@@ -1028,7 +972,7 @@ P0/P1 连续成功只进入 Composition Gate。它不能替代上述 Condition G
 
 ### 15.1 数采前
 
-- `home_side_contract.json`；
+- `ready_contract.json`；
 - `sequence_manifest.json`；
 - `split_manifest.json`；
 - 当天 resolved record config；
@@ -1074,12 +1018,13 @@ v2.0.1 通过后，后续大规模数据继续沿用同一原始合同，逐步�
 
 | 参数 | Historical baseline | 现场解析和允许覆盖 | 最终 owner |
 |---|---|---|---|
-| `home_swing_axis_rad` | 不直接采用历史角度；代码候选 `-0.007831 rad` 无现场授权 | 必须由 10 次独立回中解析 | `home_side_contract.json` |
-| `physical_left_qpos_sign` | 无默认值 | 必须由视觉和物理方向确认；无法确认则 Home-side Gate 失败 | `home_side_contract.json` |
-| `classification_deadband_rad` | `0.05 rad` | 按第 4.2 节公式解析；当天波动更大时增大，不能为保样本缩小 | `home_side_contract.json` |
-| clean endpoint threshold | `0.08 rad` | 等于 deadband 加当天重复裕量；只能随重复误差增大 | `home_side_contract.json` |
-| A/B 外边界和联合 ready 支持 | 无外推默认值 | 由每侧至少 10 个 accepted ready、最近联合参考和视觉共同冻结 | `home_side_contract.json` |
-| ready candidate | 0.5 s、action `0.05`、qvel `[0.015,0.015,0.020,0.020]`、qpos 峰峰值 `0.005 rad` | 当天可直接收紧；放宽前必须有独立 shadow 统计和安全评审 | `home_side_contract.json` |
+| `home_swing_axis_rad` | `0.000690 rad` | 本 session 固定；改变必须生成新合同 | `ready_contract.json` |
+| `left_qpos_sign` | `-1`（左减右增） | 本 session 固定；与现场物理方向不符时停止 | `ready_contract.json` |
+| `home_tolerance_rad` | `0.05 rad` | 本 session 固定；home 不可标为 ready | `ready_contract.json` |
+| clean ready threshold | `0.08 rad` | 本 session 固定；`0.05–0.08 rad` 为过渡区 | `ready_contract.json` |
+| swing safe range | `[-0.3892, +0.4189] rad` | 只允许收紧；任何扩张都需要新的机械安全证据和合同版本 | `ready_contract.json` |
+| ready stable window | 连续 0.5 s、全窗 `abs(swing_qvel)<=0.015 rad/s`、最大样本间隔 0.15 s | boom/stick/bucket qpos/qvel 只记录；门控放宽必须有独立证据和新合同 | `ready_contract.json` |
+| ready人工证据 | 铲斗离土确认 + 操作员确认 | 两项均不可省略，initial/target 共用 | task event + `ready_contract.json` |
 | return candidate | swing action `0.08`、连续 6 row、回溯 5 row、复核窗 ±2.5 s | 可以根据人工 marker 偏差更新 detector；修改后提升 annotation 版本 | detector config + annotation manifest |
 | 时序和 gap QC | 第 11.1 节表格 | 可以收紧；放宽会生成新的 QC/dataset 版本，不能回写旧 clean 结论 | resolved record/dataset config |
 | run 间土面处理 | 恢复土面或切换相近工作条带都允许 | 不需要选成唯一模式；每次操作记录 `workface_reset_id` 和方式 | `run_manifest.json` |
@@ -1091,7 +1036,7 @@ v2.0.1 通过后，后续大规模数据继续沿用同一原始合同，逐步�
 ### 17.2 变更与版本规则
 
 - 第一条正式 run 之前，按本节解析并冻结 field-resolved 值，不提升数据合同版本；`context_version`、resolved config 和所有 checksum 必须更新。
-- 正式录制开始后，home 中线、左右符号、A/B 支持、相机位姿或 ready 物理语义发生变化时，关闭当前 block，创建新的 context 和 home-side contract。不同 context 不混在同一个 block。
+- 正式录制开始后，home 中线、左右符号、安全范围、相机位姿或 ready 物理语义发生变化时，关闭当前 block，创建新的 context 和 ready contract。不同 context 不混在同一个 block。
 - raw 封存后调整 ready、dump 或 return detector，只发布新的 annotation 和派生 dataset 版本；原始 HDF5 与 `task_events.jsonl` 保持不变。
 - 调整 QC 门槛、resample offset、边界 mask 或 clean/review 规则，发布新的 QC 和 dataset 版本，并重新生成 checksum。旧版本结论保留，不覆盖。
 - 改变 condition 编码、目标语义、policy 输入、action 语义、cycle 定义、source split 或 planner prospective-command 规则，必须提升数据合同版本，不能继续使用 `v2.0.1-real-transition`。
@@ -1110,7 +1055,9 @@ v2.0.1 通过后，后续大规模数据继续沿用同一原始合同，逐步�
 
 v2.0.0 SimVerify 树中的 `testbed/testbed/configs/simverify_sector_geometry_physical_v1.json` 提供了 physical center、left、right 的方向语义。本计划据此使用以 center 区分左右的物理语义。
 
-当前 checkout 的 `testbed/testbed/configs/teleop_real_v1.yaml` 和 `testbed/testbed/configs/policy_real_gmsl_fourcam_g49_n5_control_v1.yaml` 都记录了 `home_pose_rad[0]=-0.007831 rad`。该数值只是代码中的当前候选，现场执行使用当天 resolved config、标定结果和 checksum；`home_side_contract.json` 拥有本批数据的最终 home 中线与左右分类边界。
+旧配置中的 `home_pose_rad[0]=-0.007831 rad` 只属于旧版 go-home 配置，不再拥有
+v2 ready 分类语义。本轮 `ready_contract.json` 明确冻结现场确认的 swing home
+`0.000690 rad`、左减右增、home 容差、clean 阈值和安全范围；两者不能混用。
 
 上述文件只证明仓库内已有的数据和运行边界。它们不证明当前现场 Jetson 已部署同一 commit，也不证明相机、CAN、IMU、时钟或 N5 bundle 当天可用。这些状态必须在数采前用 resolved config、运行日志和 checksum 现场确认。
 
@@ -1132,7 +1079,7 @@ commit `a64e5d1` 实现了旧版 A/B sequencer、P0/P1 四-cycle manifest、home
 | 历史观测 | 统计 | 支持的本文参数 |
 |---|---|---|
 | 140 条 N5 source episode 回中终点 | 相对历史中位数的 swing 绝对偏差 P95 `0.0269 rad`、最大 `0.0366 rad`；代码候选相对历史中位数偏 `0.0132 rad` | deadband `0.05 rad`、clean threshold `0.08 rad`；不授权直接使用代码 home 候选 |
-| 3975 个历史静止 0.5 s 窗口 | qvel 稳态噪声约 `[0.00763,0.00716,0.00903,0.00896] rad/s`；qpos 峰峰值 P99 不超过约 `0.00023 rad` | ready qvel 和 qpos 稳定阈值 |
+| 3975 个历史静止 0.5 s 窗口 | qvel 稳态噪声约 `[0.00763,0.00716,0.00903,0.00896] rad/s`；qpos 峰峰值 P99 不超过约 `0.00023 rad` | swing ready 阈值的历史旁证；非 swing 三轴不作为门控 |
 | 29 条人工周期快速复核 | 持续 swing intent 到 `0.005 rad` 位移 P95 `2.11 s`；完整周期 P95 `40.2 s`；return 段 P95 `9.5 s` | return action candidate、±2.5 s 复核窗和 45/60、12/20 s 时间带 |
 | 140 条源 episode 的时序诊断 | action latency P99/P99.9 `38.0/47.1 ms`；bridge age P99.9 `27.7 ms`；sync skew P99/P99.9 `49.2/61.4 ms`；camera age P99/P99.9 `94.3/112.0 ms` | 第 11.1 节 action、bridge、sync 和 camera QC 带 |
 | 同批四相机与 row 间隔 | group skew P99.9 `0.112 ms`；raw row gap P99/P99.9 `45.0/51.5 ms`；20 Hz gap P99 约 `94.7–96.5 ms`、P99.9 `110.1–116.4 ms` | group skew 和 50/20 Hz gap 门槛 |

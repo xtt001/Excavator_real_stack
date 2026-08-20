@@ -36,3 +36,23 @@ def test_usbcan_imu_interface_skips_socketcan_helpers() -> None:
     assert 'skipping SocketCAN setup for IMU_IF=${IMU_IF}' in text
     assert 'if ! is_socketcan_if "${IMU_RAW_CAN_LOG_IF}"; then' in text
     assert 'skipping raw IMU candump for non-SocketCAN interface' in text
+
+
+def test_real_stack_fails_closed_without_locked_jetson_clocks() -> None:
+    text = SCRIPT.read_text(encoding="utf-8")
+
+    assert 'JETSON_NVP_MODEL_ID="${EXCAVATOR_JETSON_NVP_MODEL_ID:-0}"' in text
+    assert "require_jetson_performance_access()" in text
+    assert "setup_jetson_performance()" in text
+    assert 'sudo nvpmodel -m "${JETSON_NVP_MODEL_ID}"' in text
+    assert "sudo jetson_clocks" in text
+    assert "FreqOverride=1" in text
+    assert "setup_jetson_performance\n  prepare_start" in text
+    assert 'restart)\n      require_jetson_performance_access\n      stop_stack "${force}"' in text
+
+
+def test_policy_remote_verbose_test_log_is_opt_in() -> None:
+    text = SCRIPT.read_text(encoding="utf-8")
+
+    assert 'TEST_LOG_DIR="${EXCAVATOR_TEST_LOG_DIR:-}"' in text
+    assert 'extra_args+=(--test-log-dir "${TEST_LOG_DIR}")' in text

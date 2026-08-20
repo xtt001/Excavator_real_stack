@@ -11,6 +11,7 @@ from testbed.cli.record_real import (
     _online_qc_status_payload,
     _publish_remote_receiver_status,
     _receiver_health_status_payload,
+    _receiver_latency_status_payload,
     _save_status_payload,
     _storage_status_payload,
 )
@@ -71,6 +72,30 @@ def test_build_host_status_snapshot_carries_sender_and_receiver() -> None:
     assert snapshot["sender"]["status11"] == [1, 0, 1]
     assert snapshot["receiver_available"] == 1
     assert snapshot["receiver"]["receiver_mode"] == "armed"
+
+
+def test_receiver_latency_payload_reports_only_current_action_age() -> None:
+    action_info = SimpleNamespace(
+        extras={
+            "policy_remote_mode": "policy",
+            "model_control": 1,
+            "policy_inference_latency_ms": 18.5,
+            "action_timestamp_ns": 1_000_000_000,
+        }
+    )
+    payload = _receiver_latency_status_payload(
+        action_info=action_info,
+        control_result={
+            "action_sample_timestamp_ns": 1_000_000_000,
+            "controller_timestamp_ns": 1_030_000_000,
+        },
+        status_time_ns=1_040_000_000,
+    )
+    assert payload == {
+        "action_age_ms": 40.0,
+        "action_source": "policy",
+        "definition": "receiver status time minus current action sample time",
+    }
 
 
 def test_receiver_health_payload_has_per_imu_fields() -> None:
@@ -202,8 +227,18 @@ def test_structured_receiver_status_is_remote_protocol_jsonable(tmp_path) -> Non
         storage_path=tmp_path,
         save_status={"state": "idle"},
         home_status={"enabled": 1, "home_pose_rad": [0.1, 0.2, 0.3, 0.4]},
+        real_transition_status={
+            "session_id": "rt_test",
+            "phase": "ready",
+            "next_target_side": "B",
+        },
     )
     assert sink.payload is not None
     assert sink.payload["health"]["imu"]["online"] == [1, 1, 1, 1]
     assert sink.payload["home"]["enabled"] == 1
+    assert sink.payload["real_transition"] == {
+        "session_id": "rt_test",
+        "phase": "ready",
+        "next_target_side": "B",
+    }
     assert encode_remote_receiver_status(sink.payload).endswith(b"\n")

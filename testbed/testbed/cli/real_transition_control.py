@@ -36,6 +36,18 @@ def main() -> None:
     start.add_argument("--weather", default="")
     start.add_argument("--notes", default="")
     initial = subparsers.add_parser("initial-ready")
+    initial.add_argument(
+        "--confirm-bucket-clear",
+        action="store_true",
+        required=True,
+        help="Confirm that the bucket is visibly clear of the soil.",
+    )
+    initial.add_argument(
+        "--confirm-operator-ready",
+        action="store_true",
+        required=True,
+        help="Confirm that the operator accepts the current ready state.",
+    )
     initial.add_argument("--notes", default="")
     goal = subparsers.add_parser("goal")
     goal.add_argument(
@@ -49,10 +61,16 @@ def main() -> None:
     dump.add_argument("--notes", default="")
     ready = subparsers.add_parser("target-ready")
     ready.add_argument(
-        "--realized-side",
-        choices=["A", "B"],
+        "--confirm-bucket-clear",
+        action="store_true",
         required=True,
-        help="Operator-confirmed realized ready side; mismatch aborts the run.",
+        help="Confirm that the bucket is visibly clear of the soil.",
+    )
+    ready.add_argument(
+        "--confirm-operator-ready",
+        action="store_true",
+        required=True,
+        help="Confirm that the operator accepts the current ready state.",
     )
     ready.add_argument("--notes", default="")
     intervention = subparsers.add_parser("intervention")
@@ -109,11 +127,22 @@ def main() -> None:
                 args,
                 args.command,
                 {
-                    "realized_target_side": args.realized_side,
+                    "bucket_clear_confirmed": args.confirm_bucket_clear,
+                    "operator_confirmed": args.confirm_operator_ready,
                     "notes": args.notes,
                 },
             )
-        elif args.command in {"initial-ready", "dump-end"}:
+        elif args.command == "initial-ready":
+            result = _send(
+                args,
+                args.command,
+                {
+                    "bucket_clear_confirmed": args.confirm_bucket_clear,
+                    "operator_confirmed": args.confirm_operator_ready,
+                    "notes": args.notes,
+                },
+            )
+        elif args.command == "dump-end":
             result = _send(
                 args,
                 args.command,

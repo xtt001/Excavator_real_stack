@@ -11,6 +11,7 @@ import numpy as np
 
 from testbed.backends.real.bridge import InProcessMockBridgeClient
 from testbed.cli.record_real import RecordSession, _load_yaml_config
+from testbed.cli.teleop_remote import _load_yaml_config as _load_sender_yaml_config
 from testbed.data.recorder import EpisodeRecorder
 from testbed.tasks.home_side_calibration import (
     _camera_image_from_payload,
@@ -18,7 +19,10 @@ from testbed.tasks.home_side_calibration import (
     initialise_home_calibration,
 )
 from testbed.tasks.home_side_contract import (
+    build_rule_ready_contract,
     build_home_side_contract,
+    classify_ready_swing_qpos,
+    validate_rule_ready_contract,
     validate_home_side_contract,
 )
 from testbed.tasks.real_transition import (
@@ -46,10 +50,55 @@ from testbed.tasks.real_transition_runtime import (
     TransitionTaskServer,
     send_transition_command,
 )
+from testbed.transition_control_client import (
+    send_transition_command as lightweight_send_transition_command,
+)
+
+
+READY_CONFIRMATIONS = {
+    "bucket_clear_confirmed": True,
+    "operator_confirmed": True,
+}
+
+
+def _ready_event_evidence(side: str) -> dict[str, object]:
+    return {
+        "actual_side": side,
+        "expected_side": side,
+        "window_complete": True,
+        "sample_gap_ok": True,
+        "swing_stable": True,
+        "clean_side_window": True,
+        "bucket_clear_confirmed": True,
+        "operator_confirmed": True,
+        "non_swing_axes_gate_ready": False,
+    }
+
+
+def _feed_ready_window(
+    runtime: TransitionTaskRuntime,
+    *,
+    side: str,
+    end_ns: int,
+    swing_qvel: float = 0.0,
+) -> None:
+    swing_qpos = {
+        "A": -0.10,
+        "B": 0.10,
+        "home": 0.000690,
+        "transition": 0.06,
+        "outside": 0.50,
+    }[side]
+    for offset in range(10, -1, -1):
+        runtime.update_ready_observation(
+            step_ns=end_ns - offset * 50_000_000,
+            qpos=[swing_qpos, 1.7, -2.4, 0.9],
+            qvel=[swing_qvel, 3.0, -4.0, 5.0],
+        )
 
 
 class RealTransitionPlanTest(unittest.TestCase):
-    def test_manual_profile_inherits_field_contract_and_disables_policy_helpers(
+    def test_manual_profile_inherits_field_contract_and_preserves_field_joysticks(
         self,
     ) -> None:
         config_path = (
@@ -62,16 +111,31 @@ class RealTransitionPlanTest(unittest.TestCase):
         self.assertEqual(config["teleop"]["input"], "remote")
         self.assertIsNone(config["teleop"]["joystick"]["policy_start_button"])
         self.assertIsNone(config["teleop"]["joystick"]["record_start_button"])
-        self.assertFalse(config["teleop"]["recording"]["go_home"]["enabled"])
+        self.assertEqual(config["teleop"]["joystick"]["go_home_button"], 2)
+        self.assertTrue(config["teleop"]["recording"]["go_home"]["enabled"])
+        self.assertEqual(
+            config["teleop"]["joystick"]["joystick_ids"], [0, 1, 0, 1]
+        )
+        self.assertEqual(config["teleop"]["joystick"]["axis_map"], [1, 1, 0, 0])
+        self.assertEqual(
+            config["teleop"]["joystick"]["invert"], [True, False, True, False]
+        )
         self.assertEqual(
             config["task"]["camera_names"], ["video4", "video5", "video6", "video7"]
         )
         self.assertEqual(config["task"]["max_steps"], 15000)
+        self.assertIn("ready_contract", config["real_transition"])
+        self.assertNotIn("home_side_contract", config["real_transition"])
         self.assertEqual(
             config["real_transition"]["time_limits"]["run_stop_s_per_cycle"],
             60.0,
         )
         self.assertEqual(config["receiver"]["health"]["mode"], "strict")
+
+        sender_config = _load_sender_yaml_config(config_path)
+        self.assertEqual(
+            sender_config["teleop"]["joystick"], config["teleop"]["joystick"]
+        )
 
     def test_plan_is_deterministic_balanced_and_split_by_block(self) -> None:
         first_sequence, first_split = build_session_manifests(
@@ -229,6 +293,11 @@ class RealTransitionPlanTest(unittest.TestCase):
                 seed=7,
             )
             self.assertEqual(first, second)
+            ready_contract = Path(first["ready_contract"])
+            self.assertTrue(ready_contract.is_file())
+            validate_rule_ready_contract(
+                json.loads(ready_contract.read_text(encoding="utf-8"))
+            )
             with self.assertRaisesRegex(
                 TransitionContractError, "refusing to overwrite immutable artifact"
             ):
@@ -299,7 +368,11 @@ class RealTransitionRunPackageTest(unittest.TestCase):
                 n_rows = 2 + cycle_count * 7
                 self._write_raw(run_dir / "raw.hdf5", n_rows=n_rows)
                 package.start_run(step_id=0, step_ns=self._step_ns(0))
-                package.mark_initial_ready(step_id=1, step_ns=self._step_ns(1))
+                package.mark_initial_ready(
+                    step_id=1,
+                    step_ns=self._step_ns(1),
+                    ready_evidence=_ready_event_evidence(spec.initial_side),
+                )
                 last_step = 1
                 for cycle_index in range(cycle_count):
                     base = 2 + cycle_index * 7
@@ -317,6 +390,9 @@ class RealTransitionRunPackageTest(unittest.TestCase):
                         step_id=base + 6,
                         step_ns=self._step_ns(base + 6),
                         realized_target_side=spec.targets[cycle_index],
+                        ready_evidence=_ready_event_evidence(
+                            spec.targets[cycle_index]
+                        ),
                     )
                     last_step = base + 6
                 package.complete_run(
@@ -328,9 +404,10 @@ class RealTransitionRunPackageTest(unittest.TestCase):
                 sequence_path.write_text(
                     json.dumps(sequence, sort_keys=True) + "\n", encoding="utf-8"
                 )
-                home_contract = root / "home_side_contract.json"
-                home_contract.write_text(
-                    '{"schema":"home_side_contract_v1"}\n', encoding="utf-8"
+                ready_contract = root / "ready_contract.json"
+                ready_contract.write_text(
+                    json.dumps(build_rule_ready_contract(), sort_keys=True) + "\n",
+                    encoding="utf-8",
                 )
                 resolved = root / "resolved_record_config.yaml"
                 resolved.write_text("task: real_transition\n", encoding="utf-8")
@@ -339,7 +416,7 @@ class RealTransitionRunPackageTest(unittest.TestCase):
                     resolved_config_sha256=sha256_file(resolved),
                     owner_artifacts={
                         "sequence_manifest": sequence_path,
-                        "home_side_contract": home_contract,
+                        "ready_contract": ready_contract,
                         "resolved_record_config": resolved,
                     },
                     field_context={"workface_reset_id": "wf01"},
@@ -462,7 +539,11 @@ class RealTransitionRunPackageTest(unittest.TestCase):
                 run_spec=find_run_spec(sequence, run_id),
             )
             package.start_run(step_id=0, step_ns=self._step_ns(0))
-            package.mark_initial_ready(step_id=1, step_ns=self._step_ns(1))
+            package.mark_initial_ready(
+                step_id=1,
+                step_ns=self._step_ns(1),
+                ready_evidence=_ready_event_evidence(package.run_spec.initial_side),
+            )
             with self.assertRaisesRegex(
                 TransitionContractError, "missing acknowledgements: display"
             ):
@@ -474,7 +555,7 @@ class RealTransitionRunPackageTest(unittest.TestCase):
 
     @staticmethod
     def _step_ns(step: int) -> int:
-        return 1_000_000_000 + step * 20_000_000
+        return 1_000_000_000 + step * 100_000_000
 
     @classmethod
     def _write_raw(cls, path: Path, *, n_rows: int) -> None:
@@ -499,6 +580,79 @@ class RealTransitionRunPackageTest(unittest.TestCase):
 
 
 class RealTransitionRuntimeTest(unittest.TestCase):
+    def test_ready_gate_uses_only_stable_clean_swing_plus_confirmations(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            prepared = prepare_session_directory(
+                output_root=Path(tmp),
+                session_id="ready01",
+                seed=23,
+                created_at_utc="2026-08-17T00:00:00Z",
+            )
+            runtime = TransitionTaskRuntime(
+                session_dir=prepared["session_dir"],
+                sequence_manifest_path=prepared["sequence_manifest"],
+                split_manifest_path=prepared["split_manifest"],
+                ready_contract_path=prepared["ready_contract"],
+                resolved_record_config_yaml="task: real_transition\n",
+                git_commit="a" * 40,
+            )
+            runtime.update_receiver_state(mode="armed", health_ok=True)
+            runtime.handle_command(
+                "start-run",
+                {
+                    "field_context": {
+                        "workface_reset_id": "wf01",
+                        "workface_action": "restore",
+                    }
+                },
+            )
+            expected = runtime.status()["initial_side"]
+            for index, (side, error) in enumerate(
+                (
+                    ("home", "swing_side_home"),
+                    ("transition", "swing_side_transition"),
+                    ("outside", "swing_side_outside_safe_range"),
+                )
+            ):
+                _feed_ready_window(
+                    runtime,
+                    side=side,
+                    end_ns=1_000_000_000 + index * 600_000_000,
+                )
+                with self.assertRaisesRegex(TransitionContractError, error):
+                    runtime.handle_command("initial-ready", READY_CONFIRMATIONS)
+
+            _feed_ready_window(
+                runtime,
+                side=expected,
+                end_ns=2_800_000_000,
+                swing_qvel=0.0151,
+            )
+            with self.assertRaisesRegex(TransitionContractError, "swing_not_stable"):
+                runtime.handle_command("initial-ready", READY_CONFIRMATIONS)
+
+            _feed_ready_window(
+                runtime,
+                side=expected,
+                end_ns=3_400_000_000,
+            )
+            state = runtime.status()["ready_state"]
+            self.assertEqual(state["actual_side"], expected)
+            self.assertEqual(state["blockers"], [])
+            self.assertEqual(
+                state["non_swing_qvel_abs_max_rad_s"],
+                [3.0, 4.0, 5.0],
+            )
+            self.assertFalse(state["non_swing_axes_gate_ready"])
+            with self.assertRaisesRegex(
+                TransitionContractError, "bucket_clear_confirmed=true"
+            ):
+                runtime.handle_command(
+                    "initial-ready", {"operator_confirmed": True}
+                )
+            runtime.handle_command("initial-ready", READY_CONFIRMATIONS)
+            self.assertTrue(runtime.consume_record_start_request())
+
     def test_cycle_timeout_is_fail_closed_on_a_recorded_row(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -509,17 +663,16 @@ class RealTransitionRuntimeTest(unittest.TestCase):
                 created_at_utc="2026-08-13T00:00:00Z",
             )
             session_dir = Path(prepared["session_dir"])
-            home_contract = session_dir / "home_side_contract.json"
-            _write_valid_home_contract(home_contract)
+            ready_contract = Path(prepared["ready_contract"])
             runtime = TransitionTaskRuntime(
                 session_dir=session_dir,
                 sequence_manifest_path=prepared["sequence_manifest"],
                 split_manifest_path=prepared["split_manifest"],
-                home_side_contract_path=home_contract,
+                ready_contract_path=ready_contract,
                 resolved_record_config_yaml="task: real_transition\n",
                 git_commit="e" * 40,
-                cycle_review_s=0.02,
-                cycle_stop_s=0.04,
+                cycle_review_s=0.05,
+                cycle_stop_s=0.15,
                 run_stop_s=1.0,
             )
             runtime.update_receiver_state(mode="armed", health_ok=True)
@@ -540,7 +693,12 @@ class RealTransitionRuntimeTest(unittest.TestCase):
                     }
                 },
             )
-            runtime.handle_command("initial-ready")
+            _feed_ready_window(
+                runtime,
+                side=runtime.status()["initial_side"],
+                end_ns=RealTransitionRunPackageTest._step_ns(0),
+            )
+            runtime.handle_command("initial-ready", READY_CONFIRMATIONS)
             self.assertTrue(runtime.consume_record_start_request())
             runtime.attach_recording(episode_idx=0)
             runtime.update_recorded_step(
@@ -573,13 +731,12 @@ class RealTransitionRuntimeTest(unittest.TestCase):
                 created_at_utc="2026-08-13T00:00:00Z",
             )
             session_dir = Path(prepared["session_dir"])
-            home_contract = session_dir / "home_side_contract.json"
-            _write_valid_home_contract(home_contract)
+            ready_contract = Path(prepared["ready_contract"])
             runtime = TransitionTaskRuntime(
                 session_dir=session_dir,
                 sequence_manifest_path=prepared["sequence_manifest"],
                 split_manifest_path=prepared["split_manifest"],
-                home_side_contract_path=home_contract,
+                ready_contract_path=ready_contract,
                 resolved_record_config_yaml="task: real_transition\n",
                 git_commit="d" * 40,
             )
@@ -589,7 +746,7 @@ class RealTransitionRuntimeTest(unittest.TestCase):
             )
             server.start()
             try:
-                started = send_transition_command(
+                started = lightweight_send_transition_command(
                     host="127.0.0.1",
                     port=server.port,
                     command="start-run",
@@ -608,10 +765,16 @@ class RealTransitionRuntimeTest(unittest.TestCase):
                     started["time_limits_s"]["run_stop"], 60.0 * cycle_count
                 )
                 self.assertFalse(runtime.consume_record_start_request())
+                _feed_ready_window(
+                    runtime,
+                    side=started["initial_side"],
+                    end_ns=RealTransitionRunPackageTest._step_ns(0),
+                )
                 send_transition_command(
                     host="127.0.0.1",
                     port=server.port,
                     command="initial-ready",
+                    payload=READY_CONFIRMATIONS,
                 )
                 self.assertTrue(runtime.consume_record_start_request())
                 runtime.attach_recording(episode_idx=0)
@@ -640,11 +803,16 @@ class RealTransitionRuntimeTest(unittest.TestCase):
                             )
                         elif cycle < cycle_count and within == 6:
                             target = runtime.status()["next_target_side"]
+                            _feed_ready_window(
+                                runtime,
+                                side=target,
+                                end_ns=RealTransitionRunPackageTest._step_ns(step),
+                            )
                             send_transition_command(
                                 host="127.0.0.1",
                                 port=server.port,
                                 command="target-ready",
-                                payload={"realized_target_side": target},
+                                payload=READY_CONFIRMATIONS,
                             )
                 stop = runtime.consume_stop_request()
                 self.assertIsNotNone(stop)
@@ -678,13 +846,12 @@ class RealTransitionRuntimeTest(unittest.TestCase):
                 created_at_utc="2026-08-13T00:00:00Z",
             )
             session_dir = Path(prepared["session_dir"])
-            home_contract = session_dir / "home_side_contract.json"
-            _write_valid_home_contract(home_contract)
+            ready_contract = Path(prepared["ready_contract"])
             runtime = TransitionTaskRuntime(
                 session_dir=session_dir,
                 sequence_manifest_path=prepared["sequence_manifest"],
                 split_manifest_path=prepared["split_manifest"],
-                home_side_contract_path=home_contract,
+                ready_contract_path=ready_contract,
                 resolved_record_config_yaml="task: real_transition\n",
                 git_commit="f" * 40,
             )
@@ -698,7 +865,12 @@ class RealTransitionRuntimeTest(unittest.TestCase):
                     }
                 },
             )
-            runtime.handle_command("initial-ready")
+            _feed_ready_window(
+                runtime,
+                side=runtime.status()["initial_side"],
+                end_ns=RealTransitionRunPackageTest._step_ns(0),
+            )
+            runtime.handle_command("initial-ready", READY_CONFIRMATIONS)
             self.assertTrue(runtime.consume_record_start_request())
             runtime.attach_recording(episode_idx=0)
             runtime.update_recorded_step(
@@ -713,9 +885,14 @@ class RealTransitionRuntimeTest(unittest.TestCase):
             runtime.handle_command("dump-end")
             expected = runtime.status()["next_target_side"]
             realized = "B" if expected == "A" else "A"
+            _feed_ready_window(
+                runtime,
+                side=realized,
+                end_ns=RealTransitionRunPackageTest._step_ns(1),
+            )
             result = runtime.handle_command(
                 "target-ready",
-                {"realized_target_side": realized},
+                READY_CONFIRMATIONS,
             )
             self.assertEqual(result["phase"], "aborted")
             self.assertEqual(result["completed_cycles"], 0)
@@ -727,6 +904,25 @@ class RealTransitionRuntimeTest(unittest.TestCase):
 
 
 class HomeSideContractTest(unittest.TestCase):
+    def test_rule_contract_classifies_home_transition_sides_and_safe_limits(
+        self,
+    ) -> None:
+        contract = build_rule_ready_contract()
+        validate_rule_ready_contract(contract)
+        self.assertEqual(classify_ready_swing_qpos(contract, 0.000690), "home")
+        self.assertEqual(classify_ready_swing_qpos(contract, -0.049), "home")
+        self.assertEqual(classify_ready_swing_qpos(contract, 0.061), "transition")
+        self.assertEqual(classify_ready_swing_qpos(contract, -0.080), "A")
+        self.assertEqual(classify_ready_swing_qpos(contract, 0.081), "B")
+        self.assertEqual(
+            classify_ready_swing_qpos(contract, -0.3893),
+            "outside_safe_range",
+        )
+        self.assertEqual(
+            classify_ready_swing_qpos(contract, 0.4190),
+            "outside_safe_range",
+        )
+
     def test_field_windows_resolve_historical_floor_and_clean_support(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -2,7 +2,7 @@
 #
 # The session directory is intentionally not hard-coded. Pass the frozen field
 # directory with --transition-session-dir (the field wrapper does this). This
-# profile never loads a policy and disables go-home during a continuous run.
+# profile never loads a policy. It keeps the field-proven manual go-home flow.
 extends: teleop_real_v1.yaml
 
 teleop:
@@ -14,12 +14,13 @@ teleop:
   joystick:
     record_start_button: null
     policy_start_button: null
-    go_home_button: null
+    # Keep the field-proven physical button 3 and the established go-home flow.
+    go_home_button: 2
   recording:
     enabled: true
     wait_for_start: true
     go_home:
-      enabled: false
+      enabled: true
 
 task:
   task_name: real_transition_expert_v2_0_1
@@ -35,7 +36,7 @@ real_transition:
   session_dir: ""
   sequence_manifest: ""
   split_manifest: ""
-  home_side_contract: ""
+  ready_contract: ""
   control:
     bind_host: "0.0.0.0"
     port: 8771

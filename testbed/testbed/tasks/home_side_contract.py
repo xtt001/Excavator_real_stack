@@ -21,7 +21,19 @@ from testbed.tasks.real_transition import (
 
 CALIBRATION_INPUT_SCHEMA = "real_transition_home_calibration_samples_v1"
 HOME_SIDE_CONTRACT_SCHEMA = "real_home_side_contract_v1"
+READY_RULE_CONTRACT_SCHEMA = "real_transition_ready_rule_contract_v2"
 BASELINE_ID = "real_transition_historical_baseline_20260813"
+
+READY_RULE_DEFAULTS = {
+    "home_swing_qpos_rad": 0.000690,
+    "physical_left_qpos_sign": -1,
+    "home_tolerance_rad": 0.05,
+    "clean_ready_min_abs_delta_rad": 0.08,
+    "safe_swing_qpos_range_rad": [-0.3892, 0.4189],
+    "stable_window_s": 0.5,
+    "swing_qvel_abs_max_rad_s": 0.015,
+    "max_sample_gap_s": 0.15,
+}
 
 READY_BASELINE = {
     "dwell_s": 0.5,
@@ -30,6 +42,128 @@ READY_BASELINE = {
     "qpos_peak_to_peak_max": [0.005, 0.005, 0.005, 0.005],
     "visual_confirmation_required": True,
 }
+
+
+def build_rule_ready_contract() -> dict[str, Any]:
+    """Build the field-confirmed v2 rule contract without pose calibration files."""
+
+    contract: dict[str, Any] = {
+        "schema": READY_RULE_CONTRACT_SCHEMA,
+        "context_version": "v2.0.1-field-ready-rule-20260817",
+        "swing_axis": {
+            "axis_index": 0,
+            **READY_RULE_DEFAULTS,
+            "side_mapping": {
+                "A": "physical_left_of_home",
+                "B": "physical_right_of_home",
+            },
+        },
+        "ready_requirements": {
+            "clean_side_required": True,
+            "swing_stable_window_required": True,
+            "bucket_clear_confirmation_required": True,
+            "operator_confirmation_required": True,
+            "non_swing_qpos_policy": "record_only_unbounded",
+            "non_swing_qvel_policy": "record_only_not_a_ready_gate",
+        },
+        "threshold_evidence": {
+            "field_date": "2026-08-17",
+            "hdf5_episode_ids": ["episode_111", "episode_112", "episode_113"],
+            "natural_stop_rule": (
+                "accept only when every swing qvel sample in the latest 0.5 s "
+                "window is <= 0.015 rad/s"
+            ),
+            "episode_113_sha256": (
+                "4e41aebeff36118a78ab488c83b4cf0f8db02289205ed51b83a8eb9186d753b5"
+            ),
+        },
+        "contract_sha256_scope": "canonical_json_without_contract_sha256",
+    }
+    contract["contract_sha256"] = _contract_digest(contract)
+    return contract
+
+
+def write_rule_ready_contract(output_path: Path | str) -> dict[str, Any]:
+    contract = build_rule_ready_contract()
+    output = write_immutable_text(
+        output_path,
+        json.dumps(
+            contract,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+    )
+    return {
+        "status": "PASS",
+        "output": str(output),
+        "sha256": sha256_file(output),
+        "contract_sha256": contract["contract_sha256"],
+    }
+
+
+def validate_rule_ready_contract(contract: Mapping[str, Any]) -> None:
+    if contract.get("schema") != READY_RULE_CONTRACT_SCHEMA:
+        raise TransitionContractError("ready rule contract schema mismatch")
+    if contract.get("contract_sha256") != _contract_digest(contract):
+        raise TransitionContractError("ready rule contract digest mismatch")
+    swing = contract.get("swing_axis", {})
+    if not isinstance(swing, Mapping):
+        raise TransitionContractError("ready rule swing_axis must be an object")
+    if int(swing.get("axis_index", -1)) != 0:
+        raise TransitionContractError("ready rule swing axis index must be 0")
+    for key, expected in READY_RULE_DEFAULTS.items():
+        actual = swing.get(key)
+        if isinstance(expected, list):
+            if list(actual or ()) != expected:
+                raise TransitionContractError(f"ready rule {key} is not field-frozen")
+        elif not math.isclose(float(actual), float(expected), rel_tol=0.0, abs_tol=1e-12):
+            raise TransitionContractError(f"ready rule {key} is not field-frozen")
+    if swing.get("side_mapping") != {
+        "A": "physical_left_of_home",
+        "B": "physical_right_of_home",
+    }:
+        raise TransitionContractError("ready rule A/B side mapping is invalid")
+    requirements = contract.get("ready_requirements", {})
+    required_true = (
+        "clean_side_required",
+        "swing_stable_window_required",
+        "bucket_clear_confirmation_required",
+        "operator_confirmation_required",
+    )
+    if not isinstance(requirements, Mapping) or any(
+        requirements.get(name) is not True for name in required_true
+    ):
+        raise TransitionContractError("ready rule confirmations/gates must be enabled")
+    if requirements.get("non_swing_qpos_policy") != "record_only_unbounded":
+        raise TransitionContractError("non-swing qpos must remain unbounded")
+    if requirements.get("non_swing_qvel_policy") != "record_only_not_a_ready_gate":
+        raise TransitionContractError("non-swing qvel must remain record-only")
+
+
+def classify_ready_swing_qpos(
+    contract: Mapping[str, Any],
+    swing_qpos_rad: float,
+) -> str:
+    """Classify one current swing qpos as home/transition/A/B/outside-safe."""
+
+    validate_rule_ready_contract(contract)
+    value = float(swing_qpos_rad)
+    if not math.isfinite(value):
+        raise TransitionContractError("swing qpos must be finite")
+    swing = contract["swing_axis"]
+    lower, upper = [float(item) for item in swing["safe_swing_qpos_range_rad"]]
+    if value < lower or value > upper:
+        return "outside_safe_range"
+    delta = _shortest_angle(value - float(swing["home_swing_qpos_rad"]))
+    abs_delta = abs(delta)
+    if abs_delta <= float(swing["home_tolerance_rad"]):
+        return "home"
+    if abs_delta < float(swing["clean_ready_min_abs_delta_rad"]):
+        return "transition"
+    left_sign = int(swing["physical_left_qpos_sign"])
+    return "A" if delta * left_sign > 0.0 else "B"
 
 
 def build_home_side_contract(

@@ -27,6 +27,7 @@ from testbed.host_status import (
     LocalHostStatusPublisher,
     build_host_status_snapshot,
 )
+from testbed.config_loader import load_yaml_config
 
 log = logging.getLogger(__name__)
 
@@ -422,11 +423,7 @@ def main() -> None:
 
 
 def _load_yaml_config(path: Path) -> dict[str, Any]:
-    with path.open("r", encoding="utf-8") as f:
-        data = yaml.safe_load(f) or {}
-    if not isinstance(data, dict):
-        raise ValueError(f"config must decode to a mapping: {path}")
-    return data
+    return load_yaml_config(path)
 
 
 def _build_host_action_source(

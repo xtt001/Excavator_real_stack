@@ -59,6 +59,7 @@ from testbed.data.schema import (
     ATTR_TELEOP_INPUT,
     DEFAULT_PLATFORM,
 )
+from testbed.config_loader import deep_merge_config, load_yaml_config
 
 log = logging.getLogger(__name__)
 
@@ -107,6 +108,7 @@ def _publish_remote_receiver_status(
     storage_path: Any | None = None,
     save_status: Mapping[str, Any] | None = None,
     home_status: Mapping[str, Any] | None = None,
+    real_transition_status: Mapping[str, Any] | None = None,
     message: str = "",
 ) -> None:
     publish = getattr(action_source, "publish_status", None)
@@ -135,8 +137,9 @@ def _publish_remote_receiver_status(
         if receiver_health is None
         else str(getattr(receiver_health, "error_code", "") or "")
     )
+    status_time_ns = int(time.time_ns())
     payload = {
-        "timestamp_ns": int(time.time_ns()),
+        "timestamp_ns": status_time_ns,
         "receiver_mode": str(receiver_mode),
         "episode_idx": int(episode_idx),
         "saved": int(saved),
@@ -153,7 +156,15 @@ def _publish_remote_receiver_status(
     payload["storage"] = _storage_status_payload(storage_path)
     payload["save"] = _save_status_payload(save_status, saved_path=saved_path)
     payload["home"] = _status_jsonable(dict(home_status or {}))
+    payload["real_transition"] = _status_jsonable(
+        dict(real_transition_status or {})
+    )
     payload.update(_policy_remote_status_payload(action_source, action_info))
+    payload["latency"] = _receiver_latency_status_payload(
+        action_info=action_info,
+        control_result=control_result,
+        status_time_ns=status_time_ns,
+    )
     if control_result is not None:
         commanded = control_result.get("commanded_action")
         if commanded is not None:
@@ -163,6 +174,34 @@ def _publish_remote_receiver_status(
     if saved_path is not None:
         payload["saved_path"] = str(saved_path)
     publish(payload)
+
+
+def _receiver_latency_status_payload(
+    *,
+    action_info: Any | None,
+    control_result: Mapping[str, Any] | None,
+    status_time_ns: int,
+) -> dict[str, Any]:
+    """Report the age of the action currently represented by receiver status."""
+
+    extras = dict(getattr(action_info, "extras", {}) or {})
+    control = dict(control_result or {})
+    policy_active = str(extras.get("policy_remote_mode", "")) == "policy" or bool(
+        extras.get("model_control", False)
+    )
+    action_sample_ns = _int_timestamp(
+        control.get("action_sample_timestamp_ns"),
+        default=_int_timestamp(extras.get("action_timestamp_ns")),
+    )
+    action_age_ms: float | None = None
+    if action_sample_ns > 0 and int(status_time_ns) >= action_sample_ns:
+        action_age_ms = (int(status_time_ns) - action_sample_ns) * 1e-6
+
+    return {
+        "action_age_ms": action_age_ms,
+        "action_source": "policy" if policy_active else "manual",
+        "definition": "receiver status time minus current action sample time",
+    }
 
 
 def _receiver_health_status_payload(receiver_health: Any | None) -> dict[str, Any]:
@@ -687,7 +726,7 @@ def main(prog: str = "tb-record-real") -> None:
         help=(
             "Enable expert real-transition recording and use this pre-generated "
             "session directory. The directory must contain sequence_manifest.json, "
-            "split_manifest.json, and home_side_contract.json."
+            "split_manifest.json, and ready_contract.json."
         ),
     )
     parser.add_argument(
@@ -955,10 +994,6 @@ def main(prog: str = "tb-record-real") -> None:
             raise ValueError(
                 "expert real-transition recording requires recording.enabled=true "
                 "and recording.wait_for_start=true"
-            )
-        if go_home_config is not None:
-            raise ValueError(
-                "expert real-transition recording requires recording.go_home.enabled=false"
             )
         from testbed.tasks.real_transition_runtime import (
             DEFAULT_TRANSITION_CONTROL_PORT,
@@ -1526,6 +1561,13 @@ def main(prog: str = "tb-record-real") -> None:
                         live_line.message("mode=armed health=OK")
 
                     if transition_runtime is not None:
+                        transition_runtime.update_ready_observation(
+                            step_ns=_record_step_timestamp_ns(
+                                obs, fallback=action_send_ns
+                            ),
+                            qpos=obs.get("qpos"),
+                            qvel=obs.get("qvel"),
+                        )
                         transition_runtime.update_receiver_state(
                             mode=receiver_mode,
                             health_ok=(
@@ -1623,6 +1665,11 @@ def main(prog: str = "tb-record-real") -> None:
                                 storage_path=dataset_dir,
                                 save_status=save_status,
                                 home_status=home_status,
+                                real_transition_status=(
+                                    transition_runtime.status()
+                                    if transition_runtime is not None
+                                    else None
+                                ),
                                 message="saving_failed_health_record",
                             )
                             if transition_runtime is not None:
@@ -1723,6 +1770,11 @@ def main(prog: str = "tb-record-real") -> None:
                             storage_path=dataset_dir,
                             save_status=save_status,
                             home_status=home_status,
+                            real_transition_status=(
+                                transition_runtime.status()
+                                if transition_runtime is not None
+                                else None
+                            ),
                             message="saving_failed_online_qc_record",
                         )
                         if transition_runtime is not None:
@@ -1873,6 +1925,11 @@ def main(prog: str = "tb-record-real") -> None:
                         storage_path=dataset_dir,
                         save_status=save_status,
                         home_status=home_status,
+                        real_transition_status=(
+                            transition_runtime.status()
+                            if transition_runtime is not None
+                            else None
+                        ),
                     )
                     if test_logger is not None:
                         test_logger.record_step(
@@ -1922,6 +1979,11 @@ def main(prog: str = "tb-record-real") -> None:
                                 receiver_health=receiver_health,
                                 action_info=action_info,
                                 home_status=home_status,
+                                real_transition_status=(
+                                    transition_runtime.status()
+                                    if transition_runtime is not None
+                                    else None
+                                ),
                                 message="go_home_failed_armed",
                             )
                         elif go_home_update.done:
@@ -1945,6 +2007,11 @@ def main(prog: str = "tb-record-real") -> None:
                                 receiver_health=receiver_health,
                                 action_info=action_info,
                                 home_status=home_status,
+                                real_transition_status=(
+                                    transition_runtime.status()
+                                    if transition_runtime is not None
+                                    else None
+                                ),
                                 message="go_home_done_armed",
                             )
                     if receiver_mode in {"recording", "go_home"} and record_session is not None:
@@ -2120,6 +2187,11 @@ def main(prog: str = "tb-record-real") -> None:
                                 storage_path=dataset_dir,
                                 save_status=save_status,
                                 home_status=home_status,
+                                real_transition_status=(
+                                    transition_runtime.status()
+                                    if transition_runtime is not None
+                                    else None
+                                ),
                                 message="saving_failed_go_home_record",
                             )
                             failed_path = record_session.save_failed(
@@ -2179,6 +2251,11 @@ def main(prog: str = "tb-record-real") -> None:
                                 storage_path=dataset_dir,
                                 save_status=save_status,
                                 home_status=home_status,
+                                real_transition_status=(
+                                    transition_runtime.status()
+                                    if transition_runtime is not None
+                                    else None
+                                ),
                                 message="go_home_failed_record_saved",
                             )
                             ts = ts_next
@@ -2214,6 +2291,11 @@ def main(prog: str = "tb-record-real") -> None:
                                 storage_path=dataset_dir,
                                 save_status=save_status,
                                 home_status=home_status,
+                                real_transition_status=(
+                                    transition_runtime.status()
+                                    if transition_runtime is not None
+                                    else None
+                                ),
                                 message="saving_hdf5",
                             )
                             saved_path, saved_success, final_qc_snapshot = (
@@ -2309,6 +2391,11 @@ def main(prog: str = "tb-record-real") -> None:
                                 storage_path=dataset_dir,
                                 save_status=save_status,
                                 home_status=home_status,
+                                real_transition_status=(
+                                    transition_runtime.status()
+                                    if transition_runtime is not None
+                                    else None
+                                ),
                                 message=(
                                     "go_home_done_record_saved"
                                     if saved_success
@@ -2347,6 +2434,11 @@ def main(prog: str = "tb-record-real") -> None:
                                 storage_path=dataset_dir,
                                 save_status=save_status,
                                 home_status=home_status,
+                                real_transition_status=(
+                                    transition_runtime.status()
+                                    if transition_runtime is not None
+                                    else None
+                                ),
                                 message="saving_hdf5",
                             )
                             saved_path, saved_success, final_qc_snapshot = (
@@ -2420,6 +2512,11 @@ def main(prog: str = "tb-record-real") -> None:
                                 storage_path=dataset_dir,
                                 save_status=save_status,
                                 home_status=home_status,
+                                real_transition_status=(
+                                    transition_runtime.status()
+                                    if transition_runtime is not None
+                                    else None
+                                ),
                                 message=(
                                     "record_saved"
                                     if saved_success
@@ -2556,43 +2653,11 @@ def _load_yaml_config(
     *,
     _stack: tuple[Path, ...] = (),
 ) -> dict[str, Any]:
-    try:
-        import yaml
-    except ImportError as exc:
-        raise RuntimeError(
-            "PyYAML is required to run tb-record-real. Install project dependencies "
-            "or use the adapter/unit tests for no-dependency checks."
-        ) from exc
-
-    path = path.resolve()
-    if path in _stack:
-        chain = " -> ".join(str(item) for item in (*_stack, path))
-        raise ValueError(f"config extends cycle: {chain}")
-    with open(path) as f:
-        value = yaml.safe_load(f) or {}
-    if not isinstance(value, dict):
-        raise ValueError(f"config must decode to a mapping: {path}")
-    overlay = dict(value)
-    base_value = overlay.pop("extends", None)
-    if base_value is None:
-        return overlay
-    if not isinstance(base_value, str) or not base_value.strip():
-        raise ValueError(f"config extends must be a non-empty path string: {path}")
-    base_path = Path(base_value).expanduser()
-    if not base_path.is_absolute():
-        base_path = path.parent / base_path
-    base = _load_yaml_config(base_path, _stack=(*_stack, path))
-    return _deep_merge_config(base, overlay)
+    return load_yaml_config(path, _stack=_stack)
 
 
 def _deep_merge_config(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
-    merged = dict(base)
-    for key, value in overlay.items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = _deep_merge_config(dict(merged[key]), value)
-        else:
-            merged[key] = value
-    return merged
+    return deep_merge_config(base, overlay)
 
 
 def _dump_yaml_config(cfg: dict[str, Any]) -> str:

@@ -73,6 +73,46 @@ class TransitionContractError(RuntimeError):
     """Raised when a plan, event stream, or run package violates the contract."""
 
 
+def _validate_ready_event_evidence(
+    value: Mapping[str, Any] | None,
+    *,
+    expected_side: str,
+    required: bool,
+) -> dict[str, Any] | None:
+    if value is None:
+        if required:
+            raise TransitionContractError("v2 ready event requires ready_evidence")
+        return None
+    if not isinstance(value, Mapping):
+        raise TransitionContractError("ready_evidence must be an object")
+    evidence = dict(value)
+    if evidence.get("actual_side") != expected_side:
+        raise TransitionContractError(
+            "ready_evidence actual side does not match the event side"
+        )
+    if evidence.get("expected_side") != expected_side:
+        raise TransitionContractError(
+            "ready_evidence expected side does not match the event side"
+        )
+    for field in (
+        "window_complete",
+        "sample_gap_ok",
+        "swing_stable",
+        "clean_side_window",
+        "bucket_clear_confirmed",
+        "operator_confirmed",
+    ):
+        if evidence.get(field) is not True:
+            raise TransitionContractError(
+                f"ready_evidence requires {field}=true"
+            )
+    if evidence.get("non_swing_axes_gate_ready") is not False:
+        raise TransitionContractError(
+            "ready_evidence must record that non-swing axes do not gate ready"
+        )
+    return evidence
+
+
 @dataclass(frozen=True)
 class TransitionRunSpec:
     session_id: str
@@ -756,6 +796,11 @@ def prepare_session_directory(
     split_path = session_dir / "split_manifest.json"
     _write_json_immutable(sequence_path, sequence_manifest)
     _write_json_immutable(split_path, split_manifest)
+    # Local import avoids the legacy calibration module's import of this module.
+    from testbed.tasks.home_side_contract import write_rule_ready_contract
+
+    ready_contract_path = session_dir / "ready_contract.json"
+    write_rule_ready_contract(ready_contract_path)
 
     preparation = {
         "schema": SESSION_PREPARATION_SCHEMA,
@@ -763,13 +808,13 @@ def prepare_session_directory(
         "session_id": sequence_manifest["session_id"],
         "created_at_utc": sequence_manifest["created_at_utc"],
         "seed": int(seed),
-        "status": "sequence_and_split_frozen",
+        "status": "sequence_split_and_ready_rule_frozen",
         "artifacts": {
             "sequence_manifest.json": sha256_file(sequence_path),
             "split_manifest.json": sha256_file(split_path),
+            "ready_contract.json": sha256_file(ready_contract_path),
         },
         "remaining_field_owned_artifacts": [
-            "home_side_contract.json",
             "resolved_record_config.yaml",
             "session_manifest.json",
         ],
@@ -780,6 +825,7 @@ def prepare_session_directory(
         "session_dir": str(session_dir),
         "sequence_manifest": str(sequence_path),
         "split_manifest": str(split_path),
+        "ready_contract": str(ready_contract_path),
         "preparation_manifest": str(preparation_path),
         "counts": summarize_sequence_manifest(sequence_manifest),
     }
@@ -1516,8 +1562,14 @@ class TransitionRunPackage:
         step_id: int,
         step_ns: int,
         notes: str = "",
+        ready_evidence: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         self._require_phase("started")
+        evidence = _validate_ready_event_evidence(
+            ready_evidence,
+            expected_side=self.run_spec.initial_side,
+            required=self.run_spec.task_event_schema == TASK_EVENT_SCHEMA,
+        )
         event = self._append_event(
             event_type="initial_ready_mark",
             step_id=step_id,
@@ -1525,6 +1577,7 @@ class TransitionRunPackage:
             event_source="experimenter",
             notes=notes,
             scripted_target_side=self.run_spec.initial_side,
+            ready_evidence=evidence,
         )
         self._phase = "ready"
         return event
@@ -1598,6 +1651,7 @@ class TransitionRunPackage:
         step_ns: int,
         realized_target_side: str | None = None,
         notes: str = "",
+        ready_evidence: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         self._require_phase("dump_marked")
         expected_target = self.next_target_side
@@ -1612,6 +1666,11 @@ class TransitionRunPackage:
                 )
         elif realized_target_side is None:
             realized_target_side = expected_target
+        evidence = _validate_ready_event_evidence(
+            ready_evidence,
+            expected_side=expected_target,
+            required=self.run_spec.task_event_schema == TASK_EVENT_SCHEMA,
+        )
         event = self._append_event(
             event_type="target_ready_mark",
             step_id=step_id,
@@ -1621,6 +1680,7 @@ class TransitionRunPackage:
             scripted_target_side=expected_target,
             realized_target_side=realized_target_side,
             goal_epoch=self._goal_epoch,
+            ready_evidence=evidence,
         )
         self._cycle_index += 1
         self._phase = (
@@ -1836,6 +1896,7 @@ class TransitionRunPackage:
         commit_ack_sources: Sequence[str] = (),
         goal_epoch: int | None = None,
         realized_target_side: str | None = None,
+        ready_evidence: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         if self._sealed:
             raise TransitionContractError("cannot append an event after package seal")
@@ -1895,6 +1956,9 @@ class TransitionRunPackage:
             "expected_return_swing_sign": expected_return_swing_sign,
             "event_source": str(event_source),
             "commit_ack_sources": list(commit_ack_sources),
+            "ready_evidence": (
+                None if ready_evidence is None else dict(ready_evidence)
+            ),
             "notes": str(notes),
         }
         encoded = json.dumps(
@@ -1952,6 +2016,12 @@ def validate_event_sequence(
         if event_type == "initial_ready_mark" and phase == "started":
             if event.get("scripted_target_side") != run_spec.initial_side:
                 raise TransitionContractError("initial_ready_mark side is incorrect")
+            if run_spec.task_event_schema == TASK_EVENT_SCHEMA:
+                _validate_ready_event_evidence(
+                    event.get("ready_evidence"),
+                    expected_side=run_spec.initial_side,
+                    required=True,
+                )
             phase = "ready"
             continue
         if event_type == "goal_commit" and phase == "ready":
@@ -1992,6 +2062,11 @@ def validate_event_sequence(
                         "target_ready_mark realized target does not match "
                         "scripted target"
                     )
+                _validate_ready_event_evidence(
+                    event.get("ready_evidence"),
+                    expected_side=expected_target,
+                    required=True,
+                )
                 realized_targets.append(str(realized))
             cycle_index += 1
             phase = (

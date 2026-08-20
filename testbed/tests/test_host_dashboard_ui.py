@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -12,7 +13,11 @@ pytest.importorskip("PyQt5")
 
 from PyQt5 import QtCore, QtWidgets
 
-from testbed.cli.host_dashboard import HostDashboard, _parse_args
+from testbed.cli.host_dashboard import (
+    HostDashboard,
+    _load_config,
+    _parse_args,
+)
 
 
 class _LayoutOnlyDashboard(HostDashboard):
@@ -32,6 +37,10 @@ def test_always_on_top_checkbox_toggles_window_flag() -> None:
     window = _LayoutOnlyDashboard()
     window.show()
     app.processEvents()
+
+    assert window.latency_text.text() == "等待状态"
+    assert window.badges["sender"].title == "SENDER AGE"
+    assert window.badges["receiver"].title == "RECEIVER AGE"
 
     assert window.always_on_top_checkbox.text() == "保持窗口最前"
     assert not bool(window.windowFlags() & QtCore.Qt.WindowStaysOnTopHint)
@@ -55,3 +64,75 @@ def test_always_on_top_startup_option(monkeypatch) -> None:
         ["host-dashboard", "--always-on-top"],
     )
     assert _parse_args().always_on_top is True
+
+
+def test_v2_panel_exposes_only_the_valid_next_event() -> None:
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    window = _LayoutOnlyDashboard()
+
+    window._update_transition_panel(
+        {
+            "phase": "idle",
+            "receiver_mode": "armed",
+            "receiver_health_ok": True,
+            "ready_state": {},
+        }
+    )
+    assert window.transition_primary_button.isEnabled()
+    assert window.transition_primary_command == "start-run"
+
+    ready_state = {
+        "actual_side": "A",
+        "window_complete": True,
+        "swing_stable": True,
+        "clean_side_window": True,
+        "blockers": [],
+    }
+    window._update_transition_panel(
+        {
+            "phase": "new",
+            "receiver_mode": "armed",
+            "receiver_health_ok": True,
+            "run_id": "b01_r01",
+            "initial_side": "A",
+            "next_target_side": "B",
+            "completed_cycles": 0,
+            "planned_cycle_count": 4,
+            "ready_state": ready_state,
+        }
+    )
+    assert window.transition_primary_button.isEnabled()
+    assert window.transition_primary_command == "initial-ready"
+    assert "A" in window.transition_primary_button.text()
+
+    window._update_transition_panel(
+        {
+            "phase": "ready",
+            "receiver_mode": "recording",
+            "receiver_health_ok": True,
+            "run_id": "b01_r01",
+            "initial_side": "A",
+            "next_target_side": "B",
+            "completed_cycles": 0,
+            "planned_cycle_count": 4,
+            "ready_state": ready_state,
+        }
+    )
+    assert window.transition_primary_button.isEnabled()
+    assert window.transition_primary_command == "commit-goal"
+    assert "B" in window.transition_primary_button.text()
+    window.close()
+    app.processEvents()
+
+
+def test_dashboard_resolves_v2_extended_config() -> None:
+    config_path = (
+        Path(__file__).resolve().parents[1]
+        / "testbed"
+        / "configs"
+        / "teleop_real_transition_v2_0_1.yaml"
+    )
+    config = _load_config(config_path)
+    assert config["record_hz"] == 50.0
+    assert config["max_steps"] == 15000
+    assert config["home"]["enabled"] == 1
