@@ -406,7 +406,23 @@ class HostDashboard(QtWidgets.QMainWindow):
         self.alert_label.setStyleSheet(
             f"background:{GRAY}; color:white; padding:7px; border-radius:5px;"
         )
-        root.addWidget(self.alert_label)
+        top_state_row = QtWidgets.QHBoxLayout()
+        top_state_row.setSpacing(8)
+        top_state_row.addWidget(self.alert_label, stretch=3)
+        self.machine_status_label = QtWidgets.QLabel(
+            "机器状态：等待 sender / status11"
+        )
+        self.machine_status_label.setAlignment(QtCore.Qt.AlignCenter)
+        self.machine_status_label.setTextInteractionFlags(
+            QtCore.Qt.TextSelectableByMouse
+        )
+        self.machine_status_label.setStyleSheet(
+            f"background:#11181d; color:{GRAY}; padding:7px; "
+            "border:1px solid #46535e; border-radius:5px; "
+            "font-family:monospace; font-size:13px; font-weight:800;"
+        )
+        top_state_row.addWidget(self.machine_status_label, stretch=5)
+        root.addLayout(top_state_row)
 
         transition_group = QtWidgets.QGroupBox(
             "v2.0.1 连续录制（事件控制，不生成摇杆动作）"
@@ -422,10 +438,30 @@ class HostDashboard(QtWidgets.QMainWindow):
         transition_layout.addWidget(self.transition_state)
 
         action_row = QtWidgets.QHBoxLayout()
+        self._auto_workface_context_key = ""
+        self._workface_context_user_edited = False
+        context_defaults = dict(
+            self.config.get("field_context_defaults", {}) or {}
+        )
+        self._workface_reset_id_prefix = str(
+            context_defaults.get("workface_reset_id_prefix", "wf_") or "wf_"
+        )
+        self._workface_action_default = str(
+            context_defaults.get("workface_action", "fresh_strip")
+            or "fresh_strip"
+        )
         self.workface_reset_id = QtWidgets.QLineEdit()
-        self.workface_reset_id.setPlaceholderText("必填，例如 wf_001")
+        self.workface_reset_id.setText(f"{self._workface_reset_id_prefix}001")
+        self.workface_reset_id.setPlaceholderText("自动按下一条 run 更新")
         self.workface_action = QtWidgets.QLineEdit()
-        self.workface_action.setPlaceholderText("必填，例如 fresh_strip")
+        self.workface_action.setText(self._workface_action_default)
+        self.workface_action.setPlaceholderText("默认 fresh_strip，可人工修改")
+        self.workface_reset_id.textEdited.connect(
+            self._mark_workface_context_user_edited
+        )
+        self.workface_action.textEdited.connect(
+            self._mark_workface_context_user_edited
+        )
         action_row.addWidget(QtWidgets.QLabel("reset ID"))
         action_row.addWidget(self.workface_reset_id, stretch=2)
         action_row.addWidget(QtWidgets.QLabel("工作面处理"))
@@ -659,6 +695,31 @@ class HostDashboard(QtWidgets.QMainWindow):
             },
         )
 
+    def _mark_workface_context_user_edited(self, _text: str) -> None:
+        self._workface_context_user_edited = True
+
+    def _update_automatic_workface_context(
+        self, transition: dict[str, Any]
+    ) -> None:
+        if str(transition.get("phase", "") or "") != "idle":
+            return
+        next_run_id = str(transition.get("next_run_id", "") or "")
+        next_ordinal = _int(transition.get("next_run_ordinal"), 0)
+        if not next_run_id or next_ordinal <= 0:
+            return
+        key = (
+            f"{transition.get('session_id', '')}:"
+            f"{next_run_id}:{next_ordinal}"
+        )
+        if key == self._auto_workface_context_key:
+            return
+        self._auto_workface_context_key = key
+        self._workface_context_user_edited = False
+        self.workface_reset_id.setText(
+            f"{self._workface_reset_id_prefix}{next_ordinal:03d}"
+        )
+        self.workface_action.setText(self._workface_action_default)
+
     def _transition_primary_action(self) -> None:
         handlers = {
             "start-run": self._transition_start_run,
@@ -773,6 +834,7 @@ class HostDashboard(QtWidgets.QMainWindow):
 
     def _update_transition_panel(self, transition: dict[str, Any]) -> None:
         transition = dict(transition or {})
+        self._update_automatic_workface_context(transition)
         busy = bool(getattr(self, "transition_busy", False))
         phase = str(transition.get("phase", "") or "")
         ready = dict(transition.get("ready_state", {}) or {})
@@ -1041,6 +1103,30 @@ class HostDashboard(QtWidgets.QMainWindow):
         safe_action = _vector(receiver.get("policy_assisted_action"), 4)
         commanded = _vector(receiver.get("commanded_action"), 4)
         sender_action = _vector(sender.get("action"), 4)
+        status11 = sender.get("status11")
+        status_values = (
+            [int(value) for value in status11]
+            if isinstance(status11, (list, tuple))
+            else []
+        )
+        ignition = status_values[0] if len(status_values) > 0 else None
+        remote_mode = status_values[4] if len(status_values) > 4 else None
+        pilot = status_values[5] if len(status_values) > 5 else None
+        if status_values:
+            self.machine_status_label.setText(
+                "机器状态  "
+                f"点火={_on_off(ignition)}  遥控={_on_off(remote_mode)}  "
+                f"先导={_on_off(pilot)}  status11={status_values}"
+            )
+            machine_color = GREEN if ignition and remote_mode and pilot else AMBER
+        else:
+            self.machine_status_label.setText("机器状态：等待 sender / status11")
+            machine_color = GRAY
+        self.machine_status_label.setStyleSheet(
+            f"background:#11181d; color:{machine_color}; padding:7px; "
+            f"border:2px solid {machine_color}; border-radius:5px; "
+            "font-family:monospace; font-size:13px; font-weight:800;"
+        )
         self.control_text.setText(
             f"mode       {receiver.get('control_mode') or 'manual'}\n"
             f"sender     {_format_action(sender_action)}\n"
@@ -1225,6 +1311,7 @@ def _load_config(path: Path) -> dict[str, Any]:
             },
         }
     task = dict(data.get("task", {}) or {})
+    transition = dict(data.get("real_transition", {}) or {})
     teleop = dict(data.get("teleop", {}) or {})
     recording = dict(teleop.get("recording", {}) or {})
     go_home = dict(recording.get("go_home", {}) or {})
@@ -1243,6 +1330,9 @@ def _load_config(path: Path) -> dict[str, Any]:
     return {
         "record_hz": float(task.get("record_hz", task.get("control_hz", 0.0)) or 0.0),
         "max_steps": int(task.get("max_steps", 0) or 0),
+        "field_context_defaults": dict(
+            transition.get("field_context_defaults", {}) or {}
+        ),
         "home": {
             "available": 1,
             "enabled": int(bool(go_home.get("enabled", False))),
@@ -1358,6 +1448,10 @@ def _format_action(values: list[Any] | None) -> str:
 
 def _yes_no(value: Any) -> str:
     return "YES" if bool(value) else "NO"
+
+
+def _on_off(value: Any) -> str:
+    return "ON" if bool(value) else "OFF"
 
 
 def _format_fraction(value: Any) -> str:

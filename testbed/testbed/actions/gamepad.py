@@ -74,6 +74,7 @@ class JoystickActionSource(ActionSource):
         status_button_device: int = 0,
         status_buttons_enabled: bool = True,
         status_button_count: int = STATUS_TOGGLE_BIT_COUNT,
+        status_reserved_buttons: Sequence[int] | None = None,
         group_switch_button: int | None = 11,
     ) -> None:
         import pygame
@@ -132,6 +133,9 @@ class JoystickActionSource(ActionSource):
             raise ValueError(
                 f"status_button_count must be in 1..{STATUS_TOGGLE_BIT_COUNT}"
             )
+        self._status_reserved_buttons = {
+            int(button) for button in (status_reserved_buttons or ())
+        }
         self._group_switch_button = self._normalize_button(
             group_switch_button, name="group_switch_button"
         )
@@ -341,6 +345,7 @@ class JoystickActionSource(ActionSource):
             status_button_count=int(
                 cfg.get("status_button_count", STATUS_TOGGLE_BIT_COUNT)
             ),
+            status_reserved_buttons=cfg.get("status_reserved_buttons"),
             group_switch_button=None if group_switch is None else int(group_switch),
         )
 
@@ -389,7 +394,7 @@ class JoystickActionSource(ActionSource):
         return triggered
 
     def _status_control_buttons(self) -> set[int]:
-        return {
+        return self._status_reserved_buttons | {
             int(button)
             for button in (
                 self._reset_button,

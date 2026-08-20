@@ -3,7 +3,7 @@
 本文作为当前现场主从分体测试和录制的主文档，集中记录应启动的命令、链路检查、
 QC 和停止顺序。历史 runbook/checklist 已并入本页。
 
-> **v2.0.1 Real Transition**：上机准备和规则型 ready 合同先执行《[v2.0.1 真机测试与标定准备手册](v2_0_1_real_transition_field_preparation_and_calibration_runbook.md)》。不再执行 home/A/B 各 10 次固定标定。准备阶段使用 `--no-receiver`，不要套用本页普通录制的 `--policy-remote`、按钮录制或模型控制步骤。正式 transition 录制只使用专用 wrapper 和 transition control，并先停止旧版 `policy_remote` receiver 释放 `8770`。
+> **v2.0.1 Real Transition**：上机准备和规则型 ready 合同先执行《[v2.0.1 真机测试与标定准备手册](v2_0_1_real_transition_field_preparation_and_calibration_runbook.md)》。不再执行 home/A/B 各 10 次固定标定。正式录制沿用同一个主端 `teleop_remote` 手柄入口；从端使用 v2 wrapper，任务事件只在主端 GUI 操作，不要求操作员另开 transition control CLI。启动前先停止旧版 `policy_remote` receiver 释放 `8770`。
 
 ## 现场常用命令集合（置顶）
 

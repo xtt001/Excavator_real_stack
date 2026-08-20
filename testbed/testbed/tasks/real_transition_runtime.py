@@ -155,6 +155,11 @@ class TransitionTaskRuntime:
         self._goal_commit_step_ns: int | None = None
         self._timing_warning = ""
         self._ready_samples: deque[tuple[int, np.ndarray, np.ndarray]] = deque()
+        self._sealed_run_count = 0
+        self._next_run_spec_hint: TransitionRunSpec | None = None
+        self._next_run_ordinal: int | None = None
+        self._session_progress_error = ""
+        self._refresh_session_progress()
 
     @classmethod
     def from_mapping(
@@ -377,6 +382,7 @@ class TransitionTaskRuntime:
                 stop_reason=stop_reason,
             )
             self._reset_active_state()
+            self._refresh_session_progress()
             return manifest
 
     def handle_command(
@@ -509,6 +515,14 @@ class TransitionTaskRuntime:
                 "receiver_mode": self._receiver_mode,
                 "receiver_health_ok": self._receiver_health_ok,
                 "session_id": str(self._manifest["session_id"]),
+                "sealed_run_count": self._sealed_run_count,
+                "next_run_id": (
+                    self._next_run_spec_hint.run_id
+                    if self._next_run_spec_hint is not None
+                    else None
+                ),
+                "next_run_ordinal": self._next_run_ordinal,
+                "session_progress_error": self._session_progress_error,
                 "active": package is not None,
                 "recording_attached": self._recording_attached,
                 "run_id": spec.run_id if spec is not None else None,
@@ -752,6 +766,31 @@ class TransitionTaskRuntime:
                 f"next run directory is unsealed and requires review: {run_dir}"
             )
         raise TransitionContractError("all frozen runs already have sealed packages")
+
+    def _refresh_session_progress(self) -> None:
+        sealed = 0
+        next_spec: TransitionRunSpec | None = None
+        next_ordinal: int | None = None
+        progress_error = ""
+        for ordinal, spec in enumerate(self._run_specs, start=1):
+            run_dir = self.session_dir / f"block_{spec.block_id}" / f"run_{spec.run_id}"
+            if not run_dir.exists():
+                if next_spec is None:
+                    next_spec = spec
+                    next_ordinal = ordinal
+                continue
+            if (run_dir / "run_manifest.json").is_file():
+                sealed += 1
+                continue
+            progress_error = f"unsealed run requires review: {run_dir}"
+            if next_spec is None:
+                next_spec = spec
+                next_ordinal = ordinal
+            break
+        self._sealed_run_count = sealed
+        self._next_run_spec_hint = next_spec
+        self._next_run_ordinal = next_ordinal
+        self._session_progress_error = progress_error
 
     def _require_active_package(self) -> TransitionRunPackage:
         if self._active_package is None:

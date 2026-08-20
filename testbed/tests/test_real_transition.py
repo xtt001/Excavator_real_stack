@@ -108,10 +108,13 @@ class RealTransitionPlanTest(unittest.TestCase):
             / "teleop_real_transition_v2_0_1.yaml"
         )
         config = _load_yaml_config(config_path)
-        self.assertEqual(config["teleop"]["input"], "remote")
+        self.assertEqual(config["teleop"]["input"], "joystick")
         self.assertIsNone(config["teleop"]["joystick"]["policy_start_button"])
         self.assertIsNone(config["teleop"]["joystick"]["record_start_button"])
         self.assertEqual(config["teleop"]["joystick"]["go_home_button"], 2)
+        self.assertEqual(
+            config["teleop"]["joystick"]["status_reserved_buttons"], [1, 3]
+        )
         self.assertTrue(config["teleop"]["recording"]["go_home"]["enabled"])
         self.assertEqual(
             config["teleop"]["joystick"]["joystick_ids"], [0, 1, 0, 1]
@@ -597,6 +600,10 @@ class RealTransitionRuntimeTest(unittest.TestCase):
                 git_commit="a" * 40,
             )
             runtime.update_receiver_state(mode="armed", health_ok=True)
+            idle = runtime.status()
+            self.assertEqual(idle["sealed_run_count"], 0)
+            self.assertEqual(idle["next_run_id"], "b01_r01")
+            self.assertEqual(idle["next_run_ordinal"], 1)
             runtime.handle_command(
                 "start-run",
                 {
