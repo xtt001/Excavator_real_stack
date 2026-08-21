@@ -155,16 +155,17 @@ sequence 平衡只是第一层控制。录制后还要按完整 source block 检
 
 如果仅凭 cycle index、pair rank 或地形特征就能高置信预测目标，这批数据不能支持 condition 因果结论。应先调整配对、工作条带和序列 profile，再决定是否补录。
 
-## 10. 仍未完成的链路
+## 10. 后续仍未完成的链路
 
-本次实现覆盖 sequence manifest、split manifest、专家连续录制状态机、事件合同和 run package。以下部分仍未实现：
+当前实现覆盖 sequence/split manifest、专家连续录制状态机、事件合同、run package，
+以及 raw run 到 20 Hz ready-to-ready cycle 的 annotation/materializer 和 condition 数组。
+以下部分仍未实现：
 
-- raw run 到 ready-to-ready cycle 的离线 annotation/materializer；
-- `real_transition_condition_v1` 训练数组；
 - B0/B1/B2 训练和评估入口；
 - N5 condition warm-start；
 - conditioned-policy 真机 goal router 和分级 Gate。
 
-因此，当前代码可以离线生成和检查新的录制计划，也具备专家录制支架。它还不能训练或执行最终的 Conditioned ACT，本文也不是上机授权。
+因此，当前代码可完成专家录制与训练分段生成，但还不能训练或执行最终的
+Conditioned ACT，本文也不是 conditioned-policy 上机授权。
 
 真机同步、只读传感器检查、home/A/B 稳定窗采集和合同冻结按《[v2.0.1 真机测试与标定准备手册](v2_0_1_real_transition_field_preparation_and_calibration_runbook.md)》执行。该手册只授权准备阶段，不改变本文的正式录制证据边界。

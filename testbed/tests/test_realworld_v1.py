@@ -134,6 +134,7 @@ class RealworldV1Tests(unittest.TestCase):
             toggle_mask=3,
             reset_requested=True,
             record_start_requested=True,
+            mark_requested=True,
             policy_start_requested=True,
             go_home_requested=True,
         )
@@ -149,6 +150,7 @@ class RealworldV1Tests(unittest.TestCase):
         self.assertEqual(packet.toggle_mask, 3)
         self.assertTrue(packet.reset_requested)
         self.assertTrue(packet.record_start_requested)
+        self.assertTrue(packet.mark_requested)
         self.assertTrue(packet.policy_start_requested)
         self.assertTrue(packet.go_home_requested)
 
@@ -166,6 +168,7 @@ class RealworldV1Tests(unittest.TestCase):
             b'"host_sample_time_ns":1,"source_id":"old"}}'
         )
         self.assertFalse(packet.go_home_requested)
+        self.assertFalse(packet.mark_requested)
         self.assertFalse(packet.policy_start_requested)
 
     def test_remote_receiver_status_protocol_round_trip(self) -> None:
@@ -200,6 +203,7 @@ class RealworldV1Tests(unittest.TestCase):
                 toggle_mask=5,
                 reset_requested=True,
                 record_start_requested=True,
+                mark_requested=True,
                 go_home_requested=True,
             )
             action, info = _wait_for_remote_seq(source, 0)
@@ -208,6 +212,7 @@ class RealworldV1Tests(unittest.TestCase):
             self.assertEqual(extras["toggle_mask"], 5)
             self.assertTrue(extras["reset_requested"])
             self.assertTrue(extras["record_start_requested"])
+            self.assertTrue(extras["mark_requested"])
             self.assertTrue(extras["go_home_requested"])
             self.assertEqual(extras["remote_action_host_sample_ns"], 111)
             self.assertEqual(extras["remote_action_stale"], 0)
@@ -216,6 +221,7 @@ class RealworldV1Tests(unittest.TestCase):
             self.assertEqual(info_again.extras["toggle_mask"], 0)
             self.assertFalse(info_again.extras["reset_requested"])
             self.assertFalse(info_again.extras["record_start_requested"])
+            self.assertFalse(info_again.extras["mark_requested"])
             self.assertFalse(info_again.extras["go_home_requested"])
         finally:
             client.close()

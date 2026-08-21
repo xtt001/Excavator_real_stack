@@ -344,12 +344,14 @@ def main() -> None:
                 discard_requested=bool(extras.get("discard_requested", False)),
                 quit_requested=bool(extras.get("quit_requested", False)),
                 record_start_requested=bool(extras.get("record_start_requested", False)),
+                mark_requested=bool(extras.get("mark_requested", False)),
                 policy_start_requested=bool(extras.get("policy_start_requested", False)),
                 go_home_requested=bool(extras.get("go_home_requested", False)),
             )
             event_flags = {
                 "toggle_mask": int(extras.get("toggle_mask", 0) or 0),
                 "record_start": bool(extras.get("record_start_requested", False)),
+                "mark": bool(extras.get("mark_requested", False)),
                 "policy_start": bool(extras.get("policy_start_requested", False)),
                 "go_home": bool(extras.get("go_home_requested", False)),
                 "reset": bool(extras.get("reset_requested", False)),
@@ -359,10 +361,11 @@ def main() -> None:
             if any(event_flags.values()):
                 if not monitor.enabled:
                     log.info(
-                        "remote_event seq=%d toggle_mask=%d record_start=%s policy_start=%s go_home=%s reset=%s discard=%s quit=%s",
+                        "remote_event seq=%d toggle_mask=%d record_start=%s mark=%s policy_start=%s go_home=%s reset=%s discard=%s quit=%s",
                         seq,
                         event_flags["toggle_mask"],
                         event_flags["record_start"],
+                        event_flags["mark"],
                         event_flags["policy_start"],
                         event_flags["go_home"],
                         event_flags["reset"],
@@ -569,6 +572,7 @@ class _RemoteTeleopMonitor:
             self._last_event_by_name["toggle"] = (int(seq), now_s)
         for key, label in (
             ("record_start", "record_start_requested"),
+            ("mark", "mark_requested"),
             ("policy_start", "policy_start_requested"),
             ("go_home", "go_home_requested"),
             ("reset", "reset_requested"),
@@ -640,6 +644,7 @@ class _RemoteTeleopMonitor:
         status_text = _format_status_bits(status11)
         toggle_mask = int(extras.get("toggle_mask", 0) or 0)
         record_last = self._format_last_event("record_start", now_s)
+        mark_last = self._format_last_event("mark", now_s)
         policy_last = self._format_last_event("policy_start", now_s)
         go_home_last = self._format_last_event("go_home", now_s)
         source = getattr(info, "source_id", "") or self.source_id
@@ -661,6 +666,11 @@ class _RemoteTeleopMonitor:
                 "record_start: "
                 f"pulse={_yes_no(extras.get('record_start_requested', False))} "
                 f"count={self._event_counts['record_start']} last={record_last}"
+            ),
+            (
+                "MARK:        "
+                f"pulse={_yes_no(extras.get('mark_requested', False))} "
+                f"count={self._event_counts['mark']} last={mark_last}"
             ),
             (
                 "go_home:      "

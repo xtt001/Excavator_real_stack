@@ -14,7 +14,7 @@ import subprocess
 import threading
 import time
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -69,6 +69,8 @@ class TransitionTaskRuntime:
         resolved_record_config_yaml: str,
         git_commit: str,
         session_metadata: Mapping[str, Any] | None = None,
+        field_context_defaults: Mapping[str, Any] | None = None,
+        camera_sync: Mapping[str, Any] | None = None,
         cycle_review_s: float = 45.0,
         cycle_stop_s: float = 60.0,
         run_stop_s: float | None = None,
@@ -83,6 +85,44 @@ class TransitionTaskRuntime:
         self.cycle_stop_s = float(cycle_stop_s)
         self.run_stop_s = None if run_stop_s is None else float(run_stop_s)
         self.run_stop_s_per_cycle = float(run_stop_s_per_cycle)
+        self._field_context_defaults = dict(field_context_defaults or {})
+        self._camera_sync_config = dict(camera_sync or {})
+        self._camera_sync_enabled = bool(
+            self._camera_sync_config.get("enabled", False)
+        )
+        self._camera_sync_expected_cameras = tuple(
+            str(value)
+            for value in self._camera_sync_config.get(
+                "expected_cameras", ("video4", "video5", "video6", "video7")
+            )
+        )
+        self._camera_sync_window_s = float(
+            self._camera_sync_config.get("stable_window_s", 2.0)
+        )
+        self._camera_sync_max_skew_ms = float(
+            self._camera_sync_config.get("max_group_skew_ms", 5.0)
+        )
+        self._camera_sync_min_valid_fraction = float(
+            self._camera_sync_config.get("min_valid_fraction", 0.98)
+        )
+        self._camera_sync_min_distinct_groups = int(
+            self._camera_sync_config.get("min_distinct_groups", 30)
+        )
+        if self._camera_sync_enabled:
+            if not self._camera_sync_expected_cameras:
+                raise TransitionContractError(
+                    "camera sync gate requires expected_cameras"
+                )
+            if self._camera_sync_window_s <= 0 or self._camera_sync_max_skew_ms < 0:
+                raise TransitionContractError("camera sync window/skew is invalid")
+            if not 0.0 <= self._camera_sync_min_valid_fraction <= 1.0:
+                raise TransitionContractError(
+                    "camera sync min_valid_fraction must be in [0,1]"
+                )
+            if self._camera_sync_min_distinct_groups <= 0:
+                raise TransitionContractError(
+                    "camera sync min_distinct_groups must be positive"
+                )
         if not (0.0 < self.cycle_review_s < self.cycle_stop_s):
             raise TransitionContractError(
                 "transition time limits must satisfy 0 < cycle_review < cycle_stop"
@@ -144,6 +184,7 @@ class TransitionTaskRuntime:
         self._record_start_requested = False
         self._pending_initial_ready_notes: str | None = None
         self._pending_initial_ready_evidence: dict[str, Any] | None = None
+        self._pending_initial_ready_source = "experimenter"
         self._stop_request: TransitionStopRequest | None = None
         self._active_spec: TransitionRunSpec | None = None
         self._active_package: TransitionRunPackage | None = None
@@ -155,6 +196,11 @@ class TransitionTaskRuntime:
         self._goal_commit_step_ns: int | None = None
         self._timing_warning = ""
         self._ready_samples: deque[tuple[int, np.ndarray, np.ndarray]] = deque()
+        self._camera_sync_samples: deque[
+            tuple[int, int, bool, float, tuple[str, ...]]
+        ] = deque()
+        self._last_mark_error = ""
+        self._last_mark_result = ""
         self._sealed_run_count = 0
         self._next_run_spec_hint: TransitionRunSpec | None = None
         self._next_run_ordinal: int | None = None
@@ -207,6 +253,10 @@ class TransitionTaskRuntime:
             resolved_record_config_yaml=resolved_record_config_yaml,
             git_commit=_git_commit(repo_root),
             session_metadata=session_metadata,
+            field_context_defaults=dict(
+                config.get("field_context_defaults", {}) or {}
+            ),
+            camera_sync=dict(config.get("camera_sync", {}) or {}),
             cycle_review_s=float(time_limits.get("cycle_review_s", 45.0)),
             cycle_stop_s=float(time_limits.get("cycle_stop_s", 60.0)),
             run_stop_s=(
@@ -276,6 +326,61 @@ class TransitionTaskRuntime:
             while self._ready_samples and self._ready_samples[0][0] < cutoff:
                 self._ready_samples.popleft()
 
+    def update_camera_sync_observation(
+        self,
+        *,
+        step_ns: int,
+        image_metadata: Any,
+    ) -> None:
+        """Update the rolling four-camera gate without decoding image payloads."""
+
+        if not self._camera_sync_enabled:
+            return
+        stamp = int(step_ns)
+        metadata_map = image_metadata if isinstance(image_metadata, Mapping) else {}
+        missing: list[str] = []
+        entries: list[Mapping[str, Any]] = []
+        for camera in self._camera_sync_expected_cameras:
+            value = metadata_map.get(camera)
+            if not isinstance(value, Mapping):
+                missing.append(camera)
+            else:
+                entries.append(value)
+        group_ids = {
+            int(value.get("group_id", 0) or 0) for value in entries
+        }
+        camera_counts = {
+            int(value.get("group_camera_count", 0) or 0) for value in entries
+        }
+        skews = [
+            float(value.get("group_skew_ms", float("inf"))) for value in entries
+        ]
+        valid = (
+            not missing
+            and len(entries) == len(self._camera_sync_expected_cameras)
+            and len(group_ids) == 1
+            and next(iter(group_ids), 0) > 0
+            and camera_counts == {len(self._camera_sync_expected_cameras)}
+            and all(int(value.get("group_valid", 0) or 0) == 1 for value in entries)
+            and not any(int(value.get("v4l2_error", 0) or 0) for value in entries)
+            and bool(skews)
+            and max(skews) <= self._camera_sync_max_skew_ms
+        )
+        group_id = next(iter(group_ids), 0) if len(group_ids) == 1 else 0
+        skew_ms = max(skews) if skews else float("inf")
+        with self._lock:
+            if self._camera_sync_samples and stamp <= self._camera_sync_samples[-1][0]:
+                if stamp < self._camera_sync_samples[-1][0]:
+                    self._camera_sync_samples.clear()
+                else:
+                    self._camera_sync_samples.pop()
+            self._camera_sync_samples.append(
+                (stamp, int(group_id), bool(valid), float(skew_ms), tuple(missing))
+            )
+            cutoff = stamp - int(4.0 * self._camera_sync_window_s * 1_000_000_000)
+            while self._camera_sync_samples and self._camera_sync_samples[0][0] < cutoff:
+                self._camera_sync_samples.popleft()
+
     def consume_record_start_request(self) -> bool:
         with self._lock:
             requested = self._record_start_requested
@@ -322,9 +427,16 @@ class TransitionTaskRuntime:
                         step_ns=step_ns,
                         notes=self._pending_initial_ready_notes,
                         ready_evidence=self._pending_initial_ready_evidence,
+                        event_source=self._pending_initial_ready_source,
                     )
                     self._pending_initial_ready_notes = None
                     self._pending_initial_ready_evidence = None
+                    self._pending_initial_ready_source = "experimenter"
+                    self._commit_goal_automatically(
+                        self._active_package,
+                        step_id=step_id,
+                        step_ns=step_ns,
+                    )
             self._evaluate_time_limits(step_id=step_id, step_ns=step_ns)
 
     def consume_stop_request(self) -> TransitionStopRequest | None:
@@ -396,6 +508,7 @@ class TransitionTaskRuntime:
             if command == "start-run":
                 return self._start_run(payload)
             package = self._require_active_package()
+            auto_goal_event: dict[str, Any] | None = None
             if command == "initial-ready":
                 ready_evidence = self._require_ready_evidence(
                     expected_side=package.run_spec.initial_side,
@@ -404,6 +517,9 @@ class TransitionTaskRuntime:
                 if package.phase == "new" and not self._recording_attached:
                     self._pending_initial_ready_notes = str(payload.get("notes", ""))
                     self._pending_initial_ready_evidence = ready_evidence
+                    self._pending_initial_ready_source = str(
+                        payload.get("event_source", "experimenter")
+                    )
                     self._record_start_requested = True
                     result = self.status()
                     result["message"] = (
@@ -417,8 +533,18 @@ class TransitionTaskRuntime:
                     step_ns=step_ns,
                     notes=str(payload.get("notes", "")),
                     ready_evidence=ready_evidence,
+                    event_source=str(payload.get("event_source", "experimenter")),
+                )
+                auto_goal_event = self._commit_goal_automatically(
+                    package,
+                    step_id=step_id,
+                    step_ns=step_ns,
                 )
             elif command == "commit-goal":
+                if package.phase == "goal_committed":
+                    result = self.status()
+                    result["message"] = "goal was already committed automatically"
+                    return result
                 if not bool(payload.get("display_ack", False)):
                     raise TransitionContractError(
                         "commit-goal requires display_ack=true after the target "
@@ -442,6 +568,7 @@ class TransitionTaskRuntime:
                     step_id=step_id,
                     step_ns=step_ns,
                     notes=str(payload.get("notes", "")),
+                    event_source=str(payload.get("event_source", "experimenter")),
                 )
             elif command == "target-ready":
                 step_id, step_ns = self._require_latest_step()
@@ -470,6 +597,9 @@ class TransitionTaskRuntime:
                         realized_target_side=realized_target_side,
                         notes=str(payload.get("notes", "")),
                         ready_evidence=ready_evidence,
+                        event_source=str(
+                            payload.get("event_source", "experimenter")
+                        ),
                     )
                 self._goal_commit_step_ns = None
                 self._timing_warning = ""
@@ -478,6 +608,12 @@ class TransitionTaskRuntime:
                     self._stop_request = TransitionStopRequest(
                         success=True,
                         stop_reason="planned_cycles_complete",
+                    )
+                elif package.phase == "ready":
+                    auto_goal_event = self._commit_goal_automatically(
+                        package,
+                        step_id=step_id,
+                        step_ns=step_ns,
                     )
             elif command == "intervention":
                 step_id, step_ns = self._require_latest_step()
@@ -505,6 +641,67 @@ class TransitionTaskRuntime:
                 )
             result = self.status()
             result["accepted_event"] = event
+            if auto_goal_event is not None:
+                result["automatic_goal_event"] = auto_goal_event
+            return result
+
+    def handle_mark(self) -> dict[str, Any]:
+        """Apply the one-button operator MARK according to the current phase."""
+
+        with self._lock:
+            try:
+                phase = (
+                    self._active_package.phase
+                    if self._active_package is not None
+                    else "idle"
+                )
+                if phase == "idle":
+                    result = self._start_run(
+                        {"field_context": self._automatic_field_context()}
+                    )
+                    action = "start-run"
+                elif phase == "new":
+                    result = self.handle_command(
+                        "initial-ready",
+                        {
+                            "bucket_clear_confirmed": True,
+                            "operator_confirmed": True,
+                            "notes": "operator joystick MARK",
+                            "event_source": "operator",
+                        },
+                    )
+                    action = "initial-ready"
+                elif phase == "goal_committed":
+                    result = self.handle_command(
+                        "dump-end",
+                        {
+                            "notes": "operator joystick MARK",
+                            "event_source": "operator",
+                        },
+                    )
+                    action = "dump-end"
+                elif phase == "dump_marked":
+                    result = self.handle_command(
+                        "target-ready",
+                        {
+                            "bucket_clear_confirmed": True,
+                            "operator_confirmed": True,
+                            "notes": "operator joystick MARK",
+                            "event_source": "operator",
+                        },
+                    )
+                    action = "target-ready"
+                else:
+                    raise TransitionContractError(
+                        f"MARK is not accepted while phase={phase}"
+                    )
+            except Exception as exc:
+                self._last_mark_error = str(exc)
+                self._last_mark_result = "rejected"
+                raise
+            self._last_mark_error = ""
+            self._last_mark_result = action
+            result["mark_action"] = action
             return result
 
     def status(self) -> dict[str, Any]:
@@ -522,6 +719,11 @@ class TransitionTaskRuntime:
                     else None
                 ),
                 "next_run_ordinal": self._next_run_ordinal,
+                "next_field_context": (
+                    self._automatic_field_context()
+                    if package is None and self._next_run_spec_hint is not None
+                    else {}
+                ),
                 "session_progress_error": self._session_progress_error,
                 "active": package is not None,
                 "recording_attached": self._recording_attached,
@@ -547,6 +749,7 @@ class TransitionTaskRuntime:
                     list(spec.sequence) if spec is not None else None
                 ),
                 "phase": package.phase if package is not None else "idle",
+                "field_context": dict(self._field_context),
                 "completed_cycles": package.cycle_index if package is not None else 0,
                 "next_target_side": (
                     package.next_target_side if package is not None else None
@@ -563,7 +766,11 @@ class TransitionTaskRuntime:
                 "cycle_elapsed_s": self._elapsed_s(self._goal_commit_step_ns),
                 "run_elapsed_s": self._elapsed_s(self._run_start_step_ns),
                 "timing_warning": self._timing_warning,
+                "mark_next_action": self._mark_next_action(package),
+                "last_mark_result": self._last_mark_result,
+                "last_mark_error": self._last_mark_error,
                 "ready_state": self._ready_state_snapshot(),
+                "camera_sync_state": self._camera_sync_state_snapshot(),
                 "time_limits_s": {
                     "cycle_review": self.cycle_review_s,
                     "cycle_stop": self.cycle_stop_s,
@@ -614,7 +821,21 @@ class TransitionTaskRuntime:
             return base
         latest_ns = int(samples[-1][0])
         window_ns = int(float(swing["stable_window_s"]) * 1_000_000_000)
-        window = [sample for sample in samples if sample[0] >= latest_ns - window_ns]
+        cutoff_ns = latest_ns - window_ns
+        start_index = next(
+            index
+            for index, sample in enumerate(samples)
+            if sample[0] >= cutoff_ns
+        )
+        # Keep the sample immediately before the cutoff when no sample lands
+        # exactly on it.  Real 50 Hz observations are not phase-locked to a
+        # 0.5 s boundary; dropping this predecessor makes the measured span
+        # permanently shorter than 0.5 s (typically about 0.49 s).  Including
+        # it is conservative because its qpos/qvel also participates in every
+        # ready gate, while max_sample_gap_s still rejects missing coverage.
+        if samples[start_index][0] > cutoff_ns and start_index > 0:
+            start_index -= 1
+        window = samples[start_index:]
         timestamps = np.asarray([sample[0] for sample in window], dtype=np.int64)
         qpos = np.stack([sample[1] for sample in window])
         qvel = np.stack([sample[2] for sample in window])
@@ -693,6 +914,12 @@ class TransitionTaskRuntime:
             raise TransitionContractError(
                 "ready contract blocked: " + ", ".join(blockers)
             )
+        camera_sync = self._camera_sync_state_snapshot()
+        camera_blockers = list(camera_sync.get("blockers", ()))
+        if camera_blockers:
+            raise TransitionContractError(
+                "camera sync gate blocked: " + ", ".join(camera_blockers)
+            )
         actual_side = str(evidence["actual_side"])
         if expected_side is not None and actual_side != expected_side:
             raise TransitionContractError(
@@ -704,6 +931,7 @@ class TransitionTaskRuntime:
         evidence["ready_contract_sha256"] = self._ready_contract[
             "contract_sha256"
         ]
+        evidence["camera_sync"] = camera_sync
         return evidence
 
     def _start_run(self, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -718,6 +946,14 @@ class TransitionTaskRuntime:
             )
         if not self._receiver_health_ok:
             raise TransitionContractError("start-run is blocked by receiver health")
+        camera_blockers = list(
+            self._camera_sync_state_snapshot().get("blockers", ())
+        )
+        if camera_blockers:
+            raise TransitionContractError(
+                "start-run is blocked by camera sync: "
+                + ", ".join(camera_blockers)
+            )
         requested_run_id = str(payload.get("run_id", "")).strip()
         spec = (
             find_run_spec(self._manifest, requested_run_id)
@@ -741,6 +977,7 @@ class TransitionTaskRuntime:
         self._record_start_requested = False
         self._pending_initial_ready_notes = None
         self._pending_initial_ready_evidence = None
+        self._pending_initial_ready_source = "experimenter"
         self._stop_request = None
         self._recording_attached = False
         self._last_step_id = None
@@ -754,6 +991,114 @@ class TransitionTaskRuntime:
             "targets are already frozen and must not be changed from field observations"
         )
         return result
+
+    def _automatic_field_context(self) -> dict[str, str]:
+        ordinal = int(self._next_run_ordinal or (self._sealed_run_count + 1))
+        prefix = str(
+            self._field_context_defaults.get("workface_reset_id_prefix", "wf_")
+            or "wf_"
+        )
+        action = str(
+            self._field_context_defaults.get("workface_action", "fresh_strip")
+            or "fresh_strip"
+        )
+        return {
+            "workface_reset_id": f"{prefix}{ordinal:03d}",
+            "workface_action": action,
+            "context_source": "automatic_joystick_mark",
+        }
+
+    def _commit_goal_automatically(
+        self,
+        package: TransitionRunPackage,
+        *,
+        step_id: int,
+        step_ns: int,
+    ) -> dict[str, Any] | None:
+        if package.phase != "ready" or package.next_target_side is None:
+            return None
+        event = package.commit_next_goal(
+            step_id=step_id,
+            step_ns=step_ns,
+            commit_ack_sources=REQUIRED_GOAL_ACK_SOURCES,
+            notes="automatic frozen-sequence goal commit",
+        )
+        self._goal_commit_step_ns = int(step_ns)
+        self._timing_warning = ""
+        return event
+
+    @staticmethod
+    def _mark_next_action(package: TransitionRunPackage | None) -> str:
+        phase = package.phase if package is not None else "idle"
+        return {
+            "idle": "start-run",
+            "new": "initial-ready",
+            "goal_committed": "dump-end",
+            "dump_marked": "target-ready",
+            "cycles_complete": "wait-save",
+            "complete": "wait-save",
+            "aborted": "wait-save",
+        }.get(phase, "wait")
+
+    def _camera_sync_state_snapshot(self) -> dict[str, Any]:
+        base = {
+            "enabled": self._camera_sync_enabled,
+            "expected_cameras": list(self._camera_sync_expected_cameras),
+            "window_required_s": self._camera_sync_window_s,
+            "max_group_skew_ms": self._camera_sync_max_skew_ms,
+            "min_valid_fraction": self._camera_sync_min_valid_fraction,
+            "min_distinct_groups": self._camera_sync_min_distinct_groups,
+            "sample_count": 0,
+            "distinct_group_count": 0,
+            "valid_fraction": 0.0,
+            "observed_max_skew_ms": None,
+            "window_duration_s": 0.0,
+            "ready": not self._camera_sync_enabled,
+            "blockers": [],
+        }
+        if not self._camera_sync_enabled:
+            return base
+        samples = list(self._camera_sync_samples)
+        if not samples:
+            base["blockers"] = ["camera_sync_no_samples"]
+            return base
+        latest_ns = int(samples[-1][0])
+        cutoff_ns = latest_ns - int(self._camera_sync_window_s * 1_000_000_000)
+        start_index = next(
+            (index for index, sample in enumerate(samples) if sample[0] >= cutoff_ns),
+            len(samples) - 1,
+        )
+        if samples[start_index][0] > cutoff_ns and start_index > 0:
+            start_index -= 1
+        window = samples[start_index:]
+        duration_s = float((window[-1][0] - window[0][0]) / 1_000_000_000.0)
+        valid_fraction = sum(bool(sample[2]) for sample in window) / len(window)
+        distinct_groups = {sample[1] for sample in window if sample[1] > 0}
+        finite_skews = [sample[3] for sample in window if np.isfinite(sample[3])]
+        max_skew = max(finite_skews) if finite_skews else None
+        missing = sorted({camera for sample in window for camera in sample[4]})
+        blockers: list[str] = []
+        if duration_s + 1e-9 < self._camera_sync_window_s:
+            blockers.append("camera_sync_window_too_short")
+        if len(distinct_groups) < self._camera_sync_min_distinct_groups:
+            blockers.append("camera_sync_groups_too_few")
+        if valid_fraction < self._camera_sync_min_valid_fraction:
+            blockers.append("camera_sync_valid_fraction")
+        if max_skew is None or max_skew > self._camera_sync_max_skew_ms:
+            blockers.append("camera_sync_skew")
+        if missing:
+            blockers.append("camera_sync_missing_" + ",".join(missing))
+        return {
+            **base,
+            "sample_count": len(window),
+            "distinct_group_count": len(distinct_groups),
+            "valid_fraction": float(valid_fraction),
+            "observed_max_skew_ms": None if max_skew is None else float(max_skew),
+            "window_duration_s": duration_s,
+            "missing_cameras": missing,
+            "ready": not blockers,
+            "blockers": blockers,
+        }
 
     def _next_available_run(self) -> TransitionRunSpec:
         for spec in self._run_specs:
@@ -815,6 +1160,7 @@ class TransitionTaskRuntime:
         self._record_start_requested = False
         self._pending_initial_ready_notes = None
         self._pending_initial_ready_evidence = None
+        self._pending_initial_ready_source = "experimenter"
         self._stop_request = None
         self._last_step_id = None
         self._last_step_ns = None

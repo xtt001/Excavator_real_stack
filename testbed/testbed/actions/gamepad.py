@@ -65,6 +65,7 @@ class JoystickActionSource(ActionSource):
         discard_button: int | None = None,
         quit_button: int | None = None,
         record_start_button: int | None = None,
+        mark_button: int | None = None,
         policy_start_button: int | None = None,
         go_home_button: int | None = None,
         button_joystick_ids: Sequence[int] | None = None,
@@ -115,6 +116,10 @@ class JoystickActionSource(ActionSource):
         self._record_start_button = self._normalize_button(
             record_start_button,
             name="record_start_button",
+        )
+        self._mark_button = self._normalize_button(
+            mark_button,
+            name="mark_button",
         )
         self._policy_start_button = self._normalize_button(
             policy_start_button,
@@ -219,6 +224,7 @@ class JoystickActionSource(ActionSource):
                 "discard_requested": self._button_edge(self._discard_button),
                 "quit_requested": self._button_edge(self._quit_button),
                 "record_start_requested": self._button_edge(self._record_start_button),
+                "mark_requested": self._button_edge(self._mark_button),
                 "policy_start_requested": self._button_edge(self._policy_start_button),
                 "go_home_requested": self._button_edge(self._go_home_button),
             },
@@ -335,6 +341,7 @@ class JoystickActionSource(ActionSource):
             discard_button=cfg.get("discard_button"),
             quit_button=cfg.get("quit_button"),
             record_start_button=cfg.get("record_start_button"),
+            mark_button=cfg.get("mark_button"),
             policy_start_button=cfg.get("policy_start_button"),
             go_home_button=cfg.get("go_home_button"),
             button_joystick_ids=cfg.get("button_joystick_ids"),
@@ -401,6 +408,7 @@ class JoystickActionSource(ActionSource):
                 self._discard_button,
                 self._quit_button,
                 self._record_start_button,
+                self._mark_button,
                 self._policy_start_button,
                 self._go_home_button,
             )

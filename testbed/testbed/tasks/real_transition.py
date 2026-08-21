@@ -13,8 +13,10 @@ import datetime as dt
 import hashlib
 import json
 import os
+import queue
 import random
 import re
+import threading
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -71,6 +73,15 @@ _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 class TransitionContractError(RuntimeError):
     """Raised when a plan, event stream, or run package violates the contract."""
+
+
+def _ready_mark_event_source(value: Any) -> str:
+    source = str(value or "experimenter")
+    if source not in {"experimenter", "operator"}:
+        raise TransitionContractError(
+            "ready/dump MARK event_source must be experimenter or operator"
+        )
+    return source
 
 
 def _validate_ready_event_evidence(
@@ -1504,6 +1515,93 @@ def find_run_spec(manifest: Mapping[str, Any], run_id: str) -> TransitionRunSpec
     raise TransitionContractError(f"run_id {run_id!r} is absent from sequence manifest")
 
 
+@dataclass
+class _EventJournalRequest:
+    kind: str
+    payload: str = ""
+    done: threading.Event | None = None
+
+
+class _AsyncEventJournal:
+    """Serialize event writes off the recorder thread and fsync only at seal."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = Path(path)
+        self._handle = self.path.open("a", encoding="utf-8", buffering=1)
+        self._queue: queue.Queue[_EventJournalRequest] = queue.Queue()
+        self._state_lock = threading.Lock()
+        self._failure: BaseException | None = None
+        self._closed = False
+        self._thread = threading.Thread(
+            target=self._run,
+            name=f"transition-event-journal-{self.path.parent.name}",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def append(self, encoded_line: str) -> None:
+        with self._state_lock:
+            self._raise_if_failed_locked()
+            if self._closed:
+                raise TransitionContractError("event journal is already closed")
+            self._queue.put(_EventJournalRequest("append", payload=str(encoded_line)))
+
+    def close_durable(self) -> None:
+        done = threading.Event()
+        with self._state_lock:
+            if self._closed:
+                should_wait = False
+            else:
+                self._closed = True
+                should_wait = True
+                self._queue.put(_EventJournalRequest("close", done=done))
+        if should_wait:
+            done.wait()
+        self._thread.join()
+        with self._state_lock:
+            self._raise_if_failed_locked()
+
+    def _run(self) -> None:
+        while True:
+            request = self._queue.get()
+            should_close = request.kind == "close"
+            try:
+                with self._state_lock:
+                    failed = self._failure is not None
+                if not failed:
+                    if request.kind == "append":
+                        self._handle.write(request.payload)
+                    elif request.kind == "close":
+                        self._handle.flush()
+                        os.fsync(self._handle.fileno())
+                    else:  # pragma: no cover - internal requests are closed.
+                        raise RuntimeError(
+                            f"unsupported event journal request {request.kind!r}"
+                        )
+            except BaseException as exc:  # propagate disk failures to seal/caller.
+                with self._state_lock:
+                    if self._failure is None:
+                        self._failure = exc
+            finally:
+                if request.done is not None:
+                    request.done.set()
+                self._queue.task_done()
+            if should_close:
+                try:
+                    self._handle.close()
+                except BaseException as exc:
+                    with self._state_lock:
+                        if self._failure is None:
+                            self._failure = exc
+                return
+
+    def _raise_if_failed_locked(self) -> None:
+        if self._failure is not None:
+            raise TransitionContractError(
+                f"event journal write failed for {self.path}: {self._failure}"
+            ) from self._failure
+
+
 class TransitionRunPackage:
     """Append-only event recorder and immutable run-package sealer."""
 
@@ -1525,8 +1623,10 @@ class TransitionRunPackage:
         self._cycle_index = 0
         self._goal_epoch = 0
         self._sealed = False
+        self._event_journal: _AsyncEventJournal | None = None
         if create:
             self._create_empty_package()
+            self._event_journal = _AsyncEventJournal(self.events_path)
 
     @property
     def cycle_index(self) -> int:
@@ -1563,6 +1663,7 @@ class TransitionRunPackage:
         step_ns: int,
         notes: str = "",
         ready_evidence: Mapping[str, Any] | None = None,
+        event_source: str = "experimenter",
     ) -> dict[str, Any]:
         self._require_phase("started")
         evidence = _validate_ready_event_evidence(
@@ -1574,7 +1675,7 @@ class TransitionRunPackage:
             event_type="initial_ready_mark",
             step_id=step_id,
             step_ns=step_ns,
-            event_source="experimenter",
+            event_source=_ready_mark_event_source(event_source),
             notes=notes,
             scripted_target_side=self.run_spec.initial_side,
             ready_evidence=evidence,
@@ -1630,13 +1731,14 @@ class TransitionRunPackage:
         step_id: int,
         step_ns: int,
         notes: str = "",
+        event_source: str = "experimenter",
     ) -> dict[str, Any]:
         self._require_phase("goal_committed")
         event = self._append_event(
             event_type="dump_end_mark",
             step_id=step_id,
             step_ns=step_ns,
-            event_source="experimenter",
+            event_source=_ready_mark_event_source(event_source),
             notes=notes,
             scripted_target_side=self.next_target_side,
             goal_epoch=self._goal_epoch,
@@ -1652,6 +1754,7 @@ class TransitionRunPackage:
         realized_target_side: str | None = None,
         notes: str = "",
         ready_evidence: Mapping[str, Any] | None = None,
+        event_source: str = "experimenter",
     ) -> dict[str, Any]:
         self._require_phase("dump_marked")
         expected_target = self.next_target_side
@@ -1675,7 +1778,7 @@ class TransitionRunPackage:
             event_type="target_ready_mark",
             step_id=step_id,
             step_ns=step_ns,
-            event_source="experimenter",
+            event_source=_ready_mark_event_source(event_source),
             notes=notes,
             scripted_target_side=expected_target,
             realized_target_side=realized_target_side,
@@ -1782,6 +1885,11 @@ class TransitionRunPackage:
             raise TransitionContractError(
                 f"run package is already sealed: {self.run_dir}"
             )
+        if self._event_journal is None:
+            raise TransitionContractError("run package event journal is unavailable")
+        # Recording has stopped before seal.  The only durable fsync in the event
+        # path is deliberately performed here, outside the 50 Hz recorder lock.
+        self._event_journal.close_durable()
         raw_path = Path(raw_hdf5_path) if raw_hdf5_path is not None else self.raw_path
         if raw_path.resolve() != self.raw_path.resolve():
             raise TransitionContractError(
@@ -1967,10 +2075,9 @@ class TransitionRunPackage:
             separators=(",", ":"),
             sort_keys=True,
         )
-        with self.events_path.open("a", encoding="utf-8") as handle:
-            handle.write(encoded + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
+        if self._event_journal is None:
+            raise TransitionContractError("run package event journal is unavailable")
+        self._event_journal.append(encoded + "\n")
         self._events.append(event)
         return dict(event)
 

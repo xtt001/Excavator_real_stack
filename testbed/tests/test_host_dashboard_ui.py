@@ -88,7 +88,7 @@ def test_always_on_top_startup_option(monkeypatch) -> None:
     assert _parse_args().always_on_top is True
 
 
-def test_v2_panel_exposes_only_the_valid_next_event() -> None:
+def test_v2_panel_is_read_only_and_explains_the_next_mark_action() -> None:
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     window = _LayoutOnlyDashboard()
 
@@ -100,28 +100,23 @@ def test_v2_panel_exposes_only_the_valid_next_event() -> None:
             "session_id": "rt01",
             "next_run_id": "b01_r01",
             "next_run_ordinal": 1,
+            "mark_next_action": "start-run",
+            "next_field_context": {
+                "workface_reset_id": "wf_001",
+                "workface_action": "fresh_strip",
+            },
+            "camera_sync_state": {
+                "ready": True,
+                "observed_max_skew_ms": 0.04,
+            },
             "ready_state": {},
         }
     )
-    assert window.transition_primary_button.isEnabled()
-    assert window.transition_primary_command == "start-run"
-    assert window.workface_reset_id.text() == "wf_001"
-    assert window.workface_action.text() == "fresh_strip"
-
-    window.workface_action.setText("restore")
-    window._update_transition_panel(
-        {
-            "phase": "idle",
-            "receiver_mode": "armed",
-            "receiver_health_ok": True,
-            "session_id": "rt01",
-            "next_run_id": "b02_r01",
-            "next_run_ordinal": 2,
-            "ready_state": {},
-        }
-    )
-    assert window.workface_reset_id.text() == "wf_002"
-    assert window.workface_action.text() == "fresh_strip"
+    assert "按左手柄物理按钮 2" in window.transition_instruction.text()
+    assert "wf_001 / fresh_strip" in window.transition_context.text()
+    assert "PASS" in window.transition_context.text()
+    assert not hasattr(window, "transition_primary_button")
+    assert not hasattr(window, "workface_reset_id")
 
     ready_state = {
         "actual_side": "A",
@@ -140,16 +135,20 @@ def test_v2_panel_exposes_only_the_valid_next_event() -> None:
             "next_target_side": "B",
             "completed_cycles": 0,
             "planned_cycle_count": 4,
+            "mark_next_action": "initial-ready",
+            "field_context": {
+                "workface_reset_id": "wf_001",
+                "workface_action": "fresh_strip",
+            },
             "ready_state": ready_state,
         }
     )
-    assert window.transition_primary_button.isEnabled()
-    assert window.transition_primary_command == "initial-ready"
-    assert "A" in window.transition_primary_button.text()
+    assert "INITIAL READY" in window.transition_instruction.text()
+    assert "A侧" in window.transition_instruction.text()
 
     window._update_transition_panel(
         {
-            "phase": "ready",
+            "phase": "goal_committed",
             "receiver_mode": "recording",
             "receiver_health_ok": True,
             "run_id": "b01_r01",
@@ -157,12 +156,12 @@ def test_v2_panel_exposes_only_the_valid_next_event() -> None:
             "next_target_side": "B",
             "completed_cycles": 0,
             "planned_cycle_count": 4,
+            "mark_next_action": "dump-end",
             "ready_state": ready_state,
         }
     )
-    assert window.transition_primary_button.isEnabled()
-    assert window.transition_primary_command == "commit-goal"
-    assert "B" in window.transition_primary_button.text()
+    assert "目标 B 已按预定序列自动提交" in window.transition_instruction.text()
+    assert "DUMP END" in window.transition_instruction.text()
     window.close()
     app.processEvents()
 

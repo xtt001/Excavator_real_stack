@@ -62,6 +62,18 @@ GMSL_PREPROCESS_CAMERA_ARGS="${EXCAVATOR_GMSL_PREPROCESS_CAMERA_ARGS:---camera v
 GMSL_PREPROCESS_MANIFEST="${EXCAVATOR_GMSL_PREPROCESS_MANIFEST:-${ROOT_DIR}/configs/camera_calibration/gmsl_h190ta_four_camera/preprocess_manifest.json}"
 GMSL_INTRINSICS_MANIFEST="${EXCAVATOR_GMSL_INTRINSICS_MANIFEST:-${ROOT_DIR}/configs/camera_intrinsics/gmsl_h190ta/manifest.json}"
 GMSL_BUFFERS="${EXCAVATOR_GMSL_BUFFERS:-8}"
+GMSL_VIDEO_DEVICES="${EXCAVATOR_GMSL_VIDEO_DEVICES:-4 5 6 7}"
+GMSL_WIDTH="${EXCAVATOR_GMSL_WIDTH:-1920}"
+GMSL_HEIGHT="${EXCAVATOR_GMSL_HEIGHT:-1536}"
+GMSL_PIXEL_FORMAT="${EXCAVATOR_GMSL_PIXEL_FORMAT:-UYVY}"
+GMSL_SENSOR_MODE="${EXCAVATOR_GMSL_SENSOR_MODE:-2}"
+GMSL_TRIG_MODE="${EXCAVATOR_GMSL_TRIG_MODE:-2}"
+GMSL_TRIG_PIN="${EXCAVATOR_GMSL_TRIG_PIN:-0x00020007}"
+GMSL_SYNC_GATE_DURATION_S="${EXCAVATOR_GMSL_SYNC_GATE_DURATION_S:-3.0}"
+GMSL_SYNC_GATE_RATE_HZ="${EXCAVATOR_GMSL_SYNC_GATE_RATE_HZ:-20.0}"
+GMSL_SYNC_GATE_MIN_VALID_FRACTION="${EXCAVATOR_GMSL_SYNC_GATE_MIN_VALID_FRACTION:-0.98}"
+GMSL_SYNC_GATE_MAX_SKEW_MS="${EXCAVATOR_GMSL_SYNC_GATE_MAX_SKEW_MS:-5.0}"
+GMSL_SYNC_GATE_MIN_DISTINCT_GROUPS="${EXCAVATOR_GMSL_SYNC_GATE_MIN_DISTINCT_GROUPS:-30}"
 STARTUP_TIMEOUT_S="${EXCAVATOR_STARTUP_TIMEOUT_S:-45}"
 RECEIVER_STOP_TIMEOUT_S="${EXCAVATOR_RECEIVER_STOP_TIMEOUT_S:-${EXCAVATOR_RECORDER_STOP_TIMEOUT_S:-180}}"
 EXCAVATOR_SKIP_PIP_INSTALL="${EXCAVATOR_SKIP_PIP_INSTALL:-1}"
@@ -84,6 +96,7 @@ Usage:
   scripts/slave_real_stack.sh run [--force] [--policy-remote] [--no-camera] [--no-imu] [--no-receiver] [--skip-usb] [--skip-can] [--install-python-package]
   scripts/slave_real_stack.sh stop [--force]
   scripts/slave_real_stack.sh restart [--force] [start options]
+  scripts/slave_real_stack.sh mount-usb
   scripts/slave_real_stack.sh status
   scripts/slave_real_stack.sh logs
   scripts/slave_real_stack.sh tail [service]
@@ -128,6 +141,11 @@ Common environment overrides:
   EXCAVATOR_CAMERA_STACK=gmsl                 # gmsl | orbbec
   EXCAVATOR_GMSL_PREPROCESS_BIN=/media/mundane/D/Excavator_real_stack/tools/gmsl_realtime_capture/build/gmsl_realtime_preprocess_probe
   EXCAVATOR_GMSL_GATEWAY_CAMERAS=video4=excavator_gmsl_video4,video5=excavator_gmsl_video5,video6=excavator_gmsl_video6,video7=excavator_gmsl_video7
+  EXCAVATOR_GMSL_VIDEO_DEVICES="4 5 6 7"       # reapplied after every GMSL restart
+  EXCAVATOR_GMSL_TRIG_MODE=2 EXCAVATOR_GMSL_TRIG_PIN=0x00020007
+  EXCAVATOR_GMSL_SYNC_GATE_DURATION_S=3.0      # receiver starts only after this gate passes
+  EXCAVATOR_GMSL_SYNC_GATE_MAX_SKEW_MS=5.0
+  EXCAVATOR_GMSL_SYNC_GATE_MIN_VALID_FRACTION=0.98
   EXCAVATOR_RECEIVER_INPUT=remote
   EXCAVATOR_TRANSITION_SESSION_DIR=/media/mundane/EXTERNAL_USB/real_transition_raw_v2/session_<id>
   EXCAVATOR_TRANSITION_CONTROL_PORT=8771
@@ -409,7 +427,7 @@ stop_stack() {
   fi
 }
 
-mount_usb() {
+mount_usb_device() {
   sudo mkdir -p "${USB_MOUNT}"
   if ! findmnt "${USB_MOUNT}" >/dev/null 2>&1; then
     log "mounting USB label ${USB_LABEL} at ${USB_MOUNT}"
@@ -418,9 +436,54 @@ mount_usb() {
       || sudo mount -t ntfs-3g -o "uid=$(id -u),gid=$(id -g),umask=022" \
         "/dev/disk/by-label/${USB_LABEL}" "${USB_MOUNT}"
   fi
+  findmnt "${USB_MOUNT}" >/dev/null 2>&1 \
+    || die "USB label ${USB_LABEL} is not mounted at ${USB_MOUNT}"
+}
+
+mount_usb() {
+  mount_usb_device
   mkdir -p "${DATASET_DIR}"
   [[ -w "${DATASET_DIR}" ]] || die "dataset directory is not writable: ${DATASET_DIR}"
   log "dataset directory writable: ${DATASET_DIR}"
+}
+
+configure_gmsl_runtime_trigger() {
+  local dev controls expected_pin
+  command -v v4l2-ctl >/dev/null 2>&1 \
+    || die "v4l2-ctl is required to reapply the GMSL trigger contract"
+  expected_pin="$(printf '%d' "${GMSL_TRIG_PIN}")" \
+    || die "invalid EXCAVATOR_GMSL_TRIG_PIN=${GMSL_TRIG_PIN}"
+  for dev in ${GMSL_VIDEO_DEVICES}; do
+    [[ "${dev}" =~ ^[0-9]+$ ]] \
+      || die "invalid EXCAVATOR_GMSL_VIDEO_DEVICES entry: ${dev}"
+    [[ -e "/dev/video${dev}" ]] \
+      || die "missing configured GMSL device: /dev/video${dev}"
+    v4l2-ctl -d "/dev/video${dev}" \
+      --set-fmt-video="width=${GMSL_WIDTH},height=${GMSL_HEIGHT},pixelformat=${GMSL_PIXEL_FORMAT}" \
+      --set-ctrl "bypass_mode=0,sensor_mode=${GMSL_SENSOR_MODE},trig_mode=${GMSL_TRIG_MODE},trig_pin=${GMSL_TRIG_PIN}" \
+      >/dev/null
+    controls="$(v4l2-ctl -d "/dev/video${dev}" --get-ctrl trig_mode,trig_pin)"
+    grep -Eq "trig_mode:[[:space:]]*${GMSL_TRIG_MODE}([^0-9]|$)" <<<"${controls}" \
+      || die "GMSL trigger mode did not stick on /dev/video${dev}"
+    grep -Eq "trig_pin:[[:space:]]*${expected_pin}([^0-9]|$)" <<<"${controls}" \
+      || die "GMSL trigger pin did not stick on /dev/video${dev}"
+  done
+  log "GMSL external trigger reapplied before capture: devices=${GMSL_VIDEO_DEVICES} mode=${GMSL_TRIG_MODE} pin=${GMSL_TRIG_PIN}"
+}
+
+check_gmsl_sync_gate() {
+  local python_bin="python3"
+  [[ -x "${ROOT_DIR}/.venv/bin/python" ]] && python_bin="${ROOT_DIR}/.venv/bin/python"
+  "${python_bin}" "${ROOT_DIR}/scripts/check_gmsl_sync.py" \
+    --host "${GATEWAY_HOST}" \
+    --port "${GATEWAY_PORT}" \
+    --duration-s "${GMSL_SYNC_GATE_DURATION_S}" \
+    --rate-hz "${GMSL_SYNC_GATE_RATE_HZ}" \
+    --min-valid-fraction "${GMSL_SYNC_GATE_MIN_VALID_FRACTION}" \
+    --max-skew-ms "${GMSL_SYNC_GATE_MAX_SKEW_MS}" \
+    --min-distinct-groups "${GMSL_SYNC_GATE_MIN_DISTINCT_GROUPS}" \
+    || die "GMSL sync gate failed; receiver was not started"
+  log "GMSL sync gate passed"
 }
 
 setup_can() {
@@ -627,6 +690,7 @@ start_stack() {
   if [[ "${no_camera}" != "1" ]]; then
     case "${CAMERA_STACK}" in
       gmsl)
+        configure_gmsl_runtime_trigger
         start_service gmsl bash -lc '
           cd "${ROOT_DIR}"
           read -r -a camera_args <<<"${GMSL_PREPROCESS_CAMERA_ARGS}"
@@ -674,6 +738,10 @@ start_stack() {
       --fpv-max-stale-ms "${FPV_MAX_STALE_MS}"
   '
   wait_for_port "${GATEWAY_HOST}" "${GATEWAY_PORT}" gateway
+
+  if [[ "${no_camera}" != "1" && "${CAMERA_STACK}" == "gmsl" ]]; then
+    check_gmsl_sync_gate
+  fi
 
   if [[ "${no_receiver}" != "1" ]]; then
     start_service receiver bash -lc '
@@ -1169,6 +1237,10 @@ main() {
       require_jetson_performance_access
       stop_stack "${force}"
       start_stack 0 "${no_camera}" "${no_imu}" "${no_receiver}" "${skip_usb}" "${skip_can}" "${skip_pip}"
+      ;;
+    mount-usb)
+      mount_usb_device
+      log "USB mounted: ${USB_MOUNT}"
       ;;
     status)
       status_stack

@@ -14,13 +14,6 @@ if [[ "${SESSION_DIR}" != /* ]]; then
   printf '[real-transition] session directory must be absolute: %s\n' "${SESSION_DIR}" >&2
   exit 2
 fi
-for name in sequence_manifest.json split_manifest.json ready_contract.json; do
-  if [[ ! -f "${SESSION_DIR}/${name}" ]]; then
-    printf '[real-transition] missing required artifact: %s/%s\n' \
-      "${SESSION_DIR}" "${name}" >&2
-    exit 2
-  fi
-done
 
 session_name="$(basename "${SESSION_DIR}")"
 if [[ "${session_name}" != session_* || "${session_name}" == session_ ]]; then
@@ -28,6 +21,26 @@ if [[ "${session_name}" != session_* || "${session_name}" == session_ ]]; then
     "${session_name}" >&2
   exit 2
 fi
+
+# The generic stack mounts the recording disk during start, but the v2 wrapper
+# must inspect the immutable session artifacts before handing control to it.
+# Mount the configured USB first when this session lives below that mountpoint,
+# so the documented one-command startup also works immediately after a reboot.
+USB_MOUNT="${EXCAVATOR_USB_MOUNT:-/media/${USER}/EXTERNAL_USB}"
+if [[ "${SESSION_DIR}" == "${USB_MOUNT}/"* ]] \
+  && ! findmnt "${USB_MOUNT}" >/dev/null 2>&1; then
+  printf '[real-transition] USB is not mounted; mounting %s before session validation.\n' \
+    "${USB_MOUNT}"
+  "${ROOT_DIR}/scripts/slave_real_stack.sh" mount-usb
+fi
+
+for name in sequence_manifest.json split_manifest.json ready_contract.json; do
+  if [[ ! -f "${SESSION_DIR}/${name}" ]]; then
+    printf '[real-transition] missing required artifact: %s/%s\n' \
+      "${SESSION_DIR}" "${name}" >&2
+    exit 2
+  fi
+done
 
 export EXCAVATOR_TELEOP_CONFIG="${ROOT_DIR}/testbed/testbed/configs/teleop_real_transition_v2_0_1.yaml"
 export EXCAVATOR_TRANSITION_SESSION_DIR="${SESSION_DIR}"

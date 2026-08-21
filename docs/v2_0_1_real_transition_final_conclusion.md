@@ -130,9 +130,10 @@ Ready_i
 | sequence manifest | 已升级为 seeded 多序列 v2 | 24 条唯一序列、96 cycle 和平衡约束已离线验证 |
 | 专家录制 runtime | 已按 manifest 长度执行 | 支持可变 cycle 数、动态超时和 realized-target mismatch fail-closed |
 | 旧版 P0/P1 v1 | 保留只读验证 | 不允许启动新的现场录制 |
-| 离线 cycle annotation/materializer | 未实现 | 不能生成新 ACT 训练集 |
+| 离线 cycle annotation/materializer | 已实现 | 可生成带 condition、valid mask 和 provenance 的 20 Hz cycle |
 | Conditioned ACT 训练与 B0/B1/B2 对照 | 未实现 | 不能训练目标模型 |
 | 真机 conditioned-policy goal router/lifecycle | 未实现 | 不能闭环执行四种原子 cycle |
 | 真机验证 | 未进行 | 不能声称现场可用 |
 
-因此，sequence、标定采集入口和专家录制支架已经与最终任务对齐，但离线数据链、训练链和 conditioned-policy runtime 仍未完成。当前电脑没有连接现场 Jetson，录制流程也没有经过当天传感器、标定和操作员预演。上机前按《[真机测试与标定准备手册](v2_0_1_real_transition_field_preparation_and_calibration_runbook.md)》逐项产生现场证据。本文是任务范围权威，不是正式录制授权。
+因此，sequence、专家录制和离线 cycle 数据链已与最终任务对齐；训练对照和
+conditioned-policy runtime 仍未完成。每次正式录制仍需按《[v2.0.1 主从端现场启动与命令手册](v2_0_1_host_slave_start_commands.md)》通过当天硬件和相机门禁。

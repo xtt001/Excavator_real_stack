@@ -1356,6 +1356,7 @@ def main(prog: str = "tb-record-real") -> None:
                         break
 
                     record_start_requested = False
+                    mark_requested = False
                     go_home_requested = False
                     go_home_start_accepted = False
                     go_home_start_rejected = False
@@ -1389,6 +1390,7 @@ def main(prog: str = "tb-record-real") -> None:
                             )
                         (
                             record_start_now,
+                            mark_now,
                             go_home_now,
                             reset_now,
                             discard_now,
@@ -1404,6 +1406,7 @@ def main(prog: str = "tb-record-real") -> None:
                             log.info("Episode discarded by action-source request.")
                             break
                         record_start_requested = bool(record_start_now)
+                        mark_requested = bool(mark_now)
                         go_home_requested = bool(go_home_now)
 
                         sample = remote_control_loop.latest_sample()
@@ -1447,6 +1450,7 @@ def main(prog: str = "tb-record-real") -> None:
                         record_start_requested = bool(
                             extras.get("record_start_requested", False)
                         )
+                        mark_requested = bool(extras.get("mark_requested", False))
                         go_home_requested = bool(
                             extras.get("go_home_requested", False)
                         )
@@ -1568,6 +1572,12 @@ def main(prog: str = "tb-record-real") -> None:
                             qpos=obs.get("qpos"),
                             qvel=obs.get("qvel"),
                         )
+                        transition_runtime.update_camera_sync_observation(
+                            step_ns=_record_step_timestamp_ns(
+                                obs, fallback=action_send_ns
+                            ),
+                            image_metadata=obs.get("image_metadata"),
+                        )
                         transition_runtime.update_receiver_state(
                             mode=receiver_mode,
                             health_ok=(
@@ -1577,6 +1587,23 @@ def main(prog: str = "tb-record-real") -> None:
                                 )
                             ),
                         )
+                        if mark_requested:
+                            try:
+                                mark_result = transition_runtime.handle_mark()
+                                log.info(
+                                    "Operator MARK accepted: action=%s phase=%s run=%s",
+                                    mark_result.get("mark_action"),
+                                    mark_result.get("phase"),
+                                    mark_result.get("run_id"),
+                                )
+                                live_line.message(
+                                    "mark="
+                                    f"{mark_result.get('mark_action')} "
+                                    f"phase={mark_result.get('phase')}"
+                                )
+                            except TransitionContractError as exc:
+                                log.warning("Operator MARK rejected: %s", exc)
+                                live_line.message(f"mark_rejected={exc}")
                         if transition_runtime.consume_record_start_request():
                             if receiver_mode != "armed" or record_session is not None:
                                 raise RuntimeError(
@@ -3119,6 +3146,7 @@ class ReceiverTestLogger:
             "joint_timestamp_ns": _int_timestamp(obs.get("joint_timestamp_ns")),
             "image_timestamp_ns": _jsonable(obs.get("image_timestamp_ns", {})),
             "record_start_requested": int(bool(record_start_requested)),
+            "mark_requested": int(bool(extras.get("mark_requested", False))),
             "policy_start_requested": int(
                 bool(extras.get("policy_start_requested", False))
             ),
@@ -3531,6 +3559,7 @@ class _RemoteControlLoop:
             sensor_age_s=None,
         )
         self._record_start_requested = False
+        self._mark_requested = False
         self._go_home_requested = False
         self._reset_requested = False
         self._discard_requested = False
@@ -3595,16 +3624,18 @@ class _RemoteControlLoop:
         with self._lock:
             return self._latest_sample
 
-    def consume_requests(self) -> tuple[bool, bool, bool, bool, bool]:
+    def consume_requests(self) -> tuple[bool, bool, bool, bool, bool, bool]:
         with self._lock:
             out = (
                 self._record_start_requested,
+                self._mark_requested,
                 self._go_home_requested,
                 self._reset_requested,
                 self._discard_requested,
                 self._quit_requested,
             )
             self._record_start_requested = False
+            self._mark_requested = False
             self._go_home_requested = False
             self._reset_requested = False
             self._discard_requested = False
@@ -3696,6 +3727,9 @@ class _RemoteControlLoop:
             self._record_start_requested = (
                 self._record_start_requested
                 or bool(extras.get("record_start_requested", False))
+            )
+            self._mark_requested = self._mark_requested or bool(
+                extras.get("mark_requested", False)
             )
             self._go_home_requested = self._go_home_requested or bool(
                 extras.get("go_home_requested", False)
@@ -4549,6 +4583,7 @@ def _build_step_diagnostics(
         "toggle_mask": int(extras.get("toggle_mask", 0) or 0),
         "status11": np.asarray(extras.get("status11", []), dtype=np.int32),
         "record_start_requested": int(bool(extras.get("record_start_requested", False))),
+        "mark_requested": int(bool(extras.get("mark_requested", False))),
         "policy_start_requested": int(bool(extras.get("policy_start_requested", False))),
         "go_home_requested": int(bool(extras.get("go_home_requested", False))),
         "guard_triggered": int(bool(guard_info.triggered)),

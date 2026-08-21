@@ -397,7 +397,9 @@ safety_stop
 
 `goal_commit` 只有在 recorder、policy router 和 display 都接受同一个 `goal_id/goal_epoch` 后才完成；任一方未确认时界面保持 unarmed，不能让师傅开始本 cycle。三个接收结果和共同的 commit 时间进入同一事件，避免把界面时间、模型时间和日志时间分别解释成目标提交时刻。
 
-现场 marker 可由实验员点击，不要让师傅在操作中找按钮或记录时间。marker 是快速定位索引，不是最终训练边界。
+现场 marker 由操作员左手柄的单一状态感知 `MARK` 产生；操作员无需离开摇杆点鼠标。
+`initial_ready_mark` 、`dump_end_mark` 和 `target_ready_mark` 使用同一物理按钮，
+`goal_commit` 由 frozen sequencer 在 ready 被接受后自动提交。GUI 只读显示状态。
 
 启用 shadow detector 后，系统另外记录 `ready_candidate_start`、`ready_candidate_met` 和 `return_candidate`。这些事件只用于比较自动检测与人工 marker 的偏差，不改变人工 evidence owner。
 
@@ -416,7 +418,12 @@ target_ready_confirmed
 cycle_validity_confirmed
 ```
 
-每个确认事件必须记录 source raw checksum、annotation schema、detector 版本、复核人、source row/time 和使用的证据。自动 detector 只能生成 candidate；第一版 clean 数据的边界由人工复核后冻结。更改边界时发布新 annotation 版本，不改原始 `task_events.jsonl`。
+每个确认事件必须记录 source raw checksum、annotation schema/version、source
+row/time 和证据 owner。`operator_mark_materializer_v1` 把已通过在线 ready 合同的
+操作员 MARK 冻结为 ready/dump 边界，用动作阈值 detector 生成 intent/effective/
+return 边界，并按相机 group、gap、goal lead、action source 和目标一致性自动分为
+`clean/review/excluded`。`review` 可由人工发布新 annotation 版本；任何修订都不改
+原始 `task_events.jsonl`。
 
 candidate 生成规则固定为：
 
@@ -505,7 +512,8 @@ provenance/annotation_sha256
 ### 6.3 切片与 action chunk
 
 - cycle 从 `goal_commit_i` 后第一条训练 row 开始，到 `Ready_(i+1)` 的确认边界结束；
-- `Ready_i`、`goal_commit_i` 和 `Ready_(i+1)` 来自已冻结的离线 annotation，不直接把在线 marker 当作训练边界；
+- `Ready_i`、`goal_commit_i` 和 `Ready_(i+1)` 写入已冻结的派生 annotation；
+  ready 边界由通过在线合同的操作员 MARK 拥有，goal 边界由 frozen sequencer 拥有；
 - 20 Hz row 必须可追溯到 50 Hz source row 和时间戳；
 - 20 Hz 生成沿用当前确定性规则：每个 50 ms 目标时刻选择第一条不早于目标的 source observation，action label offset 为 `-20 ms`；resolved dataset config 必须保存这两个值；
 - cycle 内所有训练 row 都令 `goal_active=1`，并保持同一个 `target_side_code`；
@@ -635,12 +643,14 @@ P1: B → A → A → B → B
 ### 9.2 每条 run
 
 1. 程序显示初始侧 A 或 B，师傅自然摆到该侧 ready。
-2. 实验员点击 `initial_ready_mark`，开始连续录制。
-3. 脚本 planner 写入本 cycle 的 `goal_commit`，屏幕显示本 cycle 最终要回到 A 还是 B。
+2. 操作员按左手柄单一 MARK 确认 `initial_ready_mark`，开始连续录制。
+3. 脚本 planner 在同一录制 row 自动写入本 cycle 的 `goal_commit`，只读界面显示目标 A/B。
 4. 师傅看到目标后开始本铲，正常完成挖掘、运土、卸料和返回；不需要对准唯一数值点。
-5. 实验员在卸料完成时记录 `dump_end_mark`，在机器到达目标侧 ready 时记录 `target_ready_mark`。
-6. 脚本 planner 提交下一 cycle 目标，师傅继续下一铲，直至完成四个 cycle。
-7. 第四铲返回最后目标侧并满足 0.5 s ready 稳定窗后结束 run。
+5. 操作员在卸料完成和目标侧 ready 时分别按同一 MARK，依当前状态记录
+   `dump_end_mark` 和 `target_ready_mark`。
+6. 脚本 planner 自动提交下一 cycle 目标，师傅继续下一铲，直至完成冻结的
+   3/4/5 个 cycle。
+7. 最后一铲返回目标侧并满足 0.5 s ready 稳定窗后结束 run。
 8. 程序保存 HDF5、事件、manifest、checksum 和即时 QC。
 
 ### 9.3 失败处理
@@ -926,7 +936,7 @@ P0/P1 连续成功只进入 Composition Gate。它不能替代上述 Condition G
 | 终点正确但后续空铲 | 物理效果、土面状态或观察能力问题 |
 | locked source block 失败 | transition 对新土面状态或新 source run 的支持不足 |
 
-## 14. 需要开发的程序
+## 14. 程序交付状态
 
 本计划的代码改动集中在真实栈内的任务程序、数据链、离线处理和 policy runtime，工作量按中等规模规划。
 
@@ -942,7 +952,7 @@ P0/P1 连续成功只进入 Composition Gate。它不能替代上述 Condition G
 - historical baseline 到 field-resolved 参数的解析和覆盖记录；
 - 每条 run 的即时结构 QC。
 
-目标程序只显示任务和记录事件，不直接控制执行器。
+上述专家录制现场端已实现。目标程序只显示任务和记录事件，不直接控制执行器。
 
 ### 14.2 离线端
 
@@ -950,7 +960,7 @@ P0/P1 连续成功只进入 Composition Gate。它不能替代上述 Condition G
 - continuous run 的 ready/dump/return candidate labeler；
 - 人工复核界面或复核清单；
 - 50 Hz → 20 Hz resample；
-- ready-to-ready cycle materializer；
+- ready-to-ready cycle materializer（已实现 `operator_mark_materializer_v1`）；
 - condition lifecycle 和 chunk valid mask；
 - source-block split、coverage report 和 checksum package；
 - B0/B1/B2 配置生成与 target-side flip control；
@@ -966,7 +976,7 @@ P0/P1 连续成功只进入 Composition Gate。它不能替代上述 Condition G
 - 轴向动作上限、deadzone 后响应计时、反向响应和 return 错向位移停止；
 - fail-closed：目标缺失、过期、边界不确定或状态异常时停止，不猜下一目标。
 
-第一版 ready detector 先 shadow，人工确认仍是正式证据 owner。自动 detector 达到独立真机证据后，再让它接管 cycle 切换。
+第一版 ready 仍由操作员 MARK 作为正式证据 owner，自动 detector 不接管 cycle 切换。
 
 ## 15. 必须交付的产物
 
@@ -1063,7 +1073,10 @@ v2 ready 分类语义。本轮 `ready_contract.json` 明确冻结现场确认的
 
 commit `a64e5d1` 实现了旧版 A/B sequencer、P0/P1 四-cycle manifest、home-side contract 生成、在线 task event、录制控制服务、raw HDF5 对齐、run package 封存和 checksum 验证。当前 `fs/v2.0.1` 工作分支已在此基础上实现 seeded multi-sequence v2、可变 cycle runtime、配对顺序对消和 realized-target mismatch fail-closed。旧版 v1 只保留只读验证，不能启动新录制。
 
-离线 cycle annotation/materializer、`real_transition_condition_v1` 训练数组、B0/B1/B2 训练对照、N5 condition warm-start 和真机 conditioned-policy goal lifecycle 仍未实现。因此当前代码只能作为旧版专家数据录制支架，不能训练或执行本轮目标中的 Conditioned ACT。N5 完成真机整铲是本计划使用的既有实验前提，本次文档修订没有连接真机或重复该验证。
+离线 cycle annotation/materializer 和 `real_transition_condition_v1` 数组已实现，可从封存 raw
+run 确定性生成 20 Hz ready-to-ready episode 与 `train_ready_manifest.json`。B0/B1/B2
+训练对照、N5 condition warm-start 和真机 conditioned-policy goal lifecycle 仍未实现，因此现阶段
+可完成专家数据收集与训练分段交付，但不得声称 Conditioned ACT 已可真机闭环。
 
 ## 附录 B. Historical baseline 的数据依据
 

@@ -45,6 +45,7 @@ class RemoteActionPacket:
     discard_requested: bool = False
     quit_requested: bool = False
     record_start_requested: bool = False
+    mark_requested: bool = False
     policy_start_requested: bool = False
     go_home_requested: bool = False
 
@@ -68,6 +69,7 @@ class _PendingRemoteEvent:
     discard_requested: bool
     quit_requested: bool
     record_start_requested: bool
+    mark_requested: bool
     policy_start_requested: bool
     go_home_requested: bool
     receive_time_ns: int
@@ -84,6 +86,7 @@ def encode_remote_action_update(
     discard_requested: bool = False,
     quit_requested: bool = False,
     record_start_requested: bool = False,
+    mark_requested: bool = False,
     policy_start_requested: bool = False,
     go_home_requested: bool = False,
 ) -> bytes:
@@ -98,6 +101,7 @@ def encode_remote_action_update(
         "discard_requested": bool(discard_requested),
         "quit_requested": bool(quit_requested),
         "record_start_requested": bool(record_start_requested),
+        "mark_requested": bool(mark_requested),
         "policy_start_requested": bool(policy_start_requested),
         "go_home_requested": bool(go_home_requested),
     }
@@ -187,6 +191,7 @@ def decode_remote_action_update(frame: bytes | str) -> RemoteActionPacket:
         discard_requested=bool(payload.get("discard_requested", False)),
         quit_requested=bool(payload.get("quit_requested", False)),
         record_start_requested=bool(payload.get("record_start_requested", False)),
+        mark_requested=bool(payload.get("mark_requested", False)),
         policy_start_requested=bool(payload.get("policy_start_requested", False)),
         go_home_requested=bool(payload.get("go_home_requested", False)),
     )
@@ -239,6 +244,7 @@ class RemoteActionClient:
         discard_requested: bool = False,
         quit_requested: bool = False,
         record_start_requested: bool = False,
+        mark_requested: bool = False,
         policy_start_requested: bool = False,
         go_home_requested: bool = False,
     ) -> None:
@@ -252,6 +258,7 @@ class RemoteActionClient:
             discard_requested=discard_requested,
             quit_requested=quit_requested,
             record_start_requested=record_start_requested,
+            mark_requested=mark_requested,
             policy_start_requested=policy_start_requested,
             go_home_requested=go_home_requested,
         )
@@ -434,6 +441,9 @@ class RemoteActionSource(ActionSource):
                 "record_start_requested": (
                     bool(pending_event.record_start_requested) if pending_event else False
                 ),
+                "mark_requested": (
+                    bool(pending_event.mark_requested) if pending_event else False
+                ),
                 "policy_start_requested": (
                     bool(pending_event.policy_start_requested) if pending_event else False
                 ),
@@ -571,6 +581,7 @@ class RemoteActionSource(ActionSource):
                 or packet.discard_requested
                 or packet.quit_requested
                 or packet.record_start_requested
+                or packet.mark_requested
                 or packet.policy_start_requested
                 or packet.go_home_requested
             ):
@@ -584,6 +595,7 @@ class RemoteActionSource(ActionSource):
                         discard_requested=bool(packet.discard_requested),
                         quit_requested=bool(packet.quit_requested),
                         record_start_requested=bool(packet.record_start_requested),
+                        mark_requested=bool(packet.mark_requested),
                         policy_start_requested=bool(packet.policy_start_requested),
                         go_home_requested=bool(packet.go_home_requested),
                         receive_time_ns=receive_time_ns,

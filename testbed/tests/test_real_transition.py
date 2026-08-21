@@ -97,6 +97,30 @@ def _feed_ready_window(
         )
 
 
+def _feed_camera_sync_window(
+    runtime: TransitionTaskRuntime,
+    *,
+    start_ns: int,
+    count: int,
+    skew_ms: float,
+) -> None:
+    for index in range(count):
+        group_id = index + 1
+        runtime.update_camera_sync_observation(
+            step_ns=start_ns + index * 20_000_000,
+            image_metadata={
+                camera: {
+                    "group_id": group_id,
+                    "group_camera_count": 4,
+                    "group_valid": 1,
+                    "group_skew_ms": skew_ms,
+                    "v4l2_error": 0,
+                }
+                for camera in ("video4", "video5", "video6", "video7")
+            },
+        )
+
+
 class RealTransitionPlanTest(unittest.TestCase):
     def test_manual_profile_inherits_field_contract_and_preserves_field_joysticks(
         self,
@@ -583,6 +607,170 @@ class RealTransitionRunPackageTest(unittest.TestCase):
 
 
 class RealTransitionRuntimeTest(unittest.TestCase):
+    def test_camera_sync_gate_blocks_start_until_a_coherent_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            prepared = prepare_session_directory(
+                output_root=Path(tmp),
+                session_id="camera_gate01",
+                seed=23,
+                created_at_utc="2026-08-21T00:00:00Z",
+            )
+            runtime = TransitionTaskRuntime(
+                session_dir=prepared["session_dir"],
+                sequence_manifest_path=prepared["sequence_manifest"],
+                split_manifest_path=prepared["split_manifest"],
+                ready_contract_path=prepared["ready_contract"],
+                resolved_record_config_yaml="task: real_transition\n",
+                git_commit="a" * 40,
+                camera_sync={
+                    "enabled": True,
+                    "expected_cameras": [
+                        "video4",
+                        "video5",
+                        "video6",
+                        "video7",
+                    ],
+                    "stable_window_s": 0.2,
+                    "max_group_skew_ms": 5.0,
+                    "min_valid_fraction": 0.98,
+                    "min_distinct_groups": 10,
+                },
+            )
+            runtime.update_receiver_state(mode="armed", health_ok=True)
+            with self.assertRaisesRegex(
+                TransitionContractError, "camera_sync_no_samples"
+            ):
+                runtime.handle_mark()
+
+            _feed_camera_sync_window(
+                runtime,
+                start_ns=1_000_000_000,
+                count=11,
+                skew_ms=8.0,
+            )
+            self.assertIn(
+                "camera_sync_valid_fraction",
+                runtime.status()["camera_sync_state"]["blockers"],
+            )
+            with self.assertRaisesRegex(
+                TransitionContractError, "camera_sync_valid_fraction"
+            ):
+                runtime.handle_mark()
+
+            passing = TransitionTaskRuntime(
+                session_dir=prepared["session_dir"],
+                sequence_manifest_path=prepared["sequence_manifest"],
+                split_manifest_path=prepared["split_manifest"],
+                ready_contract_path=prepared["ready_contract"],
+                resolved_record_config_yaml="task: real_transition\n",
+                git_commit="a" * 40,
+                camera_sync={
+                    "enabled": True,
+                    "stable_window_s": 0.2,
+                    "max_group_skew_ms": 5.0,
+                    "min_valid_fraction": 0.98,
+                    "min_distinct_groups": 10,
+                },
+            )
+            passing.update_receiver_state(mode="armed", health_ok=True)
+            _feed_camera_sync_window(
+                passing,
+                start_ns=2_000_000_000,
+                count=11,
+                skew_ms=0.04,
+            )
+            camera_state = passing.status()["camera_sync_state"]
+            self.assertTrue(camera_state["ready"])
+            self.assertEqual(camera_state["blockers"], [])
+            started = passing.handle_mark()
+            self.assertEqual(started["mark_action"], "start-run")
+
+    def test_one_state_aware_mark_advances_run_and_goals_are_automatic(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            prepared = prepare_session_directory(
+                output_root=Path(tmp),
+                session_id="mark01",
+                seed=23,
+                created_at_utc="2026-08-21T00:00:00Z",
+            )
+            runtime = TransitionTaskRuntime(
+                session_dir=prepared["session_dir"],
+                sequence_manifest_path=prepared["sequence_manifest"],
+                split_manifest_path=prepared["split_manifest"],
+                ready_contract_path=prepared["ready_contract"],
+                resolved_record_config_yaml="task: real_transition\n",
+                git_commit="a" * 40,
+                field_context_defaults={
+                    "workface_reset_id_prefix": "wf_",
+                    "workface_action": "fresh_strip",
+                },
+            )
+            runtime.update_receiver_state(mode="armed", health_ok=True)
+            started = runtime.handle_mark()
+            self.assertEqual(started["mark_action"], "start-run")
+            self.assertEqual(
+                started["field_context"]["workface_reset_id"], "wf_001"
+            )
+            initial = str(started["initial_side"])
+            _feed_ready_window(runtime, side=initial, end_ns=1_000_000_000)
+            initial_mark = runtime.handle_mark()
+            self.assertEqual(initial_mark["mark_action"], "initial-ready")
+            self.assertTrue(runtime.consume_record_start_request())
+            runtime.attach_recording(episode_idx=0)
+            runtime.update_recorded_step(step_id=0, step_ns=1_000_000_000)
+            self.assertEqual(runtime.status()["phase"], "goal_committed")
+
+            cycle_count = int(runtime.status()["planned_cycle_count"])
+            step_id = 0
+            for cycle_index in range(cycle_count):
+                step_id += 1
+                runtime.update_recorded_step(
+                    step_id=step_id,
+                    step_ns=1_000_000_000 + step_id * 100_000_000,
+                )
+                dump = runtime.handle_mark()
+                self.assertEqual(dump["mark_action"], "dump-end")
+
+                step_id += 1
+                target = str(runtime.status()["next_target_side"])
+                target_ns = 1_000_000_000 + step_id * 100_000_000
+                _feed_ready_window(runtime, side=target, end_ns=target_ns)
+                runtime.update_recorded_step(step_id=step_id, step_ns=target_ns)
+                ready = runtime.handle_mark()
+                self.assertEqual(ready["mark_action"], "target-ready")
+                expected_phase = (
+                    "complete"
+                    if cycle_index + 1 == cycle_count
+                    else "goal_committed"
+                )
+                self.assertEqual(runtime.status()["phase"], expected_phase)
+
+            stop = runtime.consume_stop_request()
+            self.assertIsNotNone(stop)
+            assert stop is not None
+            self.assertTrue(stop.success)
+            package = runtime._active_package  # noqa: SLF001 - event ownership check.
+            assert package is not None
+            operator_events = [
+                event
+                for event in package._events  # noqa: SLF001
+                if event["event_type"]
+                in {"initial_ready_mark", "dump_end_mark", "target_ready_mark"}
+            ]
+            self.assertTrue(operator_events)
+            self.assertTrue(
+                all(event["event_source"] == "operator" for event in operator_events)
+            )
+            goals = [
+                event
+                for event in package._events  # noqa: SLF001
+                if event["event_type"] == "goal_commit"
+            ]
+            self.assertEqual(len(goals), cycle_count)
+            self.assertTrue(
+                all(event["event_source"] == "sequencer" for event in goals)
+            )
+
     def test_ready_gate_uses_only_stable_clean_swing_plus_confirmations(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             prepared = prepare_session_directory(
@@ -659,6 +847,46 @@ class RealTransitionRuntimeTest(unittest.TestCase):
                 )
             runtime.handle_command("initial-ready", READY_CONFIRMATIONS)
             self.assertTrue(runtime.consume_record_start_request())
+
+    def test_ready_window_accepts_real_50hz_timestamps_without_exact_cutoff(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            prepared = prepare_session_directory(
+                output_root=Path(tmp),
+                session_id="ready_real_cadence01",
+                seed=23,
+                created_at_utc="2026-08-17T00:00:00Z",
+            )
+            runtime = TransitionTaskRuntime(
+                session_dir=prepared["session_dir"],
+                sequence_manifest_path=prepared["sequence_manifest"],
+                split_manifest_path=prepared["split_manifest"],
+                ready_contract_path=prepared["ready_contract"],
+                resolved_record_config_yaml="task: real_transition\n",
+                git_commit="a" * 40,
+            )
+            runtime.update_receiver_state(mode="armed", health_ok=True)
+            started = runtime.handle_command(
+                "start-run",
+                {
+                    "field_context": {
+                        "workface_reset_id": "wf01",
+                        "workface_action": "restore",
+                    }
+                },
+            )
+            swing_qpos = -0.10 if started["initial_side"] == "A" else 0.10
+            end_ns = 2_000_000_000
+            for offset in range(30, -1, -1):
+                runtime.update_ready_observation(
+                    step_ns=end_ns - offset * 20_500_000,
+                    qpos=[swing_qpos, 1.7, -2.4, 0.9],
+                    qvel=[0.0, 3.0, -4.0, 5.0],
+                )
+
+            state = runtime.status()["ready_state"]
+            self.assertGreaterEqual(state["window_duration_s"], 0.5)
+            self.assertTrue(state["window_complete"])
+            self.assertEqual(state["blockers"], [])
 
     def test_cycle_timeout_is_fail_closed_on_a_recorded_row(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

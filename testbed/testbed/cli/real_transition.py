@@ -21,6 +21,10 @@ from testbed.tasks.real_transition import (
     prepare_session_directory,
     verify_run_package,
 )
+from testbed.tasks.real_transition_materializer import (
+    materialize_transition_run,
+    materialize_transition_session,
+)
 
 
 def main() -> None:
@@ -54,6 +58,20 @@ def main() -> None:
         help="Verify checksums, event order, and exact HDF5 step/time alignment.",
     )
     verify.add_argument("run_dir", type=Path)
+
+    materialize_run = subparsers.add_parser(
+        "materialize-run",
+        help="Generate immutable 20 Hz ready-to-ready cycle episodes from one run.",
+    )
+    materialize_run.add_argument("run_dir", type=Path)
+    materialize_run.add_argument("--output-dir", type=Path, required=True)
+
+    materialize_session = subparsers.add_parser(
+        "materialize-session",
+        help="Generate immutable cycle episodes from all sealed runs in a session.",
+    )
+    materialize_session.add_argument("session_dir", type=Path)
+    materialize_session.add_argument("--output-dir", type=Path, required=True)
 
     ready = subparsers.add_parser(
         "build-ready-contract",
@@ -130,6 +148,16 @@ def main() -> None:
             )
         elif args.command == "verify-run":
             result = verify_run_package(args.run_dir)
+        elif args.command == "materialize-run":
+            result = materialize_transition_run(
+                run_dir=args.run_dir,
+                output_dir=args.output_dir,
+            )
+        elif args.command == "materialize-session":
+            result = materialize_transition_session(
+                session_dir=args.session_dir,
+                output_dir=args.output_dir,
+            )
         elif args.command == "build-ready-contract":
             result = write_rule_ready_contract(args.output)
         elif args.command == "build-home-contract":

@@ -5,6 +5,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "slave_real_stack.sh"
+TRANSITION_WRAPPER = REPO_ROOT / "scripts" / "run_real_transition_expert_recording.sh"
 
 
 def test_no_camera_stack_configures_gateway_without_camera_source() -> None:
@@ -56,3 +57,32 @@ def test_policy_remote_verbose_test_log_is_opt_in() -> None:
 
     assert 'TEST_LOG_DIR="${EXCAVATOR_TEST_LOG_DIR:-}"' in text
     assert 'extra_args+=(--test-log-dir "${TEST_LOG_DIR}")' in text
+
+
+def test_transition_wrapper_mounts_usb_before_validating_session() -> None:
+    stack_text = SCRIPT.read_text(encoding="utf-8")
+    wrapper_text = TRANSITION_WRAPPER.read_text(encoding="utf-8")
+
+    assert "mount_usb_device()" in stack_text
+    assert "mount-usb)" in stack_text
+    assert '"${ROOT_DIR}/scripts/slave_real_stack.sh" mount-usb' in wrapper_text
+    assert wrapper_text.index('slave_real_stack.sh" mount-usb') < wrapper_text.index(
+        "for name in sequence_manifest.json"
+    )
+
+
+def test_gmsl_restart_restores_trigger_before_capture_and_gates_receiver() -> None:
+    text = SCRIPT.read_text(encoding="utf-8")
+
+    configure_call = text.index("        configure_gmsl_runtime_trigger")
+    capture_start = text.index("        start_service gmsl", configure_call)
+    gateway_ready = text.index(
+        '  wait_for_port "${GATEWAY_HOST}" "${GATEWAY_PORT}" gateway'
+    )
+    gate_call = text.index("    check_gmsl_sync_gate", gateway_ready)
+    receiver_start = text.index("    start_service receiver", gate_call)
+
+    assert configure_call < capture_start
+    assert gateway_ready < gate_call < receiver_start
+    assert 'trig_pin=${GMSL_TRIG_PIN}' in text
+    assert 'trig_pin:[[:space:]]*${expected_pin}' in text
