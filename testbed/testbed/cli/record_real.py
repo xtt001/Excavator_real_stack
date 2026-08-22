@@ -1587,6 +1587,9 @@ def main(prog: str = "tb-record-real") -> None:
                                 )
                             ),
                         )
+                        transition_runtime.update_operator_action(
+                            action=raw_action,
+                        )
                         if mark_requested:
                             try:
                                 mark_result = transition_runtime.handle_mark()
@@ -1604,6 +1607,18 @@ def main(prog: str = "tb-record-real") -> None:
                             except TransitionContractError as exc:
                                 log.warning("Operator MARK rejected: %s", exc)
                                 live_line.message(f"mark_rejected={exc}")
+                        automatic_result = (
+                            transition_runtime.advance_automatic_workflow(
+                                allow_recorded_events=False
+                            )
+                        )
+                        if automatic_result is not None:
+                            log.info(
+                                "Automatic transition action=%s phase=%s run=%s",
+                                automatic_result.get("automatic_action"),
+                                automatic_result.get("phase"),
+                                automatic_result.get("run_id"),
+                            )
                         if transition_runtime.consume_record_start_request():
                             if receiver_mode != "armed" or record_session is not None:
                                 raise RuntimeError(
@@ -2086,6 +2101,20 @@ def main(prog: str = "tb-record-real") -> None:
                                 step_id=record_step_id,
                                 step_ns=record_step_ns,
                             )
+                            automatic_result = (
+                                transition_runtime.advance_automatic_workflow(
+                                    allow_recorded_events=True
+                                )
+                            )
+                            if automatic_result is not None and automatic_result.get(
+                                "automatic_action"
+                            ):
+                                log.info(
+                                    "Automatic transition action=%s phase=%s run=%s",
+                                    automatic_result.get("automatic_action"),
+                                    automatic_result.get("phase"),
+                                    automatic_result.get("run_id"),
+                                )
                             transition_stop = transition_runtime.consume_stop_request()
                             if transition_stop is None and len(record_session) >= max_steps:
                                 transition_runtime.abort_on_latest_step(

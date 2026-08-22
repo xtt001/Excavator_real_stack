@@ -668,7 +668,7 @@ class _RemoteTeleopMonitor:
                 f"count={self._event_counts['record_start']} last={record_last}"
             ),
             (
-                "MARK:        "
+                "TASK ARM/MARK:"
                 f"pulse={_yes_no(extras.get('mark_requested', False))} "
                 f"count={self._event_counts['mark']} last={mark_last}"
             ),

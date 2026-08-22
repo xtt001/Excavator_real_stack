@@ -21,7 +21,8 @@ from testbed.tasks.real_transition import (
 
 CALIBRATION_INPUT_SCHEMA = "real_transition_home_calibration_samples_v1"
 HOME_SIDE_CONTRACT_SCHEMA = "real_home_side_contract_v1"
-READY_RULE_CONTRACT_SCHEMA = "real_transition_ready_rule_contract_v2"
+LEGACY_READY_RULE_CONTRACT_SCHEMA = "real_transition_ready_rule_contract_v2"
+READY_RULE_CONTRACT_SCHEMA = "real_transition_ready_rule_contract_v3"
 BASELINE_ID = "real_transition_historical_baseline_20260813"
 
 READY_RULE_DEFAULTS = {
@@ -33,6 +34,8 @@ READY_RULE_DEFAULTS = {
     "stable_window_s": 0.5,
     "swing_qvel_abs_max_rad_s": 0.015,
     "max_sample_gap_s": 0.15,
+    "cycle_excursion_min_abs_delta_rad": 0.08,
+    "cycle_excursion_min_consecutive_samples": 3,
 }
 
 READY_BASELINE = {
@@ -49,7 +52,7 @@ def build_rule_ready_contract() -> dict[str, Any]:
 
     contract: dict[str, Any] = {
         "schema": READY_RULE_CONTRACT_SCHEMA,
-        "context_version": "v2.0.1-field-ready-rule-20260817",
+        "context_version": "v2.0.1-session-arm-auto-boundary-20260821",
         "swing_axis": {
             "axis_index": 0,
             **READY_RULE_DEFAULTS,
@@ -61,8 +64,11 @@ def build_rule_ready_contract() -> dict[str, Any]:
         "ready_requirements": {
             "clean_side_required": True,
             "swing_stable_window_required": True,
-            "bucket_clear_confirmation_required": True,
-            "operator_confirmation_required": True,
+            "operator_authorization_policy": "single_session_arm",
+            "bucket_clear_policy": "posthoc_visual_qc",
+            "automatic_cycle_excursion_required": (
+                "swing_displacement_from_goal_anchor"
+            ),
             "non_swing_qpos_policy": "record_only_unbounded",
             "non_swing_qvel_policy": "record_only_not_a_ready_gate",
         },
@@ -76,6 +82,13 @@ def build_rule_ready_contract() -> dict[str, Any]:
             "episode_113_sha256": (
                 "4e41aebeff36118a78ab488c83b4cf0f8db02289205ed51b83a8eb9186d753b5"
             ),
+            "automatic_boundary_evidence": {
+                "source_session": "rt_20260817_ctx01",
+                "successful_runs": ["b01_r02", "b01_r03"],
+                "successful_cycle_count": 6,
+            "observed_goal_anchor_excursion_peak_range_rad": [1.411, 1.998],
+                "automatic_target_ready_lead_vs_operator_mark_s": [0.441, 0.623],
+            },
         },
         "contract_sha256_scope": "canonical_json_without_contract_sha256",
     }
@@ -104,7 +117,11 @@ def write_rule_ready_contract(output_path: Path | str) -> dict[str, Any]:
 
 
 def validate_rule_ready_contract(contract: Mapping[str, Any]) -> None:
-    if contract.get("schema") != READY_RULE_CONTRACT_SCHEMA:
+    schema = contract.get("schema")
+    if schema not in {
+        LEGACY_READY_RULE_CONTRACT_SCHEMA,
+        READY_RULE_CONTRACT_SCHEMA,
+    }:
         raise TransitionContractError("ready rule contract schema mismatch")
     if contract.get("contract_sha256") != _contract_digest(contract):
         raise TransitionContractError("ready rule contract digest mismatch")
@@ -114,6 +131,10 @@ def validate_rule_ready_contract(contract: Mapping[str, Any]) -> None:
     if int(swing.get("axis_index", -1)) != 0:
         raise TransitionContractError("ready rule swing axis index must be 0")
     for key, expected in READY_RULE_DEFAULTS.items():
+        if schema == LEGACY_READY_RULE_CONTRACT_SCHEMA and key.startswith(
+            "cycle_excursion_"
+        ):
+            continue
         actual = swing.get(key)
         if isinstance(expected, list):
             if list(actual or ()) != expected:
@@ -126,16 +147,37 @@ def validate_rule_ready_contract(contract: Mapping[str, Any]) -> None:
     }:
         raise TransitionContractError("ready rule A/B side mapping is invalid")
     requirements = contract.get("ready_requirements", {})
-    required_true = (
-        "clean_side_required",
-        "swing_stable_window_required",
-        "bucket_clear_confirmation_required",
-        "operator_confirmation_required",
-    )
+    required_true = ("clean_side_required", "swing_stable_window_required")
     if not isinstance(requirements, Mapping) or any(
         requirements.get(name) is not True for name in required_true
     ):
-        raise TransitionContractError("ready rule confirmations/gates must be enabled")
+        raise TransitionContractError("ready rule swing gates must be enabled")
+    if schema == LEGACY_READY_RULE_CONTRACT_SCHEMA:
+        if any(
+            requirements.get(name) is not True
+            for name in (
+                "bucket_clear_confirmation_required",
+                "operator_confirmation_required",
+            )
+        ):
+            raise TransitionContractError(
+                "legacy ready rule confirmations must be enabled"
+            )
+    else:
+        if requirements.get("operator_authorization_policy") != "single_session_arm":
+            raise TransitionContractError(
+                "automatic ready rule requires one session-level ARM"
+            )
+        if requirements.get("bucket_clear_policy") != "posthoc_visual_qc":
+            raise TransitionContractError(
+                "automatic ready rule bucket-clear policy must be posthoc visual QC"
+            )
+        if requirements.get("automatic_cycle_excursion_required") != (
+            "swing_displacement_from_goal_anchor"
+        ):
+            raise TransitionContractError(
+                "automatic ready rule excursion evidence is invalid"
+            )
     if requirements.get("non_swing_qpos_policy") != "record_only_unbounded":
         raise TransitionContractError("non-swing qpos must remain unbounded")
     if requirements.get("non_swing_qvel_policy") != "record_only_not_a_ready_gate":

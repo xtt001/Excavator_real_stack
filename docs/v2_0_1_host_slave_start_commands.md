@@ -12,7 +12,7 @@ N5/E52 流程仍参考《[主从端启动命令速查](host_slave_start_commands
 | 从端 SSH | `slave-jetson`，即 `mundane@192.168.100.1` |
 | 从端仓库 | `/media/mundane/D/Excavator_real_stack` |
 | 分支 | `fs/v2.0.1`；两端 `git rev-parse HEAD` 必须一致 |
-| 当前新 session | `/media/mundane/EXTERNAL_USB/real_transition_raw_v2/session_rt_20260821_ctx02` |
+| 当前新 session | `/media/mundane/EXTERNAL_USB/real_transition_raw_v2/session_rt_20260821_ctx03` |
 | 控制 CAN / IMU CAN | `can2` 250 kbit/s / `can5` 1 Mbit/s |
 | 四路相机 | `/dev/video4..7` |
 | bridge / gateway | `127.0.0.1:8766` / `127.0.0.1:8765` |
@@ -20,19 +20,20 @@ N5/E52 流程仍参考《[主从端启动命令速查](host_slave_start_commands
 | v2 恢复/诊断 API | `192.168.100.1:8771`；正常操作不用 |
 | sender → 主端 GUI | `127.0.0.1:8781/UDP` |
 
-本流程不加载 policy，不启动 `policy_remote`。左手柄物理按钮 2 是唯一的状态感知
-`MARK`；同一个按钮根据状态依次执行：
+本流程不加载 policy，不启动 `policy_remote`。左手柄物理按钮 2 只在整个 session 开始前
+按一次，用于 `ARM SESSION`；它不再产生 cycle marker。ARM 后的正常状态流为：
 
 ```text
-idle             -> start-run（工作面自动生成 wf_NNN / fresh_strip）
-new              -> initial-ready
-goal_committed   -> dump-end
-dump_marked      -> target-ready
+等待下一条 initial side 稳定 -> 自动 start-run + initial-ready
+initial-ready                 -> 自动提交冻结 goal
+goal_committed                -> 正常完成挖掘/回转/卸料
+swing 相对本 cycle 起点持续移动 >=0.08 rad -> 自动记录 cycle_excursion_observed
+回到 TARGET 且 swing 稳定      -> 自动 target-ready / 下一 goal / 保存
 ```
 
-每个 `initial-ready` 或 `target-ready` 被接受后，程序立即按冻结序列自动写入下一条
-`goal_commit`。操作员不再手动确认 goal，也不需要离开摇杆点击鼠标。GUI 只显示状态、
-下一次 MARK 的含义、TARGET、blocker、相机同步和保存结果，不提交任何事件。
+操作员在 run/cycle 内不做任何专门标注按键，也不离开摇杆点鼠标。GUI 只显示 ARM、
+TARGET、自动检测阶段、blocker、相机同步和保存结果，不提交任何事件。`dump-end` 不再是
+在线状态机门槛；materializer 只保留 return proxy，不把代理点冒充人工确认的 dump。
 
 左手柄物理按钮 3 仍是主动 go-home；它不是正常 run 的必需步骤。按钮 4 保留，不切换
 policy。机器状态仍使用现场既有按钮。
@@ -50,8 +51,9 @@ swing qvel 上限           = 全窗每行 abs(qvel) <= 0.015 rad/s
 ```
 
 `A` 是物理左侧，`B` 是物理右侧。boom、stick、bucket 可自然预摆，三轴 qpos 不设
-ready 边界，qvel 只记录、不阻止 ready。按 ready MARK 即表示操作员同时确认铲斗离土
-和整体状态可接受。
+ready 边界，qvel 只记录、不阻止 ready。一次 session ARM 表示操作员授权本 session 的
+自动边界；系统无法直接测量铲斗是否入土，因此 `bucket_clear` 改为录后画面/QC 项，不再
+伪装成逐 cycle 的人工确认。
 
 ## 2. 每次启动前检查
 
@@ -119,7 +121,7 @@ GMSL_VIDEO_DEVICES="4 5 6 7" ./scripts/bring_up_gmsl_cameras.sh
 ```bash
 cd /media/mundane/D/Excavator_real_stack
 
-export EXCAVATOR_TRANSITION_SESSION_DIR="/media/mundane/EXTERNAL_USB/real_transition_raw_v2/session_rt_20260821_ctx02"
+export EXCAVATOR_TRANSITION_SESSION_DIR="/media/mundane/EXTERNAL_USB/real_transition_raw_v2/session_rt_20260821_ctx03"
 ./scripts/run_real_transition_expert_recording.sh
 ```
 
@@ -166,7 +168,7 @@ export PYTHON="$HOME/miniforge3/envs/excavator-real-stack/bin/python"
 
 轴绑定固定为：左摇杆 Y = swing、左摇杆 X = stick、右摇杆 Y = boom、右摇杆 X =
 bucket；动作数组为 `[swing, boom, stick, bucket]`。sender 必须识别两只摇杆。物理
-按钮 2 的日志应显示 `mark=1`，但一次按下只产生一个 rising-edge MARK。
+按钮 2 的日志应显示一次 `mark=1`；它只 ARM 整个 session。之后重复按不会创建标注。
 
 ### 3.4 主端终端 D：只读 GUI
 
@@ -209,24 +211,29 @@ status11 = [1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0]
 状态按钮出现在 sender 日志不代表机器必然执行；还要核对 receiver/bridge ACK、
 `status11`，必要时查看 CAN 状态帧。
 
-## 5. 正式 run：全程只按一个 MARK
+## 5. 正式录制：session 只 ARM 一次，run 内零标注按键
 
-1. 在 `idle` 且相机同步 PASS 时按一次左手柄物理按钮 2。状态机选择下一条 frozen run，
-   自动写入 `wf_NNN / fresh_strip`，GUI 显示 initial side。
-2. 将 swing 放到要求的 clean A/B。大小臂和铲斗可自然预摆；摇杆回中、铲斗离土，
-   等待 swing 稳定窗通过且无 blocker，再按同一 MARK。
-3. 这个 MARK 被记录为 `initial_ready_mark`，HDF5 从第一条精确 row 开始；程序在同一
-   row 按预定序列自动写 `goal_commit`。确认 GUI 显示 TARGET 后自然开始本铲。
-4. 完成挖掘、回转和实际卸料；卸料动作结束时按 MARK，记录 `dump_end_mark`。
-5. 移动到 GUI 显示的 TARGET 侧。swing 稳定、铲斗离土且无 blocker 后按 MARK，记录
-   `target_ready_mark`。
-6. 若还有 cycle，程序立即自动提交下一 TARGET，GUI 的下一次 MARK 说明重新变为
-   `DUMP END`；继续第 3–5 步。完成 frozen 3/4/5 cycle 后自动停止、保存和封存。
-7. 等 GUI 显示保存完成、run 数增加，再执行第 6 节验证。
+1. 确认整场 session 可以开始后，只按一次左手柄物理按钮 2。GUI 显示
+   `SESSION ARMED=YES`；此后不要再为标注按该键。
+2. 将 swing 放到 GUI 要求的下一条 initial clean A/B，大小臂和铲斗可自然预摆。摇杆
+   回中且 swing 稳定窗通过后，程序自动选择 frozen run、写入 `wf_NNN/fresh_strip`、
+   启动 HDF5，并在第一条精确 row 自动写 initial-ready 与 goal。
+3. 看清 GUI 的 TARGET 后自然完成挖掘、回转和实际卸料。过程中不按 MARK；程序只观察
+   数据，不生成任何机器动作。
+4. 当 swing 相对本 cycle 的 goal 起点连续 3 个采样移动至少 `0.08 rad` 时，程序记录
+   `cycle_excursion_observed`，证明本 cycle 不是停在原地误完成。这里是相对行程检测，
+   不是要求或允许机器越过 `[-0.3892,+0.4189] rad` 的安全范围。
+5. 自然回到 TARGET 侧。最近 0.5 s 全窗满足 clean side、采样连续且
+   `abs(swing_qvel)<=0.015 rad/s` 后，程序自动写 target-ready。
+6. 若还有 cycle，下一 goal 在同一 row 自动提交；继续正常操作。完成 frozen 3/4/5
+   cycle 后自动停止、保存和封存，不需要 dump/target 点击或按键。
+7. 两条 run 之间，为避免相同 initial side 被立即误启动，程序要求观察到一次自然的
+   操作员调整，再等下一 initial 稳定后自动开始。等 GUI 显示保存完成后继续即可。
 
-如果 MARK 不满足当前状态，receiver 会拒绝但不会推进状态机；GUI 会显示具体 blocker。
-纠正姿态/同步/健康问题后重新按 MARK。不要用 home 代替 A/B ready，也不要求 run 中
-go-home。
+如果自动流程没有推进，只看 GUI 的 `automatic_wait_reason`：通常是等待 initial side、
+等待本 cycle 形成有效 swing 行程、等待 TARGET 稳定或等待两条 run 之间的自然调整。不要为此
+反复按键，也不要求 run 中 go-home。软件无法直接证明铲斗离土；该项在 materializer/QC
+中保留为录后画面审计，而不是打断操作员的在线确认。
 
 ## 6. 每条 run 的验证和 cycle 生成
 
@@ -235,7 +242,7 @@ go-home。
 ```bash
 cd /media/mundane/D/Excavator_real_stack
 export PYTHON="$PWD/.venv/bin/python"
-export SESSION_DIR="/media/mundane/EXTERNAL_USB/real_transition_raw_v2/session_rt_20260821_ctx02"
+export SESSION_DIR="/media/mundane/EXTERNAL_USB/real_transition_raw_v2/session_rt_20260821_ctx03"
 
 find "${SESSION_DIR}" -name run_manifest.json -printf '%T@ %h\n' \
   | sort -n | tail -n 1
@@ -262,13 +269,13 @@ find "${SESSION_DIR}" -name run_manifest.json -printf '%T@ %h\n' \
 ```bash
 "${PYTHON}" -m testbed.cli.real_transition materialize-session \
   "${SESSION_DIR}" \
-  --output-dir "/media/mundane/EXTERNAL_USB/real_transition_cycle_v1/session_rt_20260821_ctx02_v1"
+  --output-dir "/media/mundane/EXTERNAL_USB/real_transition_cycle_v1/session_rt_20260821_ctx03_v2"
 ```
 
 输出目录必须不存在，工具拒绝覆盖。生成内容包括：
 
 ```text
-annotations/cycle_annotations_v1.jsonl
+annotations/cycle_annotations_v2.jsonl
 episodes/episode_<N>.hdf5
 cycle_manifest.jsonl
 split_manifest.json
@@ -395,6 +402,14 @@ export PYTHONPATH="$PWD/testbed${PYTHONPATH:+:$PYTHONPATH}"
 "${PYTHON}" -m testbed.cli.real_transition_control \
   --host 192.168.100.1 status
 
+# 手柄按钮不可用时的等价单次 ARM；正常现场优先按一次手柄按钮 2
+"${PYTHON}" -m testbed.cli.real_transition_control \
+  --host 192.168.100.1 arm-session
+
+# 仅在没有 active run 时停止自动开始后续 run
+"${PYTHON}" -m testbed.cli.real_transition_control \
+  --host 192.168.100.1 disarm-session
+
 "${PYTHON}" -m testbed.cli.real_transition_control \
   --host 192.168.100.1 intervention --reason "operator_intervention"
 
@@ -405,8 +420,9 @@ export PYTHONPATH="$PWD/testbed${PYTHONPATH:+:$PYTHONPATH}"
   --host 192.168.100.1 safety-stop --reason "hardware_safety_stop"
 ```
 
-CLI 仍保留 `start-run/initial-ready/goal/dump-end/target-ready` 作为协议诊断兼容入口，
-但正常录制只用手柄 MARK，`goal` 已由 frozen sequencer 自动提交，不得人工重复操作。
+CLI 仍保留 `start-run/initial-ready/goal/dump-end/target-ready` 作为旧数据和协议诊断兼容
+入口；正常录制只执行一次 `arm-session`，其余边界由数据自动生成。不要人工重复提交
+goal/dump/target。
 
 ### 9.4 创建新 session
 
@@ -420,7 +436,7 @@ export SESSION_ROOT="/media/mundane/EXTERNAL_USB/real_transition_raw_v2"
 
 "${PYTHON}" -m testbed.cli.real_transition prepare-session \
   --output-root "${SESSION_ROOT}" \
-  --session-id "rt_20260821_ctx02" \
+  --session-id "rt_20260821_ctx03" \
   --seed 20260821
 ```
 

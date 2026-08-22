@@ -771,6 +771,118 @@ class RealTransitionRuntimeTest(unittest.TestCase):
                 all(event["event_source"] == "sequencer" for event in goals)
             )
 
+    def test_one_session_arm_runs_all_cycle_boundaries_automatically(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            prepared = prepare_session_directory(
+                output_root=Path(tmp),
+                session_id="auto_arm01",
+                seed=31,
+                created_at_utc="2026-08-21T00:00:00Z",
+            )
+            runtime = TransitionTaskRuntime(
+                session_dir=prepared["session_dir"],
+                sequence_manifest_path=prepared["sequence_manifest"],
+                split_manifest_path=prepared["split_manifest"],
+                ready_contract_path=prepared["ready_contract"],
+                resolved_record_config_yaml="task: real_transition\n",
+                git_commit="a" * 40,
+                field_context_defaults={
+                    "workface_reset_id_prefix": "wf_",
+                    "workface_action": "fresh_strip",
+                },
+                automatic_annotation={
+                    "enabled": True,
+                    "activity_action_abs_min": 0.05,
+                    "require_inter_run_activity": True,
+                },
+            )
+            runtime.update_receiver_state(mode="armed", health_ok=True)
+            next_spec = runtime._next_run_spec_hint  # noqa: SLF001
+            assert next_spec is not None
+            _feed_ready_window(
+                runtime,
+                side=next_spec.initial_side,
+                end_ns=1_000_000_000,
+            )
+            runtime.update_operator_action(action=[0.0, 0.0, 0.0, 0.0])
+
+            armed = runtime.handle_mark()
+            self.assertEqual(armed["mark_action"], "arm-session")
+            self.assertTrue(armed["session_armed"])
+            started = runtime.advance_automatic_workflow(
+                allow_recorded_events=False
+            )
+            self.assertIsNotNone(started)
+            self.assertTrue(runtime.consume_record_start_request())
+            runtime.attach_recording(episode_idx=0)
+            runtime.update_recorded_step(step_id=0, step_ns=1_000_000_000)
+            runtime.advance_automatic_workflow(allow_recorded_events=True)
+            self.assertEqual(runtime.status()["phase"], "goal_committed")
+
+            cycle_count = int(runtime.status()["planned_cycle_count"])
+            step_id = 0
+            step_ns = 1_000_000_000
+            for cycle_index in range(cycle_count):
+                for excursion_sample in range(3):
+                    step_id += 1
+                    step_ns += 20_000_000
+                    runtime.update_ready_observation(
+                        step_ns=step_ns,
+                        qpos=[1.60, 0.0, 0.0, 0.0],
+                        qvel=[0.2, 0.0, 0.0, 0.0],
+                    )
+                    runtime.update_recorded_step(
+                        step_id=step_id, step_ns=step_ns
+                    )
+                    runtime.advance_automatic_workflow(
+                        allow_recorded_events=True
+                    )
+                    if excursion_sample < 2:
+                        self.assertFalse(
+                            runtime.status()["cycle_excursion_observed"]
+                        )
+                self.assertTrue(runtime.status()["cycle_excursion_observed"])
+
+                target = str(runtime.status()["next_target_side"])
+                step_id += 1
+                step_ns += 600_000_000
+                _feed_ready_window(runtime, side=target, end_ns=step_ns)
+                runtime.update_recorded_step(step_id=step_id, step_ns=step_ns)
+                completed = runtime.advance_automatic_workflow(
+                    allow_recorded_events=True
+                )
+                self.assertIsNotNone(completed)
+                expected_phase = (
+                    "complete"
+                    if cycle_index + 1 == cycle_count
+                    else "goal_committed"
+                )
+                self.assertEqual(runtime.status()["phase"], expected_phase)
+
+            stop = runtime.consume_stop_request()
+            self.assertIsNotNone(stop)
+            assert stop is not None
+            self.assertTrue(stop.success)
+            package = runtime._active_package  # noqa: SLF001
+            assert package is not None
+            event_types = [
+                event["event_type"]
+                for event in package._events  # noqa: SLF001
+            ]
+            self.assertEqual(event_types.count("dump_end_mark"), 0)
+            self.assertEqual(
+                event_types.count("cycle_excursion_observed"), cycle_count
+            )
+            automatic_ready = [
+                event
+                for event in package._events  # noqa: SLF001
+                if event["event_type"]
+                in {"initial_ready_mark", "target_ready_mark"}
+            ]
+            self.assertTrue(
+                all(event["event_source"] == "automatic" for event in automatic_ready)
+            )
+
     def test_ready_gate_uses_only_stable_clean_swing_plus_confirmations(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             prepared = prepare_session_directory(
@@ -1144,6 +1256,15 @@ class HomeSideContractTest(unittest.TestCase):
     ) -> None:
         contract = build_rule_ready_contract()
         validate_rule_ready_contract(contract)
+        self.assertEqual(contract["schema"], "real_transition_ready_rule_contract_v3")
+        self.assertEqual(
+            contract["ready_requirements"]["operator_authorization_policy"],
+            "single_session_arm",
+        )
+        self.assertEqual(
+            contract["ready_requirements"]["bucket_clear_policy"],
+            "posthoc_visual_qc",
+        )
         self.assertEqual(classify_ready_swing_qpos(contract, 0.000690), "home")
         self.assertEqual(classify_ready_swing_qpos(contract, -0.049), "home")
         self.assertEqual(classify_ready_swing_qpos(contract, 0.061), "transition")

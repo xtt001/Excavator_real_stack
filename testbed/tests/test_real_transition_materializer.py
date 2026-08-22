@@ -18,6 +18,7 @@ from testbed.tasks.real_transition_materializer import (
     ACTION_LABEL_OFFSET_S,
     ANNOTATION_SCHEMA,
     CONDITION_SCHEMA,
+    _read_indexed,
     materialize_transition_run,
 )
 
@@ -36,7 +37,24 @@ def _ready_evidence(side: str) -> dict[str, object]:
     }
 
 
-def _build_sealed_run(root: Path, *, invalid_camera_row: int | None = None) -> Path:
+def _automatic_ready_evidence(side: str, *, excursion: bool) -> dict[str, object]:
+    return {
+        **_ready_evidence(side),
+        "boundary_mode": "automatic_session_arm",
+        "session_armed": True,
+        "operator_confirmation_source": "session_arm",
+        "bucket_clear_confirmed": False,
+        "bucket_clear_policy": "posthoc_visual_qc",
+        "cycle_excursion_observed": excursion,
+    }
+
+
+def _build_sealed_run(
+    root: Path,
+    *,
+    invalid_camera_row: int | None = None,
+    automatic_boundaries: bool = False,
+) -> Path:
     spec = TransitionRunSpec(
         session_id="session01",
         block_id="b01",
@@ -53,11 +71,26 @@ def _build_sealed_run(root: Path, *, invalid_camera_row: int | None = None) -> P
     step_ids = np.arange(n_rows, dtype=np.int64)
     step_ns = 1_000_000_000 + step_ids * 20_000_000
     qpos = np.zeros((n_rows, 4), dtype=np.float32)
-    qvel = np.zeros((n_rows, 4), dtype=np.float32)
+    side_qpos = {"A": -0.20, "B": 0.20}
+    qpos[:, 0] = side_qpos[spec.initial_side]
     actions = np.zeros((n_rows, 4), dtype=np.float32)
     cycle_bounds = ((0, 20, 35), (35, 55, 70), (70, 90, 105))
-    for goal, _dump, target in cycle_bounds:
+    for index, (goal, dump, target) in enumerate(cycle_bounds):
+        current_qpos = side_qpos[spec.sequence[index]]
+        target_qpos = side_qpos[spec.targets[index]]
+        outbound_end = goal + 12
+        qpos[goal : goal + 5, 0] = current_qpos
+        qpos[goal + 5 : outbound_end + 1, 0] = np.linspace(
+            current_qpos, 1.60, outbound_end - (goal + 5) + 1
+        )
+        qpos[outbound_end : dump + 1, 0] = 1.60
+        qpos[dump : target - 5 + 1, 0] = np.linspace(
+            1.60, target_qpos, (target - 5) - dump + 1
+        )
+        qpos[target - 5 : target + 1, 0] = target_qpos
         actions[goal + 6 : target - 1, 0] = 0.2
+    qvel = np.zeros((n_rows, 4), dtype=np.float32)
+    qvel[1:, 0] = np.diff(qpos[:, 0]) / 0.02
     frames = {
         camera: [
             np.asarray([0xFF, 0xD8, index % 255, 0xFF, 0xD9], dtype=np.uint8)
@@ -99,8 +132,12 @@ def _build_sealed_run(root: Path, *, invalid_camera_row: int | None = None) -> P
     package.mark_initial_ready(
         step_id=0,
         step_ns=int(step_ns[0]),
-        ready_evidence=_ready_evidence("A"),
-        event_source="operator",
+        ready_evidence=(
+            _automatic_ready_evidence("A", excursion=False)
+            if automatic_boundaries
+            else _ready_evidence("A")
+        ),
+        event_source="automatic" if automatic_boundaries else "operator",
     )
     for index, (goal, dump, target) in enumerate(cycle_bounds):
         package.commit_next_goal(
@@ -109,17 +146,34 @@ def _build_sealed_run(root: Path, *, invalid_camera_row: int | None = None) -> P
             commit_ack_sources=REQUIRED_GOAL_ACK_SOURCES,
             notes="automatic frozen-sequence goal commit",
         )
-        package.mark_dump_end(
-            step_id=dump,
-            step_ns=int(step_ns[dump]),
-            event_source="operator",
-        )
+        if automatic_boundaries:
+            anchor = float(qpos[goal, 0])
+            current = float(qpos[goal + 8, 0])
+            package.record_cycle_excursion(
+                step_id=goal + 8,
+                step_ns=int(step_ns[goal + 8]),
+                anchor_swing_qpos_rad=anchor,
+                swing_qpos_rad=current,
+                swing_delta_rad=current - anchor,
+                threshold_rad=0.08,
+                consecutive_samples=3,
+            )
+        else:
+            package.mark_dump_end(
+                step_id=dump,
+                step_ns=int(step_ns[dump]),
+                event_source="operator",
+            )
         package.mark_target_ready(
             step_id=target,
             step_ns=int(step_ns[target]),
             realized_target_side=spec.targets[index],
-            ready_evidence=_ready_evidence(spec.targets[index]),
-            event_source="operator",
+            ready_evidence=(
+                _automatic_ready_evidence(spec.targets[index], excursion=True)
+                if automatic_boundaries
+                else _ready_evidence(spec.targets[index])
+            ),
+            event_source="automatic" if automatic_boundaries else "operator",
         )
     package.complete_run(step_id=105, step_ns=int(step_ns[105]))
 
@@ -180,7 +234,7 @@ def test_materializer_builds_conditioned_ready_to_ready_cycles(tmp_path: Path) -
 
     annotations = [
         json.loads(line)
-        for line in (output / "annotations" / "cycle_annotations_v1.jsonl")
+        for line in (output / "annotations" / "cycle_annotations_v2.jsonl")
         .read_text()
         .splitlines()
     ]
@@ -192,6 +246,33 @@ def test_materializer_builds_conditioned_ready_to_ready_cycles(tmp_path: Path) -
         "event_source"
     ] == "operator"
     assert (output / "SHA256SUMS.txt").is_file()
+
+
+def test_materializer_accepts_session_arm_automatic_cycles_without_dump_mark(
+    tmp_path: Path,
+) -> None:
+    run_dir = _build_sealed_run(
+        tmp_path / "raw",
+        automatic_boundaries=True,
+    )
+    output = tmp_path / "cycles"
+
+    result = materialize_transition_run(run_dir=run_dir, output_dir=output)
+
+    assert result["clean_cycle_count"] == 3
+    annotations = [
+        json.loads(line)
+        for line in (output / "annotations" / "cycle_annotations_v2.jsonl")
+        .read_text()
+        .splitlines()
+    ]
+    assert annotations[0]["boundaries"]["dump_end_confirmed"] is None
+    assert annotations[0]["boundaries"]["cycle_excursion_observed"][
+        "event_source"
+    ] == "automatic"
+    assert annotations[0]["boundaries"]["target_ready_confirmed"][
+        "event_source"
+    ] == "automatic"
 
 
 def test_materializer_excludes_a_cycle_with_invalid_camera_group(tmp_path: Path) -> None:
@@ -224,3 +305,32 @@ def test_event_journal_only_fsyncs_when_closed_durably(
 
     journal.close_durable()
     assert len(calls) == 1
+
+
+def test_materializer_hdf5_reader_preserves_repeated_action_indices(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "indices.hdf5"
+    with h5py.File(path, "w") as output:
+        output.create_dataset("value", data=np.asarray([10, 20, 30], dtype=np.int64))
+    with h5py.File(path, "r") as source:
+        values = _read_indexed(
+            source["value"],
+            np.asarray([0, 0, 2, 2, 2], dtype=np.int64),
+        )
+    np.testing.assert_array_equal(values, [10, 10, 30, 30, 30])
+
+
+def test_materializer_hdf5_reader_supports_zero_width_diagnostics(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "zero_width.hdf5"
+    with h5py.File(path, "w") as output:
+        output.create_dataset("status11", shape=(4, 0), dtype=np.int32)
+    with h5py.File(path, "r") as source:
+        values = _read_indexed(
+            source["status11"],
+            np.asarray([3, 1, 1], dtype=np.int64),
+        )
+    assert values.shape == (3, 0)
+    assert values.dtype == np.dtype(np.int32)

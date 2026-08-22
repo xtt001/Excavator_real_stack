@@ -15,6 +15,10 @@ field_execution_authority: false
 
 # v2.0.1 Real Transition 最终结论
 
+> **现场执行更新（2026-08-21）**：实验范围与平衡序列不变；边界采集已从逐 cycle
+> MARK 改为一次 session ARM + 自动 ready/goal-anchor excursion 证据。dump 只作录后代理信息，
+> 不再要求操作员打断动作。当前执行合同见《[v2.0.1 主从端现场启动与命令手册](v2_0_1_host_slave_start_commands.md)》。
+
 ## 0. 最终决定
 
 v2.0.1 真机阶段只回答一个问题：

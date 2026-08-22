@@ -97,6 +97,40 @@ def test_v2_panel_is_read_only_and_explains_the_next_mark_action() -> None:
             "phase": "idle",
             "receiver_mode": "armed",
             "receiver_health_ok": True,
+            "mark_next_action": "arm-session",
+            "automatic_wait_reason": "session_not_armed",
+            "next_field_context": {
+                "workface_reset_id": "wf_001",
+                "workface_action": "fresh_strip",
+            },
+            "camera_sync_state": {"ready": True},
+            "ready_state": {},
+        }
+    )
+    assert "按一次左手柄物理按钮 2" in window.transition_instruction.text()
+    assert "ARM 自动录制" in window.transition_instruction.text()
+
+    window._update_transition_panel(
+        {
+            "phase": "goal_committed",
+            "receiver_mode": "recording",
+            "receiver_health_ok": True,
+            "run_id": "b01_r01",
+            "next_target_side": "B",
+            "mark_next_action": "automatic",
+            "automatic_wait_reason": "waiting_target_ready",
+            "cycle_excursion_observed": True,
+            "ready_state": {},
+        }
+    )
+    assert "无需按键" not in window.transition_instruction.text()
+    assert "停稳后自动结束" in window.transition_instruction.text()
+
+    window._update_transition_panel(
+        {
+            "phase": "idle",
+            "receiver_mode": "armed",
+            "receiver_health_ok": True,
             "session_id": "rt01",
             "next_run_id": "b01_r01",
             "next_run_ordinal": 1,
@@ -180,4 +214,9 @@ def test_dashboard_resolves_v2_extended_config() -> None:
     assert config["field_context_defaults"] == {
         "workface_reset_id_prefix": "wf_",
         "workface_action": "fresh_strip",
+    }
+    assert config["automatic_annotation"] == {
+        "enabled": True,
+        "activity_action_abs_min": 0.05,
+        "require_inter_run_activity": True,
     }

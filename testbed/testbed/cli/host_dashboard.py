@@ -419,7 +419,7 @@ class HostDashboard(QtWidgets.QMainWindow):
         root.addLayout(top_state_row)
 
         transition_group = QtWidgets.QGroupBox(
-            "v2.0.1 连续录制（手柄 MARK，GUI 只读）"
+            "v2.0.1 连续录制（session 只 ARM 一次，边界自动，GUI 只读）"
         )
         transition_layout = QtWidgets.QVBoxLayout(transition_group)
         transition_layout.setSpacing(5)
@@ -433,7 +433,7 @@ class HostDashboard(QtWidgets.QMainWindow):
 
         status_row = QtWidgets.QHBoxLayout()
         self.transition_instruction = QtWidgets.QLabel(
-            "等待 receiver 告知下一个 MARK 动作"
+            "等待 receiver 自动流程状态"
         )
         self.transition_instruction.setWordWrap(True)
         self.transition_instruction.setStyleSheet(
@@ -659,11 +659,17 @@ class HostDashboard(QtWidgets.QMainWindow):
             color = GRAY
         else:
             blocker_text = ",".join(blockers) if blockers else "无"
+            armed_text = _yes_no(transition.get("session_armed", False))
+            auto_wait = str(
+                transition.get("automatic_wait_reason", "") or "-"
+            )
             self.transition_state.setText(
-                f"RUN {run_id}  |  phase={phase}  |  cycle={completed}/{planned}  |  "
+                f"ARM={armed_text}  |  RUN {run_id}  |  phase={phase}  |  "
+                f"cycle={completed}/{planned}  |  "
                 f"initial={initial_side}  |  TARGET={target_side}  |  "
                 f"实际侧={actual_side}  |  swing稳定={_yes_no(stable)}  |  "
-                f"稳定窗={_yes_no(window_complete)}  |  blockers={blocker_text}"
+                f"稳定窗={_yes_no(window_complete)}  |  blockers={blocker_text}  |  "
+                f"auto={auto_wait}"
             )
             color = GREEN if health_ok and not blockers else AMBER
         self.transition_state.setStyleSheet(
@@ -672,7 +678,32 @@ class HostDashboard(QtWidgets.QMainWindow):
         )
 
         mark_action = str(transition.get("mark_next_action", "") or "")
+        automatic_wait = str(
+            transition.get("automatic_wait_reason", "") or ""
+        )
         instruction = {
+            "arm-session": (
+                "准备好整个 session 后，按一次左手柄物理按钮 2：ARM 自动录制"
+            ),
+            "automatic": {
+                "waiting_inter_run_activity": (
+                    "已 ARM：自然调整一次工作面/姿态后回到下一条 INITIAL，程序自动开始"
+                ),
+                "waiting_cycle_excursion": (
+                    f"TARGET={target_side}：正常操作；等待 swing 形成有效行程"
+                ),
+                "confirming_cycle_excursion": (
+                    f"TARGET={target_side}：正在确认 swing 有效行程；无需按键"
+                ),
+                "waiting_target_ready": (
+                    f"TARGET={target_side}：回到目标侧并停稳后自动结束本 cycle"
+                ),
+                "saving_run": "本 run 自动完成，正在保存；无需按键",
+                "recorder_start_requested": "INITIAL READY 已自动确认，正在开始录制",
+            }.get(
+                automatic_wait,
+                f"已 ARM：自动流程等待 {automatic_wait or '状态更新'}；无需按键",
+            ),
             "start-run": "按左手柄物理按钮 2（MARK）：开始下一条 RUN",
             "initial-ready": (
                 f"机器位于 {initial_side}侧、swing 稳定且铲斗离土后，"
@@ -686,7 +717,7 @@ class HostDashboard(QtWidgets.QMainWindow):
                 f"到达 {target_side}侧、swing 稳定且铲斗离土后，"
                 "按 MARK 确认 TARGET READY"
             ),
-        }.get(mark_action, "当前阶段不接受 MARK，等待 receiver 状态更新")
+        }.get(mark_action, "等待 receiver 自动流程状态更新")
         mark_error = str(transition.get("last_mark_error", "") or "")
         if mark_error:
             instruction += f"  |  上次 MARK 未接受：{mark_error}"
@@ -1055,7 +1086,7 @@ class HostDashboard(QtWidgets.QMainWindow):
             )
         else:
             self.alert_label.setText(
-                "所有关键链路正常（GUI 不发送摇杆动作；v2 按钮只提交数据事件）"
+                "所有关键链路正常（GUI 只读；v2 正常 run 内无需标注按键）"
             )
             self.alert_label.setStyleSheet(
                 f"background:{GREEN}; color:#101820; padding:7px; border-radius:5px; font-weight:700;"

@@ -12,7 +12,8 @@ teleop:
     notes: "v2.0.1 expert real-transition recording"
   joystick:
     record_start_button: null
-    # Physical left-hand button 2 (pygame index 1) is the only task MARK.
+    # Physical left-hand button 2 (pygame index 1) ARMs the whole session once.
+    # Further presses do not create cycle annotations.
     mark_button: 1
     policy_start_button: null
     # Keep the field-proven physical button 3 and the established go-home flow.
@@ -38,6 +39,12 @@ real_transition:
   field_context_defaults:
     workface_reset_id_prefix: "wf_"
     workface_action: fresh_strip
+  automatic_annotation:
+    enabled: true
+    # Matches the field joystick deadzone and the historical ready baseline.
+    activity_action_abs_min: 0.05
+    # Between runs, require one natural operator reposition before auto-start.
+    require_inter_run_activity: true
   camera_sync:
     enabled: true
     expected_cameras: [video4, video5, video6, video7]

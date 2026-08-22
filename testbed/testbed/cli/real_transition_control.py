@@ -18,7 +18,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         prog="tb-real-transition-control",
         description=(
-            "Select frozen runs and mark transition events; never sends actions."
+            "ARM/inspect automatic transition recording or recover exceptions; "
+            "never sends actions."
         ),
     )
     parser.add_argument("--host", required=True, help="Slave receiver host/IP.")
@@ -27,6 +28,8 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("status")
+    subparsers.add_parser("arm-session")
+    subparsers.add_parser("disarm-session")
     start = subparsers.add_parser("start-run")
     start.add_argument("--run-id", default="")
     start.add_argument("--workface-reset-id", required=True)
@@ -82,8 +85,8 @@ def main() -> None:
     args = parser.parse_args()
 
     try:
-        if args.command == "status":
-            result = _send(args, "status")
+        if args.command in {"status", "arm-session", "disarm-session"}:
+            result = _send(args, args.command)
         elif args.command == "start-run":
             result = _send(
                 args,

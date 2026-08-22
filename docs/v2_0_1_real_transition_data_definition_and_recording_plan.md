@@ -18,6 +18,12 @@ field_preparation: docs/v2_0_1_real_transition_field_preparation_and_calibration
 
 > 当前上机同步、只读检查和 home/A/B 标定入口见《[真机测试与标定准备手册](v2_0_1_real_transition_field_preparation_and_calibration_runbook.md)》；不要从本文旧 P0/P1 示例反推现场命令。
 
+> **自动边界更新（2026-08-21）**：本文后续关于逐 cycle 人工 MARK、人工 dump-end 和
+> `operator_mark_materializer_v1` 的描述只保留为历史设计。当前现场流程为每个 session
+> 只 ARM 一次；initial/target ready 使用冻结 swing 合同自动识别，cycle 必须观察到 swing
+> 相对 goal 起点持续移动至少 0.08 rad，dump 不再阻塞在线状态机，materializer 版本为
+> `session_arm_auto_materializer_v2`。唯一执行依据是《[v2.0.1 主从端现场启动与命令手册](v2_0_1_host_slave_start_commands.md)》。
+
 ## 0. 一页结论
 
 v2.0.1 的目标是用一批可在一天内完成的真机数据，验证下面这条技术路线能否基本跑通：
@@ -374,18 +380,18 @@ goal_epoch
 scripted_target_side         # A / B
 target_side_code             # -1 / +1
 expected_return_swing_sign   # -1 / +1 / null，仅供标注与 QC，不进入 policy
-event_source                 # sequencer / experimenter / operator / system
+event_source                 # sequencer / automatic / experimenter / operator / system
 commit_ack_sources           # goal_commit 时为 recorder / router / display
 notes
 ```
 
-这个文件只保存录制当时实际发生的程序事件和现场 marker。必需事件类型：
+这个文件只保存录制当时实际发生的程序事件。当前自动模式的必需事件类型：
 
 ```text
 run_start
 initial_ready_mark
-dump_end_mark
 goal_commit
+cycle_excursion_observed
 target_ready_mark
 run_complete
 run_abort
@@ -397,41 +403,42 @@ safety_stop
 
 `goal_commit` 只有在 recorder、policy router 和 display 都接受同一个 `goal_id/goal_epoch` 后才完成；任一方未确认时界面保持 unarmed，不能让师傅开始本 cycle。三个接收结果和共同的 commit 时间进入同一事件，避免把界面时间、模型时间和日志时间分别解释成目标提交时刻。
 
-现场 marker 由操作员左手柄的单一状态感知 `MARK` 产生；操作员无需离开摇杆点鼠标。
-`initial_ready_mark` 、`dump_end_mark` 和 `target_ready_mark` 使用同一物理按钮，
-`goal_commit` 由 frozen sequencer 在 ready 被接受后自动提交。GUI 只读显示状态。
-
-启用 shadow detector 后，系统另外记录 `ready_candidate_start`、`ready_candidate_met` 和 `return_candidate`。这些事件只用于比较自动检测与人工 marker 的偏差，不改变人工 evidence owner。
+操作员只在 session 开始前按一次按钮 ARM。`initial_ready_mark` 和
+`target_ready_mark` 的名称为旧 schema 兼容名称，当前 `event_source=automatic`；
+`cycle_excursion_observed` 证明本 cycle 的 swing 相对 goal 起点已连续 3 个采样移动
+至少 0.08 rad。该规则不要求越过机械安全范围。`goal_commit` 由
+frozen sequencer 自动提交，GUI 只读显示状态。旧 run 的人工 `dump_end_mark` 仍可读取，
+但新自动 run 不要求该事件。
 
 ### 5.4 离线确认边界
 
-原始 run 封存后，detector 和复核人员在独立文件 `cycle_annotations_v1.jsonl` 中产生：
+原始 run 封存后，detector 在独立文件 `cycle_annotations_v2.jsonl` 中产生：
 
 ```text
 initial_ready_confirmed
 goal_commit_confirmed
 first_cycle_intent_confirmed
 first_effective_action_confirmed
-dump_end_confirmed
-first_return_action_confirmed
+dump_end_confirmed          # 新自动 run 为 null；旧人工 run 可保留
+cycle_excursion_observed
+return_to_ready_entry_proxy
 target_ready_confirmed
 cycle_validity_confirmed
 ```
 
 每个确认事件必须记录 source raw checksum、annotation schema/version、source
-row/time 和证据 owner。`operator_mark_materializer_v1` 把已通过在线 ready 合同的
-操作员 MARK 冻结为 ready/dump 边界，用动作阈值 detector 生成 intent/effective/
-return 边界，并按相机 group、gap、goal lead、action source 和目标一致性自动分为
+row/time 和证据 owner。`session_arm_auto_materializer_v2` 使用自动 ready、excursion、
+frozen goal 和 return proxy，并按相机 group、gap、goal lead、action source 和目标一致性自动分为
 `clean/review/excluded`。`review` 可由人工发布新 annotation 版本；任何修订都不改
 原始 `task_events.jsonl`。
 
 candidate 生成规则固定为：
 
 - ready candidate 使用第 3.2 节的 0.5 s 联合稳定窗；`target_ready_confirmed` 放在稳定窗末端，因此 cycle 切片保留完整的末端停稳证据；
-- return candidate 从 `dump_end_mark` 附近搜索，使用本次 dump→target 几何对应的 swing 方向；若方向元数据缺失，同时生成正、负两个 candidate 并要求人工选择，不能固定复用历史数据中的负方向；
-- return candidate 要求 `expected_return_swing_sign * swing_action >0.08` 连续 6 个 20 Hz row，确认后回溯 5 row 到持续动作段首帧；
-- `dump_end_mark` 和 return candidate 前后各保留 2.5 s 复核窗；
-- qvel 或 qpos 起动只作为交叉证据，不能单独定义 return 起点。历史数据中动作意图到 `0.005 rad` swing 位移的 P95 约为 2.11 s，单用运动起点会系统性切晚。
+- automatic cycle 必须先有 `cycle_excursion_observed`，再允许 target ready；
+- `return_to_ready_entry_proxy` 是最后一次进入目标 clean side 的代理点，明确不宣称为精确 dump-end；
+- 人工 `dump_end_mark` 若存在则原样保留；缺失时不伪造人工确认；
+- ready-to-ready 训练切片由 goal 后首行到 target-ready，dump proxy 不参与切片边界。
 
 ### 5.5 `run_manifest.json`
 
@@ -642,12 +649,11 @@ P1: B → A → A → B → B
 
 ### 9.2 每条 run
 
-1. 程序显示初始侧 A 或 B，师傅自然摆到该侧 ready。
-2. 操作员按左手柄单一 MARK 确认 `initial_ready_mark`，开始连续录制。
+1. 整个 session 开始前只 ARM 一次；程序显示下一条初始侧 A 或 B。
+2. 师傅自然摆到该侧 ready，程序自动确认 initial-ready 并开始连续录制。
 3. 脚本 planner 在同一录制 row 自动写入本 cycle 的 `goal_commit`，只读界面显示目标 A/B。
-4. 师傅看到目标后开始本铲，正常完成挖掘、运土、卸料和返回；不需要对准唯一数值点。
-5. 操作员在卸料完成和目标侧 ready 时分别按同一 MARK，依当前状态记录
-   `dump_end_mark` 和 `target_ready_mark`。
+4. 师傅看到目标后开始本铲，正常完成挖掘、运土、卸料和返回；全程不做标注按键。
+5. swing 相对 goal 起点持续移动至少 0.08 rad 后记录 excursion；回到目标侧并稳定后自动 target-ready。
 6. 脚本 planner 自动提交下一 cycle 目标，师傅继续下一铲，直至完成冻结的
    3/4/5 个 cycle。
 7. 最后一铲返回目标侧并满足 0.5 s ready 稳定窗后结束 run。
@@ -946,7 +952,7 @@ P0/P1 连续成功只进入 Composition Gate。它不能替代上述 Condition G
 - 固定 P0/P1 脚本 planner、run 顺序和 sequence manifest；
 - `goal_commit`、ready、abort 和 intervention 事件记录；
 - goal 的 recorder/router/display 三方 commit acknowledgement；
-- ready 与 return shadow candidate 事件及人工 marker 偏差；
+- session ARM、自动 ready、goal-anchor swing excursion 与可选人工恢复事件；
 - raw HDF5 与 task event 的统一 step/time 对齐；
 - run/block/session manifest 和 checksum；
 - historical baseline 到 field-resolved 参数的解析和覆盖记录；
@@ -957,10 +963,10 @@ P0/P1 连续成功只进入 Composition Gate。它不能替代上述 Condition G
 ### 14.2 离线端
 
 - home-side calibration、排除带和已示教支持范围审计；
-- continuous run 的 ready/dump/return candidate labeler；
+- continuous run 的自动 ready/excursion/return proxy labeler；
 - 人工复核界面或复核清单；
 - 50 Hz → 20 Hz resample；
-- ready-to-ready cycle materializer（已实现 `operator_mark_materializer_v1`）；
+- ready-to-ready cycle materializer（已实现 `session_arm_auto_materializer_v2`）；
 - condition lifecycle 和 chunk valid mask；
 - source-block split、coverage report 和 checksum package；
 - B0/B1/B2 配置生成与 target-side flip control；
@@ -976,7 +982,8 @@ P0/P1 连续成功只进入 Composition Gate。它不能替代上述 Condition G
 - 轴向动作上限、deadzone 后响应计时、反向响应和 return 错向位移停止；
 - fail-closed：目标缺失、过期、边界不确定或状态异常时停止，不猜下一目标。
 
-第一版 ready 仍由操作员 MARK 作为正式证据 owner，自动 detector 不接管 cycle 切换。
+当前 ready 由 session 级 ARM 授权，自动 detector 接管 cycle 切换；它只写标注状态，
+不发送机器 action。人工 MARK 流程仅用于旧数据兼容和异常诊断。
 
 ## 15. 必须交付的产物
 
@@ -1034,8 +1041,9 @@ v2.0.1 通过后，后续大规模数据继续沿用同一原始合同，逐步�
 | clean ready threshold | `0.08 rad` | 本 session 固定；`0.05–0.08 rad` 为过渡区 | `ready_contract.json` |
 | swing safe range | `[-0.3892, +0.4189] rad` | 只允许收紧；任何扩张都需要新的机械安全证据和合同版本 | `ready_contract.json` |
 | ready stable window | 连续 0.5 s、全窗 `abs(swing_qvel)<=0.015 rad/s`、最大样本间隔 0.15 s | boom/stick/bucket qpos/qvel 只记录；门控放宽必须有独立证据和新合同 | `ready_contract.json` |
-| ready人工证据 | 铲斗离土确认 + 操作员确认 | 两项均不可省略，initial/target 共用 | task event + `ready_contract.json` |
-| return candidate | swing action `0.08`、连续 6 row、回溯 5 row、复核窗 ±2.5 s | 可以根据人工 marker 偏差更新 detector；修改后提升 annotation 版本 | detector config + annotation manifest |
+| ready 操作员授权 | 每个 session 单次 ARM | run/cycle 内不再重复确认；ARM 后只按数据合同推进 | task status + `ready_contract.json` |
+| bucket clear | 无直接传感器真值 | 不作为在线伪门禁；保留为录后画面/QC 审计 | annotation manifest |
+| cycle excursion / return | 相对 goal 起点连续 3 个采样移动 `>=0.08 rad`，随后回到预定 TARGET 并满足 0.5 s 稳定窗 | ctx01 六个成功 cycle 均满足，首次触发距人工 target-ready 仍有 20.8–26.5 s；改变规则需提升 annotation 版本 | task event + annotation manifest |
 | 时序和 gap QC | 第 11.1 节表格 | 可以收紧；放宽会生成新的 QC/dataset 版本，不能回写旧 clean 结论 | resolved record/dataset config |
 | run 间土面处理 | 恢复土面或切换相近工作条带都允许 | 不需要选成唯一模式；每次操作记录 `workface_reset_id` 和方式 | `run_manifest.json` |
 | N5 warm-start bundle | 无现场默认 bundle | 上机前冻结实际 checkpoint、stats、resolved config、commit 和 SHA256 | session manifest |

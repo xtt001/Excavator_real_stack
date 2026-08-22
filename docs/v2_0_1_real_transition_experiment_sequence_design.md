@@ -14,6 +14,10 @@ field_preparation: docs/v2_0_1_real_transition_field_preparation_and_calibration
 
 # v2.0.1 Real Transition 实验执行序列设计
 
+> **现场边界更新（2026-08-21）**：冻结的 24-run/96-cycle 序列设计不变；操作侧已改为
+> 每个 session 只 ARM 一次，initial/target ready 和 goal 推进自动完成。旧的逐 cycle
+> 操作员确认描述不再是执行合同，当前命令见《[v2.0.1 主从端现场启动与命令手册](v2_0_1_host_slave_start_commands.md)》。
+
 ## 0. 结论
 
 本轮不再使用固定 P0/P1 作为正式数采顺序。正式方案在录制前根据 seed 生成并冻结 24 条不同序列，共 96 个 cycle。四种原子 transition、3/4/5 三种 run 长度、初始侧、首目标和配对先后顺序都有显式平衡。
@@ -120,8 +124,8 @@ cycle 位置又固定对应某个目标
 
 - 3/4/5 cycle 的 run stop 默认分别为 180/240/300 s；
 - 录制上限为 15000 step，对应 50 Hz 下最长 300 s；
-- 每个目标仍需在 cycle 开始前提交；
-- `initial-ready` 和 `target-ready` 必须同时记录铲斗离土、操作员确认和稳定窗证据；
+- 每个目标仍需在 cycle 开始前由 frozen sequencer 自动提交；
+- 每个 session 只做一次操作员 ARM；initial/target ready 自动记录稳定窗，铲斗离土保留为录后视觉/QC 项；
 - realized side 由当前 swing qpos 自动计算并记录，不能人工输入；
 - realized side 与 scripted target 不一致时立即 abort，不消费下一目标；
 - `workface_reset_id` 和 `workface_action` 缺失时，run 在创建文件前被拒绝；

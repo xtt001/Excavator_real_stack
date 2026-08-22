@@ -77,9 +77,9 @@ class TransitionContractError(RuntimeError):
 
 def _ready_mark_event_source(value: Any) -> str:
     source = str(value or "experimenter")
-    if source not in {"experimenter", "operator"}:
+    if source not in {"experimenter", "operator", "automatic"}:
         raise TransitionContractError(
-            "ready/dump MARK event_source must be experimenter or operator"
+            "ready boundary event_source must be experimenter, operator, or automatic"
         )
     return source
 
@@ -110,13 +110,35 @@ def _validate_ready_event_evidence(
         "sample_gap_ok",
         "swing_stable",
         "clean_side_window",
-        "bucket_clear_confirmed",
-        "operator_confirmed",
     ):
         if evidence.get(field) is not True:
             raise TransitionContractError(
                 f"ready_evidence requires {field}=true"
             )
+    automatic = evidence.get("boundary_mode") == "automatic_session_arm"
+    if automatic:
+        if evidence.get("session_armed") is not True:
+            raise TransitionContractError(
+                "automatic ready_evidence requires session_armed=true"
+            )
+        if evidence.get("operator_confirmed") is not True or evidence.get(
+            "operator_confirmation_source"
+        ) != "session_arm":
+            raise TransitionContractError(
+                "automatic ready_evidence requires session-level authorization"
+            )
+        if evidence.get("bucket_clear_confirmed") is not False or evidence.get(
+            "bucket_clear_policy"
+        ) != "posthoc_visual_qc":
+            raise TransitionContractError(
+                "automatic ready_evidence must defer bucket-clear to posthoc visual QC"
+            )
+    else:
+        for field in ("bucket_clear_confirmed", "operator_confirmed"):
+            if evidence.get(field) is not True:
+                raise TransitionContractError(
+                    f"manual ready_evidence requires {field}=true"
+                )
     if evidence.get("non_swing_axes_gate_ready") is not False:
         raise TransitionContractError(
             "ready_evidence must record that non-swing axes do not gate ready"
@@ -1622,6 +1644,7 @@ class TransitionRunPackage:
         self._phase = "new"
         self._cycle_index = 0
         self._goal_epoch = 0
+        self._cycle_excursion_observed = False
         self._sealed = False
         self._event_journal: _AsyncEventJournal | None = None
         if create:
@@ -1723,6 +1746,45 @@ class TransitionRunPackage:
             goal_epoch=self._goal_epoch,
         )
         self._phase = "goal_committed"
+        self._cycle_excursion_observed = False
+        return event
+
+    def record_cycle_excursion(
+        self,
+        *,
+        step_id: int,
+        step_ns: int,
+        anchor_swing_qpos_rad: float,
+        swing_qpos_rad: float,
+        swing_delta_rad: float,
+        threshold_rad: float,
+        consecutive_samples: int,
+    ) -> dict[str, Any]:
+        """Record sustained swing displacement from this goal's ready anchor."""
+
+        self._require_phase("goal_committed")
+        if self._cycle_excursion_observed:
+            raise TransitionContractError(
+                "cycle excursion was already recorded for the active goal"
+            )
+        event = self._append_event(
+            event_type="cycle_excursion_observed",
+            step_id=step_id,
+            step_ns=step_ns,
+            event_source="automatic",
+            notes="swing made a sustained excursion from the goal anchor",
+            scripted_target_side=self.next_target_side,
+            goal_epoch=self._goal_epoch,
+            detector_evidence={
+                "detector": "swing_displacement_from_goal_anchor",
+                "anchor_swing_qpos_rad": float(anchor_swing_qpos_rad),
+                "swing_qpos_rad": float(swing_qpos_rad),
+                "swing_delta_rad": float(swing_delta_rad),
+                "threshold_rad": float(threshold_rad),
+                "consecutive_samples": int(consecutive_samples),
+            },
+        )
+        self._cycle_excursion_observed = True
         return event
 
     def mark_dump_end(
@@ -1756,7 +1818,16 @@ class TransitionRunPackage:
         ready_evidence: Mapping[str, Any] | None = None,
         event_source: str = "experimenter",
     ) -> dict[str, Any]:
-        self._require_phase("dump_marked")
+        source = _ready_mark_event_source(event_source)
+        automatic = source == "automatic"
+        if automatic:
+            self._require_phase("goal_committed")
+            if not self._cycle_excursion_observed:
+                raise TransitionContractError(
+                    "automatic target ready requires a recorded swing excursion"
+                )
+        else:
+            self._require_phase("dump_marked")
         expected_target = self.next_target_side
         if self.run_spec.manifest_schema == SEQUENCE_MANIFEST_SCHEMA:
             if realized_target_side not in SIDE_CODES:
@@ -1778,7 +1849,7 @@ class TransitionRunPackage:
             event_type="target_ready_mark",
             step_id=step_id,
             step_ns=step_ns,
-            event_source=_ready_mark_event_source(event_source),
+            event_source=source,
             notes=notes,
             scripted_target_side=expected_target,
             realized_target_side=realized_target_side,
@@ -1786,6 +1857,7 @@ class TransitionRunPackage:
             ready_evidence=evidence,
         )
         self._cycle_index += 1
+        self._cycle_excursion_observed = False
         self._phase = (
             "cycles_complete"
             if self._cycle_index == len(self.run_spec.targets)
@@ -2005,6 +2077,7 @@ class TransitionRunPackage:
         goal_epoch: int | None = None,
         realized_target_side: str | None = None,
         ready_evidence: Mapping[str, Any] | None = None,
+        detector_evidence: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         if self._sealed:
             raise TransitionContractError("cannot append an event after package seal")
@@ -2069,6 +2142,8 @@ class TransitionRunPackage:
             ),
             "notes": str(notes),
         }
+        if detector_evidence is not None:
+            event["detector_evidence"] = dict(detector_evidence)
         encoded = json.dumps(
             event,
             ensure_ascii=False,
@@ -2091,6 +2166,7 @@ def validate_event_sequence(
     phase = "new"
     cycle_index = 0
     goal_epoch = 0
+    cycle_excursion_observed = False
     terminal = ""
     previous_pair: tuple[int, int] | None = None
     realized_targets: list[str] = []
@@ -2152,13 +2228,55 @@ def validate_event_sequence(
                     f"goal_commit is missing acknowledgements: {sorted(missing)}"
                 )
             phase = "goal_committed"
+            cycle_excursion_observed = False
+            continue
+        if event_type == "cycle_excursion_observed" and phase == "goal_committed":
+            if cycle_excursion_observed:
+                raise TransitionContractError(
+                    "duplicate cycle_excursion_observed event"
+                )
+            if event.get("event_source") != "automatic":
+                raise TransitionContractError(
+                    "cycle_excursion_observed must come from the automatic detector"
+                )
+            if event.get("scripted_target_side") != run_spec.targets[cycle_index]:
+                raise TransitionContractError(
+                    "cycle excursion target does not match the frozen goal"
+                )
+            evidence = event.get("detector_evidence")
+            if not isinstance(evidence, Mapping) or evidence.get("detector") != (
+                "swing_displacement_from_goal_anchor"
+            ):
+                raise TransitionContractError(
+                    "cycle excursion detector evidence is missing"
+                )
+            try:
+                threshold = float(evidence["threshold_rad"])
+                delta = abs(float(evidence["swing_delta_rad"]))
+                consecutive = int(evidence["consecutive_samples"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise TransitionContractError(
+                    "cycle excursion detector evidence is invalid"
+                ) from exc
+            if threshold <= 0.0 or delta < threshold or consecutive < 1:
+                raise TransitionContractError(
+                    "cycle excursion detector threshold was not met"
+                )
+            cycle_excursion_observed = True
             continue
         if event_type == "dump_end_mark" and phase == "goal_committed":
             if event.get("scripted_target_side") != run_spec.targets[cycle_index]:
                 raise TransitionContractError("dump_end_mark target is incorrect")
             phase = "dump_marked"
             continue
-        if event_type == "target_ready_mark" and phase == "dump_marked":
+        if event_type == "target_ready_mark" and (
+            phase == "dump_marked"
+            or (
+                phase == "goal_committed"
+                and event.get("event_source") == "automatic"
+                and cycle_excursion_observed
+            )
+        ):
             expected_target = run_spec.targets[cycle_index]
             if event.get("scripted_target_side") != expected_target:
                 raise TransitionContractError("target_ready_mark target is incorrect")
@@ -2176,6 +2294,7 @@ def validate_event_sequence(
                 )
                 realized_targets.append(str(realized))
             cycle_index += 1
+            cycle_excursion_observed = False
             phase = (
                 "cycles_complete"
                 if cycle_index == run_spec.cycle_count

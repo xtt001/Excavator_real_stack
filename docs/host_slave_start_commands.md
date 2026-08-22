@@ -3,7 +3,7 @@
 本文作为当前现场主从分体测试和录制的主文档，集中记录应启动的命令、链路检查、
 QC 和停止顺序。历史 runbook/checklist 已并入本页。
 
-> **v2.0.1 Real Transition**：现场固定启动、手柄单一 MARK、GUI 只读状态、停止、恢复和 materializer 命令统一执行《[v2.0.1 主从端现场启动与命令手册](v2_0_1_host_slave_start_commands.md)》。准备证据和规则型 ready 合同背景见《[v2.0.1 真机测试与标定准备手册](v2_0_1_real_transition_field_preparation_and_calibration_runbook.md)》。不再执行 home/A/B 各 10 次固定标定，也不要把下方 v1/policy 示例混入 v2 流程。
+> **v2.0.1 Real Transition**：现场固定启动、每个 session 只 ARM 一次、run/cycle 自动边界、GUI 只读状态、停止、恢复和 materializer 命令统一执行《[v2.0.1 主从端现场启动与命令手册](v2_0_1_host_slave_start_commands.md)》。准备证据和规则型 ready 合同背景见《[v2.0.1 真机测试与标定准备手册](v2_0_1_real_transition_field_preparation_and_calibration_runbook.md)》。不再执行 home/A/B 各 10 次固定标定，也不要把下方 v1/policy 示例混入 v2 流程。
 
 ## 现场常用命令集合（置顶）
 

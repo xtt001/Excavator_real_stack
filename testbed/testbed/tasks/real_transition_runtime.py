@@ -1,8 +1,8 @@
 """Receiver-side task runtime for expert real-transition recording.
 
 The task server never sends actuator commands.  It selects a frozen run,
-records experimenter markers against the latest HDF5 row, and requests the
-existing recorder state machine to start or stop the continuous run.
+records automatic/optional operator events against exact HDF5 rows, and
+requests the existing recorder state machine to start or stop each run.
 """
 
 from __future__ import annotations
@@ -71,6 +71,7 @@ class TransitionTaskRuntime:
         session_metadata: Mapping[str, Any] | None = None,
         field_context_defaults: Mapping[str, Any] | None = None,
         camera_sync: Mapping[str, Any] | None = None,
+        automatic_annotation: Mapping[str, Any] | None = None,
         cycle_review_s: float = 45.0,
         cycle_stop_s: float = 60.0,
         run_stop_s: float | None = None,
@@ -86,6 +87,22 @@ class TransitionTaskRuntime:
         self.run_stop_s = None if run_stop_s is None else float(run_stop_s)
         self.run_stop_s_per_cycle = float(run_stop_s_per_cycle)
         self._field_context_defaults = dict(field_context_defaults or {})
+        self._automatic_annotation_config = dict(automatic_annotation or {})
+        self._automatic_annotation_enabled = bool(
+            self._automatic_annotation_config.get("enabled", False)
+        )
+        self._activity_action_abs_min = float(
+            self._automatic_annotation_config.get("activity_action_abs_min", 0.05)
+        )
+        self._require_inter_run_activity = bool(
+            self._automatic_annotation_config.get(
+                "require_inter_run_activity", True
+            )
+        )
+        if not 0.0 < self._activity_action_abs_min <= 1.0:
+            raise TransitionContractError(
+                "automatic annotation activity_action_abs_min must be in (0,1]"
+            )
         self._camera_sync_config = dict(camera_sync or {})
         self._camera_sync_enabled = bool(
             self._camera_sync_config.get("enabled", False)
@@ -170,6 +187,15 @@ class TransitionTaskRuntime:
             raise TransitionContractError("ready contract root must be an object")
         validate_rule_ready_contract(ready_contract)
         self._ready_contract = ready_contract
+        if self._automatic_annotation_enabled:
+            requirements = dict(ready_contract.get("ready_requirements", {}) or {})
+            if requirements.get("operator_authorization_policy") != (
+                "single_session_arm"
+            ) or requirements.get("bucket_clear_policy") != "posthoc_visual_qc":
+                raise TransitionContractError(
+                    "automatic annotation requires a session-arm ready contract; "
+                    "prepare a new session with the current software"
+                )
         self.resolved_config_path = write_immutable_text(
             self.session_dir / "resolved_record_config.yaml",
             resolved_record_config_yaml,
@@ -201,6 +227,14 @@ class TransitionTaskRuntime:
         ] = deque()
         self._last_mark_error = ""
         self._last_mark_result = ""
+        self._session_armed = False
+        self._last_action_amplitude = 0.0
+        self._inter_run_rearm_required = False
+        self._inter_run_activity_observed = False
+        self._cycle_excursion_observed = False
+        self._goal_anchor_swing_qpos: float | None = None
+        self._excursion_candidate_count = 0
+        self._automatic_wait_reason = "session_not_armed"
         self._sealed_run_count = 0
         self._next_run_spec_hint: TransitionRunSpec | None = None
         self._next_run_ordinal: int | None = None
@@ -257,6 +291,9 @@ class TransitionTaskRuntime:
                 config.get("field_context_defaults", {}) or {}
             ),
             camera_sync=dict(config.get("camera_sync", {}) or {}),
+            automatic_annotation=dict(
+                config.get("automatic_annotation", {}) or {}
+            ),
             cycle_review_s=float(time_limits.get("cycle_review_s", 45.0)),
             cycle_stop_s=float(time_limits.get("cycle_stop_s", 60.0)),
             run_stop_s=(
@@ -285,6 +322,131 @@ class TransitionTaskRuntime:
         with self._lock:
             self._receiver_mode = str(mode)
             self._receiver_health_ok = bool(health_ok)
+
+    def update_operator_action(self, *, action: Any) -> None:
+        """Track post-deadzone operator activity without creating annotations."""
+
+        values = np.asarray(action, dtype=np.float64).reshape(-1)
+        if values.shape != (4,) or not np.all(np.isfinite(values)):
+            raise TransitionContractError(
+                "automatic annotation action must be a finite shape-(4,) vector"
+            )
+        amplitude = float(np.max(np.abs(values)))
+        with self._lock:
+            self._last_action_amplitude = amplitude
+            package = self._active_package
+            between_runs = package is None and self._inter_run_rearm_required
+            saving_complete_run = (
+                package is not None and package.phase == "complete"
+            )
+            if (
+                self._automatic_annotation_enabled
+                and self._session_armed
+                and (between_runs or saving_complete_run)
+                and amplitude > self._activity_action_abs_min
+            ):
+                self._inter_run_activity_observed = True
+
+    def advance_automatic_workflow(
+        self, *, allow_recorded_events: bool
+    ) -> dict[str, Any] | None:
+        """Advance only data/annotation state; this method never sends actions."""
+
+        with self._lock:
+            if not self._automatic_annotation_enabled or not self._session_armed:
+                self._automatic_wait_reason = "session_not_armed"
+                return None
+
+            package = self._active_package
+            if package is None:
+                if allow_recorded_events:
+                    return None
+                blocker = self._automatic_run_start_blocker()
+                if blocker:
+                    self._automatic_wait_reason = blocker
+                    return None
+                result = self._start_run(
+                    {"field_context": self._automatic_field_context()}
+                )
+                result = self.handle_command(
+                    "initial-ready",
+                    {
+                        "automatic_boundary": True,
+                        "event_source": "automatic",
+                        "notes": "automatic stable initial-ready after session ARM",
+                    },
+                )
+                self._automatic_wait_reason = "recorder_start_requested"
+                result["automatic_action"] = "initial-ready"
+                return result
+
+            if not allow_recorded_events or not self._recording_attached:
+                return None
+            if package.phase != "goal_committed":
+                return None
+            step_id, step_ns = self._require_latest_step()
+            if not self._ready_samples:
+                self._automatic_wait_reason = "waiting_ready_observation"
+                return None
+            current_swing = float(self._ready_samples[-1][1][0])
+            if not self._cycle_excursion_observed:
+                anchor = self._goal_anchor_swing_qpos
+                if anchor is None:
+                    raise TransitionContractError(
+                        "automatic cycle excursion is missing its goal anchor"
+                    )
+                swing_delta = _shortest_angle(current_swing - anchor)
+                swing_cfg = self._ready_contract["swing_axis"]
+                threshold = float(
+                    swing_cfg["cycle_excursion_min_abs_delta_rad"]
+                )
+                required_samples = int(
+                    swing_cfg["cycle_excursion_min_consecutive_samples"]
+                )
+                if abs(swing_delta) < threshold:
+                    self._excursion_candidate_count = 0
+                    self._automatic_wait_reason = "waiting_cycle_excursion"
+                    return None
+                self._excursion_candidate_count += 1
+                if self._excursion_candidate_count < required_samples:
+                    self._automatic_wait_reason = "confirming_cycle_excursion"
+                    return None
+                package.record_cycle_excursion(
+                    step_id=step_id,
+                    step_ns=step_ns,
+                    anchor_swing_qpos_rad=anchor,
+                    swing_qpos_rad=current_swing,
+                    swing_delta_rad=swing_delta,
+                    threshold_rad=threshold,
+                    consecutive_samples=self._excursion_candidate_count,
+                )
+                self._cycle_excursion_observed = True
+                self._automatic_wait_reason = "waiting_target_ready"
+                return self.status()
+
+            ready = self._ready_state_snapshot()
+            target = package.next_target_side
+            if list(ready.get("blockers", ())):
+                self._automatic_wait_reason = "waiting_target_ready"
+                return None
+            if ready.get("actual_side") != target:
+                self._automatic_wait_reason = f"waiting_target_side_{target}"
+                return None
+            result = self.handle_command(
+                "target-ready",
+                {
+                    "automatic_boundary": True,
+                    "event_source": "automatic",
+                    "notes": "automatic target-ready after excursion and stable return",
+                },
+            )
+            self._automatic_wait_reason = (
+                "saving_run"
+                if result.get("stop_requested")
+                else "waiting_cycle_excursion"
+            )
+            result["automatic_action"] = "target-ready"
+            return result
 
     def update_ready_observation(
         self,
@@ -495,6 +657,12 @@ class TransitionTaskRuntime:
             )
             self._reset_active_state()
             self._refresh_session_progress()
+            self._inter_run_rearm_required = True
+            self._automatic_wait_reason = (
+                "all_frozen_runs_complete"
+                if self._next_run_spec_hint is None
+                else "waiting_inter_run_activity"
+            )
             return manifest
 
     def handle_command(
@@ -505,6 +673,34 @@ class TransitionTaskRuntime:
             command = str(command).strip().replace("_", "-")
             if command == "status":
                 return self.status()
+            if command == "arm-session":
+                if not self._automatic_annotation_enabled:
+                    raise TransitionContractError(
+                        "session ARM is unavailable when automatic annotation is disabled"
+                    )
+                if self._active_package is not None:
+                    raise TransitionContractError(
+                        "cannot ARM an automatic session while a run is active"
+                    )
+                self._session_armed = True
+                self._inter_run_rearm_required = self._sealed_run_count > 0
+                self._inter_run_activity_observed = False
+                self._automatic_wait_reason = "waiting_initial_ready"
+                result = self.status()
+                result["message"] = (
+                    "session armed once; run/cycle boundaries now advance automatically"
+                )
+                return result
+            if command == "disarm-session":
+                if self._active_package is not None:
+                    raise TransitionContractError(
+                        "cannot disarm while a run is active; abort it explicitly first"
+                    )
+                self._session_armed = False
+                self._automatic_wait_reason = "session_not_armed"
+                result = self.status()
+                result["message"] = "automatic session disarmed"
+                return result
             if command == "start-run":
                 return self._start_run(payload)
             package = self._require_active_package()
@@ -601,6 +797,9 @@ class TransitionTaskRuntime:
                             payload.get("event_source", "experimenter")
                         ),
                     )
+                self._cycle_excursion_observed = False
+                self._goal_anchor_swing_qpos = None
+                self._excursion_candidate_count = 0
                 self._goal_commit_step_ns = None
                 self._timing_warning = ""
                 if package.phase == "cycles_complete":
@@ -646,10 +845,24 @@ class TransitionTaskRuntime:
             return result
 
     def handle_mark(self) -> dict[str, Any]:
-        """Apply the one-button operator MARK according to the current phase."""
+        """Use the task button once to ARM; manual MARK remains legacy-only."""
 
         with self._lock:
             try:
+                if self._automatic_annotation_enabled:
+                    if self._session_armed:
+                        result = self.status()
+                        result["message"] = (
+                            "session is already armed; no annotation event was created"
+                        )
+                        action = "already-armed"
+                    else:
+                        result = self.handle_command("arm-session")
+                        action = "arm-session"
+                    self._last_mark_error = ""
+                    self._last_mark_result = action
+                    result["mark_action"] = action
+                    return result
                 phase = (
                     self._active_package.phase
                     if self._active_package is not None
@@ -711,6 +924,14 @@ class TransitionTaskRuntime:
             return {
                 "receiver_mode": self._receiver_mode,
                 "receiver_health_ok": self._receiver_health_ok,
+                "automatic_annotation_enabled": self._automatic_annotation_enabled,
+                "session_armed": self._session_armed,
+                "automatic_wait_reason": self._automatic_wait_reason,
+                "activity_action_abs_min": self._activity_action_abs_min,
+                "last_action_amplitude": self._last_action_amplitude,
+                "inter_run_rearm_required": self._inter_run_rearm_required,
+                "inter_run_activity_observed": self._inter_run_activity_observed,
+                "cycle_excursion_observed": self._cycle_excursion_observed,
                 "session_id": str(self._manifest["session_id"]),
                 "sealed_run_count": self._sealed_run_count,
                 "next_run_id": (
@@ -900,14 +1121,21 @@ class TransitionTaskRuntime:
         expected_side: str | None,
         payload: Mapping[str, Any],
     ) -> dict[str, Any]:
-        if payload.get("bucket_clear_confirmed") is not True:
-            raise TransitionContractError(
-                "ready requires bucket_clear_confirmed=true"
-            )
-        if payload.get("operator_confirmed") is not True:
-            raise TransitionContractError(
-                "ready requires operator_confirmed=true"
-            )
+        automatic = payload.get("automatic_boundary") is True
+        if automatic:
+            if not self._automatic_annotation_enabled or not self._session_armed:
+                raise TransitionContractError(
+                    "automatic ready requires an armed automatic-annotation session"
+                )
+        else:
+            if payload.get("bucket_clear_confirmed") is not True:
+                raise TransitionContractError(
+                    "ready requires bucket_clear_confirmed=true"
+                )
+            if payload.get("operator_confirmed") is not True:
+                raise TransitionContractError(
+                    "ready requires operator_confirmed=true"
+                )
         evidence = self._ready_state_snapshot()
         blockers = list(evidence.get("blockers", ()))
         if blockers:
@@ -926,8 +1154,23 @@ class TransitionTaskRuntime:
                 f"actual ready side {actual_side} does not match expected {expected_side}"
             )
         evidence["expected_side"] = expected_side
-        evidence["bucket_clear_confirmed"] = True
-        evidence["operator_confirmed"] = True
+        if automatic:
+            evidence.update(
+                {
+                    "boundary_mode": "automatic_session_arm",
+                    "session_armed": True,
+                    "operator_confirmed": True,
+                    "operator_confirmation_source": "session_arm",
+                    "bucket_clear_confirmed": False,
+                    "bucket_clear_policy": "posthoc_visual_qc",
+                    "cycle_excursion_observed": bool(
+                        self._cycle_excursion_observed
+                    ),
+                }
+            )
+        else:
+            evidence["bucket_clear_confirmed"] = True
+            evidence["operator_confirmed"] = True
         evidence["ready_contract_sha256"] = self._ready_contract[
             "contract_sha256"
         ]
@@ -985,6 +1228,10 @@ class TransitionTaskRuntime:
         self._run_start_step_ns = None
         self._goal_commit_step_ns = None
         self._timing_warning = ""
+        self._cycle_excursion_observed = False
+        self._goal_anchor_swing_qpos = None
+        self._excursion_candidate_count = 0
+        self._inter_run_activity_observed = False
         result = self.status()
         result["message"] = (
             "run selected; place the machine at initial_side, then send initial-ready; "
@@ -1008,6 +1255,32 @@ class TransitionTaskRuntime:
             "context_source": "automatic_joystick_mark",
         }
 
+    def _automatic_run_start_blocker(self) -> str:
+        if self._next_run_spec_hint is None:
+            return "all_frozen_runs_complete"
+        if self._session_progress_error:
+            return "session_progress_error"
+        if self._receiver_mode != "armed":
+            return f"receiver_mode_{self._receiver_mode}"
+        if not self._receiver_health_ok:
+            return "receiver_health"
+        if list(self._camera_sync_state_snapshot().get("blockers", ())):
+            return "camera_sync"
+        if (
+            self._inter_run_rearm_required
+            and self._require_inter_run_activity
+            and not self._inter_run_activity_observed
+        ):
+            return "waiting_inter_run_activity"
+        if self._last_action_amplitude > self._activity_action_abs_min:
+            return "waiting_operator_action_neutral"
+        ready = self._ready_state_snapshot()
+        if list(ready.get("blockers", ())):
+            return "waiting_initial_ready"
+        if ready.get("actual_side") != self._next_run_spec_hint.initial_side:
+            return f"waiting_initial_side_{self._next_run_spec_hint.initial_side}"
+        return ""
+
     def _commit_goal_automatically(
         self,
         package: TransitionRunPackage,
@@ -1024,11 +1297,19 @@ class TransitionTaskRuntime:
             notes="automatic frozen-sequence goal commit",
         )
         self._goal_commit_step_ns = int(step_ns)
+        if not self._ready_samples:
+            raise TransitionContractError(
+                "automatic goal commit requires a current swing observation"
+            )
+        self._goal_anchor_swing_qpos = float(self._ready_samples[-1][1][0])
+        self._cycle_excursion_observed = False
+        self._excursion_candidate_count = 0
         self._timing_warning = ""
         return event
 
-    @staticmethod
-    def _mark_next_action(package: TransitionRunPackage | None) -> str:
+    def _mark_next_action(self, package: TransitionRunPackage | None) -> str:
+        if self._automatic_annotation_enabled:
+            return "automatic" if self._session_armed else "arm-session"
         phase = package.phase if package is not None else "idle"
         return {
             "idle": "start-run",
@@ -1167,6 +1448,9 @@ class TransitionTaskRuntime:
         self._run_start_step_ns = None
         self._goal_commit_step_ns = None
         self._timing_warning = ""
+        self._cycle_excursion_observed = False
+        self._goal_anchor_swing_qpos = None
+        self._excursion_candidate_count = 0
 
     def _write_session_manifest(self, metadata: Mapping[str, Any]) -> Path:
         path = self.session_dir / "session_manifest.json"
@@ -1177,6 +1461,12 @@ class TransitionTaskRuntime:
             "session_id": str(self._manifest["session_id"]),
             "prepared_at_utc": str(self._manifest.get("created_at_utc", "")),
             "recording_mode": "expert_teleop_only",
+            "annotation_mode": (
+                "single_session_arm_automatic_boundaries"
+                if self._automatic_annotation_enabled
+                else "legacy_operator_mark_boundaries"
+            ),
+            "automatic_annotation": dict(self._automatic_annotation_config),
             "policy_loaded": False,
             "n5_bundle": {
                 "status": "not_loaded_expert_recording",
@@ -1482,6 +1772,10 @@ def _required_text(payload: Mapping[str, Any], field: str) -> str:
     if not value:
         raise TransitionContractError(f"transition command requires {field}")
     return value
+
+
+def _shortest_angle(value: float) -> float:
+    return float((float(value) + np.pi) % (2.0 * np.pi) - np.pi)
 
 
 def _git_commit(repo_root: Path) -> str:

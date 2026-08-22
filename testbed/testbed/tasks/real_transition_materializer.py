@@ -1,8 +1,9 @@
 """Deterministically materialize sealed transition runs into 20 Hz cycles.
 
-The raw run package remains immutable.  Operator MARK events own the ready and
-dump boundaries, while the frozen sequencer ``goal_commit`` owns the cycle
-condition.  Every derived row retains its source row/step provenance.
+The raw run package remains immutable.  A session-level ARM authorizes
+automatic ready boundaries, while the frozen sequencer ``goal_commit`` owns the
+cycle condition.  Manual MARK runs remain readable.  Every derived row retains
+its source row/step provenance.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from typing import Any
 import h5py
 import numpy as np
 
+from testbed.tasks.home_side_contract import READY_RULE_DEFAULTS
 from testbed.tasks.real_transition import (
     CONDITION_SCHEMA,
     SIDE_CODES,
@@ -28,8 +30,8 @@ from testbed.tasks.real_transition import (
 )
 
 
-ANNOTATION_SCHEMA = "real_transition_cycle_annotation_v1"
-ANNOTATION_VERSION = "operator_mark_materializer_v1"
+ANNOTATION_SCHEMA = "real_transition_cycle_annotation_v2"
+ANNOTATION_VERSION = "session_arm_auto_materializer_v2"
 CYCLE_MANIFEST_SCHEMA = "real_transition_cycle_manifest_v1"
 MATERIALIZER_SCHEMA = "real_transition_cycle_materializer_v1"
 EXPECTED_CAMERAS = ("video4", "video5", "video6", "video7")
@@ -43,6 +45,17 @@ DERIVED_GAP_MAX_MS = 120.0
 STRUCTURAL_GAP_MAX_MS = 250.0
 CAMERA_GROUP_SKEW_MAX_MS = 5.0
 ACT_CHUNK_STEPS = 20
+HOME_SWING_RAD = float(READY_RULE_DEFAULTS["home_swing_qpos_rad"])
+CLEAN_READY_MIN_DELTA_RAD = float(
+    READY_RULE_DEFAULTS["clean_ready_min_abs_delta_rad"]
+)
+LEFT_SIGN = int(READY_RULE_DEFAULTS["physical_left_qpos_sign"])
+EXCURSION_MIN_DELTA_RAD = float(
+    READY_RULE_DEFAULTS["cycle_excursion_min_abs_delta_rad"]
+)
+EXCURSION_MIN_CONSECUTIVE_SAMPLES = int(
+    READY_RULE_DEFAULTS["cycle_excursion_min_consecutive_samples"]
+)
 
 
 def materialize_transition_run(
@@ -162,7 +175,7 @@ def _materialize_into(
         cycle_records.extend(records)
         annotations.extend(run_annotations)
 
-    annotation_path = annotations_dir / "cycle_annotations_v1.jsonl"
+    annotation_path = annotations_dir / "cycle_annotations_v2.jsonl"
     _write_jsonl(annotation_path, annotations)
     annotation_sha256 = sha256_file(annotation_path)
 
@@ -258,6 +271,12 @@ def _materialize_into(
         "goal_lead_clean_ms": GOAL_LEAD_CLEAN_MS,
         "goal_lead_exclude_ms": GOAL_LEAD_EXCLUDE_MS,
         "camera_group_skew_max_ms": CAMERA_GROUP_SKEW_MAX_MS,
+        "automatic_cycle_excursion": {
+            "detector": "swing_displacement_from_goal_anchor",
+            "min_abs_delta_rad": EXCURSION_MIN_DELTA_RAD,
+            "min_consecutive_samples": EXCURSION_MIN_CONSECUTIVE_SAMPLES,
+        },
+        "dump_boundary_policy": "optional_manual_event_else_return_proxy_only",
         "local_source_gap_max_ms": LOCAL_SOURCE_GAP_MAX_MS,
         "derived_gap_max_ms": DERIVED_GAP_MAX_MS,
         "structural_gap_max_ms": STRUCTURAL_GAP_MAX_MS,
@@ -328,7 +347,7 @@ def _inspect_run_cycles(
         effective_amplitude = np.max(np.abs(commanded_action), axis=1)
         for cycle_index in range(int(manifest["completed_cycles"])):
             cycle_events = events_by_cycle.get(cycle_index, {})
-            required = ("goal_commit", "dump_end_mark", "target_ready_mark")
+            required = ("goal_commit", "target_ready_mark")
             missing = [name for name in required if name not in cycle_events]
             if missing:
                 raise TransitionContractError(
@@ -336,7 +355,8 @@ def _inspect_run_cycles(
                     + ", ".join(missing)
                 )
             goal = cycle_events["goal_commit"]
-            dump = cycle_events["dump_end_mark"]
+            dump = cycle_events.get("dump_end_mark")
+            excursion = cycle_events.get("cycle_excursion_observed")
             target_ready = cycle_events["target_ready_mark"]
             current_ready = (
                 initial_ready
@@ -344,13 +364,28 @@ def _inspect_run_cycles(
                 else events_by_cycle[cycle_index - 1]["target_ready_mark"]
             )
             goal_row = _event_row(goal, row_by_step, step_ns)
-            dump_row = _event_row(dump, row_by_step, step_ns)
             target_row = _event_row(target_ready, row_by_step, step_ns)
             current_ready_row = _event_row(current_ready, row_by_step, step_ns)
-            if not (current_ready_row <= goal_row <= dump_row <= target_row):
+            dump_row = (
+                None if dump is None else _event_row(dump, row_by_step, step_ns)
+            )
+            excursion_event_row = (
+                None
+                if excursion is None
+                else _event_row(excursion, row_by_step, step_ns)
+            )
+            if not (current_ready_row <= goal_row <= target_row):
                 raise TransitionContractError(
                     f"run {manifest['run_id']} cycle {cycle_index} event rows are invalid"
                 )
+            for label, row in (
+                ("dump", dump_row),
+                ("excursion", excursion_event_row),
+            ):
+                if row is not None and not goal_row <= row <= target_row:
+                    raise TransitionContractError(
+                        f"run {manifest['run_id']} cycle {cycle_index} {label} row is invalid"
+                    )
             obs_indices = _select_cycle_observation_indices(
                 step_ns=step_ns,
                 first_row=goal_row + 1,
@@ -377,12 +412,28 @@ def _inspect_run_cycles(
                 stop=target_row,
                 threshold=ACTION_INTENT_THRESHOLD,
             )
-            return_row = _first_threshold_row(
-                intent_amplitude,
-                start=dump_row,
-                stop=target_row,
-                threshold=ACTION_INTENT_THRESHOLD,
+            swing_qpos = np.asarray(
+                source["observations/qpos"][goal_row : target_row + 1, 0],
+                dtype=np.float64,
             )
+            goal_anchor_qpos = float(swing_qpos[0])
+            excursion_mask = (
+                np.abs(_shortest_angle_array(swing_qpos - goal_anchor_qpos))
+                >= EXCURSION_MIN_DELTA_RAD
+            )
+            excursion_end = _first_consecutive_true_end(
+                excursion_mask,
+                EXCURSION_MIN_CONSECUTIVE_SAMPLES,
+            )
+            excursion_data_row = (
+                None if excursion_end is None else goal_row + excursion_end
+            )
+            return_ready_proxy_row = _last_target_side_entry(
+                swing_qpos,
+                target_side=str(target_ready["realized_target_side"]),
+            )
+            if return_ready_proxy_row is not None:
+                return_ready_proxy_row += goal_row
             goal_lead_ms = (
                 None
                 if intent_row is None
@@ -407,6 +458,7 @@ def _inspect_run_cycles(
                 "transition_type": f"{current}->{target}",
                 "goal_event": goal,
                 "dump_event": dump,
+                "excursion_event": excursion,
                 "target_ready_event": target_ready,
                 "current_ready_event": current_ready,
                 "source_indices": obs_indices,
@@ -421,10 +473,12 @@ def _inspect_run_cycles(
                 ),
                 "goal_row": goal_row,
                 "dump_row": dump_row,
+                "excursion_event_row": excursion_event_row,
+                "excursion_data_row": excursion_data_row,
+                "return_ready_proxy_row": return_ready_proxy_row,
                 "target_ready_row": target_row,
                 "first_intent_row": intent_row,
                 "first_effective_action_row": effective_row,
-                "first_return_action_row": return_row,
                 "goal_lead_ms": goal_lead_ms,
                 "passive_events": passive_events,
             }
@@ -456,7 +510,7 @@ def _classify_cycle(
             flag(f"missing_{path.replace('/', '_')}", "excluded")
             continue
         indices = action_idx if path == "action" else obs_idx
-        values = np.asarray(source[path][indices])
+        values = _read_indexed(source[path], indices)
         if not np.all(np.isfinite(values)):
             flag(f"nonfinite_{path.replace('/', '_')}", "excluded")
 
@@ -505,6 +559,16 @@ def _classify_cycle(
 
     if str(record["realized_target_side"]) != str(record["target_side"]):
         flag("realized_target_mismatch", "excluded")
+    if record.get("excursion_data_row") is None:
+        flag("cycle_ready_range_excursion_missing", "excluded")
+    if str(record["target_ready_event"].get("event_source", "")) == "automatic":
+        excursion_event = record.get("excursion_event")
+        if not isinstance(excursion_event, Mapping):
+            flag("automatic_excursion_event_missing", "excluded")
+        elif dict(excursion_event.get("detector_evidence", {}) or {}).get(
+            "detector"
+        ) != "swing_displacement_from_goal_anchor":
+            flag("automatic_excursion_evidence_invalid", "excluded")
     if str(record["manifest"].get("status", "")) != "complete":
         flag("source_run_not_complete", "excluded")
     if record["passive_events"]:
@@ -515,7 +579,7 @@ def _classify_cycle(
     else:
         source_types = {
             _decode_text(value)
-            for value in source["action_source/type"][action_idx]
+            for value in _read_indexed(source["action_source/type"], action_idx)
         }
         if source_types != {"teleop"}:
             flag("non_teleop_action_source", "excluded")
@@ -574,10 +638,15 @@ def _camera_sync_qc(
 
 
 def _annotation_record(record: Mapping[str, Any]) -> dict[str, Any]:
+    automatic = record["target_ready_event"].get("event_source") == "automatic"
     return {
         "schema": ANNOTATION_SCHEMA,
         "annotation_version": ANNOTATION_VERSION,
-        "annotation_source": "operator_MARK_plus_frozen_sequencer",
+        "annotation_source": (
+            "session_ARM_auto_boundary_plus_frozen_sequencer"
+            if automatic
+            else "operator_MARK_plus_frozen_sequencer"
+        ),
         "source_raw_sha256": record["source_raw_sha256"],
         "source_events_sha256": record["source_events_sha256"],
         "source_session_id": record["manifest"]["session_id"],
@@ -592,9 +661,18 @@ def _annotation_record(record: Mapping[str, Any]) -> dict[str, Any]:
             "first_effective_action_confirmed": _row_boundary(
                 record, "first_effective_action_row"
             ),
-            "dump_end_confirmed": _boundary(record["dump_event"]),
-            "first_return_action_confirmed": _row_boundary(
-                record, "first_return_action_row"
+            "dump_end_confirmed": (
+                None
+                if record.get("dump_event") is None
+                else _boundary(record["dump_event"])
+            ),
+            "cycle_excursion_observed": (
+                _boundary(record["excursion_event"])
+                if record.get("excursion_event") is not None
+                else _row_boundary(record, "excursion_data_row")
+            ),
+            "return_to_ready_entry_proxy": _row_boundary(
+                record, "return_ready_proxy_row"
             ),
             "target_ready_confirmed": _boundary(record["target_ready_event"]),
         },
@@ -605,8 +683,16 @@ def _annotation_record(record: Mapping[str, Any]) -> dict[str, Any]:
         },
         "evidence": {
             "goal_owner": "frozen_sequence_goal_commit",
-            "ready_owner": "operator_state_aware_MARK",
-            "dump_owner": "operator_state_aware_MARK",
+            "ready_owner": (
+                "automatic_session_ARM_detector"
+                if automatic
+                else "operator_state_aware_MARK"
+            ),
+            "dump_owner": (
+                "operator_state_aware_MARK"
+                if record.get("dump_event") is not None
+                else "not_required_return_proxy_only"
+            ),
             "camera_owner": "recorded_GMSL_group_metadata",
         },
     }
@@ -704,7 +790,11 @@ def _write_cycle_episode(
             "transition_success": int(
                 record["realized_target_side"] == record["target_side"]
             ),
-            "physical_effect": "operator_marked_cycle_complete",
+            "physical_effect": (
+                "automatic_ready_cycle_complete"
+                if record["target_ready_event"].get("event_source") == "automatic"
+                else "operator_marked_cycle_complete"
+            ),
             "failure_reason": ",".join(record["qc_reasons"]),
             "expected_return_swing_sign": (
                 0
@@ -826,13 +916,49 @@ def _row_boundary(record: Mapping[str, Any], key: str) -> dict[str, Any] | None:
     row = record.get(key)
     if row is None:
         return None
-    return {
+    detector = {
+        "excursion_data_row": "swing_displacement_from_goal_anchor",
+        "return_ready_proxy_row": "final_entry_into_target_clean_side",
+    }.get(key, "action_amplitude_threshold")
+    result = {
         "source_row_index": int(row),
         "source_step_id": int(record["source_step_ids_all"][int(row)]),
         "source_step_ns": int(record["source_step_ns_all"][int(row)]),
-        "detector": "action_amplitude_threshold",
-        "threshold": ACTION_INTENT_THRESHOLD,
+        "detector": detector,
     }
+    if detector == "action_amplitude_threshold":
+        result["threshold"] = ACTION_INTENT_THRESHOLD
+    elif detector == "swing_displacement_from_goal_anchor":
+        result["min_abs_delta_rad"] = EXCURSION_MIN_DELTA_RAD
+        result["min_consecutive_samples"] = EXCURSION_MIN_CONSECUTIVE_SAMPLES
+    return result
+
+
+def _shortest_angle_array(values: np.ndarray) -> np.ndarray:
+    return (np.asarray(values, dtype=np.float64) + np.pi) % (2.0 * np.pi) - np.pi
+
+
+def _first_consecutive_true_end(
+    values: np.ndarray, required: int
+) -> int | None:
+    count = 0
+    for index, value in enumerate(np.asarray(values, dtype=bool)):
+        count = count + 1 if bool(value) else 0
+        if count >= required:
+            return int(index)
+    return None
+
+
+def _last_target_side_entry(
+    swing_qpos: np.ndarray, *, target_side: str
+) -> int | None:
+    delta = _shortest_angle_array(
+        np.asarray(swing_qpos, dtype=np.float64) - HOME_SWING_RAD
+    )
+    target_sign = LEFT_SIGN if target_side == "A" else -LEFT_SIGN
+    in_target = delta * target_sign >= CLEAN_READY_MIN_DELTA_RAD
+    entries = np.flatnonzero(in_target & np.r_[False, ~in_target[:-1]])
+    return None if not entries.size else int(entries[-1])
 
 
 def _copy_indexed(
@@ -841,10 +967,22 @@ def _copy_indexed(
     dataset = source[path]
     parent_path, name = path.rsplit("/", 1) if "/" in path else ("", path)
     parent = output.require_group(parent_path) if parent_path else output
-    values = dataset[np.asarray(indices, dtype=np.int64)]
+    values = _read_indexed(dataset, indices)
     copied = parent.create_dataset(name, data=values, dtype=dataset.dtype)
     for key, value in dataset.attrs.items():
         copied.attrs[key] = value
+
+
+def _read_indexed(dataset: h5py.Dataset, indices: np.ndarray) -> np.ndarray:
+    """Read ordered indices while preserving duplicates rejected by h5py."""
+
+    requested = np.asarray(indices, dtype=np.int64).reshape(-1)
+    if any(size == 0 for size in dataset.shape[1:]):
+        return np.empty((requested.size, *dataset.shape[1:]), dtype=dataset.dtype)
+    if not requested.size:
+        return np.asarray(dataset[0:0])
+    unique, inverse = np.unique(requested, return_inverse=True)
+    return np.asarray(dataset[unique])[inverse]
 
 
 def _copy_encoded_images(
