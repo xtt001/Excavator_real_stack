@@ -259,21 +259,24 @@ class ImuCard(QtWidgets.QFrame):
     def __init__(self, index: int) -> None:
         super().__init__()
         self.index = int(index)
-        self.setMinimumHeight(90)
+        self.setMinimumHeight(60)
         self.setFrameShape(QtWidgets.QFrame.StyledPanel)
         layout = QtWidgets.QVBoxLayout(self)
-        self.title = QtWidgets.QLabel(f"IMU {index}")
+        layout.setContentsMargins(6, 2, 6, 2)
+        layout.setSpacing(0)
+        self.title = QtWidgets.QLabel(f"{AXIS_NAMES[index]} · IMU {index}")
         self.title.setAlignment(QtCore.Qt.AlignCenter)
-        self.title.setStyleSheet("font-weight:800; font-size:16px;")
-        self.state = QtWidgets.QLabel("等待状态")
+        self.title.setStyleSheet("font-weight:800; font-size:12px;")
+        self.state = QtWidgets.QLabel("qpos -")
         self.state.setAlignment(QtCore.Qt.AlignCenter)
-        self.state.setStyleSheet("font-weight:800; font-size:19px;")
-        self.detail = QtWidgets.QLabel("age=-  loss=-")
+        self.state.setStyleSheet("font-weight:800; font-size:16px;")
+        self.detail = QtWidgets.QLabel("WAIT · age=-")
         self.detail.setAlignment(QtCore.Qt.AlignCenter)
+        self.detail.setStyleSheet("font-size:10px; color:#bdc3c7;")
         layout.addWidget(self.title)
         layout.addWidget(self.state)
         layout.addWidget(self.detail)
-        self.update_state(None, None, None, None)
+        self.update_state(None, None, None, None, None)
 
     def update_state(
         self,
@@ -281,29 +284,33 @@ class ImuCard(QtWidgets.QFrame):
         attitude: Any,
         age_ms: Any,
         loss: Any,
+        qpos_rad: Any,
     ) -> None:
         if online is None:
             color = GRAY
-            state = "WAIT"
+            health_text = "WAIT"
         elif not bool(online):
             color = RED
-            state = "OFFLINE"
+            health_text = "OFFLINE"
         elif not bool(attitude):
             color = AMBER
-            state = "姿态无效"
+            health_text = "姿态无效"
         elif _float(age_ms, -1.0) < 0 or _float(age_ms, -1.0) > 100.0:
             color = AMBER
-            state = "数据陈旧"
+            health_text = "数据陈旧"
         else:
             color = GREEN
-            state = "ONLINE"
-        self.state.setText(state)
+            health_text = "ONLINE"
+        qpos_text = "-" if qpos_rad is None else f"{_float(qpos_rad, 0.0):+.3f} rad"
+        self.state.setText(qpos_text)
         self.state.setStyleSheet(
-            f"font-weight:800; font-size:19px; color:{color};"
+            "font-family:monospace; font-weight:800; font-size:16px; "
+            f"color:{color};"
         )
         age_text = "-" if age_ms is None else f"{_float(age_ms, -1.0):.1f} ms"
-        loss_text = "-" if loss is None else str(_int(loss, 0))
-        self.detail.setText(f"age={age_text}  loss={loss_text}")
+        loss_value = None if loss is None else _int(loss, 0)
+        loss_text = f" · loss={loss_value}" if loss_value else ""
+        self.detail.setText(f"{health_text} · age={age_text}{loss_text}")
         self.setStyleSheet(
             "QFrame {"
             f"border:2px solid {color}; border-radius:7px; background:#202830;"
@@ -471,12 +478,13 @@ class HostDashboard(QtWidgets.QMainWindow):
         root.addLayout(summary)
 
         critical = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
-        critical.setMinimumHeight(145)
+        critical.setMinimumHeight(112)
         root.addWidget(critical)
 
-        imu_group = QtWidgets.QGroupBox("四路 IMU 健康（必须全部 ONLINE）")
+        imu_group = QtWidgets.QGroupBox("四轴 qpos / IMU 健康（绿框=ONLINE）")
         imu_layout = QtWidgets.QHBoxLayout(imu_group)
-        imu_layout.setSpacing(7)
+        imu_layout.setContentsMargins(8, 4, 8, 6)
+        imu_layout.setSpacing(5)
         self.imu_cards = [ImuCard(index) for index in range(4)]
         for card in self.imu_cards:
             imu_layout.addWidget(card)
@@ -484,29 +492,30 @@ class HostDashboard(QtWidgets.QMainWindow):
 
         home_group = QtWidgets.QGroupBox("HOME 标定（实际运行配置优先）")
         home_layout = QtWidgets.QVBoxLayout(home_group)
-        home_layout.setSpacing(4)
+        home_layout.setContentsMargins(8, 4, 8, 6)
+        home_layout.setSpacing(1)
         self.home_state = QtWidgets.QLabel("等待 HOME 配置")
         self.home_state.setAlignment(QtCore.Qt.AlignCenter)
-        self.home_state.setStyleSheet("font-size:18px; font-weight:800;")
+        self.home_state.setStyleSheet("font-size:15px; font-weight:800;")
         home_layout.addWidget(self.home_state)
         home_axes = QtWidgets.QHBoxLayout()
-        home_axes.setSpacing(5)
+        home_axes.setSpacing(3)
         self.home_axis_labels: list[QtWidgets.QLabel] = []
         for axis_name in AXIS_NAMES:
             label = QtWidgets.QLabel(f"{axis_name}\n-")
             label.setAlignment(QtCore.Qt.AlignCenter)
-            label.setMinimumHeight(52)
+            label.setMinimumHeight(42)
             label.setStyleSheet(
                 "background:#11181d; border:1px solid #46535e; "
-                "border-radius:5px; padding:4px; font-family:monospace; "
-                "font-size:11px;"
+                "border-radius:5px; padding:2px; font-family:monospace; "
+                "font-size:9px;"
             )
             self.home_axis_labels.append(label)
             home_axes.addWidget(label)
         home_layout.addLayout(home_axes)
         self.home_detail = QtWidgets.QLabel("配置来源：-")
-        self.home_detail.setWordWrap(True)
-        self.home_detail.setStyleSheet("font-size:11px; color:#bdc3c7;")
+        self.home_detail.setWordWrap(False)
+        self.home_detail.setStyleSheet("font-size:9px; color:#bdc3c7;")
         home_layout.addWidget(self.home_detail)
         critical.addWidget(home_group)
         critical.setStretchFactor(0, 5)
@@ -520,7 +529,7 @@ class HostDashboard(QtWidgets.QMainWindow):
         video_layout = QtWidgets.QVBoxLayout(video_group)
         self.video_label = QtWidgets.QLabel("等待 video4 图像")
         self.video_label.setAlignment(QtCore.Qt.AlignCenter)
-        self.video_label.setMinimumSize(640, 360)
+        self.video_label.setMinimumSize(480, 270)
         self.video_label.setStyleSheet("background:#05080a; color:#7f8c8d;")
         self.video_info = QtWidgets.QLabel("topic: " + str(self.args.video_topic))
         video_layout.addWidget(self.video_label, stretch=1)
@@ -528,27 +537,50 @@ class HostDashboard(QtWidgets.QMainWindow):
         middle.addWidget(video_group)
 
         side = QtWidgets.QWidget()
+        side.setMinimumWidth(500)
         side_layout = QtWidgets.QVBoxLayout(side)
+        side_layout.setContentsMargins(0, 0, 0, 0)
         self.record_text = self._info_box("录制状态")
         self.save_text = self._info_box("保存状态")
         self.storage_text = self._info_box("存储状态")
         self.latency_text = self._info_box("实时延迟")
         self.control_text = self._info_box("控制与动作（只读）")
-        for group, widget in (
-            ("录制", self.record_text),
-            ("HDF5 保存", self.save_text),
-            ("外置盘", self.storage_text),
-            ("当前动作年龄", self.latency_text),
-            ("控制链路", self.control_text),
-        ):
-            box = QtWidgets.QGroupBox(group)
-            layout = QtWidgets.QVBoxLayout(box)
-            layout.addWidget(widget)
-            side_layout.addWidget(box)
-        side_layout.addStretch(1)
+        detail_group = QtWidgets.QGroupBox("运行详情")
+        detail_layout = QtWidgets.QGridLayout(detail_group)
+        detail_layout.setHorizontalSpacing(10)
+        detail_layout.setVerticalSpacing(5)
+        detail_sections = (
+            ("录制", self.record_text, 0, 0, 1),
+            ("HDF5 保存", self.save_text, 0, 1, 1),
+            ("外置盘", self.storage_text, 1, 0, 1),
+            ("当前动作年龄", self.latency_text, 1, 1, 1),
+            ("控制链路", self.control_text, 2, 0, 2),
+        )
+        for group, widget, row, column, column_span in detail_sections:
+            section = QtWidgets.QWidget()
+            section_layout = QtWidgets.QVBoxLayout(section)
+            section_layout.setContentsMargins(0, 0, 0, 0)
+            section_layout.setSpacing(1)
+            heading = QtWidgets.QLabel(group)
+            heading.setAlignment(QtCore.Qt.AlignTop | QtCore.Qt.AlignLeft)
+            heading.setStyleSheet(
+                "font-size:12px; font-weight:800; color:#d5dadd; padding-top:1px;"
+            )
+            widget.setStyleSheet(
+                "font-family:monospace; font-size:12px; padding-bottom:3px; "
+                "border-bottom:1px solid #34414a;"
+            )
+            section_layout.addWidget(heading)
+            section_layout.addWidget(widget, stretch=1)
+            detail_layout.addWidget(section, row, column, 1, column_span)
+        detail_layout.setColumnStretch(0, 1)
+        detail_layout.setColumnStretch(1, 1)
+        detail_layout.setRowStretch(2, 1)
+        side_layout.addWidget(detail_group)
         middle.addWidget(side)
         middle.setStretchFactor(0, 7)
         middle.setStretchFactor(1, 3)
+        middle.setSizes([1200, 600])
 
         lower = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
         root.addWidget(lower, stretch=2)
@@ -591,7 +623,7 @@ class HostDashboard(QtWidgets.QMainWindow):
         if not home or not bool(home.get("available", 0)):
             self.home_state.setText("HOME 配置不可用")
             self.home_state.setStyleSheet(
-                f"font-size:18px; font-weight:800; color:{GRAY};"
+                f"font-size:15px; font-weight:800; color:{GRAY};"
             )
             for index, label in enumerate(self.home_axis_labels):
                 label.setText(f"{AXIS_NAMES[index]}\n-")
@@ -610,7 +642,7 @@ class HostDashboard(QtWidgets.QMainWindow):
             headline, color = "HOME 已启用", GREEN
         self.home_state.setText(headline)
         self.home_state.setStyleSheet(
-            f"font-size:18px; font-weight:800; color:{color};"
+            f"font-size:15px; font-weight:800; color:{color};"
         )
 
         pose = _vector(home.get("home_pose_rad"), 4)
@@ -629,11 +661,14 @@ class HostDashboard(QtWidgets.QMainWindow):
             label.setText(f"{AXIS_NAMES[index]}\n{value_text}")
 
         source = str(home.get("source_config", "") or "-")
+        source_name = Path(source).name if source != "-" else "-"
         timeout = _format_float(home.get("timeout_s"))
         dwell = _format_float(home.get("dwell_s"))
         self.home_detail.setText(
-            f"成功容差显示在各轴下方  |  timeout={timeout}s  dwell={dwell}s\n"
-            f"配置来源：{source}"
+            f"timeout={timeout}s  dwell={dwell}s  |  来源：{source_name}"
+        )
+        self.home_detail.setToolTip(
+            f"成功容差显示在各轴下方\n配置来源：{source}"
         )
 
     def _update_transition_panel(self, transition: dict[str, Any]) -> None:
@@ -649,7 +684,13 @@ class HostDashboard(QtWidgets.QMainWindow):
         next_initial_text = next_initial_side if phase in {"idle", "disabled"} else "-"
         target_side = str(transition.get("next_target_side", "-") or "-")
         completed = _int(transition.get("completed_cycles"), 0)
-        planned = _int(transition.get("planned_cycle_count"), 0)
+        planned = _int(
+            transition.get("planned_cycle_count")
+            if transition.get("planned_cycle_count") is not None
+            else transition.get("next_planned_cycle_count"),
+            0,
+        )
+        current_cycle = min(completed + 1, planned) if planned > 0 else 0
         stable = bool(ready.get("swing_stable", False))
         window_complete = bool(ready.get("window_complete", False))
         window_duration = _float(ready.get("window_duration_s"), 0.0)
@@ -673,7 +714,7 @@ class HostDashboard(QtWidgets.QMainWindow):
             )
             self.transition_state.setText(
                 f"ARM={armed_text}  |  RUN {run_id}  |  phase={phase}  |  "
-                f"cycle={completed}/{planned}  |  "
+                f"cycle={current_cycle}/{planned}  |  "
                 f"NEXT INITIAL={next_initial_text}  |  initial={initial_side}  |  "
                 f"TARGET={target_side}  |  "
                 f"实际侧={actual_side}  |  swing稳定={_yes_no(stable)}  |  "
@@ -856,14 +897,26 @@ class HostDashboard(QtWidgets.QMainWindow):
         save_state_key = str(save.get("state", "idle") or "idle").lower()
         save_state = save_state_key.upper()
         has_receiver_status = bool(receiver)
-        recorded_count_available = storage.get("recorded_count") is not None
-        recorded_count = _int(storage.get("recorded_count"), 0)
-        recorded_detail = (
-            f"本次进程保存 {saved} 条 / 最近 episode "
-            f"{storage.get('last_recorded_episode_idx', '-')}"
-            if recorded_count_available
-            else f"当前 receiver 尚未提供磁盘总数 / 本次保存 {saved} 条"
-        )
+        v2_recorded_count = transition.get("sealed_run_count")
+        if v2_recorded_count is not None:
+            recorded_count_available = True
+            recorded_count = _int(v2_recorded_count, 0)
+            planned_runs = _int(transition.get("planned_run_count"), 0)
+            last_auto = dict(transition.get("last_automatic_event", {}) or {})
+            last_run_id = str(last_auto.get("run_id", "-") or "-")
+            recorded_detail = (
+                f"v2 session 已封存 {recorded_count}/{planned_runs or '-'} 条"
+                f" / 最近 run {last_run_id}"
+            )
+        else:
+            recorded_count_available = storage.get("recorded_count") is not None
+            recorded_count = _int(storage.get("recorded_count"), 0)
+            recorded_detail = (
+                f"本次进程保存 {saved} 条 / 最近 episode "
+                f"{storage.get('last_recorded_episode_idx', '-')}"
+                if recorded_count_available
+                else f"当前 receiver 尚未提供磁盘总数 / 本次保存 {saved} 条"
+            )
         self.prominent_cards["recorded"].set_state(
             (
                 f"{recorded_count} 条"
@@ -1008,27 +1061,38 @@ class HostDashboard(QtWidgets.QMainWindow):
         attitude = _vector(imu.get("valid_attitude"), 4)
         ages = _vector(imu.get("host_rx_age_ms"), 4)
         losses = _vector(imu.get("packet_loss_count"), 4)
+        ready_state = dict(transition.get("ready_state", {}) or {})
+        non_swing_qpos = _vector(
+            ready_state.get("non_swing_qpos_current_rad"), 3
+        )
+        swing_qpos = ready_state.get("swing_qpos_current_rad")
+        live_qpos = (
+            [swing_qpos, *non_swing_qpos]
+            if swing_qpos is not None and non_swing_qpos is not None
+            else None
+        )
         for index, card in enumerate(self.imu_cards):
             card.update_state(
                 _item(online, index),
                 _item(attitude, index),
                 _item(ages, index),
                 _item(losses, index),
+                _item(live_qpos, index),
             )
         self._update_home_panel(dict(receiver.get("home", {}) or {}))
         self._update_transition_panel(transition)
 
         warnings = qc.get("warning_codes") or []
         self.qc_text.setText(
-            f"status          {qc.get('status') or 'WAIT'}\n"
-            f"error           {qc.get('error_code') or '-'}\n"
-            f"warnings        {','.join(str(x) for x in warnings) or '-'}\n"
-            f"train_exclude   {qc.get('train_exclude', '-')}\n"
-            f"healthy_steps   {qc.get('healthy_steps', '-')}\n"
-            f"healthy_frac    {_format_fraction(qc.get('healthy_fraction'))}\n"
-            f"masked_steps    {qc.get('train_exclude_steps', '-')}\n"
-            f"fpv_brightness  {_format_float(qc.get('fpv_brightness'))}\n"
-            f"fpv_contrast    {_format_float(qc.get('fpv_contrast'))}"
+            f"status {qc.get('status') or 'WAIT'}  |  "
+            f"error {qc.get('error_code') or '-'}\n"
+            f"warnings {','.join(str(x) for x in warnings) or '-'}\n"
+            f"train_exclude {qc.get('train_exclude', '-')}  |  "
+            f"masked {qc.get('train_exclude_steps', '-')}\n"
+            f"healthy {qc.get('healthy_steps', '-')} steps  |  "
+            f"fraction {_format_fraction(qc.get('healthy_fraction'))}\n"
+            f"fpv brightness {_format_float(qc.get('fpv_brightness'))}  |  "
+            f"contrast {_format_float(qc.get('fpv_contrast'))}"
         )
 
         event_key = (

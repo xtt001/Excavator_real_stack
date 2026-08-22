@@ -189,6 +189,10 @@ GUI 不连接控制端口、不发送 action，也不向 `8771` 写事件。顶�
 不是控制执行时延；10 Hz 状态镜像出现约 `0–100 ms` age 正常。
 v2 面板在 run 创建前直接显示 `NEXT INITIAL=A/B`，run 内显示 TARGET、实际侧、
 `excursion=YES/NO`、swing 稳定窗 `当前/0.50s`、自动等待原因和最近一次自动事件。
+`已录制条数` 以当前 v2 session 已封存的 run 数为准，不使用旧版顶层 episode 扫描；
+`cycle=X/N` 中 `X` 表示当前 cycle（已完成数加一），等待下一条 run 时从 `1/N` 开始。
+四路 IMU 卡中央显示当前四轴 qpos；绿/黄/红框和下方小字表示 IMU 在线、姿态有效性、
+数据年龄及非零丢包，不再用大号 `ONLINE` 占据主要空间。
 出现红色 `saving_run` 时禁止关闭、重启或拔盘；正常 run 内 GUI 不要求点击或 MARK。
 
 ## 4. 点火前放行条件
@@ -372,6 +376,8 @@ seed 创建新 session 后从未封存的 run 重新录制。receiver 报
 `session_manifest.json`，不需要递增新的 `ctx`。一旦出现任何 run 目录，运行期 artifact
 继续严格锁定；此时的冲突必须先检查并保留数据。所有 immutable artifact 采用“先写临时
 文件、fsync、再原子发布”，掉电不会再把 0 字节临时结果暴露为正式 manifest。
+已有 run 后若仅代码 commit 更新而数据配置与合同未变，receiver 复用原 session manifest；
+每条新 run 仍在自身 provenance 中记录当前 commit。配置或合同变化仍会拒绝混入同一 session。
 
 ## 9. 命令附录
 

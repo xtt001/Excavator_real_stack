@@ -969,6 +969,11 @@ class TransitionTaskRuntime:
                     if package is None and self._next_run_spec_hint is not None
                     else (spec.initial_side if spec is not None else None)
                 ),
+                "next_planned_cycle_count": (
+                    self._next_run_spec_hint.cycle_count
+                    if package is None and self._next_run_spec_hint is not None
+                    else None
+                ),
                 "next_field_context": (
                     self._automatic_field_context()
                     if package is None and self._next_run_spec_hint is not None
@@ -1533,6 +1538,21 @@ class TransitionTaskRuntime:
             "raw_package_mutation_policy": "append_until_seal_then_immutable",
             "sequence_mode": "seeded_balanced_frozen_multisequence",
         }
+        if path.exists() and self._session_contains_recording_data():
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise TransitionContractError(
+                    f"cannot reuse recorded session manifest {path}: {exc}"
+                ) from exc
+            expected = dict(payload)
+            expected["git_commit"] = existing.get("git_commit")
+            if existing != expected:
+                raise TransitionContractError(
+                    "recorded session manifest is incompatible with the current "
+                    f"runtime contract: {path}"
+                )
+            return path
         self._write_pre_recording_runtime_artifact(
             path,
             json.dumps(

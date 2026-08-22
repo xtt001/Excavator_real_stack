@@ -667,6 +667,15 @@ class RealTransitionRuntimeTest(unittest.TestCase):
             )
 
             (session_dir / "block_b01").mkdir()
+            TransitionTaskRuntime(
+                **kwargs,
+                resolved_record_config_yaml="task: second\n",
+                git_commit="c" * 40,
+            )
+            self.assertEqual(
+                json.loads(manifest.read_text(encoding="utf-8"))["git_commit"],
+                "b" * 40,
+            )
             with self.assertRaisesRegex(
                 TransitionContractError,
                 "after recording data exists",
@@ -674,7 +683,7 @@ class RealTransitionRuntimeTest(unittest.TestCase):
                 TransitionTaskRuntime(
                     **kwargs,
                     resolved_record_config_yaml="task: third\n",
-                    git_commit="c" * 40,
+                    git_commit="d" * 40,
                 )
 
     def test_camera_sync_gate_blocks_start_until_a_coherent_window(self) -> None:
@@ -876,6 +885,10 @@ class RealTransitionRuntimeTest(unittest.TestCase):
             assert next_spec is not None
             self.assertEqual(
                 runtime.status()["next_initial_side"], next_spec.initial_side
+            )
+            self.assertEqual(
+                runtime.status()["next_planned_cycle_count"],
+                next_spec.cycle_count,
             )
             self.assertEqual(runtime.status()["last_automatic_event"], {})
             _feed_ready_window(

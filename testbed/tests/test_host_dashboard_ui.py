@@ -102,6 +102,7 @@ def test_v2_panel_is_read_only_and_explains_the_next_mark_action() -> None:
             "mark_next_action": "arm-session",
             "automatic_wait_reason": "session_not_armed",
             "next_initial_side": "A",
+            "next_planned_cycle_count": 5,
             "next_field_context": {
                 "workface_reset_id": "wf_001",
                 "workface_action": "fresh_strip",
@@ -114,6 +115,7 @@ def test_v2_panel_is_read_only_and_explains_the_next_mark_action() -> None:
         }
     )
     assert "NEXT INITIAL=A" in window.transition_state.text()
+    assert "cycle=1/5" in window.transition_state.text()
     assert "稳定窗=0.32/0.50s" in window.transition_state.text()
     assert "下一条 INITIAL=A" in window.transition_instruction.text()
     assert "按一次左手柄物理按钮 2" in window.transition_instruction.text()
@@ -214,6 +216,7 @@ def test_v2_panel_is_read_only_and_explains_the_next_mark_action() -> None:
     )
     assert "INITIAL READY" in window.transition_instruction.text()
     assert "A侧" in window.transition_instruction.text()
+    assert "cycle=1/4" in window.transition_state.text()
 
     window._update_transition_panel(
         {
@@ -231,6 +234,80 @@ def test_v2_panel_is_read_only_and_explains_the_next_mark_action() -> None:
     )
     assert "目标 B 已按预定序列自动提交" in window.transition_instruction.text()
     assert "DUMP END" in window.transition_instruction.text()
+    assert "cycle=1/4" in window.transition_state.text()
+    window.close()
+    app.processEvents()
+
+
+def test_v2_record_count_and_compact_details_use_transition_status() -> None:
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    window = _LayoutOnlyDashboard()
+    window.record_hz = 50.0
+    window.max_steps = 15000
+    window.latest_status = {
+        "receiver": {
+            "receiver_mode": "armed",
+            "episode_idx": 1,
+            "record_steps": 0,
+            "saved": 1,
+            "health": {
+                "imu": {
+                    "online": [1, 1, 1, 1],
+                    "valid_attitude": [1, 1, 1, 1],
+                    "host_rx_age_ms": [7.0, 8.0, 9.0, 10.0],
+                    "packet_loss_count": [0, 0, 0, 0],
+                }
+            },
+            "storage": {
+                "recorded_count": 0,
+                "last_recorded_episode_idx": -1,
+            },
+            "real_transition": {
+                "phase": "idle",
+                "sealed_run_count": 1,
+                "planned_run_count": 24,
+                "next_initial_side": "A",
+                "next_planned_cycle_count": 5,
+                "last_automatic_event": {
+                    "run_id": "b01_r01",
+                    "event_type": "target_ready_mark",
+                },
+                "ready_state": {
+                    "swing_qpos_current_rad": -0.008,
+                    "non_swing_qpos_current_rad": [-0.137, -0.509, 0.239],
+                },
+            },
+        }
+    }
+    window._update_status_panels()
+    assert window.prominent_cards["recorded"].value.text() == "1 条"
+    assert "已封存 1/24" in window.prominent_cards["recorded"].detail.text()
+    assert "b01_r01" in window.prominent_cards["recorded"].detail.text()
+    assert window.imu_cards[0].state.text() == "-0.008 rad"
+    assert window.imu_cards[3].state.text() == "+0.239 rad"
+    assert "ONLINE · age=7.0 ms" in window.imu_cards[0].detail.text()
+    assert "loss=" not in window.imu_cards[0].detail.text()
+
+    for label in (
+        window.record_text,
+        window.save_text,
+        window.storage_text,
+        window.latency_text,
+        window.control_text,
+    ):
+        label.setText("第一行\n第二行\n第三行")
+    window.resize(1600, 990)
+    window.show()
+    app.processEvents()
+    for label in (
+        window.record_text,
+        window.save_text,
+        window.storage_text,
+        window.latency_text,
+        window.control_text,
+    ):
+        assert label.isVisible()
+        assert label.height() >= label.sizeHint().height()
     window.close()
     app.processEvents()
 
