@@ -12,7 +12,7 @@ N5/E52 流程仍参考《[主从端启动命令速查](host_slave_start_commands
 | 从端 SSH | `slave-jetson`，即 `mundane@192.168.100.1` |
 | 从端仓库 | `/media/mundane/D/Excavator_real_stack` |
 | 分支 | `fs/v2.0.1`；两端 `git rev-parse HEAD` 必须一致 |
-| 当前新 session | `/media/mundane/EXTERNAL_USB/real_transition_raw_v2/session_rt_20260822_ctx03` |
+| 当前新 session | `/media/mundane/EXTERNAL_USB/real_transition_raw_v2/session_rt_20260822_ctx04` |
 | 控制 CAN / IMU CAN | `can2` 250 kbit/s / `can5` 1 Mbit/s |
 | 四路相机 | `/dev/video4..7` |
 | bridge / gateway | `127.0.0.1:8766` / `127.0.0.1:8765` |
@@ -121,7 +121,7 @@ GMSL_VIDEO_DEVICES="4 5 6 7" ./scripts/bring_up_gmsl_cameras.sh
 ```bash
 cd /media/mundane/D/Excavator_real_stack
 
-export EXCAVATOR_TRANSITION_SESSION_DIR="/media/mundane/EXTERNAL_USB/real_transition_raw_v2/session_rt_20260822_ctx03"
+export EXCAVATOR_TRANSITION_SESSION_DIR="/media/mundane/EXTERNAL_USB/real_transition_raw_v2/session_rt_20260822_ctx04"
 ./scripts/run_real_transition_expert_recording.sh
 ```
 
@@ -248,7 +248,7 @@ status11 = [1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0]
 ```bash
 cd /media/mundane/D/Excavator_real_stack
 export PYTHON="$PWD/.venv/bin/python"
-export SESSION_DIR="/media/mundane/EXTERNAL_USB/real_transition_raw_v2/session_rt_20260822_ctx03"
+export SESSION_DIR="/media/mundane/EXTERNAL_USB/real_transition_raw_v2/session_rt_20260822_ctx04"
 
 find "${SESSION_DIR}" -name run_manifest.json -printf '%T@ %h\n' \
   | sort -n | tail -n 1
@@ -275,7 +275,7 @@ find "${SESSION_DIR}" -name run_manifest.json -printf '%T@ %h\n' \
 ```bash
 "${PYTHON}" -m testbed.cli.real_transition materialize-session \
   "${SESSION_DIR}" \
-  --output-dir "/media/mundane/EXTERNAL_USB/real_transition_cycle_v1/session_rt_20260822_ctx03_v2"
+  --output-dir "/media/mundane/EXTERNAL_USB/real_transition_cycle_v1/session_rt_20260822_ctx04_v2"
 ```
 
 输出目录必须不存在，工具拒绝覆盖。生成内容包括：
@@ -356,6 +356,13 @@ ls -l /dev/shm/excavator_gmsl_video{4,5,6,7}
 
 不要只重启 receiver；video7 脱同步时应正常停止整套 stack，再由 wrapper 重新应用四路
 触发配置并通过预检。
+
+若机器或链路在 `saving` 阶段故障，run 目录可能只剩 `.raw.hdf5.tmp.<pid>` 和
+`task_events.jsonl`。不要改写 `session_manifest.json`，也不要把缺少 action/timestamps 的
+临时 HDF5 改名冒充成功数据。完整保留并把该 session 改名为 `interrupted_*`，使用相同
+seed 创建新 session 后从未封存的 run 重新录制。receiver 报
+`refusing to overwrite immutable artifact: .../session_manifest.json` 时，先按此规则检查，
+不能反复强启同一损坏 session。
 
 ## 9. 命令附录
 
@@ -442,7 +449,7 @@ export SESSION_ROOT="/media/mundane/EXTERNAL_USB/real_transition_raw_v2"
 
 "${PYTHON}" -m testbed.cli.real_transition prepare-session \
   --output-root "${SESSION_ROOT}" \
-  --session-id "rt_20260822_ctx03" \
+  --session-id "rt_20260822_ctx04" \
   --seed 20260822
 ```
 
