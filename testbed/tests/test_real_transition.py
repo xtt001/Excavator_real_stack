@@ -103,6 +103,7 @@ def _feed_camera_sync_window(
     start_ns: int,
     count: int,
     skew_ms: float,
+    error_flag_cameras: tuple[str, ...] = (),
 ) -> None:
     for index in range(count):
         group_id = index + 1
@@ -114,7 +115,7 @@ def _feed_camera_sync_window(
                     "group_camera_count": 4,
                     "group_valid": 1,
                     "group_skew_ms": skew_ms,
-                    "v4l2_error": 0,
+                    "v4l2_error": int(camera in error_flag_cameras),
                 }
                 for camera in ("video4", "video5", "video6", "video7")
             },
@@ -678,10 +679,15 @@ class RealTransitionRuntimeTest(unittest.TestCase):
                 start_ns=2_000_000_000,
                 count=11,
                 skew_ms=0.04,
+                error_flag_cameras=("video4", "video5"),
             )
             camera_state = passing.status()["camera_sync_state"]
             self.assertTrue(camera_state["ready"])
             self.assertEqual(camera_state["blockers"], [])
+            self.assertEqual(
+                camera_state["v4l2_error_flag_cameras"],
+                ["video4", "video5"],
+            )
             started = passing.handle_mark()
             self.assertEqual(started["mark_action"], "start-run")
 

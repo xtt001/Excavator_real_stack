@@ -12,7 +12,7 @@ N5/E52 流程仍参考《[主从端启动命令速查](host_slave_start_commands
 | 从端 SSH | `slave-jetson`，即 `mundane@192.168.100.1` |
 | 从端仓库 | `/media/mundane/D/Excavator_real_stack` |
 | 分支 | `fs/v2.0.1`；两端 `git rev-parse HEAD` 必须一致 |
-| 当前新 session | `/media/mundane/EXTERNAL_USB/real_transition_raw_v2/session_rt_20260821_ctx03` |
+| 当前新 session | `/media/mundane/EXTERNAL_USB/real_transition_raw_v2/session_rt_20260822_ctx03` |
 | 控制 CAN / IMU CAN | `can2` 250 kbit/s / `can5` 1 Mbit/s |
 | 四路相机 | `/dev/video4..7` |
 | bridge / gateway | `127.0.0.1:8766` / `127.0.0.1:8765` |
@@ -121,7 +121,7 @@ GMSL_VIDEO_DEVICES="4 5 6 7" ./scripts/bring_up_gmsl_cameras.sh
 ```bash
 cd /media/mundane/D/Excavator_real_stack
 
-export EXCAVATOR_TRANSITION_SESSION_DIR="/media/mundane/EXTERNAL_USB/real_transition_raw_v2/session_rt_20260821_ctx03"
+export EXCAVATOR_TRANSITION_SESSION_DIR="/media/mundane/EXTERNAL_USB/real_transition_raw_v2/session_rt_20260822_ctx03"
 ./scripts/run_real_transition_expert_recording.sh
 ```
 
@@ -136,6 +136,12 @@ wrapper 会依次完成：
 5. 在 receiver 启动前采样 3 s 四相机 group metadata。只有有效率 `>=0.98`、最大
    group skew `<=5 ms` 且 distinct group `>=30` 才启动 receiver；
 6. 启动 expert receiver 和 `8771` 恢复/诊断 API。
+
+现场 SG8A 驱动会持续给 `video4/video5` 设置 `V4L2_BUF_FLAG_ERROR`，但既有动态画面、
+sequence/timestamp、CUDA preprocess 和 SHM 证据均正常。该原始 flag 必须继续写入 QC，
+但不能单独把同步组判死；正式门禁仍要求四路同 group、`group_valid=1`、时间戳推进、
+group 数足够且 skew 不超过 5 ms。若同时出现 group 无效、时间戳停滞、缺帧或画面异常，
+仍按相机故障处理。
 
 如果预检失败，`8770` 不会监听，因此不可能进入录制。不要用 `--no-camera` 绕过正式
 录制门禁；先按第 8 节检查触发配置、日志和四路 group metadata。
@@ -242,7 +248,7 @@ status11 = [1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0]
 ```bash
 cd /media/mundane/D/Excavator_real_stack
 export PYTHON="$PWD/.venv/bin/python"
-export SESSION_DIR="/media/mundane/EXTERNAL_USB/real_transition_raw_v2/session_rt_20260821_ctx03"
+export SESSION_DIR="/media/mundane/EXTERNAL_USB/real_transition_raw_v2/session_rt_20260822_ctx03"
 
 find "${SESSION_DIR}" -name run_manifest.json -printf '%T@ %h\n' \
   | sort -n | tail -n 1
@@ -269,7 +275,7 @@ find "${SESSION_DIR}" -name run_manifest.json -printf '%T@ %h\n' \
 ```bash
 "${PYTHON}" -m testbed.cli.real_transition materialize-session \
   "${SESSION_DIR}" \
-  --output-dir "/media/mundane/EXTERNAL_USB/real_transition_cycle_v1/session_rt_20260821_ctx03_v2"
+  --output-dir "/media/mundane/EXTERNAL_USB/real_transition_cycle_v1/session_rt_20260822_ctx03_v2"
 ```
 
 输出目录必须不存在，工具拒绝覆盖。生成内容包括：
@@ -436,8 +442,8 @@ export SESSION_ROOT="/media/mundane/EXTERNAL_USB/real_transition_raw_v2"
 
 "${PYTHON}" -m testbed.cli.real_transition prepare-session \
   --output-root "${SESSION_ROOT}" \
-  --session-id "rt_20260821_ctx03" \
-  --seed 20260821
+  --session-id "rt_20260822_ctx03" \
+  --seed 20260822
 ```
 
 查看工具：

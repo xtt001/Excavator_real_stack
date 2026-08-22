@@ -223,7 +223,14 @@ class TransitionTaskRuntime:
         self._timing_warning = ""
         self._ready_samples: deque[tuple[int, np.ndarray, np.ndarray]] = deque()
         self._camera_sync_samples: deque[
-            tuple[int, int, bool, float, tuple[str, ...]]
+            tuple[
+                int,
+                int,
+                bool,
+                float,
+                tuple[str, ...],
+                tuple[str, ...],
+            ]
         ] = deque()
         self._last_mark_error = ""
         self._last_mark_result = ""
@@ -517,6 +524,12 @@ class TransitionTaskRuntime:
         skews = [
             float(value.get("group_skew_ms", float("inf"))) for value in entries
         ]
+        error_flag_cameras = tuple(
+            camera
+            for camera in self._camera_sync_expected_cameras
+            if isinstance(metadata_map.get(camera), Mapping)
+            and int(metadata_map[camera].get("v4l2_error", 0) or 0)
+        )
         valid = (
             not missing
             and len(entries) == len(self._camera_sync_expected_cameras)
@@ -524,7 +537,6 @@ class TransitionTaskRuntime:
             and next(iter(group_ids), 0) > 0
             and camera_counts == {len(self._camera_sync_expected_cameras)}
             and all(int(value.get("group_valid", 0) or 0) == 1 for value in entries)
-            and not any(int(value.get("v4l2_error", 0) or 0) for value in entries)
             and bool(skews)
             and max(skews) <= self._camera_sync_max_skew_ms
         )
@@ -537,7 +549,14 @@ class TransitionTaskRuntime:
                 else:
                     self._camera_sync_samples.pop()
             self._camera_sync_samples.append(
-                (stamp, int(group_id), bool(valid), float(skew_ms), tuple(missing))
+                (
+                    stamp,
+                    int(group_id),
+                    bool(valid),
+                    float(skew_ms),
+                    tuple(missing),
+                    error_flag_cameras,
+                )
             )
             cutoff = stamp - int(4.0 * self._camera_sync_window_s * 1_000_000_000)
             while self._camera_sync_samples and self._camera_sync_samples[0][0] < cutoff:
@@ -1333,6 +1352,8 @@ class TransitionTaskRuntime:
             "distinct_group_count": 0,
             "valid_fraction": 0.0,
             "observed_max_skew_ms": None,
+            "v4l2_error_flag_cameras": [],
+            "v4l2_error_policy": "record_only_not_a_sync_gate",
             "window_duration_s": 0.0,
             "ready": not self._camera_sync_enabled,
             "blockers": [],
@@ -1358,6 +1379,9 @@ class TransitionTaskRuntime:
         finite_skews = [sample[3] for sample in window if np.isfinite(sample[3])]
         max_skew = max(finite_skews) if finite_skews else None
         missing = sorted({camera for sample in window for camera in sample[4]})
+        error_flag_cameras = sorted(
+            {camera for sample in window for camera in sample[5]}
+        )
         blockers: list[str] = []
         if duration_s + 1e-9 < self._camera_sync_window_s:
             blockers.append("camera_sync_window_too_short")
@@ -1377,6 +1401,7 @@ class TransitionTaskRuntime:
             "observed_max_skew_ms": None if max_skew is None else float(max_skew),
             "window_duration_s": duration_s,
             "missing_cameras": missing,
+            "v4l2_error_flag_cameras": error_flag_cameras,
             "ready": not blockers,
             "blockers": blockers,
         }

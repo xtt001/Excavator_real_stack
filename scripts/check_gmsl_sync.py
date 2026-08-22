@@ -73,18 +73,25 @@ def camera_group_sample(
         int(value.get("group_valid", 0) or 0) for value in metadata
     }
     skew_values = [float(value.get("group_skew_ms", float("inf"))) for value in metadata]
-    v4l2_errors = [int(value.get("v4l2_error", 0) or 0) for value in metadata]
+    v4l2_errors = {
+        camera: int(value.get("v4l2_error", 0) or 0)
+        for camera, value in zip(expected_cameras, metadata)
+    }
     coherent = (
         len(group_ids) == 1
         and next(iter(group_ids), 0) > 0
         and group_counts == {len(expected_cameras)}
         and group_valid_values == {1}
-        and not any(v4l2_errors)
     )
     return {
         "group_id": next(iter(group_ids), 0) if len(group_ids) == 1 else 0,
         "valid": bool(coherent),
         "skew_ms": max(skew_values),
+        # The field SG8A driver persistently marks video4/video5 buffers with
+        # V4L2_BUF_FLAG_ERROR even when image content, sequence, timestamp,
+        # CUDA preprocessing, SHM publication, and cross-camera grouping are
+        # healthy.  Preserve this as QC evidence; do not make it the sole gate.
+        "v4l2_errors": v4l2_errors,
         "v4l2_timestamps_ns": {
             camera: int(value.get("v4l2_timestamp_ns", 0) or 0)
             for camera, value in zip(expected_cameras, metadata)
@@ -114,6 +121,13 @@ def evaluate_samples(
     }
     skews = [float(row.get("skew_ms", float("inf"))) for row in rows]
     valid_fraction = valid_count / len(rows)
+    error_flag_counts = {
+        camera: sum(
+            bool(dict(row.get("v4l2_errors", {}) or {}).get(camera, 0))
+            for row in rows
+        )
+        for camera in EXPECTED_CAMERAS
+    }
     passed = (
         valid_fraction >= float(min_valid_fraction)
         and len(distinct_groups) >= int(min_distinct_groups)
@@ -124,6 +138,8 @@ def evaluate_samples(
         "sample_count": len(rows),
         "valid_count": int(valid_count),
         "valid_fraction": float(valid_fraction),
+        "v4l2_error_flag_counts": error_flag_counts,
+        "v4l2_error_policy": "record_only_not_a_sync_gate",
         "distinct_group_count": len(distinct_groups),
         "skew_ms": {
             "median": float(statistics.median(skews)),

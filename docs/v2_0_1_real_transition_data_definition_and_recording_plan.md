@@ -795,6 +795,8 @@ composition_penalty = max(
 第一版尽量保持 N5 已验证的主合同：
 
 - 四相机顺序：`video4, video5, video6, video7`；
+- `video4/video5` 的已知 `V4L2_BUF_FLAG_ERROR` 逐帧保留为 QC 字段，但不单独阻断同步；
+  四路 group 一致性、`group_valid`、时间戳推进、distinct group 和 skew 仍为硬门禁；
 - 图像 transform 与现场推理一致；
 - policy rate：20 Hz；
 - ACT chunk：20 steps；

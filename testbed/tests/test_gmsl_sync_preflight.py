@@ -59,3 +59,38 @@ def test_camera_group_sample_requires_one_four_camera_group() -> None:
     sample = MODULE.camera_group_sample(payload)
     assert sample["valid"] is True
     assert sample["group_id"] == 123
+
+
+def test_known_v4l2_error_flags_are_recorded_but_do_not_break_sync() -> None:
+    payload = {
+        "images": {
+            camera: {
+                "metadata": {
+                    "group_id": 123,
+                    "group_valid": 1,
+                    "group_camera_count": 4,
+                    "group_skew_ms": 0.03,
+                    "v4l2_timestamp_ns": 1000 + index,
+                    "v4l2_error": int(camera in {"video4", "video5"}),
+                }
+            }
+            for index, camera in enumerate(MODULE.EXPECTED_CAMERAS)
+        }
+    }
+    sample = MODULE.camera_group_sample(payload)
+    assert sample["valid"] is True
+    assert sample["v4l2_errors"] == {
+        "video4": 1,
+        "video5": 1,
+        "video6": 0,
+        "video7": 0,
+    }
+    report = MODULE.evaluate_samples(
+        [dict(sample, group_id=index) for index in range(1, 41)],
+        min_valid_fraction=0.98,
+        max_skew_ms=5.0,
+        min_distinct_groups=30,
+    )
+    assert report["status"] == "PASS"
+    assert report["v4l2_error_flag_counts"]["video4"] == 40
+    assert report["v4l2_error_policy"] == "record_only_not_a_sync_gate"
