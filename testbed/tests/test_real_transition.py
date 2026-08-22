@@ -5,6 +5,7 @@ import socket
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import h5py
 import numpy as np
@@ -44,6 +45,7 @@ from testbed.tasks.real_transition import (
     sha256_file,
     summarize_sequence_manifest,
     verify_run_package,
+    _write_bytes_immutable,
 )
 from testbed.tasks.real_transition_runtime import (
     TransitionTaskRuntime,
@@ -123,6 +125,18 @@ def _feed_camera_sync_window(
 
 
 class RealTransitionPlanTest(unittest.TestCase):
+    def test_immutable_write_does_not_publish_an_empty_target_on_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "manifest.json"
+            with mock.patch(
+                "testbed.tasks.real_transition.os.link",
+                side_effect=OSError("simulated publish failure"),
+            ):
+                with self.assertRaisesRegex(OSError, "simulated publish failure"):
+                    _write_bytes_immutable(target, b'{"ok":true}\n')
+            self.assertFalse(target.exists())
+            self.assertEqual(list(Path(tmp).iterdir()), [])
+
     def test_manual_profile_inherits_field_contract_and_preserves_field_joysticks(
         self,
     ) -> None:
@@ -608,6 +622,61 @@ class RealTransitionRunPackageTest(unittest.TestCase):
 
 
 class RealTransitionRuntimeTest(unittest.TestCase):
+    def test_empty_or_stale_runtime_artifacts_are_repaired_before_first_run(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            prepared = prepare_session_directory(
+                output_root=Path(tmp),
+                session_id="repair01",
+                seed=23,
+                created_at_utc="2026-08-22T00:00:00Z",
+            )
+            session_dir = Path(prepared["session_dir"])
+            resolved = session_dir / "resolved_record_config.yaml"
+            manifest = session_dir / "session_manifest.json"
+            resolved.touch()
+            manifest.touch()
+
+            kwargs = {
+                "session_dir": session_dir,
+                "sequence_manifest_path": prepared["sequence_manifest"],
+                "split_manifest_path": prepared["split_manifest"],
+                "ready_contract_path": prepared["ready_contract"],
+            }
+            TransitionTaskRuntime(
+                **kwargs,
+                resolved_record_config_yaml="task: first\n",
+                git_commit="a" * 40,
+            )
+            self.assertEqual(resolved.read_text(encoding="utf-8"), "task: first\n")
+            self.assertEqual(
+                json.loads(manifest.read_text(encoding="utf-8"))["git_commit"],
+                "a" * 40,
+            )
+
+            TransitionTaskRuntime(
+                **kwargs,
+                resolved_record_config_yaml="task: second\n",
+                git_commit="b" * 40,
+            )
+            self.assertEqual(resolved.read_text(encoding="utf-8"), "task: second\n")
+            self.assertEqual(
+                json.loads(manifest.read_text(encoding="utf-8"))["git_commit"],
+                "b" * 40,
+            )
+
+            (session_dir / "block_b01").mkdir()
+            with self.assertRaisesRegex(
+                TransitionContractError,
+                "after recording data exists",
+            ):
+                TransitionTaskRuntime(
+                    **kwargs,
+                    resolved_record_config_yaml="task: third\n",
+                    git_commit="c" * 40,
+                )
+
     def test_camera_sync_gate_blocks_start_until_a_coherent_window(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             prepared = prepare_session_directory(

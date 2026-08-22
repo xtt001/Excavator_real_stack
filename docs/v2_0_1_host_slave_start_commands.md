@@ -367,6 +367,12 @@ seed 创建新 session 后从未封存的 run 重新录制。receiver 报
 `refusing to overwrite immutable artifact: .../session_manifest.json` 时，先按此规则检查，
 不能反复强启同一损坏 session。
 
+如果 session 根目录尚未出现任何 `block_*`/`run_*`、HDF5 或事件数据，receiver 会自动
+修复空文件，或更新因代码/配置变化而过期的 `resolved_record_config.yaml` 和
+`session_manifest.json`，不需要递增新的 `ctx`。一旦出现任何 run 目录，运行期 artifact
+继续严格锁定；此时的冲突必须先检查并保留数据。所有 immutable artifact 采用“先写临时
+文件、fsync、再原子发布”，掉电不会再把 0 字节临时结果暴露为正式 manifest。
+
 ## 9. 命令附录
 
 ### 9.1 从端 stack

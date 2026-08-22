@@ -196,7 +196,7 @@ class TransitionTaskRuntime:
                     "automatic annotation requires a session-arm ready contract; "
                     "prepare a new session with the current software"
                 )
-        self.resolved_config_path = write_immutable_text(
+        self.resolved_config_path = self._write_pre_recording_runtime_artifact(
             self.session_dir / "resolved_record_config.yaml",
             resolved_record_config_yaml,
         )
@@ -1533,7 +1533,7 @@ class TransitionTaskRuntime:
             "raw_package_mutation_policy": "append_until_seal_then_immutable",
             "sequence_mode": "seeded_balanced_frozen_multisequence",
         }
-        write_immutable_text(
+        self._write_pre_recording_runtime_artifact(
             path,
             json.dumps(
                 payload,
@@ -1544,6 +1544,50 @@ class TransitionTaskRuntime:
             + "\n",
         )
         return path
+
+    def _write_pre_recording_runtime_artifact(
+        self,
+        path: Path,
+        value: str,
+    ) -> Path:
+        """Refresh derived runtime metadata only before any run exists."""
+
+        encoded = str(value).encode("utf-8")
+        if path.exists():
+            if path.is_symlink() or not path.is_file():
+                raise TransitionContractError(
+                    f"runtime artifact target is not a regular file: {path}"
+                )
+            if path.read_bytes() == encoded:
+                return path
+            if self._session_contains_recording_data():
+                raise TransitionContractError(
+                    "refusing to update runtime artifact after recording data "
+                    f"exists: {path}"
+                )
+            path.unlink()
+        return write_immutable_text(path, value)
+
+    def _session_contains_recording_data(self) -> bool:
+        allowed_root_files = {
+            "sequence_manifest.json",
+            "split_manifest.json",
+            "ready_contract.json",
+            "preparation_manifest.json",
+            "resolved_record_config.yaml",
+            "session_manifest.json",
+        }
+        for child in self.session_dir.iterdir():
+            if (
+                child.name in allowed_root_files
+                and child.is_file()
+                and not child.is_symlink()
+            ):
+                continue
+            if child.name.startswith(".") and ".tmp." in child.name:
+                continue
+            return True
+        return False
 
     def _evaluate_time_limits(self, *, step_id: int, step_ns: int) -> None:
         package = self._active_package

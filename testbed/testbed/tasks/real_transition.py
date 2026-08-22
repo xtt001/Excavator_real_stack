@@ -16,6 +16,7 @@ import os
 import queue
 import random
 import re
+import tempfile
 import threading
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
@@ -2583,23 +2584,48 @@ def _write_text_immutable(path: Path, value: str) -> None:
 def _write_bytes_immutable(path: Path, payload: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
+        if path.is_symlink() or not path.is_file():
+            raise TransitionContractError(
+                f"immutable artifact target is not a regular file: {path}"
+            )
         if path.read_bytes() == payload:
             return
         raise TransitionContractError(
             f"refusing to overwrite immutable artifact: {path}"
         )
-    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.tmp.",
+        dir=path.parent,
+    )
+    temporary_path = Path(temporary_name)
     try:
         with os.fdopen(fd, "wb") as handle:
+            os.fchmod(handle.fileno(), 0o644)
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
-    except Exception:
         try:
-            path.unlink()
+            os.link(temporary_path, path)
+        except FileExistsError:
+            if (
+                path.is_file()
+                and not path.is_symlink()
+                and path.read_bytes() == payload
+            ):
+                return
+            raise TransitionContractError(
+                f"refusing to overwrite immutable artifact: {path}"
+            )
+        directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        try:
+            temporary_path.unlink()
         except FileNotFoundError:
             pass
-        raise
 
 
 def _read_json_object(path: Path) -> dict[str, Any]:
