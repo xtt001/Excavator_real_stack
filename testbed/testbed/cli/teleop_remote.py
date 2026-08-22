@@ -495,6 +495,7 @@ class _RemoteTeleopMonitor:
         self._event_counts = {
             "toggle": 0,
             "record_start": 0,
+            "mark": 0,
             "policy_start": 0,
             "go_home": 0,
             "reset": 0,
