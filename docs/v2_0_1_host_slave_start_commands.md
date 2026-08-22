@@ -187,6 +187,9 @@ EXCAVATOR_TELEOP_CONFIG="$PWD/testbed/testbed/configs/teleop_real_transition_v2_
 
 GUI 不连接控制端口、不发送 action，也不向 `8771` 写事件。顶部 AGE 是数据新鲜度，
 不是控制执行时延；10 Hz 状态镜像出现约 `0–100 ms` age 正常。
+v2 面板在 run 创建前直接显示 `NEXT INITIAL=A/B`，run 内显示 TARGET、实际侧、
+`excursion=YES/NO`、swing 稳定窗 `当前/0.50s`、自动等待原因和最近一次自动事件。
+出现红色 `saving_run` 时禁止关闭、重启或拔盘；正常 run 内 GUI 不要求点击或 MARK。
 
 ## 4. 点火前放行条件
 

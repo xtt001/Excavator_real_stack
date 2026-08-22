@@ -805,6 +805,10 @@ class RealTransitionRuntimeTest(unittest.TestCase):
             runtime.update_receiver_state(mode="armed", health_ok=True)
             next_spec = runtime._next_run_spec_hint  # noqa: SLF001
             assert next_spec is not None
+            self.assertEqual(
+                runtime.status()["next_initial_side"], next_spec.initial_side
+            )
+            self.assertEqual(runtime.status()["last_automatic_event"], {})
             _feed_ready_window(
                 runtime,
                 side=next_spec.initial_side,
@@ -824,6 +828,10 @@ class RealTransitionRuntimeTest(unittest.TestCase):
             runtime.update_recorded_step(step_id=0, step_ns=1_000_000_000)
             runtime.advance_automatic_workflow(allow_recorded_events=True)
             self.assertEqual(runtime.status()["phase"], "goal_committed")
+            self.assertEqual(
+                runtime.status()["last_automatic_event"]["event_type"],
+                "goal_commit",
+            )
 
             cycle_count = int(runtime.status()["planned_cycle_count"])
             step_id = 0
@@ -848,6 +856,10 @@ class RealTransitionRuntimeTest(unittest.TestCase):
                             runtime.status()["cycle_excursion_observed"]
                         )
                 self.assertTrue(runtime.status()["cycle_excursion_observed"])
+                self.assertEqual(
+                    runtime.status()["last_automatic_event"]["event_type"],
+                    "cycle_excursion_observed",
+                )
 
                 target = str(runtime.status()["next_target_side"])
                 step_id += 1
@@ -864,6 +876,15 @@ class RealTransitionRuntimeTest(unittest.TestCase):
                     else "goal_committed"
                 )
                 self.assertEqual(runtime.status()["phase"], expected_phase)
+                expected_event = (
+                    "target_ready_mark"
+                    if cycle_index + 1 == cycle_count
+                    else "goal_commit"
+                )
+                self.assertEqual(
+                    runtime.status()["last_automatic_event"]["event_type"],
+                    expected_event,
+                )
 
             stop = runtime.consume_stop_request()
             self.assertIsNotNone(stop)

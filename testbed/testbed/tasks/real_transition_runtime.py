@@ -242,6 +242,7 @@ class TransitionTaskRuntime:
         self._goal_anchor_swing_qpos: float | None = None
         self._excursion_candidate_count = 0
         self._automatic_wait_reason = "session_not_armed"
+        self._last_automatic_event: dict[str, Any] = {}
         self._sealed_run_count = 0
         self._next_run_spec_hint: TransitionRunSpec | None = None
         self._next_run_ordinal: int | None = None
@@ -418,7 +419,7 @@ class TransitionTaskRuntime:
                 if self._excursion_candidate_count < required_samples:
                     self._automatic_wait_reason = "confirming_cycle_excursion"
                     return None
-                package.record_cycle_excursion(
+                excursion_event = package.record_cycle_excursion(
                     step_id=step_id,
                     step_ns=step_ns,
                     anchor_swing_qpos_rad=anchor,
@@ -427,6 +428,7 @@ class TransitionTaskRuntime:
                     threshold_rad=threshold,
                     consecutive_samples=self._excursion_candidate_count,
                 )
+                self._remember_automatic_event(excursion_event)
                 self._cycle_excursion_observed = True
                 self._automatic_wait_reason = "waiting_target_ready"
                 return self.status()
@@ -447,6 +449,8 @@ class TransitionTaskRuntime:
                     "notes": "automatic target-ready after excursion and stable return",
                 },
             )
+            if result.get("automatic_goal_event") is None:
+                self._remember_automatic_event(result.get("accepted_event"))
             self._automatic_wait_reason = (
                 "saving_run"
                 if result.get("stop_requested")
@@ -951,6 +955,7 @@ class TransitionTaskRuntime:
                 "inter_run_rearm_required": self._inter_run_rearm_required,
                 "inter_run_activity_observed": self._inter_run_activity_observed,
                 "cycle_excursion_observed": self._cycle_excursion_observed,
+                "last_automatic_event": dict(self._last_automatic_event),
                 "session_id": str(self._manifest["session_id"]),
                 "sealed_run_count": self._sealed_run_count,
                 "next_run_id": (
@@ -959,6 +964,11 @@ class TransitionTaskRuntime:
                     else None
                 ),
                 "next_run_ordinal": self._next_run_ordinal,
+                "next_initial_side": (
+                    self._next_run_spec_hint.initial_side
+                    if package is None and self._next_run_spec_hint is not None
+                    else (spec.initial_side if spec is not None else None)
+                ),
                 "next_field_context": (
                     self._automatic_field_context()
                     if package is None and self._next_run_spec_hint is not None
@@ -1324,7 +1334,21 @@ class TransitionTaskRuntime:
         self._cycle_excursion_observed = False
         self._excursion_candidate_count = 0
         self._timing_warning = ""
+        self._remember_automatic_event(event)
         return event
+
+    def _remember_automatic_event(self, event: Any) -> None:
+        if not isinstance(event, Mapping):
+            return
+        self._last_automatic_event = {
+            "event_type": str(event.get("event_type", "") or ""),
+            "event_source": str(event.get("event_source", "") or ""),
+            "run_id": str(event.get("run_id", "") or ""),
+            "cycle_index": event.get("cycle_index"),
+            "event_step_id": event.get("event_step_id"),
+            "event_step_ns": event.get("event_step_ns"),
+            "scripted_target_side": event.get("scripted_target_side"),
+        }
 
     def _mark_next_action(self, package: TransitionRunPackage | None) -> str:
         if self._automatic_annotation_enabled:

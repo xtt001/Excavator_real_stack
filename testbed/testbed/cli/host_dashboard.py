@@ -643,11 +643,19 @@ class HostDashboard(QtWidgets.QMainWindow):
         blockers = [str(item) for item in ready.get("blockers", []) or []]
         actual_side = str(ready.get("actual_side", "unknown") or "unknown")
         initial_side = str(transition.get("initial_side", "-") or "-")
+        next_initial_side = str(
+            transition.get("next_initial_side", initial_side) or initial_side
+        )
+        next_initial_text = next_initial_side if phase in {"idle", "disabled"} else "-"
         target_side = str(transition.get("next_target_side", "-") or "-")
         completed = _int(transition.get("completed_cycles"), 0)
         planned = _int(transition.get("planned_cycle_count"), 0)
         stable = bool(ready.get("swing_stable", False))
         window_complete = bool(ready.get("window_complete", False))
+        window_duration = _float(ready.get("window_duration_s"), 0.0)
+        window_required = _float(ready.get("window_required_s"), 0.5)
+        window_progress = min(window_duration, window_required)
+        excursion = bool(transition.get("cycle_excursion_observed", False))
         run_id = str(transition.get("run_id", "-") or "-")
         receiver_mode = str(transition.get("receiver_mode", "-") or "-")
         health_ok = bool(transition.get("receiver_health_ok", False))
@@ -666,12 +674,16 @@ class HostDashboard(QtWidgets.QMainWindow):
             self.transition_state.setText(
                 f"ARM={armed_text}  |  RUN {run_id}  |  phase={phase}  |  "
                 f"cycle={completed}/{planned}  |  "
-                f"initial={initial_side}  |  TARGET={target_side}  |  "
+                f"NEXT INITIAL={next_initial_text}  |  initial={initial_side}  |  "
+                f"TARGET={target_side}  |  "
                 f"实际侧={actual_side}  |  swing稳定={_yes_no(stable)}  |  "
-                f"稳定窗={_yes_no(window_complete)}  |  blockers={blocker_text}  |  "
+                f"稳定窗={window_progress:.2f}/{window_required:.2f}s"
+                f"({_yes_no(window_complete)})  |  excursion={_yes_no(excursion)}  |  "
+                f"blockers={blocker_text}  |  "
                 f"auto={auto_wait}"
             )
-            color = GREEN if health_ok and not blockers else AMBER
+            saving = auto_wait == "saving_run" or phase in {"complete", "cycles_complete"}
+            color = RED if saving else (GREEN if health_ok and not blockers else AMBER)
         self.transition_state.setStyleSheet(
             "font-size:16px; font-weight:800; padding:5px; "
             f"background:#11181d; border:2px solid {color}; border-radius:5px;"
@@ -683,12 +695,25 @@ class HostDashboard(QtWidgets.QMainWindow):
         )
         instruction = {
             "arm-session": (
-                "准备好整个 session 后，按一次左手柄物理按钮 2：ARM 自动录制"
+                f"下一条 INITIAL={next_initial_side}；准备好整个 session 后，"
+                "按一次左手柄物理按钮 2：ARM 自动录制"
             ),
             "automatic": {
                 "waiting_inter_run_activity": (
-                    "已 ARM：自然调整一次工作面/姿态后回到下一条 INITIAL，程序自动开始"
+                    f"已 ARM：自然调整工作面/姿态后回到下一条 INITIAL={next_initial_side}，"
+                    "程序自动开始"
                 ),
+                "waiting_initial_ready": (
+                    f"下一条 INITIAL={next_initial_side}：自然到达该侧并停稳；无需按键"
+                ),
+                f"waiting_initial_side_{next_initial_side}": (
+                    f"下一条 INITIAL={next_initial_side}：当前侧不匹配，自然移动到该侧并停稳"
+                ),
+                "waiting_operator_action_neutral": (
+                    f"下一条 INITIAL={next_initial_side}：摇杆回中后自动开始；无需按键"
+                ),
+                "camera_sync": "等待四相机同步门禁；不要开始动作",
+                "receiver_health": "等待 receiver 健康恢复；不要开始动作",
                 "waiting_cycle_excursion": (
                     f"TARGET={target_side}：正常操作；等待 swing 形成有效行程"
                 ),
@@ -698,11 +723,11 @@ class HostDashboard(QtWidgets.QMainWindow):
                 "waiting_target_ready": (
                     f"TARGET={target_side}：回到目标侧并停稳后自动结束本 cycle"
                 ),
-                "saving_run": "本 run 自动完成，正在保存；无需按键",
+                "saving_run": "本 run 自动完成，正在写盘；禁止关闭、重启或拔盘",
                 "recorder_start_requested": "INITIAL READY 已自动确认，正在开始录制",
             }.get(
                 automatic_wait,
-                f"已 ARM：自动流程等待 {automatic_wait or '状态更新'}；无需按键",
+                f"已 ARM：自动流程等待 {automatic_wait or '状态更新'}；无需标注按键",
             ),
             "start-run": "按左手柄物理按钮 2（MARK）：开始下一条 RUN",
             "initial-ready": (
@@ -737,9 +762,18 @@ class HostDashboard(QtWidgets.QMainWindow):
         camera_gate = "PASS" if camera.get("ready", False) else "WAIT"
         camera_skew = camera.get("observed_max_skew_ms")
         skew_text = "-" if camera_skew is None else f"{_float(camera_skew, 0.0):.2f}ms"
+        last_auto = dict(transition.get("last_automatic_event", {}) or {})
+        last_type = str(last_auto.get("event_type", "-") or "-")
+        last_cycle = last_auto.get("cycle_index")
+        last_step = last_auto.get("event_step_id")
+        last_detail = (
+            f"{last_type}  cycle={last_cycle if last_cycle is not None else '-'}  "
+            f"step={last_step if last_step is not None else '-'}"
+        )
         self.transition_context.setText(
             f"自动工作面: {reset_id} / {action}\n"
-            f"录制前相机同步: {camera_gate}  max_skew={skew_text}"
+            f"录制前相机同步: {camera_gate}  max_skew={skew_text}\n"
+            f"最近自动事件: {last_detail}"
         )
 
     @QtCore.pyqtSlot(object)
@@ -1165,6 +1199,9 @@ def _load_config(path: Path) -> dict[str, Any]:
         "max_steps": int(task.get("max_steps", 0) or 0),
         "field_context_defaults": dict(
             transition.get("field_context_defaults", {}) or {}
+        ),
+        "automatic_annotation": dict(
+            transition.get("automatic_annotation", {}) or {}
         ),
         "home": {
             "available": 1,

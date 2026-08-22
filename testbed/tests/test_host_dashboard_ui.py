@@ -14,6 +14,7 @@ pytest.importorskip("PyQt5")
 from PyQt5 import QtCore, QtWidgets
 
 from testbed.cli.host_dashboard import (
+    RED,
     HostDashboard,
     _load_config,
     _parse_args,
@@ -26,6 +27,7 @@ class _LayoutOnlyDashboard(HostDashboard):
         self.args = SimpleNamespace(video_topic="/test/video4/compressed")
         self.config = {}
         self.video_pixmap = None
+        self.last_event_key = None
         self._build_ui()
 
     def closeEvent(self, event) -> None:
@@ -99,14 +101,21 @@ def test_v2_panel_is_read_only_and_explains_the_next_mark_action() -> None:
             "receiver_health_ok": True,
             "mark_next_action": "arm-session",
             "automatic_wait_reason": "session_not_armed",
+            "next_initial_side": "A",
             "next_field_context": {
                 "workface_reset_id": "wf_001",
                 "workface_action": "fresh_strip",
             },
             "camera_sync_state": {"ready": True},
-            "ready_state": {},
+            "ready_state": {
+                "window_duration_s": 0.32,
+                "window_required_s": 0.5,
+            },
         }
     )
+    assert "NEXT INITIAL=A" in window.transition_state.text()
+    assert "稳定窗=0.32/0.50s" in window.transition_state.text()
+    assert "下一条 INITIAL=A" in window.transition_instruction.text()
     assert "按一次左手柄物理按钮 2" in window.transition_instruction.text()
     assert "ARM 自动录制" in window.transition_instruction.text()
 
@@ -120,11 +129,37 @@ def test_v2_panel_is_read_only_and_explains_the_next_mark_action() -> None:
             "mark_next_action": "automatic",
             "automatic_wait_reason": "waiting_target_ready",
             "cycle_excursion_observed": True,
-            "ready_state": {},
+            "last_automatic_event": {
+                "event_type": "cycle_excursion_observed",
+                "cycle_index": 0,
+                "event_step_id": 42,
+            },
+            "ready_state": {
+                "window_duration_s": 0.5,
+                "window_required_s": 0.5,
+                "window_complete": True,
+            },
         }
     )
     assert "无需按键" not in window.transition_instruction.text()
     assert "停稳后自动结束" in window.transition_instruction.text()
+    assert "excursion=YES" in window.transition_state.text()
+    assert "cycle_excursion_observed" in window.transition_context.text()
+    assert "step=42" in window.transition_context.text()
+
+    window._update_transition_panel(
+        {
+            "phase": "complete",
+            "receiver_mode": "recording",
+            "receiver_health_ok": True,
+            "run_id": "b01_r01",
+            "mark_next_action": "automatic",
+            "automatic_wait_reason": "saving_run",
+            "ready_state": {},
+        }
+    )
+    assert "禁止关闭、重启或拔盘" in window.transition_instruction.text()
+    assert RED in window.transition_state.styleSheet()
 
     window._update_transition_panel(
         {
