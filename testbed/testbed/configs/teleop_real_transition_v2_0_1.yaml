@@ -18,6 +18,9 @@ teleop:
     policy_start_button: null
     # Keep the field-proven physical button 3 and the established go-home flow.
     go_home_button: 2
+    # Physical left-hand button 4 cancels the current run. A partial recording
+    # is archived for diagnosis but does not consume the frozen run entry.
+    discard_button: 3
     # Buttons 2/4 are task-reserved and must never become machine status toggles.
     status_reserved_buttons: [1, 3]
   recording:

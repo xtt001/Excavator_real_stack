@@ -151,6 +151,7 @@ class RealTransitionPlanTest(unittest.TestCase):
         self.assertIsNone(config["teleop"]["joystick"]["policy_start_button"])
         self.assertIsNone(config["teleop"]["joystick"]["record_start_button"])
         self.assertEqual(config["teleop"]["joystick"]["go_home_button"], 2)
+        self.assertEqual(config["teleop"]["joystick"]["discard_button"], 3)
         self.assertEqual(
             config["teleop"]["joystick"]["status_reserved_buttons"], [1, 3]
         )
@@ -622,6 +623,133 @@ class RealTransitionRunPackageTest(unittest.TestCase):
 
 
 class RealTransitionRuntimeTest(unittest.TestCase):
+    def test_cancel_unstarted_run_retries_same_frozen_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            prepared = prepare_session_directory(
+                output_root=Path(tmp),
+                session_id="cancel01",
+                seed=23,
+                created_at_utc="2026-08-24T00:00:00Z",
+            )
+            runtime = TransitionTaskRuntime(
+                session_dir=prepared["session_dir"],
+                sequence_manifest_path=prepared["sequence_manifest"],
+                split_manifest_path=prepared["split_manifest"],
+                ready_contract_path=prepared["ready_contract"],
+                resolved_record_config_yaml="task: real_transition\n",
+                git_commit="a" * 40,
+            )
+            runtime.update_receiver_state(mode="armed", health_ok=True)
+            run_id = runtime.status()["next_run_id"]
+            runtime.handle_command(
+                "start-run",
+                {
+                    "field_context": {
+                        "workface_reset_id": "wf01",
+                        "workface_action": "fresh_strip",
+                    }
+                },
+            )
+            run_dir = runtime._active_package.run_dir  # noqa: SLF001
+            self.assertTrue(run_dir.is_dir())
+
+            cancelled = runtime.cancel_active_run()
+
+            self.assertFalse(run_dir.exists())
+            self.assertFalse(cancelled["active"])
+            self.assertEqual(cancelled["next_run_id"], run_id)
+            self.assertEqual(cancelled["sealed_run_count"], 0)
+            self.assertEqual(
+                cancelled["automatic_wait_reason"],
+                "cancelled_waiting_inter_run_activity",
+            )
+
+    def test_empty_orphan_run_is_recovered_but_nonempty_is_not(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            prepared = prepare_session_directory(
+                output_root=Path(tmp),
+                session_id="orphan01",
+                seed=23,
+                created_at_utc="2026-08-24T00:00:00Z",
+            )
+            session_dir = Path(prepared["session_dir"])
+            run_dir = session_dir / "block_b01" / "run_b01_r01"
+            run_dir.mkdir(parents=True)
+            (run_dir / "task_events.jsonl").touch()
+            runtime = TransitionTaskRuntime(
+                session_dir=session_dir,
+                sequence_manifest_path=prepared["sequence_manifest"],
+                split_manifest_path=prepared["split_manifest"],
+                ready_contract_path=prepared["ready_contract"],
+                resolved_record_config_yaml="task: real_transition\n",
+                git_commit="a" * 40,
+            )
+            self.assertFalse(run_dir.exists())
+            self.assertEqual(runtime.status()["session_progress_error"], "")
+
+            run_dir.mkdir(parents=True)
+            (run_dir / "task_events.jsonl").write_text("{}\n", encoding="utf-8")
+            runtime._refresh_session_progress()  # noqa: SLF001
+            self.assertIn(
+                "unsealed run requires review",
+                runtime.status()["session_progress_error"],
+            )
+            self.assertTrue(run_dir.exists())
+
+    def test_cancel_recording_archives_partial_without_consuming_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            prepared = prepare_session_directory(
+                output_root=Path(tmp),
+                session_id="cancel_recording01",
+                seed=23,
+                created_at_utc="2026-08-24T00:00:00Z",
+            )
+            runtime = TransitionTaskRuntime(
+                session_dir=prepared["session_dir"],
+                sequence_manifest_path=prepared["sequence_manifest"],
+                split_manifest_path=prepared["split_manifest"],
+                ready_contract_path=prepared["ready_contract"],
+                resolved_record_config_yaml="task: real_transition\n",
+                git_commit="a" * 40,
+            )
+            runtime.update_receiver_state(mode="armed", health_ok=True)
+            first_run = runtime.status()["next_run_id"]
+            runtime.handle_command(
+                "start-run",
+                {
+                    "field_context": {
+                        "workface_reset_id": "wf01",
+                        "workface_action": "fresh_strip",
+                    }
+                },
+            )
+            initial_side = runtime.status()["initial_side"]
+            _feed_ready_window(runtime, side=initial_side, end_ns=1_000_000_000)
+            runtime.handle_command("initial-ready", READY_CONFIRMATIONS)
+            runtime.consume_record_start_request()
+            runtime.attach_recording(episode_idx=0)
+            runtime.update_recorded_step(step_id=0, step_ns=1_000_000_000)
+            raw_path = runtime.active_raw_path
+            RealTransitionRunPackageTest._write_raw(raw_path, n_rows=1)
+
+            runtime.cancel_active_run()
+            sealed = runtime.seal_saved_run(
+                raw_path=raw_path,
+                stop_reason="operator_cancelled_run",
+            )
+
+            archived = Path(sealed["archived_cancelled_run"])
+            self.assertTrue((archived / "raw.hdf5").is_file())
+            self.assertEqual(runtime.status()["sealed_run_count"], 0)
+            self.assertEqual(runtime.status()["next_run_id"], first_run)
+            self.assertFalse(
+                (
+                    Path(prepared["session_dir"])
+                    / "block_b01"
+                    / f"run_{first_run}"
+                ).exists()
+            )
+
     def test_empty_or_stale_runtime_artifacts_are_repaired_before_first_run(
         self,
     ) -> None:

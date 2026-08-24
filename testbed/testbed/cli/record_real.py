@@ -2596,11 +2596,20 @@ def main(prog: str = "tb-record-real") -> None:
 
             if abort or saved >= num_episodes:
                 _stop_control_output(stop_reason=_runtime_stop_reason())
+            transition_cancelled = False
+            if (
+                transition_runtime is not None
+                and discard
+                and transition_runtime.has_active_run
+            ):
+                transition_runtime.cancel_active_run()
+                transition_cancelled = True
             if transition_runtime is not None and record_session is not None:
-                transition_runtime.abort_on_latest_step(
-                    reason="interrupted" if abort else "recording_discard_requested",
-                    safety_stop=False,
-                )
+                if not transition_cancelled:
+                    transition_runtime.abort_on_latest_step(
+                        reason="interrupted",
+                        safety_stop=False,
+                    )
                 discard = False
             interrupt_path = _save_interrupt_partial(
                 record_session,
@@ -2610,7 +2619,11 @@ def main(prog: str = "tb-record-real") -> None:
             if transition_runtime is not None and interrupt_path is not None:
                 transition_runtime.seal_saved_run(
                     raw_path=interrupt_path,
-                    stop_reason="interrupted" if abort else "recording_discard_requested",
+                    stop_reason=(
+                        "operator_cancelled_run"
+                        if transition_cancelled
+                        else "interrupted"
+                    ),
                 )
             if interrupt_path is not None:
                 live_line.message(f"failed steps={len(record_session)} path={interrupt_path}")

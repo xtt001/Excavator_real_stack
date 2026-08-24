@@ -2049,6 +2049,33 @@ class TransitionRunPackage:
         self._phase = "sealed"
         return manifest
 
+    def discard_unstarted(self) -> None:
+        """Remove a package that never acquired a recorded HDF5 row."""
+
+        self._require_phase("new")
+        if self._events:
+            raise TransitionContractError(
+                "cannot discard an unstarted package after events were recorded"
+            )
+        if self._event_journal is None:
+            raise TransitionContractError("run package event journal is unavailable")
+        self._event_journal.close_durable()
+        self._event_journal = None
+        entries = list(self.run_dir.iterdir())
+        if (
+            len(entries) != 1
+            or entries[0] != self.events_path
+            or entries[0].is_symlink()
+            or not entries[0].is_file()
+            or entries[0].stat().st_size != 0
+        ):
+            raise TransitionContractError(
+                f"refusing to discard non-empty run package: {self.run_dir}"
+            )
+        self.events_path.unlink()
+        self.run_dir.rmdir()
+        self._phase = "discarded"
+
     def _create_empty_package(self) -> None:
         if self.run_dir.exists() and any(self.run_dir.iterdir()):
             raise TransitionContractError(

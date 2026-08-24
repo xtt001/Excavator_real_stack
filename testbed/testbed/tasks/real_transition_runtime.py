@@ -651,6 +651,31 @@ class TransitionTaskRuntime:
                 stop_reason=str(reason),
             )
 
+    def cancel_active_run(self) -> dict[str, Any]:
+        """Cancel the current run without consuming its frozen plan entry."""
+
+        with self._lock:
+            package = self._require_active_package()
+            run_id = package.run_spec.run_id
+            if package.phase == "new" and self._last_step_id is None:
+                package.discard_unstarted()
+                self._reset_active_state()
+                self._refresh_session_progress()
+                self._inter_run_rearm_required = True
+                self._inter_run_activity_observed = False
+                self._automatic_wait_reason = "cancelled_waiting_inter_run_activity"
+                result = self.status()
+                result["message"] = f"cancelled unstarted run {run_id}; same run will retry"
+                return result
+            self.abort_on_latest_step(
+                reason="operator_cancelled_run",
+                safety_stop=False,
+            )
+            self._automatic_wait_reason = "cancelling_run"
+            result = self.status()
+            result["message"] = f"cancelling run {run_id}; partial data will be archived"
+            return result
+
     def seal_saved_run(
         self, *, raw_path: Path | str, stop_reason: str
     ) -> dict[str, Any]:
@@ -678,6 +703,14 @@ class TransitionTaskRuntime:
                 field_context=self._field_context,
                 stop_reason=stop_reason,
             )
+            archived_path: Path | None = None
+            if stop_reason == "operator_cancelled_run":
+                archive_root = self.session_dir / "cancelled_runs"
+                archive_root.mkdir(exist_ok=True)
+                archived_path = archive_root / (
+                    f"{package.run_spec.run_id}_{time.time_ns()}"
+                )
+                package.run_dir.rename(archived_path)
             self._reset_active_state()
             self._refresh_session_progress()
             self._inter_run_rearm_required = True
@@ -686,6 +719,9 @@ class TransitionTaskRuntime:
                 if self._next_run_spec_hint is None
                 else "waiting_inter_run_activity"
             )
+            if archived_path is not None:
+                manifest = dict(manifest)
+                manifest["archived_cancelled_run"] = str(archived_path)
             return manifest
 
     def handle_command(
@@ -1442,6 +1478,8 @@ class TransitionTaskRuntime:
                 return spec
             if (run_dir / "run_manifest.json").is_file():
                 continue
+            if self._remove_empty_unstarted_run_dir(run_dir):
+                return spec
             raise TransitionContractError(
                 f"next run directory is unsealed and requires review: {run_dir}"
             )
@@ -1462,6 +1500,11 @@ class TransitionTaskRuntime:
             if (run_dir / "run_manifest.json").is_file():
                 sealed += 1
                 continue
+            if self._remove_empty_unstarted_run_dir(run_dir):
+                if next_spec is None:
+                    next_spec = spec
+                    next_ordinal = ordinal
+                continue
             progress_error = f"unsealed run requires review: {run_dir}"
             if next_spec is None:
                 next_spec = spec
@@ -1471,6 +1514,29 @@ class TransitionTaskRuntime:
         self._next_run_spec_hint = next_spec
         self._next_run_ordinal = next_ordinal
         self._session_progress_error = progress_error
+
+    @staticmethod
+    def _remove_empty_unstarted_run_dir(run_dir: Path) -> bool:
+        """Recover only the exact empty artifact created before recording starts."""
+
+        if run_dir.is_symlink() or not run_dir.is_dir():
+            return False
+        entries = list(run_dir.iterdir())
+        if not entries:
+            run_dir.rmdir()
+            return True
+        events_path = run_dir / "task_events.jsonl"
+        if (
+            len(entries) != 1
+            or entries[0] != events_path
+            or events_path.is_symlink()
+            or not events_path.is_file()
+            or events_path.stat().st_size != 0
+        ):
+            return False
+        events_path.unlink()
+        run_dir.rmdir()
+        return True
 
     def _require_active_package(self) -> TransitionRunPackage:
         if self._active_package is None:

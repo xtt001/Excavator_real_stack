@@ -234,6 +234,9 @@ def test_v2_panel_is_read_only_and_explains_the_next_mark_action() -> None:
     )
     assert "目标 B 已按预定序列自动提交" in window.transition_instruction.text()
     assert "DUMP END" in window.transition_instruction.text()
+    assert "● REC 正在录制" in window.transition_state.text()
+    assert "左手柄物理按钮 4" in window.transition_instruction.text()
+    assert RED in window.transition_state.styleSheet()
     assert "cycle=1/4" in window.transition_state.text()
     window.close()
     app.processEvents()
@@ -287,6 +290,13 @@ def test_v2_record_count_and_compact_details_use_transition_status() -> None:
     assert window.imu_cards[3].state.text() == "+0.239 rad"
     assert "ONLINE · age=7.0 ms" in window.imu_cards[0].detail.text()
     assert "loss=" not in window.imu_cards[0].detail.text()
+
+    window.latest_status["receiver"]["recording"] = 1
+    window.latest_status["receiver"]["receiver_mode"] = "recording"
+    window._update_status_panels()
+    assert window.prominent_cards["recording"].value.text() == "● REC 正在录制"
+    assert "物理4号键取消" in window.prominent_cards["recording"].detail.text()
+    assert "4px solid" in window.video_label.styleSheet()
 
     for label in (
         window.record_text,

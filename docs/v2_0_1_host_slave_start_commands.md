@@ -35,8 +35,8 @@ swing 相对本 cycle 起点持续移动 >=0.08 rad -> 自动记录 cycle_excurs
 TARGET、自动检测阶段、blocker、相机同步和保存结果，不提交任何事件。`dump-end` 不再是
 在线状态机门槛；materializer 只保留 return proxy，不把代理点冒充人工确认的 dump。
 
-左手柄物理按钮 3 仍是主动 go-home；它不是正常 run 的必需步骤。按钮 4 保留，不切换
-policy。机器状态仍使用现场既有按钮。
+左手柄物理按钮 3 仍是主动 go-home；它不是正常 run 的必需步骤。左手柄物理按钮 4
+用于取消当前 run，不切换 policy。机器状态仍使用现场既有按钮。
 
 ready 合同固定为：
 
@@ -193,7 +193,9 @@ v2 面板在 run 创建前直接显示 `NEXT INITIAL=A/B`，run 内显示 TARGET
 `cycle=X/N` 中 `X` 表示当前 cycle（已完成数加一），等待下一条 run 时从 `1/N` 开始。
 四路 IMU 卡中央显示当前四轴 qpos；绿/黄/红框和下方小字表示 IMU 在线、姿态有效性、
 数据年龄及非零丢包，不再用大号 `ONLINE` 占据主要空间。
-出现红色 `saving_run` 时禁止关闭、重启或拔盘；正常 run 内 GUI 不要求点击或 MARK。
+录制中顶部状态和录制卡显示红色 `● REC 正在录制`，预览画面出现红框，并持续提示
+“左手柄物理按钮 4：取消并重录本 run”。出现 `saving_run` 时禁止关闭、重启或拔盘；
+正常 run 内 GUI 不要求点击或 MARK。
 
 ## 4. 点火前放行条件
 
@@ -242,6 +244,11 @@ status11 = [1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0]
    cycle 后自动停止、保存和封存，不需要 dump/target 点击或按键。
 7. 两条 run 之间，为避免相同 initial side 被立即误启动，程序要求观察到一次自然的
    操作员调整，再等下一 initial 稳定后自动开始。等 GUI 显示保存完成后继续即可。
+
+需要放弃当前 run 时，按一次左手柄物理按钮 4。若 HDF5 尚未开始，空 run 包会直接
+回收；若已经开始录制，部分数据会封存到 session 的 `cancelled_runs/` 供诊断，但不计入
+已完成条数，也不消耗 frozen sequence，下一次仍重录同一个 run。按下后等待 GUI 退出
+红色 `REC` 状态，不要连续重复按键。
 
 如果自动流程没有推进，只看 GUI 的 `automatic_wait_reason`：通常是等待 initial side、
 等待本 cycle 形成有效 swing 行程、等待 TARGET 稳定或等待两条 run 之间的自然调整。不要为此

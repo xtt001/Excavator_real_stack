@@ -698,8 +698,13 @@ class HostDashboard(QtWidgets.QMainWindow):
         window_progress = min(window_duration, window_required)
         excursion = bool(transition.get("cycle_excursion_observed", False))
         run_id = str(transition.get("run_id", "-") or "-")
+        next_run_id = str(transition.get("next_run_id", "-") or "-")
+        display_run_id = next_run_id if phase in {"idle", "disabled"} else run_id
         receiver_mode = str(transition.get("receiver_mode", "-") or "-")
         health_ok = bool(transition.get("receiver_health_ok", False))
+        recording_active = bool(transition.get("recording_attached", False)) or (
+            receiver_mode.lower() == "recording"
+        )
 
         if not transition:
             self.transition_state.setText(
@@ -712,8 +717,10 @@ class HostDashboard(QtWidgets.QMainWindow):
             auto_wait = str(
                 transition.get("automatic_wait_reason", "") or "-"
             )
+            recording_text = "● REC 正在录制" if recording_active else "未在录制"
             self.transition_state.setText(
-                f"ARM={armed_text}  |  RUN {run_id}  |  phase={phase}  |  "
+                f"{recording_text}  |  ARM={armed_text}  |  RUN {display_run_id}  |  "
+                f"phase={phase}  |  "
                 f"cycle={current_cycle}/{planned}  |  "
                 f"NEXT INITIAL={next_initial_text}  |  initial={initial_side}  |  "
                 f"TARGET={target_side}  |  "
@@ -724,7 +731,9 @@ class HostDashboard(QtWidgets.QMainWindow):
                 f"auto={auto_wait}"
             )
             saving = auto_wait == "saving_run" or phase in {"complete", "cycles_complete"}
-            color = RED if saving else (GREEN if health_ok and not blockers else AMBER)
+            color = RED if recording_active else (
+                AMBER if saving else (GREEN if health_ok and not blockers else AMBER)
+            )
         self.transition_state.setStyleSheet(
             "font-size:16px; font-weight:800; padding:5px; "
             f"background:#11181d; border:2px solid {color}; border-radius:5px;"
@@ -766,6 +775,15 @@ class HostDashboard(QtWidgets.QMainWindow):
                 ),
                 "saving_run": "本 run 自动完成，正在写盘；禁止关闭、重启或拔盘",
                 "recorder_start_requested": "INITIAL READY 已自动确认，正在开始录制",
+                "cancelling_run": "正在取消本 run 并保存诊断数据，请等待",
+                "cancelled_waiting_inter_run_activity": (
+                    f"上一条已取消；自然调整后回到 INITIAL={next_initial_side}，"
+                    "系统会重录同一条"
+                ),
+                "session_progress_error": (
+                    "发现未封存的 run，自动流程已暂停；请重启 receiver 触发空包恢复，"
+                    "有数据的残件仍需人工复核"
+                ),
             }.get(
                 automatic_wait,
                 f"已 ARM：自动流程等待 {automatic_wait or '状态更新'}；无需标注按键",
@@ -784,6 +802,10 @@ class HostDashboard(QtWidgets.QMainWindow):
                 "按 MARK 确认 TARGET READY"
             ),
         }.get(mark_action, "等待 receiver 自动流程状态更新")
+        if recording_active:
+            instruction = (
+                f"{instruction}  |  左手柄物理按钮 4：取消并重录本 run"
+            )
         mark_error = str(transition.get("last_mark_error", "") or "")
         if mark_error:
             instruction += f"  |  上次 MARK 未接受：{mark_error}"
@@ -931,15 +953,24 @@ class HostDashboard(QtWidgets.QMainWindow):
 
         recording_active = bool(receiver.get("recording", 0))
         self.prominent_cards["recording"].set_state(
-            "正在录制" if recording_active else (
+            "● REC 正在录制" if recording_active else (
                 "未在录制" if has_receiver_status else "等待状态"
             ),
             (
-                f"episode {episode} / {steps} steps / {duration_text}"
+                (
+                    f"episode {episode} / {steps} steps / {duration_text}"
+                    " / 左手柄物理4号键取消"
+                    if recording_active
+                    else f"episode {episode} / {steps} steps / {duration_text}"
+                )
                 if has_receiver_status
                 else "等待 receiver"
             ),
             RED if recording_active else GRAY,
+        )
+        self.video_label.setStyleSheet(
+            f"background:#05080a; color:#7f8c8d; border:"
+            f"{4 if recording_active else 0}px solid {RED};"
         )
 
         if save_state_key == "writing" or mode == "SAVING":
