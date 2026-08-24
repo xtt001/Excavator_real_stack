@@ -187,15 +187,17 @@ EXCAVATOR_TELEOP_CONFIG="$PWD/testbed/testbed/configs/teleop_real_transition_v2_
 
 GUI 不连接控制端口、不发送 action，也不向 `8771` 写事件。顶部 AGE 是数据新鲜度，
 不是控制执行时延；10 Hz 状态镜像出现约 `0–100 ms` age 正常。
-v2 面板在 run 创建前直接显示 `NEXT INITIAL=A/B`，run 内显示 TARGET、实际侧、
+v2 面板固定显示中文任务字段 `当前起始点=A/B`、`下次目标位置=A/B`、
+`当前位置=A/B/home/transition`，run 内同时显示自动检测状态、
 `excursion=YES/NO`、swing 稳定窗 `当前/0.50s`、自动等待原因和最近一次自动事件。
 `已录制条数` 以当前 v2 session 已封存的 run 数为准，不使用旧版顶层 episode 扫描；
 `cycle=X/N` 中 `X` 表示当前 cycle（已完成数加一），等待下一条 run 时从 `1/N` 开始。
 四路 IMU 卡中央显示当前四轴 qpos；绿/黄/红框和下方小字表示 IMU 在线、姿态有效性、
 数据年龄及非零丢包，不再用大号 `ONLINE` 占据主要空间。
-录制中顶部状态和录制卡显示红色 `● REC 正在录制`，预览画面出现红框，并持续提示
+录制中顶部状态和录制卡显示橙色 `● REC 正在录制`，预览画面出现橙框，并持续提示
 “左手柄物理按钮 4：取消并重录本 run”。出现 `saving_run` 时禁止关闭、重启或拔盘；
-正常 run 内 GUI 不要求点击或 MARK。
+正常 run 内 GUI 不要求点击或 MARK。红色只用于拒绝、故障和危险警告；操作提示使用
+深色底与高对比白字。
 
 ## 4. 点火前放行条件
 

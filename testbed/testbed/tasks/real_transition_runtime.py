@@ -1005,8 +1005,22 @@ class TransitionTaskRuntime:
                     if package is None and self._next_run_spec_hint is not None
                     else (spec.initial_side if spec is not None else None)
                 ),
+                "current_cycle_start_side": (
+                    package.run_spec.sequence[package.cycle_index]
+                    if package is not None
+                    else (
+                        self._next_run_spec_hint.initial_side
+                        if self._next_run_spec_hint is not None
+                        else None
+                    )
+                ),
                 "next_planned_cycle_count": (
                     self._next_run_spec_hint.cycle_count
+                    if package is None and self._next_run_spec_hint is not None
+                    else None
+                ),
+                "next_planned_target_side": (
+                    self._next_run_spec_hint.targets[0]
                     if package is None and self._next_run_spec_hint is not None
                     else None
                 ),

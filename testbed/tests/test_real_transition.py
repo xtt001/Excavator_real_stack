@@ -1108,6 +1108,9 @@ class RealTransitionRuntimeTest(unittest.TestCase):
                     else "goal_committed"
                 )
                 self.assertEqual(runtime.status()["phase"], expected_phase)
+                self.assertEqual(
+                    runtime.status()["current_cycle_start_side"], target
+                )
                 expected_event = (
                     "target_ready_mark"
                     if cycle_index + 1 == cycle_count
@@ -1163,6 +1166,10 @@ class RealTransitionRuntimeTest(unittest.TestCase):
             self.assertEqual(idle["sealed_run_count"], 0)
             self.assertEqual(idle["next_run_id"], "b01_r01")
             self.assertEqual(idle["next_run_ordinal"], 1)
+            self.assertIn(idle["next_planned_target_side"], {"A", "B"})
+            self.assertEqual(
+                idle["current_cycle_start_side"], idle["next_initial_side"]
+            )
             runtime.handle_command(
                 "start-run",
                 {

@@ -14,6 +14,7 @@ pytest.importorskip("PyQt5")
 from PyQt5 import QtCore, QtWidgets
 
 from testbed.cli.host_dashboard import (
+    REC_ORANGE,
     RED,
     HostDashboard,
     _load_config,
@@ -102,6 +103,8 @@ def test_v2_panel_is_read_only_and_explains_the_next_mark_action() -> None:
             "mark_next_action": "arm-session",
             "automatic_wait_reason": "session_not_armed",
             "next_initial_side": "A",
+            "current_cycle_start_side": "A",
+            "next_planned_target_side": "B",
             "next_planned_cycle_count": 5,
             "next_field_context": {
                 "workface_reset_id": "wf_001",
@@ -114,12 +117,15 @@ def test_v2_panel_is_read_only_and_explains_the_next_mark_action() -> None:
             },
         }
     )
-    assert "NEXT INITIAL=A" in window.transition_state.text()
+    assert "当前起始点=A" in window.transition_state.text()
+    assert "下次目标位置=B" in window.transition_state.text()
     assert "cycle=1/5" in window.transition_state.text()
     assert "稳定窗=0.32/0.50s" in window.transition_state.text()
     assert "下一条 INITIAL=A" in window.transition_instruction.text()
     assert "按一次左手柄物理按钮 2" in window.transition_instruction.text()
     assert "ARM 自动录制" in window.transition_instruction.text()
+    assert "color:#f2f5f7" in window.transition_instruction.styleSheet()
+    assert "background:#11181d" in window.transition_instruction.styleSheet()
 
     window._update_transition_panel(
         {
@@ -161,7 +167,7 @@ def test_v2_panel_is_read_only_and_explains_the_next_mark_action() -> None:
         }
     )
     assert "禁止关闭、重启或拔盘" in window.transition_instruction.text()
-    assert RED in window.transition_state.styleSheet()
+    assert REC_ORANGE in window.transition_state.styleSheet()
 
     window._update_transition_panel(
         {
@@ -203,6 +209,7 @@ def test_v2_panel_is_read_only_and_explains_the_next_mark_action() -> None:
             "receiver_health_ok": True,
             "run_id": "b01_r01",
             "initial_side": "A",
+            "current_cycle_start_side": "A",
             "next_target_side": "B",
             "completed_cycles": 0,
             "planned_cycle_count": 4,
@@ -236,7 +243,10 @@ def test_v2_panel_is_read_only_and_explains_the_next_mark_action() -> None:
     assert "DUMP END" in window.transition_instruction.text()
     assert "● REC 正在录制" in window.transition_state.text()
     assert "左手柄物理按钮 4" in window.transition_instruction.text()
-    assert RED in window.transition_state.styleSheet()
+    assert "当前起始点=A" in window.transition_state.text()
+    assert "下次目标位置=B" in window.transition_state.text()
+    assert "当前位置=A" in window.transition_state.text()
+    assert REC_ORANGE in window.transition_state.styleSheet()
     assert "cycle=1/4" in window.transition_state.text()
     window.close()
     app.processEvents()
@@ -297,6 +307,7 @@ def test_v2_record_count_and_compact_details_use_transition_status() -> None:
     assert window.prominent_cards["recording"].value.text() == "● REC 正在录制"
     assert "物理4号键取消" in window.prominent_cards["recording"].detail.text()
     assert "4px solid" in window.video_label.styleSheet()
+    assert REC_ORANGE in window.video_label.styleSheet()
 
     for label in (
         window.record_text,

@@ -39,6 +39,7 @@ AMBER = "#f5b041"
 RED = "#e74c3c"
 GRAY = "#7f8c8d"
 BLUE = "#3498db"
+REC_ORANGE = "#f39c12"
 
 
 class DashboardSignals(QtCore.QObject):
@@ -445,7 +446,8 @@ class HostDashboard(QtWidgets.QMainWindow):
         self.transition_instruction.setWordWrap(True)
         self.transition_instruction.setStyleSheet(
             "font-size:15px; font-weight:800; padding:6px; "
-            f"color:{BLUE}; background:#17222a; border-radius:5px;"
+            "color:#f2f5f7; background:#11181d; "
+            "border:1px solid #46535e; border-radius:5px;"
         )
         status_row.addWidget(self.transition_instruction, stretch=3)
         self.transition_context = QtWidgets.QLabel("自动工作面：-")
@@ -681,8 +683,16 @@ class HostDashboard(QtWidgets.QMainWindow):
         next_initial_side = str(
             transition.get("next_initial_side", initial_side) or initial_side
         )
-        next_initial_text = next_initial_side if phase in {"idle", "disabled"} else "-"
-        target_side = str(transition.get("next_target_side", "-") or "-")
+        cycle_start_side = str(
+            transition.get("current_cycle_start_side")
+            or (next_initial_side if phase in {"idle", "disabled"} else initial_side)
+            or "-"
+        )
+        target_side = str(
+            transition.get("next_target_side")
+            or transition.get("next_planned_target_side")
+            or "-"
+        )
         completed = _int(transition.get("completed_cycles"), 0)
         planned = _int(
             transition.get("planned_cycle_count")
@@ -722,16 +732,16 @@ class HostDashboard(QtWidgets.QMainWindow):
                 f"{recording_text}  |  ARM={armed_text}  |  RUN {display_run_id}  |  "
                 f"phase={phase}  |  "
                 f"cycle={current_cycle}/{planned}  |  "
-                f"NEXT INITIAL={next_initial_text}  |  initial={initial_side}  |  "
-                f"TARGET={target_side}  |  "
-                f"实际侧={actual_side}  |  swing稳定={_yes_no(stable)}  |  "
+                f"当前起始点={cycle_start_side}  |  "
+                f"下次目标位置={target_side}  |  当前位置={actual_side}  |  "
+                f"swing稳定={_yes_no(stable)}  |  "
                 f"稳定窗={window_progress:.2f}/{window_required:.2f}s"
                 f"({_yes_no(window_complete)})  |  excursion={_yes_no(excursion)}  |  "
                 f"blockers={blocker_text}  |  "
                 f"auto={auto_wait}"
             )
             saving = auto_wait == "saving_run" or phase in {"complete", "cycles_complete"}
-            color = RED if recording_active else (
+            color = REC_ORANGE if recording_active else (
                 AMBER if saving else (GREEN if health_ok and not blockers else AMBER)
             )
         self.transition_state.setStyleSheet(
@@ -810,10 +820,13 @@ class HostDashboard(QtWidgets.QMainWindow):
         if mark_error:
             instruction += f"  |  上次 MARK 未接受：{mark_error}"
         self.transition_instruction.setText(instruction)
+        instruction_warning = bool(mark_error) or automatic_wait == "session_progress_error"
         self.transition_instruction.setStyleSheet(
             "font-size:15px; font-weight:800; padding:6px; "
-            f"color:{RED if mark_error else BLUE}; "
-            "background:#17222a; border-radius:5px;"
+            "color:#f2f5f7; "
+            f"background:{'#4a1717' if instruction_warning else '#11181d'}; "
+            f"border:1px solid {RED if instruction_warning else '#46535e'}; "
+            "border-radius:5px;"
         )
 
         context = dict(transition.get("field_context", {}) or {})
@@ -966,11 +979,11 @@ class HostDashboard(QtWidgets.QMainWindow):
                 if has_receiver_status
                 else "等待 receiver"
             ),
-            RED if recording_active else GRAY,
+            REC_ORANGE if recording_active else GRAY,
         )
         self.video_label.setStyleSheet(
             f"background:#05080a; color:#7f8c8d; border:"
-            f"{4 if recording_active else 0}px solid {RED};"
+            f"{4 if recording_active else 0}px solid {REC_ORANGE};"
         )
 
         if save_state_key == "writing" or mode == "SAVING":
