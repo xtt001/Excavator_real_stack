@@ -1029,6 +1029,13 @@ class RealTransitionRuntimeTest(unittest.TestCase):
                     "activity_action_abs_min": 0.05,
                     "require_inter_run_activity": True,
                 },
+                camera_sync={
+                    "enabled": True,
+                    "stable_window_s": 0.2,
+                    "max_group_skew_ms": 5.0,
+                    "min_valid_fraction": 0.98,
+                    "min_distinct_groups": 10,
+                },
             )
             runtime.update_receiver_state(mode="armed", health_ok=True)
             next_spec = runtime._next_run_spec_hint  # noqa: SLF001
@@ -1045,6 +1052,12 @@ class RealTransitionRuntimeTest(unittest.TestCase):
                 runtime,
                 side=next_spec.initial_side,
                 end_ns=1_000_000_000,
+            )
+            _feed_camera_sync_window(
+                runtime,
+                start_ns=800_000_000,
+                count=11,
+                skew_ms=0.04,
             )
             runtime.update_operator_action(action=[0.0, 0.0, 0.0, 0.0])
 
@@ -1098,6 +1111,32 @@ class RealTransitionRuntimeTest(unittest.TestCase):
                 step_ns += 600_000_000
                 _feed_ready_window(runtime, side=target, end_ns=step_ns)
                 runtime.update_recorded_step(step_id=step_id, step_ns=step_ns)
+                _feed_camera_sync_window(
+                    runtime,
+                    start_ns=step_ns - 200_000_000,
+                    count=11,
+                    skew_ms=8.0 if cycle_index == 0 else 0.04,
+                )
+                if cycle_index == 0:
+                    blocked = runtime.advance_automatic_workflow(
+                        allow_recorded_events=True
+                    )
+                    self.assertIsNone(blocked)
+                    self.assertEqual(
+                        runtime.status()["automatic_wait_reason"],
+                        "camera_sync",
+                    )
+                    self.assertEqual(runtime.status()["phase"], "goal_committed")
+                    step_id += 1
+                    step_ns += 220_000_000
+                    _feed_ready_window(runtime, side=target, end_ns=step_ns)
+                    runtime.update_recorded_step(step_id=step_id, step_ns=step_ns)
+                    _feed_camera_sync_window(
+                        runtime,
+                        start_ns=step_ns - 200_000_000,
+                        count=11,
+                        skew_ms=0.04,
+                    )
                 completed = runtime.advance_automatic_workflow(
                     allow_recorded_events=True
                 )

@@ -441,6 +441,9 @@ class TransitionTaskRuntime:
             if ready.get("actual_side") != target:
                 self._automatic_wait_reason = f"waiting_target_side_{target}"
                 return None
+            if list(self._camera_sync_state_snapshot().get("blockers", ())):
+                self._automatic_wait_reason = "camera_sync"
+                return None
             result = self.handle_command(
                 "target-ready",
                 {

@@ -31,7 +31,7 @@ from testbed.tasks.real_transition import (
 
 
 ANNOTATION_SCHEMA = "real_transition_cycle_annotation_v2"
-ANNOTATION_VERSION = "session_arm_auto_materializer_v2"
+ANNOTATION_VERSION = "session_arm_auto_materializer_v3"
 CYCLE_MANIFEST_SCHEMA = "real_transition_cycle_manifest_v1"
 MATERIALIZER_SCHEMA = "real_transition_cycle_materializer_v1"
 EXPECTED_CAMERAS = ("video4", "video5", "video6", "video7")
@@ -395,6 +395,9 @@ def _inspect_run_cycles(
                 raise TransitionContractError(
                     f"run {manifest['run_id']} cycle {cycle_index} has no rows after goal"
                 )
+            obs_indices, camera_filter_metrics = _filter_camera_observation_indices(
+                source, obs_indices
+            )
             action_indices = _select_action_indices(
                 source=source,
                 observation_indices=obs_indices,
@@ -480,6 +483,7 @@ def _inspect_run_cycles(
                 "first_intent_row": intent_row,
                 "first_effective_action_row": effective_row,
                 "goal_lead_ms": goal_lead_ms,
+                "camera_filter_metrics": camera_filter_metrics,
                 "passive_events": passive_events,
             }
             tier, reasons, metrics = _classify_cycle(source, record)
@@ -550,12 +554,16 @@ def _classify_cycle(
         flag("local_marker_window_gap", "review")
 
     lead = record.get("goal_lead_ms")
-    if lead is None:
-        flag("no_cycle_action_intent", "review")
-    elif float(lead) < GOAL_LEAD_EXCLUDE_MS:
-        flag("late_goal_commit", "excluded")
-    elif float(lead) < GOAL_LEAD_CLEAN_MS:
-        flag("short_goal_lead", "review")
+    automatic_boundary = str(
+        record["current_ready_event"].get("event_source", "")
+    ) == "automatic"
+    if not automatic_boundary:
+        if lead is None:
+            flag("no_cycle_action_intent", "review")
+        elif float(lead) < GOAL_LEAD_EXCLUDE_MS:
+            flag("late_goal_commit", "excluded")
+        elif float(lead) < GOAL_LEAD_CLEAN_MS:
+            flag("short_goal_lead", "review")
 
     if str(record["realized_target_side"]) != str(record["target_side"]):
         flag("realized_target_mismatch", "excluded")
@@ -586,8 +594,10 @@ def _classify_cycle(
 
     metrics = {
         "goal_lead_ms": lead,
+        "goal_lead_gate_applied": not automatic_boundary,
         "raw_source_gap_max_ms": raw_gap_max,
         "derived_gap_max_ms": derived_gap_max,
+        **dict(record.get("camera_filter_metrics", {})),
         **camera_metrics,
     }
     return severity, reasons, metrics
@@ -634,6 +644,75 @@ def _camera_sync_qc(
         "camera_group_valid_fraction": float(np.mean(row_valid)),
         "camera_group_skew_max_ms": float(np.max(skews)),
         "camera_distinct_group_count": distinct_count,
+    }
+
+
+def _filter_camera_observation_indices(
+    source: h5py.File, indices: np.ndarray
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """Drop locally unusable or repeated camera groups before materialization.
+
+    A 20 Hz timestamp grid can occasionally select the same 30 Hz GMSL group
+    twice near scheduler jitter.  Keeping both rows creates duplicate visual
+    observations; rejecting the whole cycle discards hundreds of otherwise
+    valid samples.  Invalid rows and later occurrences of a repeated group are
+    removed here.  The existing derived-gap checks remain responsible for
+    rejecting a cycle when filtering creates a material time discontinuity.
+    """
+
+    selected = np.asarray(indices, dtype=np.int64)
+    valid_paths = [f"diagnostics/image_group_valid_{cam}" for cam in EXPECTED_CAMERAS]
+    skew_paths = [f"diagnostics/image_group_skew_ms_{cam}" for cam in EXPECTED_CAMERAS]
+    group_paths = [f"diagnostics/image_group_id_{cam}" for cam in EXPECTED_CAMERAS]
+    if any(path not in source for path in (*valid_paths, *skew_paths, *group_paths)):
+        return selected, {
+            "camera_candidate_row_count": int(selected.size),
+            "camera_dropped_invalid_row_count": 0,
+            "camera_dropped_repeated_group_count": 0,
+        }
+
+    valid = np.stack(
+        [np.asarray(source[path][selected], dtype=np.int64) for path in valid_paths],
+        axis=1,
+    )
+    skews = np.stack(
+        [np.asarray(source[path][selected], dtype=np.float64) for path in skew_paths],
+        axis=1,
+    )
+    groups = np.stack(
+        [np.asarray(source[path][selected], dtype=np.int64) for path in group_paths],
+        axis=1,
+    )
+    same_group = np.all(groups == groups[:, :1], axis=1)
+    row_valid = (
+        np.all(valid == 1, axis=1)
+        & same_group
+        & (groups[:, 0] > 0)
+        & np.all(np.isfinite(skews), axis=1)
+        & (np.max(skews, axis=1) <= CAMERA_GROUP_SKEW_MAX_MS)
+    )
+    keep = np.zeros(selected.size, dtype=bool)
+    seen_groups: set[int] = set()
+    repeated_count = 0
+    for row, is_valid in enumerate(row_valid):
+        if not bool(is_valid):
+            continue
+        group_id = int(groups[row, 0])
+        if group_id in seen_groups:
+            repeated_count += 1
+            continue
+        seen_groups.add(group_id)
+        keep[row] = True
+
+    filtered = selected[keep]
+    # Preserve an auditable excluded episode instead of failing the entire
+    # session build when a cycle contains no usable camera observation.
+    if not filtered.size:
+        filtered = selected
+    return filtered, {
+        "camera_candidate_row_count": int(selected.size),
+        "camera_dropped_invalid_row_count": int(np.count_nonzero(~row_valid)),
+        "camera_dropped_repeated_group_count": int(repeated_count),
     }
 
 

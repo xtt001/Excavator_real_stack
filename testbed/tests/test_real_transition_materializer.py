@@ -52,8 +52,10 @@ def _automatic_ready_evidence(side: str, *, excursion: bool) -> dict[str, object
 def _build_sealed_run(
     root: Path,
     *,
-    invalid_camera_row: int | None = None,
+    invalid_camera_rows: tuple[int, ...] = (),
+    repeated_camera_row: int | None = None,
     automatic_boundaries: bool = False,
+    automatic_continuous_prepose: bool = False,
 ) -> Path:
     spec = TransitionRunSpec(
         session_id="session01",
@@ -89,6 +91,8 @@ def _build_sealed_run(
         )
         qpos[target - 5 : target + 1, 0] = target_qpos
         actions[goal + 6 : target - 1, 0] = 0.2
+        if automatic_continuous_prepose:
+            actions[goal, 1] = 0.2
     qvel = np.zeros((n_rows, 4), dtype=np.float32)
     qvel[1:, 0] = np.diff(qpos[:, 0]) / 0.02
     frames = {
@@ -105,15 +109,20 @@ def _build_sealed_run(
     }
     for camera in frames:
         valid = np.ones(n_rows, dtype=np.int64)
-        if invalid_camera_row is not None and camera == "video7":
-            valid[int(invalid_camera_row)] = 0
+        if invalid_camera_rows and camera == "video7":
+            valid[np.asarray(invalid_camera_rows, dtype=np.int64)] = 0
         diagnostics[f"image_group_valid_{camera}"] = valid
         diagnostics[f"image_group_skew_ms_{camera}"] = np.full(
             n_rows, 0.04, dtype=np.float32
         )
-        diagnostics[f"image_group_id_{camera}"] = np.arange(
+        group_ids = np.arange(
             1, n_rows + 1, dtype=np.int64
         )
+        if repeated_camera_row is not None:
+            group_ids[int(repeated_camera_row)] = group_ids[
+                int(repeated_camera_row) - 2
+            ]
+        diagnostics[f"image_group_id_{camera}"] = group_ids
     write_episode(
         package.raw_path,
         qpos=qpos,
@@ -275,20 +284,78 @@ def test_materializer_accepts_session_arm_automatic_cycles_without_dump_mark(
     ] == "automatic"
 
 
-def test_materializer_excludes_a_cycle_with_invalid_camera_group(tmp_path: Path) -> None:
-    run_dir = _build_sealed_run(tmp_path / "raw", invalid_camera_row=6)
+def test_materializer_accepts_automatic_prepose_active_at_goal_boundary(
+    tmp_path: Path,
+) -> None:
+    run_dir = _build_sealed_run(
+        tmp_path / "raw",
+        automatic_boundaries=True,
+        automatic_continuous_prepose=True,
+    )
+    output = tmp_path / "cycles"
+
+    result = materialize_transition_run(run_dir=run_dir, output_dir=output)
+
+    assert result["clean_cycle_count"] == 3
+    rows = [
+        json.loads(line)
+        for line in (output / "cycle_manifest.jsonl").read_text().splitlines()
+    ]
+    assert rows[0]["qc_metrics"]["goal_lead_ms"] == 0.0
+    assert rows[0]["qc_metrics"]["goal_lead_gate_applied"] is False
+    assert "late_goal_commit" not in rows[0]["qc_reasons"]
+
+
+def test_materializer_filters_a_sparse_invalid_camera_group(tmp_path: Path) -> None:
+    run_dir = _build_sealed_run(tmp_path / "raw", invalid_camera_rows=(6,))
+    output = tmp_path / "cycles"
+
+    result = materialize_transition_run(run_dir=run_dir, output_dir=output)
+
+    assert result["clean_cycle_count"] == 3
+    rows = [
+        json.loads(line)
+        for line in (output / "cycle_manifest.jsonl").read_text().splitlines()
+    ]
+    assert rows[0]["training_tier"] == "clean"
+    assert rows[0]["qc_metrics"]["camera_dropped_invalid_row_count"] == 1
+    with h5py.File(output / "episodes" / "episode_0.hdf5", "r") as episode:
+        source_rows = np.asarray(episode["provenance/source_row_index"][()])
+    assert 6 not in source_rows
+
+
+def test_materializer_filters_a_repeated_camera_group(tmp_path: Path) -> None:
+    run_dir = _build_sealed_run(tmp_path / "raw", repeated_camera_row=6)
+    output = tmp_path / "cycles"
+
+    result = materialize_transition_run(run_dir=run_dir, output_dir=output)
+
+    assert result["clean_cycle_count"] == 3
+    rows = [
+        json.loads(line)
+        for line in (output / "cycle_manifest.jsonl").read_text().splitlines()
+    ]
+    assert rows[0]["qc_metrics"]["camera_dropped_repeated_group_count"] == 1
+    with h5py.File(output / "episodes" / "episode_0.hdf5", "r") as episode:
+        source_rows = np.asarray(episode["provenance/source_row_index"][()])
+    assert 6 not in source_rows
+
+
+def test_materializer_excludes_camera_gap_after_filtering(tmp_path: Path) -> None:
+    run_dir = _build_sealed_run(
+        tmp_path / "raw", invalid_camera_rows=tuple(range(4, 20))
+    )
     output = tmp_path / "cycles"
 
     result = materialize_transition_run(run_dir=run_dir, output_dir=output)
 
     assert result["excluded_cycle_count"] == 1
-    assert result["train_ready_episode_ids"] == [1, 2]
     rows = [
         json.loads(line)
         for line in (output / "cycle_manifest.jsonl").read_text().splitlines()
     ]
     assert rows[0]["training_tier"] == "excluded"
-    assert "camera_group_invalid" in rows[0]["qc_reasons"]
+    assert "structural_time_gap" in rows[0]["qc_reasons"]
 
 
 def test_event_journal_only_fsyncs_when_closed_durably(
