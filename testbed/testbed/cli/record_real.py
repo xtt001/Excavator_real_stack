@@ -144,7 +144,9 @@ def _publish_remote_receiver_status(
         "receiver_mode": str(receiver_mode),
         "episode_idx": int(episode_idx),
         "saved": int(saved),
-        "recording": int(record_session is not None),
+        "recording": int(
+            record_session is not None and str(receiver_mode) == "recording"
+        ),
         "record_steps": steps,
         "go_home_running": int(receiver_mode == "go_home"),
         "go_home_result": go_home_result,
@@ -2131,6 +2133,39 @@ def main(prog: str = "tb-record-real") -> None:
                                 receiver_mode = "saving"
                                 saved_steps = len(record_session)
                                 save_started_ns = time.time_ns()
+                                save_status = {
+                                    "state": "writing",
+                                    "episode_idx": int(episode_idx),
+                                    "steps": int(saved_steps),
+                                    "started_ns": int(save_started_ns),
+                                    "finished_ns": 0,
+                                    "path": "",
+                                    "success": -1,
+                                    "error_code": "",
+                                    "transition_run_id": str(
+                                        transition_runtime.status().get("run_id", "")
+                                    ),
+                                }
+                                transition_runtime.update_receiver_state(
+                                    mode=receiver_mode,
+                                    health_ok=receiver_health.ok,
+                                )
+                                _publish_remote_receiver_status(
+                                    action_source,
+                                    receiver_mode=receiver_mode,
+                                    episode_idx=episode_idx,
+                                    saved=saved,
+                                    record_session=record_session,
+                                    receiver_health=receiver_health,
+                                    record_steps=saved_steps,
+                                    action_info=action_info,
+                                    online_qc=online_qc_snapshot,
+                                    storage_path=dataset_dir,
+                                    save_status=save_status,
+                                    home_status=home_status,
+                                    real_transition_status=transition_runtime.status(),
+                                    message="saving_transition_hdf5",
+                                )
                                 final_qc_snapshot = None
                                 if transition_stop.success:
                                     (

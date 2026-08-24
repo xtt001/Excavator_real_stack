@@ -353,3 +353,74 @@ def test_dashboard_resolves_v2_extended_config() -> None:
         "activity_action_abs_min": 0.05,
         "require_inter_run_activity": True,
     }
+
+
+def test_saving_state_replaces_stale_rec_and_previous_save_result() -> None:
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    window = _LayoutOnlyDashboard()
+    window.record_hz = 50.0
+    window.max_steps = 15000
+    now_ns = time.time_ns()
+    window.last_status_rx_ns = now_ns
+    window.video_stats = {
+        "receive_time_ns": now_ns,
+        "stamp_ns": now_ns,
+    }
+    window.latest_status = {
+        "receiver_available": 1,
+        "receiver_receive_time_ns": now_ns - 38_000_000_000,
+        "receiver": {
+            "receiver_mode": "saving",
+            "recording": 0,
+            "episode_idx": 4,
+            "record_steps": 8230,
+            "saved": 3,
+            "save": {
+                "state": "writing",
+                "episode_idx": 4,
+                "steps": 8230,
+                "started_ns": now_ns - 38_000_000_000,
+                "finished_ns": 0,
+            },
+            "health": {
+                "ok": 1,
+                "bridge_snapshot_age_ms": 14.0,
+                "controller_ack": 1,
+            },
+            "real_transition": {
+                "phase": "complete",
+                "receiver_mode": "saving",
+                "automatic_wait_reason": "saving_run",
+                "run_id": "b01_r04",
+                "planned_cycle_count": 5,
+                "completed_cycles": 5,
+                "ready_state": {},
+            },
+        },
+    }
+
+    window._update_status_panels()
+    window._refresh_dynamic_state()
+
+    assert window.prominent_cards["recording"].value.text() == "录制已结束"
+    assert "正在写盘" in window.prominent_cards["recording"].detail.text()
+    assert window.prominent_cards["saving"].value.text() == "正在保存数据"
+    assert "episode 4" in window.prominent_cards["saving"].detail.text()
+    assert "正在保存数据（录制已结束）" in window.transition_state.text()
+    assert "REC 正在录制" not in window.transition_state.text()
+    assert "RECEIVER AGE  SAVING" == window.badges["receiver"].text()
+    assert "从端 receiver 状态中断" not in window.alert_label.text()
+    assert "请勿关闭或拔盘" in window.alert_label.text()
+
+    window.latest_status["receiver"]["receiver_mode"] = "armed"
+    window.latest_status["receiver"]["save"] = {
+        "state": "success",
+        "episode_idx": 4,
+        "steps": 8230,
+        "file_size_bytes": 1_000_000,
+    }
+    window._update_status_panels()
+    assert window.prominent_cards["saving"].value.text() == "上次保存完成"
+    assert "上次 episode 4" in window.prominent_cards["saving"].detail.text()
+    window.close()
+    app.processEvents()

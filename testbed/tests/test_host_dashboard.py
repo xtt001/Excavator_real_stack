@@ -242,3 +242,33 @@ def test_structured_receiver_status_is_remote_protocol_jsonable(tmp_path) -> Non
         "next_target_side": "B",
     }
     assert encode_remote_receiver_status(sink.payload).endswith(b"\n")
+
+
+def test_saving_status_marks_recording_as_finished(tmp_path) -> None:
+    class Sink:
+        payload = None
+
+        def publish_status(self, payload):
+            self.payload = payload
+
+    sink = Sink()
+    _publish_remote_receiver_status(
+        sink,
+        receiver_mode="saving",
+        episode_idx=4,
+        saved=3,
+        record_session=object(),
+        record_steps=8230,
+        storage_path=tmp_path,
+        save_status={
+            "state": "writing",
+            "episode_idx": 4,
+            "steps": 8230,
+            "started_ns": time.time_ns(),
+        },
+    )
+
+    assert sink.payload is not None
+    assert sink.payload["receiver_mode"] == "saving"
+    assert sink.payload["recording"] == 0
+    assert sink.payload["save"]["state"] == "writing"

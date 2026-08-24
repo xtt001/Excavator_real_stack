@@ -40,6 +40,7 @@ RED = "#e74c3c"
 GRAY = "#7f8c8d"
 BLUE = "#3498db"
 REC_ORANGE = "#f39c12"
+SAVE_STATUS_GRACE_MS = 180_000.0
 
 
 class DashboardSignals(QtCore.QObject):
@@ -712,9 +713,15 @@ class HostDashboard(QtWidgets.QMainWindow):
         display_run_id = next_run_id if phase in {"idle", "disabled"} else run_id
         receiver_mode = str(transition.get("receiver_mode", "-") or "-")
         health_ok = bool(transition.get("receiver_health_ok", False))
-        recording_active = bool(transition.get("recording_attached", False)) or (
-            receiver_mode.lower() == "recording"
+        automatic_wait = str(
+            transition.get("automatic_wait_reason", "") or ""
         )
+        saving_active = (
+            receiver_mode.lower() == "saving"
+            or automatic_wait == "saving_run"
+            or phase in {"complete", "cycles_complete"}
+        )
+        recording_active = receiver_mode.lower() == "recording" and not saving_active
 
         if not transition:
             self.transition_state.setText(
@@ -727,7 +734,11 @@ class HostDashboard(QtWidgets.QMainWindow):
             auto_wait = str(
                 transition.get("automatic_wait_reason", "") or "-"
             )
-            recording_text = "● REC 正在录制" if recording_active else "未在录制"
+            recording_text = (
+                "正在保存数据（录制已结束）"
+                if saving_active
+                else ("● REC 正在录制" if recording_active else "未在录制")
+            )
             self.transition_state.setText(
                 f"{recording_text}  |  ARM={armed_text}  |  RUN {display_run_id}  |  "
                 f"phase={phase}  |  "
@@ -740,9 +751,10 @@ class HostDashboard(QtWidgets.QMainWindow):
                 f"blockers={blocker_text}  |  "
                 f"auto={auto_wait}"
             )
-            saving = auto_wait == "saving_run" or phase in {"complete", "cycles_complete"}
-            color = REC_ORANGE if recording_active else (
-                AMBER if saving else (GREEN if health_ok and not blockers else AMBER)
+            color = AMBER if saving_active else (
+                REC_ORANGE
+                if recording_active
+                else (GREEN if health_ok and not blockers else AMBER)
             )
         self.transition_state.setStyleSheet(
             "font-size:16px; font-weight:800; padding:5px; "
@@ -750,9 +762,6 @@ class HostDashboard(QtWidgets.QMainWindow):
         )
 
         mark_action = str(transition.get("mark_next_action", "") or "")
-        automatic_wait = str(
-            transition.get("automatic_wait_reason", "") or ""
-        )
         instruction = {
             "arm-session": (
                 f"下一条 INITIAL={next_initial_side}；准备好整个 session 后，"
@@ -964,41 +973,57 @@ class HostDashboard(QtWidgets.QMainWindow):
             ) if has_receiver_status else GRAY,
         )
 
-        recording_active = bool(receiver.get("recording", 0))
+        saving_active = mode == "SAVING" or save_state_key == "writing"
+        recording_active = bool(receiver.get("recording", 0)) and not saving_active
         self.prominent_cards["recording"].set_state(
             "● REC 正在录制" if recording_active else (
-                "未在录制" if has_receiver_status else "等待状态"
+                "录制已结束" if saving_active else (
+                    "未在录制" if has_receiver_status else "等待状态"
+                )
             ),
             (
                 (
                     f"episode {episode} / {steps} steps / {duration_text}"
                     " / 左手柄物理4号键取消"
                     if recording_active
-                    else f"episode {episode} / {steps} steps / {duration_text}"
+                    else (
+                        f"episode {episode} / {steps} steps / 正在写盘"
+                        if saving_active
+                        else f"episode {episode} / {steps} steps / {duration_text}"
+                    )
                 )
                 if has_receiver_status
                 else "等待 receiver"
             ),
-            REC_ORANGE if recording_active else GRAY,
+            REC_ORANGE if recording_active else (AMBER if saving_active else GRAY),
         )
         self.video_label.setStyleSheet(
             f"background:#05080a; color:#7f8c8d; border:"
             f"{4 if recording_active else 0}px solid {REC_ORANGE};"
         )
 
-        if save_state_key == "writing" or mode == "SAVING":
-            save_headline, save_color = "正在保存", AMBER
+        if saving_active:
+            save_headline, save_color = "正在保存数据", AMBER
         elif save_state_key == "failed":
             save_headline, save_color = "保存失败", RED
         elif save_state_key == "success":
-            save_headline, save_color = "保存完成", GREEN
+            save_headline, save_color = "上次保存完成", GREEN
         elif has_receiver_status:
             save_headline, save_color = "等待保存", GRAY
         else:
             save_headline, save_color = "等待状态", GRAY
         self.prominent_cards["saving"].set_state(
             save_headline,
-            f"episode {save.get('episode_idx', '-')} / {_fmt_bytes(save.get('file_size_bytes'))}",
+            (
+                f"episode {save.get('episode_idx', '-')} / "
+                f"{save.get('steps', '-')} steps / "
+                f"{_duration_from_ns(save.get('started_ns'), time.time_ns())}"
+                if saving_active
+                else (
+                    f"上次 episode {save.get('episode_idx', '-')} / "
+                    f"{_fmt_bytes(save.get('file_size_bytes'))}"
+                )
+            ),
             save_color,
         )
 
@@ -1170,6 +1195,13 @@ class HostDashboard(QtWidgets.QMainWindow):
         )
         receiver = dict(self.latest_status.get("receiver", {}) or {})
         health = dict(receiver.get("health", {}) or {})
+        save = dict(receiver.get("save", {}) or {})
+        save_elapsed_ms = _age_ms(now_ns, save.get("started_ns", 0))
+        receiver_saving = (
+            str(receiver.get("receiver_mode", "")).lower() == "saving"
+            and str(save.get("state", "")).lower() == "writing"
+            and 0.0 <= save_elapsed_ms <= SAVE_STATUS_GRACE_MS
+        )
         sender_ok = sender_age_ms >= 0 and sender_age_ms <= 500.0
         receiver_ok = (
             bool(self.latest_status.get("receiver_available"))
@@ -1183,10 +1215,16 @@ class HostDashboard(QtWidgets.QMainWindow):
         control_ok = receiver_ok and bool(health.get("controller_ack", 0))
 
         self._set_badge("sender", sender_ok, sender_age_ms)
-        self._set_badge("receiver", receiver_ok, receiver_age_ms)
-        self._set_badge("bridge", bridge_ok, bridge_age)
+        if receiver_saving:
+            self.badges["receiver"].set_state("SAVING", AMBER)
+            self.badges["bridge"].set_state("HOLD", AMBER)
+        else:
+            self._set_badge("receiver", receiver_ok, receiver_age_ms)
+            self._set_badge("bridge", bridge_ok, bridge_age)
         self._set_badge("camera", video_ok, video_rx_age)
-        if control_ok:
+        if receiver_saving:
+            self.badges["control"].set_state("SAVE", AMBER)
+        elif control_ok:
             self.badges["control"].set_state("ACK", GREEN)
         elif receiver_ok:
             self.badges["control"].set_state("FAULT", RED)
@@ -1206,7 +1244,7 @@ class HostDashboard(QtWidgets.QMainWindow):
         alerts: list[str] = []
         if not sender_ok:
             alerts.append("主端 sender 状态中断")
-        if not receiver_ok:
+        if not receiver_ok and not receiver_saving:
             alerts.append("从端 receiver 状态中断")
         if receiver_ok and not bool(health.get("ok", 0)):
             alerts.append("健康门禁：" + str(health.get("error_code") or "unknown"))
@@ -1215,7 +1253,6 @@ class HostDashboard(QtWidgets.QMainWindow):
         storage = dict(receiver.get("storage", {}) or {})
         if storage.get("available") and not storage.get("mounted"):
             alerts.append("外置 USB 未挂载")
-        save = dict(receiver.get("save", {}) or {})
         if save.get("state") == "failed":
             alerts.append("最近 HDF5 保存失败")
         qc = dict(receiver.get("online_qc", {}) or {})
@@ -1225,6 +1262,16 @@ class HostDashboard(QtWidgets.QMainWindow):
             self.alert_label.setText("  |  ".join(alerts))
             self.alert_label.setStyleSheet(
                 f"background:{RED}; color:white; padding:7px; border-radius:5px; font-weight:700;"
+            )
+        elif receiver_saving:
+            elapsed = _duration_from_ns(save.get("started_ns"), now_ns)
+            self.alert_label.setText(
+                f"正在保存数据（录制已结束） | episode "
+                f"{save.get('episode_idx', '-')} | 已用时 {elapsed} | 请勿关闭或拔盘"
+            )
+            self.alert_label.setStyleSheet(
+                f"background:{AMBER}; color:#101820; padding:7px; "
+                "border-radius:5px; font-weight:700;"
             )
         else:
             self.alert_label.setText(
