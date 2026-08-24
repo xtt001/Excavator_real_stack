@@ -11,7 +11,11 @@ import h5py
 import numpy as np
 
 from testbed.backends.real.bridge import InProcessMockBridgeClient
-from testbed.cli.record_real import RecordSession, _load_yaml_config
+from testbed.cli.record_real import (
+    RecordSession,
+    _load_yaml_config,
+    _recording_contract_snapshot,
+)
 from testbed.cli.teleop_remote import _load_yaml_config as _load_sender_yaml_config
 from testbed.data.recorder import EpisodeRecorder
 from testbed.tasks.home_side_calibration import (
@@ -179,6 +183,24 @@ class RealTransitionPlanTest(unittest.TestCase):
         self.assertEqual(
             sender_config["teleop"]["joystick"], config["teleop"]["joystick"]
         )
+
+    def test_receiver_contract_ignores_host_only_discard_binding(self) -> None:
+        config = {
+            "teleop": {
+                "input": "remote",
+                "joystick": {
+                    "mark_button": 1,
+                    "discard_button": 3,
+                },
+            },
+            "real_transition": {"enabled": True},
+        }
+
+        snapshot = _recording_contract_snapshot(config)
+
+        self.assertNotIn("discard_button", snapshot["teleop"]["joystick"])
+        self.assertEqual(snapshot["teleop"]["joystick"]["mark_button"], 1)
+        self.assertEqual(config["teleop"]["joystick"]["discard_button"], 3)
 
     def test_plan_is_deterministic_balanced_and_split_by_block(self) -> None:
         first_sequence, first_split = build_session_manifests(

@@ -9,6 +9,7 @@ quarantined under the dataset failed/ directory instead of the training set.
 from __future__ import annotations
 
 import argparse
+import copy
 import datetime
 import json
 import logging
@@ -882,7 +883,7 @@ def main(prog: str = "tb-record-real") -> None:
         receiver_health_cfg=receiver_health_cfg,
         camera_names=camera_names,
     )
-    record_config_yaml = _dump_yaml_config(cfg)
+    record_config_yaml = _dump_yaml_config(_recording_contract_snapshot(cfg))
 
     from testbed.backends.real.backend import RealExcavatorBackend
     from testbed.backends.real.go_home import GoHomeConfig, GoHomeController
@@ -2737,6 +2738,23 @@ def _dump_yaml_config(cfg: dict[str, Any]) -> str:
             "PyYAML is required to snapshot the recording config."
         ) from exc
     return str(yaml.safe_dump(cfg, sort_keys=False))
+
+
+def _recording_contract_snapshot(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Exclude sender-only controls that cannot affect a saved receiver run."""
+
+    snapshot = copy.deepcopy(cfg)
+    transition_cfg = dict(snapshot.get("real_transition", {}) or {})
+    teleop_cfg = snapshot.setdefault("teleop", {})
+    if bool(transition_cfg.get("enabled", False)) and str(
+        teleop_cfg.get("input", "")
+    ) == "remote":
+        joystick_cfg = teleop_cfg.get("joystick")
+        if isinstance(joystick_cfg, dict):
+            # This button is interpreted only by the host sender. A cancelled
+            # run is excluded from the frozen sequence and training dataset.
+            joystick_cfg.pop("discard_button", None)
+    return snapshot
 
 
 class ZeroActionSource:
