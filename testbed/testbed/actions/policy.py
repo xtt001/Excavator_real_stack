@@ -44,6 +44,7 @@ class PolicyActionSourceState:
     assist_consecutive_steps: np.ndarray
     policy_state: Any
     runtime_gate_state: Any | None
+    planner_state: Any | None = None
 
 
 class PolicyActionSource(ActionSource):
@@ -79,6 +80,8 @@ class PolicyActionSource(ActionSource):
         bundle_dir: str | Path | None = None,
         inference_warmup_steps: int = 0,
         frame_alignment_enabled: bool = False,
+        cycle_planner: Any | None = None,
+        reset_policy_on_goal: bool = True,
     ) -> None:
         if output_mode not in POLICY_OUTPUT_MODES:
             raise ValueError(
@@ -108,6 +111,20 @@ class PolicyActionSource(ActionSource):
         self._bundle_dir = None if bundle_dir is None else str(bundle_dir)
         self._inference_warmup_steps = int(inference_warmup_steps)
         self._frame_alignment_enabled = bool(frame_alignment_enabled)
+        self._cycle_planner = cycle_planner
+        self._reset_policy_on_goal = bool(reset_policy_on_goal)
+        if self._cycle_planner is not None:
+            for method_name in (
+                "apply_condition",
+                "commit_goal",
+                "mark_target_ready",
+                "reset",
+            ):
+                if not callable(getattr(self._cycle_planner, method_name, None)):
+                    raise TypeError(
+                        "cycle_planner must implement "
+                        f"{method_name}()"
+                    )
         if self._inference_warmup_steps < 0:
             raise ValueError("inference_warmup_steps must be non-negative")
         self._inference_prepared = False
@@ -118,11 +135,14 @@ class PolicyActionSource(ActionSource):
         self._filtered_qvel = np.zeros(4, dtype=np.float32)
         self._assist_last_sign = np.zeros(4, dtype=np.int8)
         self._assist_consecutive_steps = np.zeros(4, dtype=np.int32)
+        if self._cycle_planner is not None:
+            self._cycle_planner.reset()
 
     @classmethod
     def from_config(cls, config: dict[str, Any] | None) -> PolicyActionSource:
         cfg = dict(config or {})
         bundle_dir = Path(cfg.get("bundle_dir", "policy_bundles/real_one_dig_v1"))
+        cycle_planner = _build_cycle_planner(cfg.get("cycle_planner"))
         policy = load_act_policy_from_bundle(
             bundle_dir=bundle_dir,
             ckpt_path=cfg.get("ckpt_path"),
@@ -195,6 +215,8 @@ class PolicyActionSource(ActionSource):
             frame_alignment_enabled=bool(
                 dict(cfg.get("frame_alignment", {}) or {}).get("enabled", False)
             ),
+            cycle_planner=cycle_planner,
+            reset_policy_on_goal=bool(cfg.get("reset_policy_on_goal", True)),
         )
 
     def reset(self) -> None:
@@ -205,6 +227,8 @@ class PolicyActionSource(ActionSource):
         self._filtered_qvel.fill(0.0)
         self._assist_last_sign.fill(0)
         self._assist_consecutive_steps.fill(0)
+        if self._cycle_planner is not None:
+            self._cycle_planner.reset()
         if self._runtime_gate_stack is not None:
             self._runtime_gate_stack.reset()
         if hasattr(self._policy, "reset"):
@@ -219,10 +243,24 @@ class PolicyActionSource(ActionSource):
                 "warmup_steps": 0,
                 "elapsed_s": 0.0,
             }
+        if self._cycle_planner is not None and (
+            getattr(self._cycle_planner, "committed_goal", None) is None
+        ):
+            # Startup warm-up can happen before the first ready gate.  Do not
+            # fabricate a goal merely to warm the network; the first real
+            # inference will be enabled by an explicit commit_cycle_goal().
+            return {
+                "prepared": 0,
+                "warmup_steps": 0,
+                "elapsed_s": 0.0,
+                "planner_waiting_for_commit": 1,
+            }
         started = time.perf_counter()
         completed = 0
         try:
             policy_obs, _ = self._policy_obs(obs)
+            if self._cycle_planner is not None:
+                policy_obs = self._cycle_planner.apply_condition(policy_obs)
             inference = (
                 getattr(self._policy, "predict_action_and_intent", None)
                 if self._runtime_gate_stack is not None or self._report_intent
@@ -254,6 +292,12 @@ class PolicyActionSource(ActionSource):
             if not callable(gate_snapshot):
                 raise TypeError("runtime gate stack does not implement snapshot_state()")
             gate_state = gate_snapshot()
+        planner_state = None
+        if self._cycle_planner is not None:
+            snapshot = getattr(self._cycle_planner, "snapshot_state", None)
+            if not callable(snapshot):
+                raise TypeError("cycle planner does not implement snapshot_state()")
+            planner_state = snapshot()
         return PolicyActionSourceState(
             step=int(self._step),
             record_start_pending=bool(self._record_start_pending),
@@ -270,6 +314,7 @@ class PolicyActionSource(ActionSource):
             assist_consecutive_steps=self._assist_consecutive_steps.copy(),
             policy_state=policy_snapshot(),
             runtime_gate_state=gate_state,
+            planner_state=planner_state,
         )
 
     def restore_state(self, state: PolicyActionSourceState) -> None:
@@ -282,6 +327,8 @@ class PolicyActionSource(ActionSource):
             raise TypeError("policy does not implement restore_state()")
         if (self._runtime_gate_stack is None) != (state.runtime_gate_state is None):
             raise ValueError("runtime gate state/config mismatch")
+        if (self._cycle_planner is None) != (state.planner_state is None):
+            raise ValueError("cycle planner state/config mismatch")
         self._step = int(state.step)
         self._record_start_pending = bool(state.record_start_pending)
         self._last_qpos = (
@@ -307,6 +354,63 @@ class PolicyActionSource(ActionSource):
             if not callable(gate_restore):
                 raise TypeError("runtime gate stack does not implement restore_state()")
             gate_restore(state.runtime_gate_state)
+        if self._cycle_planner is not None:
+            planner_restore = getattr(self._cycle_planner, "restore_state", None)
+            if not callable(planner_restore):
+                raise TypeError("cycle planner does not implement restore_state()")
+            planner_restore(state.planner_state)
+
+    @property
+    def cycle_planner(self) -> Any | None:
+        """Return the optional goal-only planner attached to this source."""
+
+        return self._cycle_planner
+
+    def commit_cycle_goal(self) -> Any:
+        """Commit the next planner goal before requesting policy actions."""
+
+        if self._cycle_planner is None:
+            raise RuntimeError("no cycle planner is attached")
+        goal = self._cycle_planner.commit_goal()
+        # A committed goal starts a new causal action sequence.  ACT's
+        # temporal aggregation, cached chunk, visual history, and any
+        # factorized aggregator must not carry proposals generated under the
+        # previous goal into the first tick of this goal.  The planner still
+        # owns only the condition; resetting the policy here is solely an
+        # inference-cache lifecycle boundary.
+        if self._reset_policy_on_goal:
+            policy_reset = getattr(self._policy, "reset", None)
+            if callable(policy_reset):
+                policy_reset()
+        return goal
+
+    def mark_cycle_target_ready(self, realized_side: str) -> Any:
+        """Advance the planner after an independently verified ready boundary."""
+
+        if self._cycle_planner is None:
+            raise RuntimeError("no cycle planner is attached")
+        return self._cycle_planner.mark_target_ready(realized_side)
+
+    def cycle_planner_status(self) -> dict[str, Any]:
+        """Return compact planner status for a UI/logger."""
+
+        planner = self._cycle_planner
+        if planner is None:
+            return {"enabled": False}
+        goal = getattr(planner, "committed_goal", None)
+        return {
+            "enabled": True,
+            "cycle_index": int(getattr(planner, "cycle_index", -1)),
+            "goal_epoch": int(getattr(planner, "goal_epoch", -1)),
+            "done": bool(getattr(planner, "done", False)),
+            "committed": goal is not None,
+            "target_side": None if goal is None else str(goal.target_side),
+            "condition": (
+                None
+                if goal is None
+                else [float(value) for value in goal.condition]
+            ),
+        }
 
     def next_action(self, obs: dict[str, Any]) -> tuple[np.ndarray, ActionInfo]:
         t0 = time.perf_counter()
@@ -314,6 +418,10 @@ class PolicyActionSource(ActionSource):
         record_start_requested = self._consume_record_start_request()
         try:
             policy_obs, qvel_input = self._policy_obs(obs)
+            planner_goal = None
+            if self._cycle_planner is not None:
+                policy_obs = self._cycle_planner.apply_condition(policy_obs)
+                planner_goal = self._cycle_planner.committed_goal
             gate_extras: dict[str, Any] = {}
             raw_gohome_requested = False
             intent_probabilities: np.ndarray | None = None
@@ -386,6 +494,21 @@ class PolicyActionSource(ActionSource):
                 **assist_extras,
                 **gate_extras,
             }
+            if planner_goal is not None:
+                extras.update(
+                    {
+                        "planner_cycle_index": int(planner_goal.cycle_index),
+                        "planner_goal_epoch": int(planner_goal.goal_epoch),
+                        "planner_current_side": str(planner_goal.current_side),
+                        "planner_target_side": str(planner_goal.target_side),
+                        "planner_target_side_code": int(
+                            planner_goal.target_side_code
+                        ),
+                        "planner_condition": np.asarray(
+                            planner_goal.condition, dtype=np.float32
+                        ),
+                    }
+                )
             factorized_diagnostics = getattr(
                 self._policy, "factorized_diagnostics", None
             )
@@ -621,18 +744,20 @@ def load_act_policy_from_bundle(
     with resolved_path.open("r", encoding="utf-8") as f:
         resolved = yaml.safe_load(f) or {}
     policy_config = _act_policy_config_from_resolved(resolved)
-    intent_loss = policy_config.get("intent_loss")
-    if isinstance(intent_loss, dict):
-        threshold_raw = intent_loss.get("threshold_json")
-        if threshold_raw:
-            threshold_path = Path(str(threshold_raw))
-            bundled_threshold_path = bundle / threshold_path.name
-            try:
-                threshold_path_available = threshold_path.exists()
-            except OSError:
-                threshold_path_available = False
-            if not threshold_path_available and bundled_threshold_path.is_file():
-                intent_loss["threshold_json"] = str(bundled_threshold_path)
+    for section_name in (
+        "intent_loss",
+        "deadzone_loss",
+        "window_deadzone_loss",
+        "temporal_release_loss",
+        "condition_adherence_loss",
+    ):
+        section = policy_config.get(section_name)
+        if isinstance(section, dict):
+            _relocate_bundle_file(
+                section,
+                key="threshold_json",
+                bundle=bundle,
+            )
 
     from testbed.policies.act.adapter import ACTAdapter
 
@@ -651,6 +776,25 @@ def load_act_policy_from_bundle(
         ),
         device=str(device or resolved.get("policy", {}).get("device", "cuda")),
     )
+
+
+def _relocate_bundle_file(
+    config: dict[str, Any], *, key: str, bundle: Path
+) -> None:
+    raw = config.get(key)
+    if raw is None or not str(raw).strip():
+        return
+    source = Path(str(raw))
+    try:
+        if source.is_file():
+            return
+    except OSError:
+        pass
+    candidates = (bundle / source.name, bundle / "contracts" / source.name)
+    for candidate in candidates:
+        if candidate.is_file():
+            config[key] = str(candidate)
+            return
 
 
 def _act_policy_config_from_resolved(resolved: dict[str, Any]) -> dict[str, Any]:
@@ -697,6 +841,42 @@ def _act_policy_config_from_resolved(resolved: dict[str, Any]) -> dict[str, Any]
         ),
         "goal_effect": copy.deepcopy(
             train_cfg.get("goal_effect", policy_cfg.get("goal_effect", {})) or {}
+        ),
+        # These objectives are disabled during inference, but their resolved
+        # architecture flags must be reconstructed so a conditioned ACT
+        # checkpoint (including condition_action_head) can be loaded by the
+        # offline evaluator and runtime adapter.
+        "condition_adherence_loss": copy.deepcopy(
+            train_cfg.get(
+                "condition_adherence_loss",
+                policy_cfg.get("condition_adherence_loss", {}),
+            )
+            or {}
+        ),
+        "condition_action_loss": copy.deepcopy(
+            train_cfg.get(
+                "condition_action_loss",
+                policy_cfg.get("condition_action_loss", {}),
+            )
+            or {}
+        ),
+        "deadzone_loss": copy.deepcopy(
+            train_cfg.get("deadzone_loss", policy_cfg.get("deadzone_loss", {}))
+            or {}
+        ),
+        "window_deadzone_loss": copy.deepcopy(
+            train_cfg.get(
+                "window_deadzone_loss",
+                policy_cfg.get("window_deadzone_loss", {}),
+            )
+            or {}
+        ),
+        "temporal_release_loss": copy.deepcopy(
+            train_cfg.get(
+                "temporal_release_loss",
+                policy_cfg.get("temporal_release_loss", {}),
+            )
+            or {}
         ),
         # Action-state/effort is an auxiliary training head, but the model
         # architecture must still be reconstructed when loading its bundle so
@@ -748,6 +928,20 @@ def _policy_obs_from_real_obs(
             else np.asarray(obs["qvel"], dtype=np.float32)
         ),
     }
+    if "real_transition_condition_v1" in obs:
+        condition = np.asarray(
+            obs["real_transition_condition_v1"], dtype=np.float32
+        ).reshape(-1)
+        if condition.shape != (2,):
+            raise ValueError(
+                "observation real_transition_condition_v1 must have shape (2), "
+                f"got {condition.shape}"
+            )
+        if not np.isfinite(condition).all():
+            raise ValueError(
+                "observation real_transition_condition_v1 must be finite"
+            )
+        policy_obs["real_transition_condition_v1"] = condition.copy()
     for name in names:
         policy_obs[f"image_{name}"] = _resolve_camera_image(obs, camera_name=name)
     # Keep causal image timing metadata for the opt-in temporal ACT adapter.
@@ -984,3 +1178,37 @@ def policy_bundle_manifest(bundle_dir: str | Path) -> dict[str, Any]:
     if metadata_path.exists():
         manifest["run_metadata"] = json.loads(metadata_path.read_text(encoding="utf-8"))
     return manifest
+
+
+def _build_cycle_planner(raw_config: Any) -> Any | None:
+    """Build the opt-in goal-only planner used by a policy action source."""
+
+    if raw_config is None:
+        return None
+    if not isinstance(raw_config, dict):
+        raise ValueError("teleop.policy.cycle_planner must be a mapping")
+    if not bool(raw_config.get("enabled", False)):
+        return None
+    from testbed.tasks.act_cycle_planner import ABCyclePlanner, ScriptCyclePlanner
+
+    loop = None if "loop" not in raw_config else bool(raw_config["loop"])
+    max_cycles = (
+        None
+        if raw_config.get("max_cycles") is None
+        else int(raw_config["max_cycles"])
+    )
+    script_path = raw_config.get("script_path")
+    if script_path:
+        return ScriptCyclePlanner.from_script(
+            str(script_path), loop=loop, max_cycles=max_cycles
+        )
+    script = raw_config.get("script")
+    if script is not None:
+        return ScriptCyclePlanner.from_mapping(
+            script, loop=loop, max_cycles=max_cycles
+        )
+    return ABCyclePlanner(
+        pattern=str(raw_config.get("pattern", "ABBABABA")),
+        loop=True if loop is None else loop,
+        max_cycles=max_cycles,
+    )

@@ -2,18 +2,16 @@
 """
 Backbone modules.
 """
-from collections import OrderedDict
 
 import torch
-import torch.nn.functional as F
 import torchvision
 from torch import nn
 from torchvision.models._utils import IntermediateLayerGetter
-from typing import Dict, List
 
 from testbed.policies.act.detr.util.misc import NestedTensor, is_main_process
 
 from .position_encoding import build_position_encoding
+
 
 class FrozenBatchNorm2d(torch.nn.Module):
     """
@@ -25,7 +23,7 @@ class FrozenBatchNorm2d(torch.nn.Module):
     """
 
     def __init__(self, n):
-        super(FrozenBatchNorm2d, self).__init__()
+        super().__init__()
         self.register_buffer("weight", torch.ones(n))
         self.register_buffer("bias", torch.zeros(n))
         self.register_buffer("running_mean", torch.zeros(n))
@@ -37,7 +35,7 @@ class FrozenBatchNorm2d(torch.nn.Module):
         if num_batches_tracked_key in state_dict:
             del state_dict[num_batches_tracked_key]
 
-        super(FrozenBatchNorm2d, self)._load_from_state_dict(
+        super()._load_from_state_dict(
             state_dict, prefix, local_metadata, strict,
             missing_keys, unexpected_keys, error_msgs)
 
@@ -99,7 +97,7 @@ class Joiner(nn.Sequential):
 
     def forward(self, tensor_list: NestedTensor):
         xs = self[0](tensor_list)
-        out: List[NestedTensor] = []
+        out: list[NestedTensor] = []
         pos = []
         for name, x in xs.items():
             out.append(x)

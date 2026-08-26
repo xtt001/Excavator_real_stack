@@ -8,11 +8,11 @@ Copy-paste from torch.nn.Transformer with modifications:
     * decoder returns a stack of activations from all decoding layers
 """
 import copy
-from typing import Optional, List
 
 import torch
 import torch.nn.functional as F
-from torch import nn, Tensor
+from torch import Tensor, nn
+
 
 class Transformer(nn.Module):
 
@@ -82,9 +82,9 @@ class TransformerEncoder(nn.Module):
         self.norm = norm
 
     def forward(self, src,
-                mask: Optional[Tensor] = None,
-                src_key_padding_mask: Optional[Tensor] = None,
-                pos: Optional[Tensor] = None):
+                mask: Tensor | None = None,
+                src_key_padding_mask: Tensor | None = None,
+                pos: Tensor | None = None):
         output = src
 
         for layer in self.layers:
@@ -107,12 +107,12 @@ class TransformerDecoder(nn.Module):
         self.return_intermediate = return_intermediate
 
     def forward(self, tgt, memory,
-                tgt_mask: Optional[Tensor] = None,
-                memory_mask: Optional[Tensor] = None,
-                tgt_key_padding_mask: Optional[Tensor] = None,
-                memory_key_padding_mask: Optional[Tensor] = None,
-                pos: Optional[Tensor] = None,
-                query_pos: Optional[Tensor] = None):
+                tgt_mask: Tensor | None = None,
+                memory_mask: Tensor | None = None,
+                tgt_key_padding_mask: Tensor | None = None,
+                memory_key_padding_mask: Tensor | None = None,
+                pos: Tensor | None = None,
+                query_pos: Tensor | None = None):
         output = tgt
 
         intermediate = []
@@ -157,14 +157,14 @@ class TransformerEncoderLayer(nn.Module):
         self.activation = _get_activation_fn(activation)
         self.normalize_before = normalize_before
 
-    def with_pos_embed(self, tensor, pos: Optional[Tensor]):
+    def with_pos_embed(self, tensor, pos: Tensor | None):
         return tensor if pos is None else tensor + pos
 
     def forward_post(self,
                      src,
-                     src_mask: Optional[Tensor] = None,
-                     src_key_padding_mask: Optional[Tensor] = None,
-                     pos: Optional[Tensor] = None):
+                     src_mask: Tensor | None = None,
+                     src_key_padding_mask: Tensor | None = None,
+                     pos: Tensor | None = None):
         q = k = self.with_pos_embed(src, pos)
         src2 = self.self_attn(q, k, value=src, attn_mask=src_mask,
                               key_padding_mask=src_key_padding_mask)[0]
@@ -176,9 +176,9 @@ class TransformerEncoderLayer(nn.Module):
         return src
 
     def forward_pre(self, src,
-                    src_mask: Optional[Tensor] = None,
-                    src_key_padding_mask: Optional[Tensor] = None,
-                    pos: Optional[Tensor] = None):
+                    src_mask: Tensor | None = None,
+                    src_key_padding_mask: Tensor | None = None,
+                    pos: Tensor | None = None):
         src2 = self.norm1(src)
         q = k = self.with_pos_embed(src2, pos)
         src2 = self.self_attn(q, k, value=src2, attn_mask=src_mask,
@@ -190,9 +190,9 @@ class TransformerEncoderLayer(nn.Module):
         return src
 
     def forward(self, src,
-                src_mask: Optional[Tensor] = None,
-                src_key_padding_mask: Optional[Tensor] = None,
-                pos: Optional[Tensor] = None):
+                src_mask: Tensor | None = None,
+                src_key_padding_mask: Tensor | None = None,
+                pos: Tensor | None = None):
         if self.normalize_before:
             return self.forward_pre(src, src_mask, src_key_padding_mask, pos)
         return self.forward_post(src, src_mask, src_key_padding_mask, pos)
@@ -220,16 +220,16 @@ class TransformerDecoderLayer(nn.Module):
         self.activation = _get_activation_fn(activation)
         self.normalize_before = normalize_before
 
-    def with_pos_embed(self, tensor, pos: Optional[Tensor]):
+    def with_pos_embed(self, tensor, pos: Tensor | None):
         return tensor if pos is None else tensor + pos
 
     def forward_post(self, tgt, memory,
-                     tgt_mask: Optional[Tensor] = None,
-                     memory_mask: Optional[Tensor] = None,
-                     tgt_key_padding_mask: Optional[Tensor] = None,
-                     memory_key_padding_mask: Optional[Tensor] = None,
-                     pos: Optional[Tensor] = None,
-                     query_pos: Optional[Tensor] = None):
+                     tgt_mask: Tensor | None = None,
+                     memory_mask: Tensor | None = None,
+                     tgt_key_padding_mask: Tensor | None = None,
+                     memory_key_padding_mask: Tensor | None = None,
+                     pos: Tensor | None = None,
+                     query_pos: Tensor | None = None):
         q = k = self.with_pos_embed(tgt, query_pos)
         tgt2 = self.self_attn(q, k, value=tgt, attn_mask=tgt_mask,
                               key_padding_mask=tgt_key_padding_mask)[0]
@@ -247,12 +247,12 @@ class TransformerDecoderLayer(nn.Module):
         return tgt
 
     def forward_pre(self, tgt, memory,
-                    tgt_mask: Optional[Tensor] = None,
-                    memory_mask: Optional[Tensor] = None,
-                    tgt_key_padding_mask: Optional[Tensor] = None,
-                    memory_key_padding_mask: Optional[Tensor] = None,
-                    pos: Optional[Tensor] = None,
-                    query_pos: Optional[Tensor] = None):
+                    tgt_mask: Tensor | None = None,
+                    memory_mask: Tensor | None = None,
+                    tgt_key_padding_mask: Tensor | None = None,
+                    memory_key_padding_mask: Tensor | None = None,
+                    pos: Tensor | None = None,
+                    query_pos: Tensor | None = None):
         tgt2 = self.norm1(tgt)
         q = k = self.with_pos_embed(tgt2, query_pos)
         tgt2 = self.self_attn(q, k, value=tgt2, attn_mask=tgt_mask,
@@ -270,12 +270,12 @@ class TransformerDecoderLayer(nn.Module):
         return tgt
 
     def forward(self, tgt, memory,
-                tgt_mask: Optional[Tensor] = None,
-                memory_mask: Optional[Tensor] = None,
-                tgt_key_padding_mask: Optional[Tensor] = None,
-                memory_key_padding_mask: Optional[Tensor] = None,
-                pos: Optional[Tensor] = None,
-                query_pos: Optional[Tensor] = None):
+                tgt_mask: Tensor | None = None,
+                memory_mask: Tensor | None = None,
+                tgt_key_padding_mask: Tensor | None = None,
+                memory_key_padding_mask: Tensor | None = None,
+                pos: Tensor | None = None,
+                query_pos: Tensor | None = None):
         if self.normalize_before:
             return self.forward_pre(tgt, memory, tgt_mask, memory_mask,
                                     tgt_key_padding_mask, memory_key_padding_mask, pos, query_pos)

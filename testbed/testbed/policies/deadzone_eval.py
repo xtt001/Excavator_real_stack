@@ -171,7 +171,10 @@ def build_window_ranges(
             start, end = max(0, total_steps - 80), total_steps
         elif window == "full_available":
             start, end = 0, total_steps
-        elif window == "longest_single_demo_effective_segment_gap5":
+        elif window in {
+            "longest_single_demo_effective_segment_gap5",
+            "longest_expert_effective_segment_gap5",
+        }:
             start, end = longest_true_segment_with_gap(mask, gap=gap)
         else:
             raise ValueError(f"unknown window: {window}")
@@ -237,11 +240,19 @@ def compute_window_row(
         "end_step_exclusive": int(end),
         "steps": steps,
         "single_demo_any_effective_frames": expert_effective_frames,
+        # Backward-compatible names used by the original deadzone reports.
+        "expert_any_effective_frames": expert_effective_frames,
         "single_demo_any_effective_pct": _pct(int(expert_any.sum()), steps),
         "policy_any_effective_frames": int(policy_any.sum()),
         "policy_any_effective_pct": _pct(int(policy_any.sum()), steps),
         "single_demo_same_axis_direction_effective_frames": int(same_axis_dir.sum()),
+        "same_axis_dir_effective_frames": int(same_axis_dir.sum()),
         "single_demo_same_axis_direction_effective_pct_of_demo_effective": (
+            _pct(int(same_axis_dir.sum()), expert_effective_frames)
+            if expert_effective_frames
+            else ""
+        ),
+        "same_axis_dir_effective_pct_of_expert_effective": (
             _pct(int(same_axis_dir.sum()), expert_effective_frames)
             if expert_effective_frames
             else ""
@@ -249,7 +260,11 @@ def compute_window_row(
         "policy_outside_single_demo_frame_effective_frames": int(
             outside_demo_frame.sum()
         ),
+        "policy_extra_or_wrong_effective_frames": int(outside_demo_frame.sum()),
         "policy_outside_single_demo_frame_effective_pct": _pct(
+            int(outside_demo_frame.sum()), steps
+        ),
+        "policy_extra_or_wrong_effective_pct": _pct(
             int(outside_demo_frame.sum()), steps
         ),
     }

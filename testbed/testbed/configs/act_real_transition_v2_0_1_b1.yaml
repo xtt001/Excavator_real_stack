@@ -1,0 +1,117 @@
+# Goal-conditioned ACT training contract for materialized v2.0.1 cycles.
+#
+# Materialized from session_rt_20260822_ctx04. The raw session remains under
+# external_usb_datasets/real_transition_raw_v2 with the same session id.
+
+task:
+  task_name: real_transition_v2_0_1_b1
+  equipment_model: real_excavator
+  dataset_dir: /data/pingfan/Excavator_real_stack_data/external_usb_datasets/real_transition_cycle_v1/session_rt_20260822_ctx04_v2/episodes
+  train_ready_manifest_path: /data/pingfan/Excavator_real_stack_data/external_usb_datasets/real_transition_cycle_v1/session_rt_20260822_ctx04_v2/train_ready_manifest.json
+  split_manifest_path: /data/pingfan/Excavator_real_stack_data/external_usb_datasets/real_transition_cycle_v1/session_rt_20260822_ctx04_v2/split_manifest.json
+  num_episodes: 1000000
+  episode_len:
+  camera_names:
+    - video4
+    - video5
+    - video6
+    - video7
+  backend:
+    name: real
+    dt: 0.05
+
+policy:
+  class: ACT
+  device: cuda
+  low_dim_keys:
+    - qpos
+    - real_transition_condition_v1
+  act_params:
+    chunk_size: 20
+    kl_weight: 10.0
+    hidden_dim: 512
+    dim_feedforward: 3200
+    state_dim: 6
+    camera_role_encoding:
+      enabled: true
+      roles:
+        video4: eye
+        video5: eye
+        video6: stick
+        video7: stick
+
+train:
+  lr: 1.0e-5
+  num_epochs: 2000
+  batch_size: 4
+  seed: 0
+  device: cuda
+  num_workers: 4
+  prefetch_factor: 2
+  persistent_workers: true
+  pin_memory: true
+  reuse_split: true
+  val_every: 10
+  save_latest_every: 100
+  checkpoint_every: 500
+  plot_every: 500
+  amp: true
+  amp_dtype: auto
+  ckpt_dir: /data/pingfan/Excavator_real_stack_data/runs/real_transition_v2_0_1_ctx04_b1_final_seed0_action_head_deterministic
+  # Field-proven qpos-only N5 checkpoint. Do not use resume_ckpt for 4D -> 6D
+  # expansion.
+  warm_start_ckpt: /data/pingfan/Excavator_real_stack_data/runs/g49_new_data_first_batch_20260714/training_runs/n5_new_fourcam_role_transition_boundary_2000/ckpt/policy_best.ckpt
+  # Keep the successful one-cycle N5 executable-transition supervision.
+  # The threshold artifact is in direct policy-output units with action_scale=1.
+  intent_loss:
+    enabled: false
+  deadzone_loss:
+    enabled: true
+    threshold_json: /data/pingfan/Excavator_real_stack_data/usb_hdf5_qc_20260708_72_104/runs/goal_state_hold_liveness_20260712/h2_transition_state_hold_finetune_e16_200/direct_policy_output_mechanical_deadzone.json
+    same_dir_promote_weight: 1.0
+    idle_suppression_weight: 0.0
+    wrong_effective_weight: 0.0
+    margin: 0.0
+    same_dir_window: expert_transition_window
+    same_dir_window_steps: 5
+  state_hold_transition:
+    enabled: true
+    threshold_json: /data/pingfan/Excavator_real_stack_data/usb_hdf5_qc_20260708_72_104/runs/goal_state_hold_liveness_20260712/h2_transition_state_hold_finetune_e16_200/direct_policy_output_mechanical_deadzone.json
+    probability: 0.5
+    hold_horizon_steps: 20
+  # Offline condition enforcement. The terminal transition remains the
+  # reward-shaped anchor; the side class is also supervised at every active
+  # observation with a same-observation flipped-condition intervention.
+  condition_adherence_loss:
+    # Keep the terminal anchor sampler, but do not impose an opposite-sign
+    # action rule: ctx04 reaches A/B with the same swing sign.
+    enabled: true
+    directional_enabled: false
+    scope: train_and_validation
+    # The side label is valid throughout an active cycle.  Emit the
+    # hindsight class at every sampled observation and pair it with a
+    # same-observation flipped-condition intervention in the loss.
+    action_label_scope: all_active_steps
+    condition_key: real_transition_condition_v1
+    anchor_rule: terminal_effective_swing_transition
+    threshold_json: /data/pingfan/Excavator_real_stack_data/usb_hdf5_qc_20260708_72_104/runs/goal_state_hold_liveness_20260712/h2_transition_state_hold_finetune_e16_200/direct_policy_output_mechanical_deadzone.json
+    weight: 1.0
+    recorded_crossing_weight: 1.0
+    counterfactual_violation_weight: 1.0
+    contrast_weight: 1.0
+    counterfactual_ceiling_fraction: 0.5
+    advantage_margin_scale: 1.0
+  condition_action_loss:
+    enabled: true
+    weight: 5.0
+  goal_effect:
+    enabled: true
+    # Hindsight endpoint separation appears around 320 source 20Hz steps in
+    # ctx04; retain short horizons for one-cycle phase/deadzone context.
+    horizons: [20, 80, 160, 320]
+    delta_threshold: [0.0015, 0.0015, 0.0015, 0.0015]
+    unsupported_axes: [2]
+    goal_delta_weight: 0.10
+    goal_direction_weight: 0.05
+    effect_delta_weight: 0.10
+    consistency_weight: 0.02

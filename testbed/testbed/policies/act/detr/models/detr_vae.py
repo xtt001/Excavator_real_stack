@@ -122,6 +122,7 @@ class DETRVAE(nn.Module):
         effective_action_config=None,
         temporal_input_config=None,
         camera_role_encoding_config=None,
+        condition_action_loss_config=None,
     ):
         """ Initializes the model.
         Parameters:
@@ -237,6 +238,19 @@ class DETRVAE(nn.Module):
             self.goal_context_proj = None
             self.goal_effect_head = None
             self.action_context_residual = None
+
+        condition_action_cfg = dict(condition_action_loss_config or {})
+        self.condition_action_enabled = bool(condition_action_cfg.get("enabled", False))
+        self.condition_action_head = (
+            nn.Sequential(
+                nn.Linear(num_queries * action_dim, hidden_dim),
+                nn.LayerNorm(hidden_dim),
+                nn.GELU(),
+                nn.Linear(hidden_dim, 2),
+            )
+            if self.condition_action_enabled
+            else None
+        )
 
     def _extract_camera_features(self, image, *, batch_cameras):
         """Run the shared backbone sequentially or once for all cameras."""
@@ -473,6 +487,11 @@ class DETRVAE(nn.Module):
             goal_effect_outputs = self.goal_effect_head(goal_context, a_hat)
         else:
             goal_effect_outputs = None
+        condition_action_logits = (
+            self.condition_action_head(a_hat.reshape(a_hat.shape[0], -1))
+            if self.condition_action_head is not None
+            else None
+        )
         return (
             a_hat,
             is_pad_hat,
@@ -481,6 +500,7 @@ class DETRVAE(nn.Module):
             goal_effect_outputs,
             action_state_logits,
             effective_action_phase_logits,
+            condition_action_logits,
         )
 
 
@@ -609,6 +629,7 @@ def build(args):
         effective_action_config=getattr(args, "effective_action", None),
         temporal_input_config=getattr(args, "temporal_input", None),
         camera_role_encoding_config=getattr(args, "camera_role_encoding", None),
+        condition_action_loss_config=getattr(args, "condition_action_loss", None),
     )
 
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)

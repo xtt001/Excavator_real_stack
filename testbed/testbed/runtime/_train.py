@@ -31,10 +31,46 @@ def train_policy(config: dict[str, Any]) -> None:
     train_split_ratio = float(train_cfg.get("train_split_ratio", 0.8))
     reuse_split = bool(train_cfg.get("reuse_split", True))
     split_path = Path(train_cfg.get("split_path", ckpt_dir / "train_val_split.yaml"))
-    episode_ids = _resolve_training_episode_ids(task_cfg=task_cfg, train_cfg=train_cfg)
+    episode_ids = _resolve_training_episode_ids(
+        task_cfg=task_cfg, train_cfg=train_cfg, low_dim_keys=low_dim_keys
+    )
+    split_manifest_path = _resolve_split_manifest_path(
+        task_cfg=task_cfg, train_cfg=train_cfg
+    )
     image_transform = str(train_cfg.get("image_transform", task_cfg.get("image_transform", "none")))
     deadzone_intent = copy.deepcopy(
         train_cfg.get("deadzone_intent", policy_cfg.get("deadzone_intent", {})) or {}
+    )
+    state_hold_transition = copy.deepcopy(
+        train_cfg.get(
+            "state_hold_transition",
+            policy_cfg.get("state_hold_transition", {}),
+        )
+        or {}
+    )
+    condition_adherence_loss = copy.deepcopy(
+        train_cfg.get(
+            "condition_adherence_loss",
+            policy_cfg.get("condition_adherence_loss", {}),
+        )
+        or {}
+    )
+    goal_effect = copy.deepcopy(
+        train_cfg.get("goal_effect", policy_cfg.get("goal_effect", {})) or {}
+    )
+    condition_action_loss = copy.deepcopy(
+        train_cfg.get(
+            "condition_action_loss",
+            policy_cfg.get("condition_action_loss", {}),
+        )
+        or {}
+    )
+    target_release_loss = copy.deepcopy(
+        train_cfg.get(
+            "target_release_loss",
+            policy_cfg.get("target_release_loss", {}),
+        )
+        or {}
     )
 
     if policy_class != "ACT":
@@ -68,6 +104,13 @@ def train_policy(config: dict[str, Any]) -> None:
         "low_dim_keys":  low_dim_keys,
         "state_dim":     _resolve_low_dim_state_dim(low_dim_keys, equipment_model),
         "device":        device,
+        "camera_role_encoding": copy.deepcopy(
+            act_params.get("camera_role_encoding", {}) or {}
+        ),
+        "condition_adherence_loss": copy.deepcopy(condition_adherence_loss),
+        "goal_effect": copy.deepcopy(goal_effect),
+        "condition_action_loss": copy.deepcopy(condition_action_loss),
+        "target_release_loss": copy.deepcopy(target_release_loss),
         "deadzone_loss": copy.deepcopy(
             train_cfg.get("deadzone_loss", policy_cfg.get("deadzone_loss", {})) or {}
         ),
@@ -97,6 +140,7 @@ def train_policy(config: dict[str, Any]) -> None:
         "task_name":      task_name,
         "device":         device,
         "resume_ckpt":    train_cfg.get("resume_ckpt"),
+        "warm_start_ckpt": train_cfg.get("warm_start_ckpt"),
         "start_epoch":    train_cfg.get("start_epoch"),
         "val_every":      int(train_cfg.get("val_every", 1)),
         "save_latest_every": int(train_cfg.get("save_latest_every", 1)),
@@ -132,12 +176,17 @@ def train_policy(config: dict[str, Any]) -> None:
         split_seed         = split_seed,
         train_split_ratio  = train_split_ratio,
         split_path         = split_path,
+        split_manifest_path = split_manifest_path,
         reuse_split        = reuse_split,
         low_dim_keys       = low_dim_keys,
         episode_ids        = episode_ids,
         action_chunk_size  = action_chunk_size,
         image_transform    = image_transform,
         deadzone_intent    = deadzone_intent,
+        state_hold_transition = state_hold_transition,
+        condition_adherence_loss_train = condition_adherence_loss,
+        target_release_loss_train = target_release_loss,
+        goal_effect = goal_effect,
     )
 
     # save normalisation stats so trainer can load them
@@ -151,6 +200,7 @@ def train_policy(config: dict[str, Any]) -> None:
         dataset_dir=dataset_dir,
         ckpt_dir=ckpt_dir,
         split_path=split_path,
+        split_manifest_path=split_manifest_path,
         full_config=full_config,
     )
     resolved_config_path = write_resolved_config(ckpt_dir / "resolved_config.yaml", resolved_config)
@@ -194,6 +244,7 @@ def _build_resolved_train_config(
     dataset_dir: Path,
     ckpt_dir: Path,
     split_path: Path,
+    split_manifest_path: Path | None,
     full_config: dict[str, Any],
 ) -> dict[str, Any]:
     resolved = copy.deepcopy(config)
@@ -205,6 +256,8 @@ def _build_resolved_train_config(
         task_cfg["train_ready_manifest_path"] = str(
             config["task"]["train_ready_manifest_path"]
         )
+    if split_manifest_path is not None:
+        task_cfg["split_manifest_path"] = str(split_manifest_path)
     train_cfg["ckpt_dir"] = str(ckpt_dir)
     train_cfg["split_path"] = str(split_path)
     train_cfg["image_transform"] = str(full_config["image_transform"])
@@ -224,6 +277,7 @@ def _resolve_low_dim_state_dim(low_dim_keys: list[str], equipment_model: str) ->
     dims = {
         "qpos": _resolve_single_low_dim_dim("qpos", equipment_model),
         "qvel": _resolve_single_low_dim_dim("qvel", equipment_model),
+        "real_transition_condition_v1": 2,
     }
     return int(sum(dims[key] for key in low_dim_keys))
 
@@ -231,6 +285,8 @@ def _resolve_low_dim_state_dim(low_dim_keys: list[str], equipment_model: str) ->
 def _resolve_single_low_dim_dim(key: str, equipment_model: str) -> int:
     if key in ("qpos", "qvel"):
         return 4
+    if key == "real_transition_condition_v1":
+        return 2
     raise ValueError(f"Unsupported low-dim key {key!r}.")
 
 
@@ -238,6 +294,7 @@ def _resolve_training_episode_ids(
     *,
     task_cfg: dict[str, Any],
     train_cfg: dict[str, Any],
+    low_dim_keys: list[str] | None = None,
 ) -> list[int] | None:
     raw_ids = task_cfg.get("episode_ids")
     if raw_ids is not None:
@@ -250,7 +307,18 @@ def _resolve_training_episode_ids(
     manifest_path = Path(str(manifest_raw))
     if not manifest_path.exists():
         raise FileNotFoundError(f"train_ready_manifest_path does not exist: {manifest_path}")
-    payload = json.loads(manifest_path.read_text())
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if low_dim_keys and "real_transition_condition_v1" in low_dim_keys:
+        if payload.get("schema") != "real_transition_train_ready_manifest_v1":
+            raise ValueError(
+                "goal-conditioned training requires "
+                "real_transition_train_ready_manifest_v1"
+            )
+        if payload.get("condition_schema") != "real_transition_condition_v1":
+            raise ValueError(
+                "train-ready manifest condition_schema must be "
+                "'real_transition_condition_v1'"
+            )
     ids: list[int] = []
     for value in payload.get("train_ready_episode_ids", []):
         text = str(value)
@@ -260,3 +328,35 @@ def _resolve_training_episode_ids(
     if not ids:
         raise ValueError(f"train_ready_manifest_path contains no train_ready_episode_ids: {manifest_path}")
     return sorted(set(ids))
+
+
+def _resolve_split_manifest_path(
+    *,
+    task_cfg: dict[str, Any],
+    train_cfg: dict[str, Any],
+) -> Path | None:
+    raw = train_cfg.get("split_manifest_path") or task_cfg.get("split_manifest_path")
+    if raw:
+        path = Path(str(raw))
+        if not path.exists():
+            raise FileNotFoundError(f"split_manifest_path does not exist: {path}")
+        return path
+
+    ready_raw = train_cfg.get("train_ready_manifest_path") or task_cfg.get(
+        "train_ready_manifest_path"
+    )
+    if not ready_raw:
+        return None
+    ready_path = Path(str(ready_raw))
+    if not ready_path.exists():
+        return None
+    payload = json.loads(ready_path.read_text(encoding="utf-8"))
+    if payload.get("schema") != "real_transition_train_ready_manifest_v1":
+        return None
+    sibling = ready_path.parent / "split_manifest.json"
+    if not sibling.exists():
+        raise FileNotFoundError(
+            "real_transition_train_ready_manifest_v1 requires sibling "
+            f"split_manifest.json: {sibling}"
+        )
+    return sibling

@@ -1,0 +1,109 @@
+# Goal-conditioned ACT with train-supported A/B return-release supervision.
+
+task:
+  task_name: real_transition_v2_0_1_b1_target_release
+  equipment_model: real_excavator
+  dataset_dir: /data/pingfan/Excavator_real_stack_data/external_usb_datasets/real_transition_cycle_v1/session_rt_20260822_ctx04_v2/episodes
+  train_ready_manifest_path: /data/pingfan/Excavator_real_stack_data/external_usb_datasets/real_transition_cycle_v1/session_rt_20260822_ctx04_v2/train_ready_manifest.json
+  split_manifest_path: /data/pingfan/Excavator_real_stack_data/external_usb_datasets/real_transition_cycle_v1/session_rt_20260822_ctx04_v2/split_manifest.json
+  num_episodes: 1000000
+  episode_len:
+  camera_names:
+    - video4
+    - video5
+    - video6
+    - video7
+  backend:
+    name: real
+    dt: 0.05
+
+policy:
+  class: ACT
+  device: cuda
+  low_dim_keys:
+    - qpos
+    - real_transition_condition_v1
+  act_params:
+    chunk_size: 20
+    kl_weight: 10.0
+    hidden_dim: 512
+    dim_feedforward: 3200
+    state_dim: 6
+    camera_role_encoding:
+      enabled: true
+      roles:
+        video4: eye
+        video5: eye
+        video6: stick
+        video7: stick
+
+train:
+  lr: 1.0e-5
+  num_epochs: 2000
+  batch_size: 4
+  seed: 0
+  device: cuda
+  num_workers: 4
+  prefetch_factor: 2
+  persistent_workers: true
+  pin_memory: true
+  reuse_split: true
+  val_every: 10
+  save_latest_every: 100
+  checkpoint_every: 500
+  plot_every: 500
+  amp: true
+  amp_dtype: auto
+  ckpt_dir: /data/pingfan/Excavator_real_stack_data/runs/real_transition_v2_0_1_ctx04_b1_target_release_final_seed0
+  warm_start_ckpt: /data/pingfan/Excavator_real_stack_data/runs/g49_new_data_first_batch_20260714/training_runs/n5_new_fourcam_role_transition_boundary_2000/ckpt/policy_best.ckpt
+
+  # Preserve the selected one-shovel executable-transition training route.
+  intent_loss:
+    enabled: false
+  deadzone_loss:
+    enabled: true
+    threshold_json: /data/pingfan/Excavator_real_stack_data/usb_hdf5_qc_20260708_72_104/runs/goal_state_hold_liveness_20260712/h2_transition_state_hold_finetune_e16_200/direct_policy_output_mechanical_deadzone.json
+    same_dir_promote_weight: 1.0
+    idle_suppression_weight: 0.0
+    wrong_effective_weight: 0.0
+    margin: 0.0
+    same_dir_window: expert_transition_window
+    same_dir_window_steps: 5
+  state_hold_transition:
+    enabled: true
+    threshold_json: /data/pingfan/Excavator_real_stack_data/usb_hdf5_qc_20260708_72_104/runs/goal_state_hold_liveness_20260712/h2_transition_state_hold_finetune_e16_200/direct_policy_output_mechanical_deadzone.json
+    probability: 0.5
+    hold_horizon_steps: 20
+
+  # The old side classifier reached high accuracy without changing the
+  # executable action, so both classifier and opposite-sign terminal rule are
+  # disabled. The new loss acts on deterministic ACT query-0..4 actions.
+  condition_adherence_loss:
+    enabled: false
+  condition_action_loss:
+    enabled: false
+  target_release_loss:
+    enabled: true
+    scope: train_and_validation
+    condition_key: real_transition_condition_v1
+    contract_json: /data/pingfan/Excavator_real_stack_data/runs/real_transition_v2_0_1_ctx04_target_release_contract_v2.json
+    # One appended release example per cycle leaves the old baseline sample
+    # and its 0.5 state-hold sampler intact instead of replacing either one.
+    append_samples_per_episode: 1
+    # Warm-start validation measured action L1=0.719973 and unweighted release
+    # loss=1.430664, so 0.503244 gives the two action objectives equal scale.
+    weight: 0.503244
+    continue_weight: 1.0
+    stop_weight: 1.0
+    contrast_weight: 1.0
+    contrast_margin_scale: 1.0
+
+  goal_effect:
+    enabled: true
+    horizons: [20, 80, 160, 320]
+    delta_threshold: [0.0015, 0.0015, 0.0015, 0.0015]
+    unsupported_axes: [2]
+    goal_delta_weight: 0.10
+    goal_direction_weight: 0.05
+    effect_delta_weight: 0.10
+    consistency_weight: 0.02

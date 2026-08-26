@@ -1,0 +1,20 @@
+# Variable-length, variable-order goal script for a conditioned ACT bundle.
+# The first side is the initial ready side; steps are target sides in order.
+schema: act_cycle_script_v1
+script_id: variable_ab_demo
+initial_side: A
+loop: true
+steps:
+  - step_id: target_b_1
+    target_side: B
+    label: first_bench
+  - step_id: target_a_1
+    target_side: A
+    label: return_a
+  - step_id: target_a_2
+    target_side: A
+    label: same_side_a
+  - step_id: target_b_2
+    target_side: B
+    metadata:
+      workface: wf_02

@@ -9,8 +9,8 @@ from unittest.mock import patch
 import h5py
 import numpy as np
 import yaml
-
 from scripts.summarize_policy_test_log import _compute_metrics
+
 from testbed.actions.base import ActionInfo
 from testbed.actions.policy import (
     PolicyActionSource,
@@ -29,6 +29,7 @@ from testbed.cli.record_real import (
 from testbed.cli.teleop_remote import _format_receiver_policy_status
 from testbed.data.recorder import EpisodeRecorder
 from testbed.policies.runtime_gate_stack import RuntimeGateResult
+from testbed.tasks.act_cycle_planner import ABCyclePlanner
 
 
 class DummyPolicy:
@@ -724,6 +725,118 @@ class PolicyActionSourceTests(unittest.TestCase):
         self.assertEqual(converted["image_video4"].shape, (8, 10, 3))
         self.assertEqual(converted["image_video7"].shape, (8, 10, 3))
 
+    def test_policy_obs_preserves_real_transition_condition(self) -> None:
+        obs = _obs()
+        obs["real_transition_condition_v1"] = np.asarray([1.0, 1.0])
+
+        converted = _policy_obs_from_real_obs(obs, camera_name="fpv")
+
+        np.testing.assert_allclose(
+            converted["real_transition_condition_v1"], [1.0, 1.0]
+        )
+
+    def test_policy_source_attaches_committed_planner_condition(self) -> None:
+        planner = ABCyclePlanner("ABBABABA", loop=False)
+        policy = DummyPolicy([0.1, 0.2, 0.3, 0.4])
+        source = PolicyActionSource(
+            policy=policy,
+            source_id="planner-test",
+            camera_name="fpv",
+            cycle_planner=planner,
+            output_mode="shadow_zero",
+        )
+
+        goal = source.commit_cycle_goal()
+        self.assertEqual(policy.reset_count, 1)
+        action, info = source.next_action(_obs())
+
+        np.testing.assert_allclose(action, np.zeros(4, dtype=np.float32))
+        np.testing.assert_allclose(
+            policy.seen_obs[-1]["real_transition_condition_v1"], [1.0, 1.0]
+        )
+        assert info.extras["planner_goal_epoch"] == goal.goal_epoch
+        assert info.extras["planner_target_side"] == "B"
+        assert source.mark_cycle_target_ready("B").transition == "B->B"
+        source.commit_cycle_goal()
+        self.assertEqual(policy.reset_count, 2)
+
+    def test_policy_source_can_preserve_policy_state_across_goal_commit(self) -> None:
+        planner = ABCyclePlanner("ABA", loop=False)
+        policy = DummyPolicy([0.1, 0.2, 0.3, 0.4])
+        source = PolicyActionSource(
+            policy=policy,
+            source_id="planner-continuous-test",
+            camera_name="fpv",
+            cycle_planner=planner,
+            reset_policy_on_goal=False,
+            output_mode="control",
+        )
+
+        source.commit_cycle_goal()
+        source.mark_cycle_target_ready("B")
+        source.commit_cycle_goal()
+
+        self.assertEqual(policy.reset_count, 0)
+
+    @patch("testbed.actions.policy.load_act_policy_from_bundle")
+    def test_policy_source_from_config_wires_cycle_planner(self, load_policy) -> None:
+        load_policy.return_value = DummyPolicy([0.1, 0.2, 0.3, 0.4])
+
+        source = PolicyActionSource.from_config(
+            {
+                "bundle_dir": "/tmp/conditioned-act-bundle",
+                "cycle_planner": {
+                    "enabled": True,
+                    "pattern": "ABBABABA",
+                    "loop": False,
+                },
+            }
+        )
+
+        assert source.cycle_planner is not None
+        assert source.cycle_planner.initial_side == "A"
+        assert source.cycle_planner.done is False
+
+    def test_policy_source_prepare_waits_for_planner_commit(self) -> None:
+        source = PolicyActionSource(
+            policy=DummyPolicy([0.1, 0.2, 0.3, 0.4]),
+            source_id="planner-prepare-test",
+            camera_name="fpv",
+            cycle_planner=ABCyclePlanner("AB", loop=False),
+            inference_warmup_steps=3,
+        )
+
+        result = source.prepare(_obs())
+
+        assert result["planner_waiting_for_commit"] == 1
+        assert result["warmup_steps"] == 0
+
+    @patch("testbed.actions.policy.load_act_policy_from_bundle")
+    def test_policy_source_from_config_wires_inline_variable_script(
+        self, load_policy
+    ) -> None:
+        load_policy.return_value = DummyPolicy([0.1, 0.2, 0.3, 0.4])
+
+        source = PolicyActionSource.from_config(
+            {
+                "bundle_dir": "/tmp/conditioned-act-bundle",
+                "cycle_planner": {
+                    "enabled": True,
+                    "script": {
+                        "initial_side": "A",
+                        "steps": [
+                            {"target_side": "B"},
+                            {"target_side": "A"},
+                        ],
+                    },
+                },
+            }
+        )
+
+        goal = source.commit_cycle_goal()
+        assert goal.transition == "A->B"
+        assert goal.script_step_index == 0
+
     def test_policy_diagnostics_are_added_to_record_step(self) -> None:
         diagnostics: dict = {}
         _add_policy_action_diagnostics(
@@ -1113,6 +1226,45 @@ class PolicyActionSourceTests(unittest.TestCase):
         self.assertEqual(loaded, "loaded")
         intent_loss = from_checkpoint.call_args.kwargs["policy_config"]["intent_loss"]
         self.assertEqual(intent_loss["threshold_json"], str(bundled_thresholds))
+
+    def test_load_act_policy_from_bundle_relocates_training_deadzone_from_contracts(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle = Path(tmp)
+            (bundle / "policy_best.ckpt").write_bytes(b"ckpt")
+            (bundle / "dataset_stats.pkl").write_bytes(b"stats")
+            contracts = bundle / "contracts"
+            contracts.mkdir()
+            bundled_thresholds = contracts / "direct_deadzone.json"
+            bundled_thresholds.write_text("{}", encoding="utf-8")
+            (bundle / "resolved_config.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "task": {"camera_names": ["video4"]},
+                        "policy": {"device": "cpu", "low_dim_keys": ["qpos"]},
+                        "train": {
+                            "deadzone_loss": {
+                                "enabled": True,
+                                "threshold_json": "/missing/direct_deadzone.json",
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch(
+                "testbed.policies.act.adapter.ACTAdapter.from_checkpoint",
+                return_value="loaded",
+            ) as from_checkpoint:
+                loaded = load_act_policy_from_bundle(bundle_dir=bundle)
+
+        self.assertEqual(loaded, "loaded")
+        deadzone_loss = from_checkpoint.call_args.kwargs["policy_config"][
+            "deadzone_loss"
+        ]
+        self.assertEqual(deadzone_loss["threshold_json"], str(bundled_thresholds))
 
     def test_act_temporal_aggregation_grows_past_initial_horizon(self) -> None:
         import torch

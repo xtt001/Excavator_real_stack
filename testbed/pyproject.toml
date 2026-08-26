@@ -55,6 +55,11 @@ tb-offline-policy-eval = "testbed.cli.offline_policy_eval:main"
 tb-build-online-qc-reference = "testbed.cli.build_online_qc_reference:main"
 tb-real-transition = "testbed.cli.real_transition:main"
 tb-real-transition-control = "testbed.cli.real_transition_control:main"
+tb-act-cycle-planner = "testbed.cli.act_cycle_planner:main"
+tb-real-transition-mock-eval = "testbed.cli.real_transition_mock_eval:main"
+tb-build-target-release-contract = "testbed.cli.target_release_contract:main"
+tb-state-hold-transition-replay = "testbed.cli.state_hold_transition_replay:main"
+tb-real-transition-acceptance = "testbed.cli.real_transition_acceptance:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

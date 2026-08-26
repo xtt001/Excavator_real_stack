@@ -135,7 +135,9 @@ def future_delta_scale(
             if array.ndim != 2 or array.shape[1] != AXIS_COUNT:
                 raise ValueError("qpos sequence must have shape (T, 4)")
             if array.shape[0] > int(horizon):
-                deltas.append(np.abs(array[int(horizon) :] - array[: -int(horizon)]))
+                delta = array[int(horizon) :] - array[: -int(horizon)]
+                delta[:, 0] = _shortest_angle_array(delta[:, 0])
+                deltas.append(np.abs(delta))
         if not deltas:
             scales.append(np.full(AXIS_COUNT, float(floor), dtype=np.float32))
             continue
@@ -185,6 +187,7 @@ def build_goal_effect_targets(
         if end >= qpos_arr.shape[0]:
             continue
         delta[index] = qpos_arr[end] - qpos_arr[t0]
+        delta[index, 0] = _shortest_angle_value(delta[index, 0])
         valid[index] = True
         direction[index] = np.where(
             delta[index] < -thresholds,
@@ -219,6 +222,15 @@ def build_goal_effect_targets(
         "goal_effect_response": effect_response,
         "goal_effect_response_valid": effect_valid,
     }
+
+
+def _shortest_angle_value(value: float) -> float:
+    return float((float(value) + np.pi) % (2.0 * np.pi) - np.pi)
+
+
+def _shortest_angle_array(values: np.ndarray) -> np.ndarray:
+    array = np.asarray(values, dtype=np.float32)
+    return ((array + np.pi) % (2.0 * np.pi) - np.pi).astype(np.float32)
 
 
 class GoalEffectHead(nn.Module):

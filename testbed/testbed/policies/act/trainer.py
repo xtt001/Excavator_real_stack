@@ -19,8 +19,81 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from testbed.policies.base import Trainer, compute_dict_mean, detach_dict, set_seed
 from testbed.policies.act.adapter import ACTAdapter
+from testbed.policies.base import Trainer, compute_dict_mean, detach_dict, set_seed
+
+_CONDITION_EXPANDABLE_WEIGHT_SUFFIXES = (
+    "input_proj_robot_state.weight",
+    "encoder_joint_proj.weight",
+)
+_OPTIONAL_WARM_START_PREFIXES = (
+    "goal_effect_head.",
+    "goal_context_proj.",
+    "action_context_residual.",
+    "condition_action_head.",
+)
+
+
+def _load_conditioned_warm_start(
+    adapter: ACTAdapter,
+    source_state: dict[str, torch.Tensor],
+) -> list[str]:
+    """Copy existing ACT input weights and zero newly added state columns."""
+
+    if not isinstance(source_state, dict):
+        raise TypeError("warm-start checkpoint state must be a mapping")
+    target_state = adapter.state_dict()
+    missing = sorted(set(target_state) - set(source_state))
+    unexpected = sorted(set(source_state) - set(target_state))
+    required_missing = [
+        key
+        for key in missing
+        if not key.startswith(_OPTIONAL_WARM_START_PREFIXES)
+    ]
+    if required_missing or unexpected:
+        raise ValueError(
+            "warm-start checkpoint keys do not match target model; "
+            f"missing={required_missing[:10]}, unexpected={unexpected[:10]}"
+        )
+
+    adapted: dict[str, torch.Tensor] = {}
+    expanded: list[str] = []
+    for key, target_value in target_state.items():
+        if key not in source_state:
+            adapted[key] = target_value
+            continue
+        source_value = source_state[key]
+        if tuple(source_value.shape) == tuple(target_value.shape):
+            adapted[key] = source_value.to(
+                dtype=target_value.dtype, device=target_value.device
+            )
+            continue
+        compatible = (
+            key.endswith(_CONDITION_EXPANDABLE_WEIGHT_SUFFIXES)
+            and source_value.ndim == 2
+            and target_value.ndim == 2
+            and int(source_value.shape[0]) == int(target_value.shape[0])
+            and int(source_value.shape[1]) < int(target_value.shape[1])
+        )
+        if not compatible:
+            raise ValueError(
+                f"warm-start shape mismatch for {key}: "
+                f"source={tuple(source_value.shape)} target={tuple(target_value.shape)}"
+            )
+        value = torch.zeros_like(target_value)
+        value[:, : int(source_value.shape[1])] = source_value.to(
+            dtype=value.dtype, device=value.device
+        )
+        adapted[key] = value
+        expanded.append(key)
+
+    if not expanded:
+        raise ValueError(
+            "warm_start_ckpt did not require condition-column expansion; use "
+            "resume_ckpt for an exact-shape continuation"
+        )
+    adapter.load_state_dict(adapted, strict=True)
+    return sorted(expanded)
 
 
 class ACTTrainer(Trainer):
@@ -57,6 +130,7 @@ class ACTTrainer(Trainer):
         ckpt_dir   = Path(cfg["ckpt_dir"])
         seed       = cfg["seed"]
         resume     = cfg.get("resume_ckpt")
+        warm_start = cfg.get("warm_start_ckpt")
         device     = str(cfg.get("device", "cuda"))
         val_every  = max(1, int(cfg.get("val_every", 1)))
         save_latest_every = max(1, int(cfg.get("save_latest_every", 1)))
@@ -84,6 +158,8 @@ class ACTTrainer(Trainer):
         val_epochs:    list[int] = []
 
         # ── optional resume ───────────────────────────────────────────────────
+        if resume and warm_start:
+            raise ValueError("resume_ckpt and warm_start_ckpt are mutually exclusive")
         if resume:
             ckpt_obj = torch.load(resume, map_location="cpu")
             sd = ckpt_obj["model_state_dict"] if "model_state_dict" in ckpt_obj else ckpt_obj
@@ -94,6 +170,18 @@ class ACTTrainer(Trainer):
             if "min_val_loss" in ckpt_obj:
                 min_val_loss = float(ckpt_obj["min_val_loss"])
             print(f"Resumed from {resume}, starting epoch {start_epoch}")
+        elif warm_start:
+            ckpt_obj = torch.load(warm_start, map_location="cpu")
+            source_state = (
+                ckpt_obj["model_state_dict"]
+                if isinstance(ckpt_obj, dict) and "model_state_dict" in ckpt_obj
+                else ckpt_obj
+            )
+            expanded = _load_conditioned_warm_start(adapter, source_state)
+            print(
+                f"Warm-started from {warm_start}; zero-initialized new condition "
+                f"columns in {', '.join(expanded)}"
+            )
 
         use_amp = amp_enabled and device.startswith("cuda") and torch.cuda.is_available()
         amp_dtype = self._resolve_amp_dtype(amp_dtype_name) if use_amp else None
@@ -237,6 +325,18 @@ class ACTTrainer(Trainer):
                 "deadzone_stop_mask",
                 "deadzone_wrong_mask",
                 "action_loss_mask",
+                "state_hold_transition_mask",
+                "counterfactual_proprio",
+                "condition_adherence_mask",
+                "goal_future_delta",
+                "goal_future_valid",
+                "goal_future_direction",
+                "goal_effect_delta",
+                "goal_effect_valid",
+                "condition_action_target",
+                "condition_action_valid",
+                "target_release_continue_primary",
+                "target_release_valid",
             ):
                 if key in data:
                     extra[key] = data[key].to(adapter.device)

@@ -39,6 +39,11 @@ from testbed.policies.act.action_state_effort import (
     action_state_loss_terms,
     resolve_action_state_effort_config,
 )
+from testbed.policies.act.condition_adherence import (
+    condition_adherence_loss_terms,
+    resolve_condition_action_loss_config,
+    resolve_condition_adherence_config,
+)
 from testbed.policies.act.effective_action import (
     effective_action_loss_terms,
     resolve_effective_action_config,
@@ -56,6 +61,10 @@ from testbed.policies.act.goal_effect import (
     GoalEffectConfig,
     goal_effect_loss_terms,
     resolve_goal_effect_config,
+)
+from testbed.policies.act.target_release import (
+    resolve_target_release_config,
+    target_release_loss_terms,
 )
 from testbed.policies.base import Policy, register_policy
 
@@ -654,6 +663,15 @@ class ACTAdapter(Policy):
             policy_config.get("temporal_input")
         )
         self._low_dim_keys = list(policy_config.get("low_dim_keys", ["qpos"]))
+        self._condition_adherence = resolve_condition_adherence_config(
+            policy_config.get("condition_adherence_loss")
+        )
+        self._condition_action_loss = resolve_condition_action_loss_config(
+            policy_config.get("condition_action_loss")
+        )
+        self._target_release_loss = resolve_target_release_config(
+            policy_config.get("target_release_loss")
+        )
         self._deadzone_loss = _resolve_deadzone_loss_config(
             policy_config.get("deadzone_loss")
         )
@@ -1065,7 +1083,9 @@ class ACTAdapter(Policy):
                 raw_cam_images,
                 keys=camera_keys,
                 device=self.device,
-                device_uint8_preprocess=self._device_uint8_preprocess,
+                device_uint8_preprocess=getattr(
+                    self, "_device_uint8_preprocess", False
+                ),
             )
         image = self._normalize(image)
 
@@ -1175,6 +1195,7 @@ class ACTAdapter(Policy):
                 goal_effect_outputs,
                 _action_state_logits,
                 _effective_action_phase_logits,
+                _condition_action_logits,
             ) = self._unpack_model_output(self._model(proprio, image, None))
 
         # Aggregation, diagnostics, sigmoid, and CPU conversion stay in FP32.
@@ -1384,6 +1405,12 @@ class ACTAdapter(Policy):
         effective_action_phase: torch.Tensor | None = None,
         effective_action_valid: torch.Tensor | None = None,
         effective_action_loss_weight: torch.Tensor | None = None,
+        counterfactual_proprio: torch.Tensor | None = None,
+        condition_adherence_mask: torch.Tensor | None = None,
+        condition_action_target: torch.Tensor | None = None,
+        condition_action_valid: torch.Tensor | None = None,
+        target_release_continue_primary: torch.Tensor | None = None,
+        target_release_valid: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         """
         Training-time forward pass.
@@ -1432,6 +1459,10 @@ class ACTAdapter(Policy):
             effective_action_loss_weight = effective_action_loss_weight[
                 :, : self._model.num_queries
             ]
+        if condition_adherence_mask is not None:
+            condition_adherence_mask = condition_adherence_mask[
+                :, : self._model.num_queries
+            ]
 
         (
             a_hat,
@@ -1441,6 +1472,7 @@ class ACTAdapter(Policy):
             goal_effect_outputs,
             action_state_logits,
             effective_action_phase_logits,
+            condition_action_logits,
         ) = self._unpack_model_output(
             self._model(proprio, image, None, actions, is_pad)
         )
@@ -1452,13 +1484,20 @@ class ACTAdapter(Policy):
             "_effective_action",
             resolve_effective_action_config({"enabled": False}),
         )
+        factorized_config = getattr(
+            self,
+            "_factorized_action",
+            resolve_factorized_config(
+                {"enabled": False}, num_queries=int(self._model.num_queries)
+            ),
+        )
         factorized_loss_d = factorized_training_loss_terms(
             expert_normalized=actions,
             policy_normalized=a_hat,
             intent_logits=intent_logits,
             valid_mask=valid_mask,
             norm_stats=self.norm_stats,
-            config=self._factorized_action,
+            config=factorized_config,
             transition_mask=state_hold_transition_mask,
             action_loss_mask=action_loss_mask,
         )
@@ -1475,7 +1514,7 @@ class ACTAdapter(Policy):
             config=effective_action_config,
         )
         raw_l1 = a_hat.new_zeros(())
-        if self._factorized_action["enabled"]:
+        if factorized_config["enabled"]:
             l1 = factorized_loss_d["factorized_magnitude_l1"]
             imitation_loss = factorized_loss_d["factorized_loss"]
         elif effective_action_config["enabled"]:
@@ -1591,6 +1630,31 @@ class ACTAdapter(Policy):
                 resolve_action_state_effort_config({"enabled": False}),
             ),
         )
+        condition_adherence_loss_d = self._condition_adherence_terms(
+            proprio=proprio,
+            image=image,
+            counterfactual_proprio=counterfactual_proprio,
+            anchor_mask=condition_adherence_mask,
+            device_like=a_hat,
+        )
+        condition_action_loss_d = self._condition_action_loss_terms(
+            action=a_hat,
+            logits=condition_action_logits,
+            proprio=proprio,
+            image=image,
+            counterfactual_proprio=counterfactual_proprio,
+            target=condition_action_target,
+            valid=condition_action_valid,
+            device_like=a_hat,
+        )
+        target_release_loss_d = self._target_release_loss_terms(
+            proprio=proprio,
+            image=image,
+            counterfactual_proprio=counterfactual_proprio,
+            continue_primary=target_release_continue_primary,
+            valid=target_release_valid,
+            device_like=a_hat,
+        )
 
         return {
             "l1": l1,
@@ -1607,6 +1671,9 @@ class ACTAdapter(Policy):
             **action_state_loss_d,
             **effective_action_loss_d,
             **factorized_loss_d,
+            **condition_adherence_loss_d,
+            **condition_action_loss_d,
+            **target_release_loss_d,
             "loss": (
                 imitation_loss
                 + total_kld[0] * self.kl_weight
@@ -1618,8 +1685,261 @@ class ACTAdapter(Policy):
                 + goal_effect_loss_d["goal_effect_loss"]
                 + action_state_loss_d["action_state_loss"]
                 + effective_action_loss_d["effective_action_loss"]
+                + condition_adherence_loss_d["condition_adherence_loss"]
+                + condition_action_loss_d["condition_action_loss"]
+                + target_release_loss_d["target_release_loss"]
             ),
         }
+
+    def _target_release_loss_terms(
+        self,
+        *,
+        proprio: torch.Tensor,
+        image: torch.Tensor,
+        counterfactual_proprio: torch.Tensor | None,
+        continue_primary: torch.Tensor | None,
+        valid: torch.Tensor | None,
+        device_like: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        cfg = getattr(
+            self,
+            "_target_release_loss",
+            resolve_target_release_config({"enabled": False}),
+        )
+        if not cfg["enabled"]:
+            return target_release_loss_terms(
+                primary_direct=device_like,
+                counterfactual_direct=device_like,
+                continue_primary=continue_primary,
+                valid=valid,
+                config=cfg,
+            )
+        if counterfactual_proprio is None or continue_primary is None or valid is None:
+            raise ValueError(
+                "target_release_loss requires counterfactual proprio and paired labels"
+            )
+        if tuple(counterfactual_proprio.shape) != tuple(proprio.shape):
+            raise ValueError("target release counterfactual proprio must match proprio")
+        eligible = valid.to(device=proprio.device, dtype=torch.bool).reshape(-1)
+        if eligible.numel() != proprio.shape[0]:
+            raise ValueError("target release valid must have one value per batch row")
+        if not bool(eligible.any()):
+            return target_release_loss_terms(
+                primary_direct=device_like,
+                counterfactual_direct=device_like,
+                continue_primary=continue_primary,
+                valid=valid,
+                config=cfg,
+            )
+
+        primary_proprio = proprio[eligible]
+        paired_proprio = torch.cat(
+            (primary_proprio, counterfactual_proprio[eligible]), dim=0
+        )
+        paired_image = torch.cat((image[eligible], image[eligible]), dim=0)
+        model_was_training = self._model.training
+        self._model.eval()
+        try:
+            paired_action = self._unpack_model_output(
+                self._model(paired_proprio, paired_image, None, None, None)
+            )[0]
+        finally:
+            self._model.train(model_was_training)
+        count = int(primary_proprio.shape[0])
+        action_mean = torch.as_tensor(
+            self.norm_stats["action_mean"],
+            dtype=paired_action.dtype,
+            device=paired_action.device,
+        )
+        action_std = torch.as_tensor(
+            self.norm_stats["action_std"],
+            dtype=paired_action.dtype,
+            device=paired_action.device,
+        )
+        paired_direct = paired_action * action_std + action_mean
+        selected_continue = continue_primary.to(
+            device=paired_action.device, dtype=torch.bool
+        ).reshape(-1)[eligible]
+        selected_valid = torch.ones(
+            count, device=paired_action.device, dtype=torch.bool
+        )
+        return target_release_loss_terms(
+            primary_direct=paired_direct[:count],
+            counterfactual_direct=paired_direct[count:],
+            continue_primary=selected_continue,
+            valid=selected_valid,
+            config=cfg,
+        )
+
+    def _condition_action_loss_terms(
+        self,
+        *,
+        action: torch.Tensor,
+        logits: torch.Tensor | None,
+        proprio: torch.Tensor,
+        image: torch.Tensor,
+        counterfactual_proprio: torch.Tensor | None,
+        target: torch.Tensor | None,
+        valid: torch.Tensor | None,
+        device_like: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        zero = device_like.new_zeros(())
+        result = {
+            "condition_action_class_loss": zero,
+            "condition_action_loss": zero,
+            "condition_action_valid_count": zero,
+            "condition_action_eval_count": zero,
+            "condition_action_correct_count": zero,
+        }
+        cfg = getattr(
+            self,
+            "_condition_action_loss",
+            resolve_condition_action_loss_config({"enabled": False}),
+        )
+        if not cfg["enabled"]:
+            return result
+        if target is None or valid is None:
+            raise ValueError(
+                "condition_action_loss requires action logits and anchor labels"
+            )
+        valid_mask = valid.to(device=action.device, dtype=torch.bool).reshape(-1)
+        result["condition_action_valid_count"] = valid_mask.sum().to(
+            dtype=device_like.dtype
+        )
+        if not bool(valid_mask.any()):
+            return result
+        labels = target.to(device=action.device, dtype=torch.long).reshape(-1)
+        # The action head must classify the deterministic inference proposal,
+        # not the teacher-forced posterior sample used by ordinary ACT BC.
+        paired_proprio = None
+        if counterfactual_proprio is not None:
+            if tuple(counterfactual_proprio.shape) != tuple(proprio.shape):
+                raise ValueError(
+                    "counterfactual_proprio must match proprio shape for "
+                    "condition_action_loss"
+                )
+            paired_proprio = counterfactual_proprio[valid_mask]
+
+        model_was_training = self._model.training
+        self._model.eval()
+        try:
+            deterministic_proprio = proprio[valid_mask]
+            deterministic_image = image[valid_mask]
+            if paired_proprio is not None:
+                deterministic_proprio = torch.cat(
+                    (deterministic_proprio, paired_proprio), dim=0
+                )
+                deterministic_image = torch.cat(
+                    (deterministic_image, deterministic_image), dim=0
+                )
+            deterministic_output = self._unpack_model_output(
+                self._model(
+                    deterministic_proprio,
+                    deterministic_image,
+                    None,
+                    None,
+                    None,
+                )
+            )
+            deterministic_logits = deterministic_output[7]
+        finally:
+            self._model.train(model_was_training)
+        if deterministic_logits is None:
+            raise ValueError("condition_action_loss requires action logits")
+        selected_labels = labels[valid_mask]
+        if paired_proprio is not None:
+            # The same image/state with the side code flipped is the causal
+            # intervention.  The flipped branch must classify as the opposite
+            # side, so visual memorisation alone cannot satisfy the objective.
+            selected_labels = torch.cat(
+                (selected_labels, 1 - selected_labels), dim=0
+            )
+        class_loss = torch.nn.functional.cross_entropy(deterministic_logits, selected_labels)
+        result["condition_action_class_loss"] = class_loss
+        predictions = deterministic_logits.argmax(dim=-1)
+        result["condition_action_eval_count"] = device_like.new_tensor(
+            float(selected_labels.numel())
+        )
+        result["condition_action_correct_count"] = (
+            predictions.eq(selected_labels).sum().to(dtype=device_like.dtype)
+        )
+        result["condition_action_loss"] = float(cfg["weight"]) * class_loss
+        return result
+
+    def _condition_adherence_terms(
+        self,
+        *,
+        proprio: torch.Tensor,
+        image: torch.Tensor,
+        counterfactual_proprio: torch.Tensor | None,
+        anchor_mask: torch.Tensor | None,
+        device_like: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        zero = device_like.new_zeros(())
+        empty = {
+            "condition_recorded_crossing_loss": zero,
+            "condition_counterfactual_violation_loss": zero,
+            "condition_contrast_loss": zero,
+            "condition_adherence_loss": zero,
+            "condition_adherence_anchor_count": zero,
+        }
+        condition_config = getattr(
+            self,
+            "_condition_adherence",
+            resolve_condition_adherence_config({"enabled": False}),
+        )
+        if not condition_config["enabled"] or not condition_config.get(
+            "directional_enabled", True
+        ):
+            return empty
+        if counterfactual_proprio is None and anchor_mask is None:
+            return empty
+        if (counterfactual_proprio is None) != (anchor_mask is None):
+            raise ValueError(
+                "condition adherence counterfactual proprio and mask must be supplied together"
+            )
+        if tuple(counterfactual_proprio.shape) != tuple(proprio.shape):
+            raise ValueError("counterfactual proprio must match primary proprio shape")
+        eligible = anchor_mask.to(device=proprio.device, dtype=torch.bool).any(
+            dim=(1, 2, 3)
+        )
+        if not bool(eligible.any()):
+            return condition_adherence_loss_terms(
+                recorded_direct=device_like,
+                counterfactual_direct=device_like,
+                anchor_mask=anchor_mask,
+                config=condition_config,
+            )
+
+        primary = proprio[eligible]
+        paired_proprio = torch.cat((primary, counterfactual_proprio[eligible]), dim=0)
+        paired_image = torch.cat((image[eligible], image[eligible]), dim=0)
+        model_was_training = self._model.training
+        self._model.eval()
+        try:
+            paired_action = self._unpack_model_output(
+                self._model(paired_proprio, paired_image, None, None, None)
+            )[0]
+        finally:
+            self._model.train(model_was_training)
+        count = int(primary.shape[0])
+        action_mean = torch.as_tensor(
+            self.norm_stats["action_mean"],
+            dtype=paired_action.dtype,
+            device=paired_action.device,
+        )
+        action_std = torch.as_tensor(
+            self.norm_stats["action_std"],
+            dtype=paired_action.dtype,
+            device=paired_action.device,
+        )
+        selected_mask = anchor_mask[eligible]
+        return condition_adherence_loss_terms(
+            recorded_direct=paired_action[:count] * action_std + action_mean,
+            counterfactual_direct=paired_action[count:] * action_std + action_mean,
+            anchor_mask=selected_mask,
+            config=condition_config,
+        )
 
     @staticmethod
     def _unpack_model_output(output):
@@ -1628,6 +1948,7 @@ class ACTAdapter(Policy):
         goal_effect_outputs = output[4] if len(output) > 4 else None
         action_state_logits = output[5] if len(output) > 5 else None
         effective_action_phase_logits = output[6] if len(output) > 6 else None
+        condition_action_logits = output[7] if len(output) > 7 else None
         return (
             a_hat,
             is_pad_hat,
@@ -1636,6 +1957,7 @@ class ACTAdapter(Policy):
             goal_effect_outputs,
             action_state_logits,
             effective_action_phase_logits,
+            condition_action_logits,
         )
 
     def _deadzone_loss_terms(

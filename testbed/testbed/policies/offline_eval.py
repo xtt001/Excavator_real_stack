@@ -231,6 +231,16 @@ def evaluate_episode(
         qpos = np.asarray(f["observations/qpos"][()], dtype=np.float32)
         qvel = np.asarray(f["observations/qvel"][()], dtype=np.float32)
         expert_action = np.asarray(f["action"][()], dtype=np.float32)
+        condition = None
+        if "conditions/real_transition_condition_v1" in f:
+            condition = np.asarray(
+                f["conditions/real_transition_condition_v1"][()],
+                dtype=np.float32,
+            )
+            if condition.ndim != 2 or condition.shape[1] != 2:
+                raise ValueError(
+                    "conditions/real_transition_condition_v1 must have shape (T, 2)"
+                )
         step_count = int(min(qpos.shape[0], qvel.shape[0], expert_action.shape[0]))
         if max_steps is not None:
             step_count = min(step_count, int(max_steps))
@@ -259,6 +269,8 @@ def evaluate_episode(
                     "qpos": qpos[step],
                     "qvel": qvel[step],
                 }
+                if condition is not None:
+                    obs["real_transition_condition_v1"] = condition[step]
                 for camera_name in camera_names:
                     image = _read_camera_image(
                         image_f,
