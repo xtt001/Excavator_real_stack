@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -11,6 +12,9 @@ from testbed.tasks.act_cycle_planner import (
     ScriptCyclePlanner,
     parse_side_pattern,
 )
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_parse_side_pattern_accepts_operator_separators() -> None:
@@ -157,3 +161,38 @@ def test_script_planner_loads_yaml_file(tmp_path) -> None:
     assert planner.manifest()["initial_side"] == "B"
     assert planner.manifest()["cycles"][0]["transition"] == "B->A"
     assert planner.manifest()["cycles"][0]["label"] == "first"
+
+
+@pytest.mark.parametrize(
+    ("filename", "initial_side", "transition", "target_side"),
+    [
+        (
+            "real_transition_single_cycle_right_to_left_v1.json",
+            "B",
+            "B->A",
+            "A",
+        ),
+        (
+            "real_transition_single_cycle_left_to_right_v1.json",
+            "A",
+            "A->B",
+            "B",
+        ),
+    ],
+)
+def test_field_single_cycle_scripts_are_finite_and_directionally_explicit(
+    filename: str,
+    initial_side: str,
+    transition: str,
+    target_side: str,
+) -> None:
+    script_path = REPO_ROOT / "testbed/testbed/configs" / filename
+
+    planner = ScriptCyclePlanner.from_script(script_path, loop=False)
+    manifest = planner.manifest()
+
+    assert manifest["script"]["initial_side"] == initial_side
+    assert manifest["script"]["loop"] is False
+    assert len(manifest["cycles"]) == 1
+    assert manifest["cycles"][0]["transition"] == transition
+    assert manifest["cycles"][0]["target_side"] == target_side

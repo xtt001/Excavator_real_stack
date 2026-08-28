@@ -659,7 +659,7 @@ cd /media/mundane/D/Excavator_real_stack
 git switch fs/v2.0.1
 git pull --ff-only origin fs/v2.0.1
 export MODE=shadow
-export CYCLE_SCRIPT=testbed/testbed/configs/real_transition_cycle_script_v1.json
+export CYCLE_SCRIPT=testbed/testbed/configs/real_transition_single_cycle_right_to_left_v1.json
 ./scripts/run_real_transition_target_release_policy.sh
 ```
 
@@ -672,6 +672,13 @@ shadow 通过后，受控运动必须改用已审核的短脚本并显式设置
 `CONFIRM_HARDWARE_MOTION=YES`、`CONFIRM_SCRIPT_REVIEWED=YES`。完整模型包生成、预检、
 按钮语义、锁零和日志检查见
 [`docs/real_transition_target_release_field_runtime.md`](real_transition_target_release_field_runtime.md)。
+
+首次受控运动使用两个互相独立的单铲脚本：
+
+- `real_transition_single_cycle_right_to_left_v1.json`：从右区出发，到左区后结束；
+- `real_transition_single_cycle_left_to_right_v1.json`：从左区出发，到右区后结束。
+
+两个脚本都不会循环，也不会自动开始第二铲。
 
 ## 运行分工
 

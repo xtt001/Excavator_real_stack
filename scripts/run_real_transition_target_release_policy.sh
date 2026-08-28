@@ -22,7 +22,7 @@ export PYTHON
 export PYTHONPATH="${ROOT}/testbed${PYTHONPATH:+:${PYTHONPATH}}"
 
 BASE_CONFIG="${BASE_CONFIG:-testbed/testbed/configs/policy_real_transition_target_release_v2.yaml}"
-CYCLE_SCRIPT="${CYCLE_SCRIPT:-testbed/testbed/configs/real_transition_cycle_script_v1.json}"
+CYCLE_SCRIPT="${CYCLE_SCRIPT:-testbed/testbed/configs/real_transition_single_cycle_right_to_left_v1.json}"
 POLICY_REMOTE_MAX_STEPS="${REAL_TRANSITION_POLICY_MAX_STEPS:-50000}"
 
 # A fresh git checkout does not contain the ignored model bundle. Prefer the

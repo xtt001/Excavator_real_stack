@@ -81,7 +81,7 @@ teleop:
     reset_policy_on_goal: true
     cycle_planner:
       enabled: true
-      script_path: testbed/testbed/configs/real_transition_cycle_script_v1.json
+      script_path: testbed/testbed/configs/real_transition_single_cycle_right_to_left_v1.json
       loop: false
 
   remote:

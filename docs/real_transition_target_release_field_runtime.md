@@ -28,13 +28,15 @@
 
 - 默认安全配置：`testbed/testbed/configs/policy_real_transition_target_release_v2.yaml`
 - 示例脚本：`testbed/testbed/configs/real_transition_cycle_script_v1.json`
+- 单铲右区到左区：`testbed/testbed/configs/real_transition_single_cycle_right_to_left_v1.json`
+- 单铲左区到右区：`testbed/testbed/configs/real_transition_single_cycle_left_to_right_v1.json`
 - 运行脚本：`scripts/run_real_transition_target_release_policy.sh`
 - 模型包生成：`scripts/build_real_transition_target_release_bundle.py`
 - 静态预检：`scripts/verify_real_transition_target_release_runtime.py`
 - 日志检查：`scripts/check_real_transition_target_release_log.sh`
 
 内部 A 表示左区，B 表示右区。示例脚本从右区开始，依次执行左、右、左三铲；它不循环。
-正式运动前必须按现场计划复制并审核新的非循环脚本，不要直接默认使用示例顺序。
+示例脚本不用于首次运动。首次运动使用已经准备好的两个单铲脚本，其他顺序仍需单独审核。
 
 ## 生成模型包
 
@@ -90,7 +92,7 @@ cd /media/mundane/D/Excavator_real_stack
 git switch fs/v2.0.1
 git pull --ff-only origin fs/v2.0.1
 export MODE=shadow
-export CYCLE_SCRIPT=testbed/testbed/configs/real_transition_cycle_script_v1.json
+export CYCLE_SCRIPT=testbed/testbed/configs/real_transition_single_cycle_right_to_left_v1.json
 ./scripts/run_real_transition_target_release_policy.sh
 ```
 
@@ -112,11 +114,15 @@ shadow 日志通过后，准备一条短的、非循环脚本，然后执行：
 ```bash
 cd /media/mundane/D/Excavator_real_stack
 export MODE=control
-export CYCLE_SCRIPT=/绝对路径/已审核的短脚本.json
+export CYCLE_SCRIPT=testbed/testbed/configs/real_transition_single_cycle_right_to_left_v1.json
 export CONFIRM_HARDWARE_MOTION=YES
 export CONFIRM_SCRIPT_REVIEWED=YES
 ./scripts/run_real_transition_target_release_policy.sh
 ```
+
+第一铲从右区出发，到左区稳定停止后结束。检查日志和机器状态，再把机器保持在左区，使用
+`real_transition_single_cycle_left_to_right_v1.json` 单独测试反方向。两个脚本都只有一个
+目标且 `loop=false`，不会自动开始第二铲。
 
 按钮 4 的语义：
 

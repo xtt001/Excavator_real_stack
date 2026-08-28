@@ -1,0 +1,13 @@
+{
+  "schema": "act_cycle_script_v1",
+  "script_id": "single-cycle-right-to-left-field-v1",
+  "initial_side": "B",
+  "steps": [
+    {
+      "step_id": "cycle_001_left",
+      "target_side": "A",
+      "label": "左区（单铲）"
+    }
+  ],
+  "loop": false
+}

@@ -200,6 +200,14 @@ steps:
     metadata: {workface: wf_02}
 ```
 
+The first controlled field check uses two finite one-cycle scripts instead of
+the multi-cycle example:
+
+- `real_transition_single_cycle_right_to_left_v1.json` expresses `B -> A`;
+- `real_transition_single_cycle_left_to_right_v1.json` expresses `A -> B`.
+
+Both set `loop=false` and stop after one accepted target-ready boundary.
+
 Then generate 16 goals from it:
 
 ```bash
