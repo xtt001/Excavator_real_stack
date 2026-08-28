@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 930" role="img" aria-labelledby="svg-title svg-desc">
+  <title id="svg-title">完整离线回放流程</title>
+  <desc id="svg-desc">测试以一条三到五铲的完整实机记录为单位，逐铲提交目标、逐帧读取真实观测、记录模型和保护后动作，并在稳定回位后进入下一铲。</desc>
+  <defs>
+    <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#9FB1C2"/>
+    </marker>
+    <style>
+      text { font-family: "Noto Sans CJK SC", "Source Han Sans SC", "Microsoft YaHei", Arial, sans-serif; }
+    </style>
+  </defs>
+  <rect width="1600" height="930" fill="#F4F7FB"/>
+  <rect width="1600" height="12" fill="#2F6FED"/>
+  <text x="78" y="68" font-family="Noto Sans CJK SC, Source Han Sans SC, Microsoft YaHei, Arial, sans-serif" font-size="19" font-weight="700" fill="#2F6FED">本周组会 · 2026.08.28</text>
+  <text x="78" y="128" font-family="Noto Sans CJK SC, Source Han Sans SC, Microsoft YaHei, Arial, sans-serif" font-size="45" font-weight="700" fill="#102A43">完整离线回放流程</text>
+  <line x1="78" y1="154" x2="1522" y2="154" stroke="#D5E0EA" stroke-width="2"/>
+<rect x="78" y="182" width="1444" height="74" rx="18" fill="#EAF1FF" stroke="#EAF1FF" stroke-width="2"/>
+<rect x="105" y="195" width="140" height="46" rx="23" fill="#2F6FED" stroke="#2F6FED" stroke-width="2"/>
+<text x="175.0" y="225.2" font-size="20" fill="#FFFFFF" font-weight="700" text-anchor="middle">测试单位</text>
+<text x="270" y="228" font-size="24" fill="#172B4D" font-weight="600" text-anchor="start">一条包含 3、4 或 5 铲的完整实机记录；从第一个目标开始，一直运行到目标序列结束。</text>
+<text x="78" y="304" font-size="27" fill="#102A43" font-weight="700" text-anchor="start">一次完整回放的基本流程</text>
+<rect x="70" y="340" width="190" height="102" rx="24" fill="#FFFFFF" stroke="#D5E0EA" stroke-width="2"/>
+<text x="165.0" y="382" font-size="22" fill="#102A43" font-weight="700" text-anchor="middle">读取完整序列</text>
+<text x="165.0" y="418" font-size="17" fill="#62748A" font-weight="400" text-anchor="middle">按实机记录顺序逐铲读取</text>
+<rect x="280" y="340" width="190" height="102" rx="24" fill="#FFFFFF" stroke="#D5E0EA" stroke-width="2"/>
+<text x="375.0" y="382" font-size="22" fill="#102A43" font-weight="700" text-anchor="middle">提交当前目标</text>
+<text x="375.0" y="418" font-size="17" fill="#62748A" font-weight="400" text-anchor="middle">每铲开始只提交这一个目标</text>
+<rect x="490" y="340" width="210" height="102" rx="24" fill="#FFFFFF" stroke="#D5E0EA" stroke-width="2"/>
+<text x="595.0" y="382" font-size="22" fill="#102A43" font-weight="700" text-anchor="middle">清除上一铲记录</text>
+<text x="595.0" y="418" font-size="17" fill="#62748A" font-weight="400" text-anchor="middle">旧动作预测和内部历史归零</text>
+<rect x="720" y="340" width="210" height="102" rx="24" fill="#FFFFFF" stroke="#D5E0EA" stroke-width="2"/>
+<text x="825.0" y="382" font-size="22" fill="#102A43" font-weight="700" text-anchor="middle">逐帧读取观测</text>
+<text x="825.0" y="418" font-size="17" fill="#62748A" font-weight="400" text-anchor="middle">四路图像、位置、速度</text>
+<rect x="950" y="340" width="170" height="102" rx="24" fill="#FFFFFF" stroke="#D5E0EA" stroke-width="2"/>
+<text x="1035.0" y="382" font-size="22" fill="#102A43" font-weight="700" text-anchor="middle">模型给动作</text>
+<text x="1035.0" y="418" font-size="17" fill="#62748A" font-weight="400" text-anchor="middle">保存模型原始输出</text>
+<rect x="1140" y="340" width="170" height="102" rx="24" fill="#FFFFFF" stroke="#D5E0EA" stroke-width="2"/>
+<text x="1225.0" y="382" font-size="22" fill="#102A43" font-weight="700" text-anchor="middle">经过动作保护</text>
+<text x="1225.0" y="418" font-size="17" fill="#62748A" font-weight="400" text-anchor="middle">保存保护后的动作</text>
+<rect x="1330" y="340" width="200" height="102" rx="24" fill="#FFFFFF" stroke="#D5E0EA" stroke-width="2"/>
+<text x="1430.0" y="382" font-size="22" fill="#102A43" font-weight="700" text-anchor="middle">按阶段记分</text>
+<text x="1430.0" y="418" font-size="17" fill="#62748A" font-weight="400" text-anchor="middle">挖掘→回程→释放→稳定</text>
+<line x1="263" y1="391" x2="274" y2="391" stroke="#9FB1C2" stroke-width="4" stroke-linecap="round" marker-end="url(#arrowhead)"/>
+<line x1="473" y1="391" x2="484" y2="391" stroke="#9FB1C2" stroke-width="4" stroke-linecap="round" marker-end="url(#arrowhead)"/>
+<line x1="703" y1="391" x2="714" y2="391" stroke="#9FB1C2" stroke-width="4" stroke-linecap="round" marker-end="url(#arrowhead)"/>
+<line x1="933" y1="391" x2="944" y2="391" stroke="#9FB1C2" stroke-width="4" stroke-linecap="round" marker-end="url(#arrowhead)"/>
+<line x1="1123" y1="391" x2="1134" y2="391" stroke="#9FB1C2" stroke-width="4" stroke-linecap="round" marker-end="url(#arrowhead)"/>
+<line x1="1313" y1="391" x2="1324" y2="391" stroke="#9FB1C2" stroke-width="4" stroke-linecap="round" marker-end="url(#arrowhead)"/>
+<rect x="70" y="500" width="470" height="248" rx="24" fill="#FFFFFF" stroke="#D5E0EA" stroke-width="2"/>
+<rect x="70" y="500" width="470" height="62" rx="20" fill="#2F6FED" stroke="#2F6FED" stroke-width="2"/>
+<text x="305" y="541" font-size="25" fill="#FFFFFF" font-weight="700" text-anchor="middle">① 每一帧都做的基本检查</text>
+<circle cx="105" cy="599" r="7" fill="#2F6FED"/>
+<text x="130" y="607" font-size="20" fill="#172B4D" font-weight="400" text-anchor="start">并排保存模型原始动作、保护后动作和专家动作</text>
+<circle cx="105" cy="656" r="7" fill="#2F6FED"/>
+<text x="130" y="664" font-size="20" fill="#172B4D" font-weight="400" text-anchor="start">根据真实最高点、目标区入口和稳定窗划分阶段</text>
+<circle cx="105" cy="713" r="7" fill="#2F6FED"/>
+<text x="130" y="721" font-size="20" fill="#172B4D" font-weight="400" text-anchor="start">分别计算误差、方向、挖掘、回程和停止表现</text>
+<rect x="565" y="500" width="470" height="248" rx="24" fill="#FFFFFF" stroke="#D5E0EA" stroke-width="2"/>
+<rect x="565" y="500" width="470" height="62" rx="20" fill="#12A594" stroke="#12A594" stroke-width="2"/>
+<text x="800" y="541" font-size="25" fill="#FFFFFF" font-weight="700" text-anchor="middle">② 到目标决策区时做的对照</text>
+<circle cx="600" cy="599" r="7" fill="#12A594"/>
+<text x="625" y="607" font-size="20" fill="#172B4D" font-weight="400" text-anchor="start">仅取最高点之后、训练合同支持的决策区观测</text>
+<circle cx="600" cy="656" r="7" fill="#12A594"/>
+<text x="625" y="664" font-size="20" fill="#172B4D" font-weight="400" text-anchor="start">同一图像和状态分别输入左区、右区目标</text>
+<circle cx="600" cy="713" r="7" fill="#12A594"/>
+<text x="625" y="721" font-size="20" fill="#172B4D" font-weight="400" text-anchor="start">另开不做历史动作平均的模型，只看当前一步</text>
+<rect x="1060" y="500" width="470" height="248" rx="24" fill="#FFFFFF" stroke="#D5E0EA" stroke-width="2"/>
+<rect x="1060" y="500" width="470" height="62" rx="20" fill="#F59E0B" stroke="#F59E0B" stroke-width="2"/>
+<text x="1295" y="541" font-size="25" fill="#FFFFFF" font-weight="700" text-anchor="middle">③ 到动作刚越过死区时做的对照</text>
+<circle cx="1095" cy="599" r="7" fill="#F59E0B"/>
+<text x="1120" y="607" font-size="20" fill="#172B4D" font-weight="400" text-anchor="start">在专家动作由死区内转为有效动作处选测试点</text>
+<circle cx="1095" cy="656" r="7" fill="#F59E0B"/>
+<text x="1120" y="664" font-size="20" fill="#172B4D" font-weight="400" text-anchor="start">每次从相同内部状态开始，连续判断二十次</text>
+<circle cx="1095" cy="713" r="7" fill="#F59E0B"/>
+<text x="1120" y="721" font-size="20" fill="#172B4D" font-weight="400" text-anchor="start">检查同轴同向再启动以及错误有效动作</text>
+<rect x="78" y="790" width="1444" height="92" rx="20" fill="#102A43" stroke="#102A43" stroke-width="2"/>
+<text x="800" y="826" font-size="24" fill="#FFFFFF" font-weight="700" text-anchor="middle">记录数据确认稳定回位后，结束当前一铲、提交下一个目标；重复直到整条目标序列结束。</text>
+<text x="800" y="859" font-size="21" fill="#D5E4EF" font-weight="400" text-anchor="middle">最后分别汇总开发验证集和独立留出集；完整动作、左右目标和机器不动三项标准必须一起通过。</text>
+</svg>

@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 940" role="img" aria-labelledby="svg-title svg-desc">
+  <title id="svg-title">机器不动测试</title>
+  <desc id="svg-desc">在专家动作刚从死区内变为有效动作的测试点，还原模型当时的历史，保持画面和姿态不变连续判断二十次，并与同一数据上的原模型比较。</desc>
+  <defs>
+    <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#9FB1C2"/>
+    </marker>
+    <style>
+      text { font-family: "Noto Sans CJK SC", "Source Han Sans SC", "Microsoft YaHei", Arial, sans-serif; }
+    </style>
+  </defs>
+  <rect width="1600" height="940" fill="#F4F7FB"/>
+  <rect width="1600" height="12" fill="#2F6FED"/>
+  <text x="78" y="68" font-family="Noto Sans CJK SC, Source Han Sans SC, Microsoft YaHei, Arial, sans-serif" font-size="19" font-weight="700" fill="#2F6FED">本周组会 · 2026.08.28</text>
+  <text x="78" y="128" font-family="Noto Sans CJK SC, Source Han Sans SC, Microsoft YaHei, Arial, sans-serif" font-size="45" font-weight="700" fill="#102A43">机器不动测试</text>
+  <line x1="78" y1="154" x2="1522" y2="154" stroke="#D5E0EA" stroke-width="2"/>
+<text x="78" y="198" font-size="26" fill="#62748A" font-weight="400" text-anchor="start">这个测试专门复现一种闭环风险：动作没有越过死区，机器不动，模型下一次仍看到原状态。</text>
+<rect x="70" y="235" width="315" height="150" rx="24" fill="#FFFFFF" stroke="#D5E0EA" stroke-width="2"/>
+<rect x="70" y="235" width="315" height="54" rx="20" fill="#2F6FED" stroke="#2F6FED" stroke-width="2"/>
+<text x="227.5" y="272" font-size="24" fill="#FFFFFF" font-weight="700" text-anchor="middle">1. 选测试点</text>
+<text x="94" y="327" font-size="19" fill="#172B4D" font-weight="500" text-anchor="start">专家动作从死区内转为有效</text>
+<text x="94" y="359" font-size="19" fill="#172B4D" font-weight="500" text-anchor="start">按轴和方向分别标记；排除无效样本</text>
+<rect x="455" y="235" width="315" height="150" rx="24" fill="#FFFFFF" stroke="#D5E0EA" stroke-width="2"/>
+<rect x="455" y="235" width="315" height="54" rx="20" fill="#8356E8" stroke="#8356E8" stroke-width="2"/>
+<text x="612.5" y="272" font-size="24" fill="#FFFFFF" font-weight="700" text-anchor="middle">2. 还原当时历史</text>
+<text x="479" y="327" font-size="19" fill="#172B4D" font-weight="500" text-anchor="start">逐帧读取测试点之前的真实观测</text>
+<text x="479" y="359" font-size="19" fill="#172B4D" font-weight="500" text-anchor="start">还原模型对过去几步的内部记录</text>
+<rect x="840" y="235" width="315" height="150" rx="24" fill="#FFFFFF" stroke="#D5E0EA" stroke-width="2"/>
+<rect x="840" y="235" width="315" height="54" rx="20" fill="#F59E0B" stroke="#F59E0B" stroke-width="2"/>
+<text x="997.5" y="272" font-size="24" fill="#FFFFFF" font-weight="700" text-anchor="middle">3. 每次从同样状态开始</text>
+<text x="864" y="327" font-size="19" fill="#172B4D" font-weight="500" text-anchor="start">保存并恢复同一份模型内部状态</text>
+<text x="864" y="359" font-size="19" fill="#172B4D" font-weight="500" text-anchor="start">固定图像、位置、目标，速度置零</text>
+<rect x="1225" y="235" width="315" height="150" rx="24" fill="#FFFFFF" stroke="#D5E0EA" stroke-width="2"/>
+<rect x="1225" y="235" width="315" height="54" rx="20" fill="#12A594" stroke="#12A594" stroke-width="2"/>
+<text x="1382.5" y="272" font-size="24" fill="#FFFFFF" font-weight="700" text-anchor="middle">4. 让模型连续判断</text>
+<text x="1249" y="327" font-size="19" fill="#172B4D" font-weight="500" text-anchor="start">同一观测调用策略二十次</text>
+<text x="1249" y="359" font-size="19" fill="#172B4D" font-weight="500" text-anchor="start">动作不推进状态，不借用专家下一帧</text>
+<line x1="395" y1="310" x2="443" y2="310" stroke="#9FB1C2" stroke-width="4" stroke-linecap="round" marker-end="url(#arrowhead)"/>
+<line x1="780" y1="310" x2="828" y2="310" stroke="#9FB1C2" stroke-width="4" stroke-linecap="round" marker-end="url(#arrowhead)"/>
+<line x1="1165" y1="310" x2="1213" y2="310" stroke="#9FB1C2" stroke-width="4" stroke-linecap="round" marker-end="url(#arrowhead)"/>
+<text x="80" y="446" font-size="27" fill="#102A43" font-weight="700" text-anchor="start">对照方式</text>
+<rect x="80" y="474" width="1440" height="118" rx="24" fill="#FFFFFF" stroke="#D5E0EA" stroke-width="2"/>
+<text x="112" y="520" font-size="21" fill="#2F6FED" font-weight="700" text-anchor="start">此前真实记录</text>
+<circle cx="280" cy="513" r="12" fill="#2F6FED"/>
+<line x1="292" y1="513" x2="326" y2="513" stroke="#A9B9C8" stroke-width="3" stroke-linecap="round"/>
+<circle cx="338" cy="513" r="12" fill="#2F6FED"/>
+<line x1="350" y1="513" x2="384" y2="513" stroke="#A9B9C8" stroke-width="3" stroke-linecap="round"/>
+<circle cx="396" cy="513" r="12" fill="#2F6FED"/>
+<line x1="408" y1="513" x2="442" y2="513" stroke="#A9B9C8" stroke-width="3" stroke-linecap="round"/>
+<circle cx="454" cy="513" r="12" fill="#2F6FED"/>
+<line x1="466" y1="513" x2="500" y2="513" stroke="#A9B9C8" stroke-width="3" stroke-linecap="round"/>
+<circle cx="512" cy="513" r="12" fill="#2F6FED"/>
+<line x1="524" y1="513" x2="558" y2="513" stroke="#A9B9C8" stroke-width="3" stroke-linecap="round"/>
+<circle cx="570" cy="513" r="12" fill="#F59E0B"/>
+<text x="580" y="520" font-size="21" fill="#F59E0B" font-weight="700" text-anchor="start">测试点的模型状态</text>
+<line x1="700" y1="513" x2="770" y2="513" stroke="#9FB1C2" stroke-width="4" stroke-linecap="round" marker-end="url(#arrowhead)"/>
+<text x="800" y="500" font-size="20" fill="#12A594" font-weight="700" text-anchor="start">对照 1：按一个测试轴和方向判断</text>
+<text x="800" y="536" font-size="20" fill="#8356E8" font-weight="700" text-anchor="start">对照 2：同一帧有多个测试点时逐一重跑</text>
+<line x1="1100" y1="513" x2="1170" y2="513" stroke="#9FB1C2" stroke-width="4" stroke-linecap="round" marker-end="url(#arrowhead)"/>
+<text x="1200" y="500" font-size="20" fill="#102A43" font-weight="700" text-anchor="start">每次测试前恢复相同状态</text>
+<text x="1200" y="536" font-size="19" fill="#62748A" font-weight="400" text-anchor="start">测试结束后再恢复并继续真实记录</text>
+<text x="80" y="650" font-size="27" fill="#102A43" font-weight="700" text-anchor="start">评价指标</text>
+<rect x="80" y="680" width="330" height="102" rx="24" fill="#FFFFFF" stroke="#D5E0EA" stroke-width="2"/>
+<rect x="80" y="680" width="7" height="102" fill="#2F6FED"/>
+<text x="104" y="720" font-size="21" fill="#2F6FED" font-weight="700" text-anchor="start">5 次内同向有效</text>
+<text x="104" y="755" font-size="17" fill="#172B4D" font-weight="400" text-anchor="start">只作短窗诊断，不作为最终硬门槛</text>
+<rect x="450" y="680" width="330" height="102" rx="24" fill="#FFFFFF" stroke="#D5E0EA" stroke-width="2"/>
+<rect x="450" y="680" width="7" height="102" fill="#12A594"/>
+<text x="474" y="720" font-size="21" fill="#12A594" font-weight="700" text-anchor="start">20 次内同向有效</text>
+<text x="474" y="755" font-size="17" fill="#172B4D" font-weight="400" text-anchor="start">机器没动时，能否自己重新发出有效动作</text>
+<rect x="820" y="680" width="330" height="102" rx="24" fill="#FFFFFF" stroke="#D5E0EA" stroke-width="2"/>
+<rect x="820" y="680" width="7" height="102" fill="#D94848"/>
+<text x="844" y="720" font-size="21" fill="#D94848" font-weight="700" text-anchor="start">首步错误有效动作</text>
+<text x="844" y="755" font-size="17" fill="#172B4D" font-weight="400" text-anchor="start">目标轴反向，或出现未允许的其他轴动作</text>
+<rect x="1190" y="680" width="330" height="102" rx="24" fill="#FFFFFF" stroke="#D5E0EA" stroke-width="2"/>
+<rect x="1190" y="680" width="7" height="102" fill="#F59E0B"/>
+<text x="1214" y="720" font-size="21" fill="#F59E0B" font-weight="700" text-anchor="start">启动 / 周期中分组</text>
+<text x="1214" y="755" font-size="17" fill="#172B4D" font-weight="400" text-anchor="start">第一个测试点单独报告，避免总体均值掩盖启动</text>
+<rect x="80" y="820" width="1440" height="76" rx="18" fill="#102A43" stroke="#102A43" stroke-width="2"/>
+<text x="120" y="851" font-size="22" fill="#FFFFFF" font-weight="700" text-anchor="start">同一批数据、同一批测试点、同一张死区表，直接对比原一铲模型：</text>
+<text x="900" y="851" font-size="21" fill="#76E0D1" font-weight="700" text-anchor="start">开发 67.5% ≥ 55.4%，错误 26 ≤ 38</text>
+<text x="900" y="880" font-size="21" fill="#76E0D1" font-weight="700" text-anchor="start">留出 59.7% ≥ 58.4%，错误 29 ≤ 53</text>
+</svg>

@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 920" role="img" aria-labelledby="svg-title svg-desc">
+  <title id="svg-title">三条训练路线</title>
+  <desc id="svg-desc">第一条只做目标分类，第二条强制左右方向相反，第三条把动作压在死区边缘；它们分别因动作差不足、数据假设错误和缺少动作余量而未采用。</desc>
+  <defs>
+    <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#9FB1C2"/>
+    </marker>
+    <style>
+      text { font-family: "Noto Sans CJK SC", "Source Han Sans SC", "Microsoft YaHei", Arial, sans-serif; }
+    </style>
+  </defs>
+  <rect width="1600" height="920" fill="#F4F7FB"/>
+  <rect width="1600" height="12" fill="#2F6FED"/>
+  <text x="78" y="68" font-family="Noto Sans CJK SC, Source Han Sans SC, Microsoft YaHei, Arial, sans-serif" font-size="19" font-weight="700" fill="#2F6FED">本周组会 · 2026.08.28</text>
+  <text x="78" y="128" font-family="Noto Sans CJK SC, Source Han Sans SC, Microsoft YaHei, Arial, sans-serif" font-size="45" font-weight="700" fill="#102A43">三条训练路线</text>
+  <line x1="78" y1="154" x2="1522" y2="154" stroke="#D5E0EA" stroke-width="2"/>
+<text x="78" y="198" font-size="27" fill="#62748A" font-weight="400" text-anchor="start">三条路线分别暴露出动作差不足、假设与数据不符和死区余量不足。</text>
+<rect x="70" y="225" width="1460" height="58" rx="14" fill="#102A43" stroke="#102A43" stroke-width="2"/>
+<text x="150" y="263" font-size="22" fill="#FFFFFF" font-weight="700" text-anchor="start">方案是什么</text>
+<text x="575" y="263" font-size="22" fill="#FFFFFF" font-weight="700" text-anchor="start">原本想解决什么</text>
+<text x="850" y="263" font-size="22" fill="#FFFFFF" font-weight="700" text-anchor="start">实际结果</text>
+<text x="1320" y="263" font-size="22" fill="#FFFFFF" font-weight="700" text-anchor="start">结论</text>
+<rect x="70" y="298" width="1460" height="145" rx="24" fill="#FFFFFF" stroke="#D5E0EA" stroke-width="2"/>
+<rect x="70" y="298" width="62" height="145" rx="18" fill="#D94848" stroke="#D94848" stroke-width="2"/>
+<text x="101" y="381" font-size="31" fill="#FFFFFF" font-weight="700" text-anchor="middle">1</text>
+<text x="150" y="347" font-size="21" fill="#172B4D" font-weight="700" text-anchor="start">给动作预测加左右分类</text>
+<text x="150" y="381" font-size="21" fill="#172B4D" font-weight="700" text-anchor="start">测试权重 0.5、1、2、5</text>
+<text x="575" y="347" font-size="20" fill="#62748A" font-weight="500" text-anchor="start">让模型注意到</text>
+<text x="575" y="381" font-size="20" fill="#62748A" font-weight="500" text-anchor="start">当前左右目标</text>
+<text x="850" y="343" font-size="20" fill="#172B4D" font-weight="500" text-anchor="start">权重 1、2、5 分类达到 100%</text>
+<text x="850" y="378" font-size="20" fill="#172B4D" font-weight="500" text-anchor="start">回转动作差最大仅 0.014–0.016</text>
+<text x="1320" y="347" font-size="19" fill="#D94848" font-weight="700" text-anchor="start">差值远小于</text>
+<text x="1320" y="380" font-size="19" fill="#D94848" font-weight="700" text-anchor="start">负向死区 0.721</text>
+<rect x="70" y="460" width="1460" height="145" rx="24" fill="#FFFFFF" stroke="#D5E0EA" stroke-width="2"/>
+<rect x="70" y="460" width="62" height="145" rx="18" fill="#F59E0B" stroke="#F59E0B" stroke-width="2"/>
+<text x="101" y="543" font-size="31" fill="#FFFFFF" font-weight="700" text-anchor="middle">2</text>
+<text x="150" y="509" font-size="21" fill="#172B4D" font-weight="700" text-anchor="start">规定左区向负方向</text>
+<text x="150" y="543" font-size="21" fill="#172B4D" font-weight="700" text-anchor="start">右区向正方向</text>
+<text x="575" y="509" font-size="20" fill="#62748A" font-weight="500" text-anchor="start">用相反方向</text>
+<text x="575" y="543" font-size="20" fill="#62748A" font-weight="500" text-anchor="start">强行拉开两类动作</text>
+<text x="850" y="505" font-size="20" fill="#172B4D" font-weight="500" text-anchor="start">数据表明两类回程都主要向负方向</text>
+<text x="850" y="540" font-size="20" fill="#172B4D" font-weight="500" text-anchor="start">区别是何时停止，不是方向相反</text>
+<text x="1320" y="509" font-size="19" fill="#F59E0B" font-weight="700" text-anchor="start">基本假设与</text>
+<text x="1320" y="542" font-size="19" fill="#F59E0B" font-weight="700" text-anchor="start">真实动作不符</text>
+<rect x="70" y="622" width="1460" height="145" rx="24" fill="#FFFFFF" stroke="#D5E0EA" stroke-width="2"/>
+<rect x="70" y="622" width="62" height="145" rx="18" fill="#8356E8" stroke="#8356E8" stroke-width="2"/>
+<text x="101" y="705" font-size="31" fill="#FFFFFF" font-weight="700" text-anchor="middle">3</text>
+<text x="150" y="671" font-size="21" fill="#172B4D" font-weight="700" text-anchor="start">左区动作 ≤ −0.721</text>
+<text x="150" y="705" font-size="21" fill="#172B4D" font-weight="700" text-anchor="start">右区动作 = 0</text>
+<text x="575" y="671" font-size="20" fill="#62748A" font-weight="500" text-anchor="start">直接把左右目标</text>
+<text x="575" y="705" font-size="20" fill="#62748A" font-weight="500" text-anchor="start">写进动作要求</text>
+<text x="850" y="667" font-size="20" fill="#172B4D" font-weight="500" text-anchor="start">零损失允许动作刚好压在死区边缘</text>
+<text x="850" y="702" font-size="20" fill="#172B4D" font-weight="500" text-anchor="start">短训成对命中约 67%–74%</text>
+<text x="1320" y="671" font-size="19" fill="#8356E8" font-weight="700" text-anchor="start">没有余量，也未达到</text>
+<text x="1320" y="704" font-size="19" fill="#8356E8" font-weight="700" text-anchor="start">预定的 80% 标准</text>
+<rect x="70" y="800" width="1460" height="76" rx="18" fill="#E8F8F5" stroke="#E8F8F5" stroke-width="2"/>
+<rect x="95" y="815" width="150" height="46" rx="23" fill="#12A594" stroke="#12A594" stroke-width="2"/>
+<text x="170.0" y="845.2" font-size="20" fill="#FFFFFF" font-weight="700" text-anchor="middle">最终修改</text>
+<text x="275" y="847" font-size="24" fill="#172B4D" font-weight="700" text-anchor="start">只在释放阶段约束动作：左区 ≤ −0.799，右区 = 0，并要求两者相差至少 0.799。</text>
+</svg>
