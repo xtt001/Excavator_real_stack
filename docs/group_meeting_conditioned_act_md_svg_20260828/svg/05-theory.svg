@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" role="img" aria-labelledby="svg-title svg-desc">
-  <title id="svg-title">关键动作变化与训练重点</title>
-  <desc id="svg-desc">关键帧模仿学习支持提高稀疏动作变化点的训练权重，任务分段、目标回溯和条件模仿提供补充支持。</desc>
+  <title id="svg-title">为什么要盯住少数关键时刻</title>
+  <desc id="svg-desc">关键帧模仿学习说明，长序列中真正需要改变动作的时刻很少，给这些时刻更多训练机会可以减少模型照抄旧动作的问题。</desc>
   <defs>
     <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
       <path d="M0,0 L0,6 L9,3 z" fill="#9FB1C2"/>
@@ -12,52 +12,52 @@
   <rect width="1600" height="900" fill="#F4F7FB"/>
   <rect width="1600" height="12" fill="#2F6FED"/>
   <text x="78" y="68" font-family="Noto Sans CJK SC, Source Han Sans SC, Microsoft YaHei, Arial, sans-serif" font-size="19" font-weight="700" fill="#2F6FED">本周组会 · 2026.08.28</text>
-  <text x="78" y="128" font-family="Noto Sans CJK SC, Source Han Sans SC, Microsoft YaHei, Arial, sans-serif" font-size="45" font-weight="700" fill="#102A43">关键动作变化与训练重点</text>
+  <text x="78" y="128" font-family="Noto Sans CJK SC, Source Han Sans SC, Microsoft YaHei, Arial, sans-serif" font-size="45" font-weight="700" fill="#102A43">为什么要盯住少数关键时刻</text>
   <line x1="78" y1="154" x2="1522" y2="154" stroke="#D5E0EA" stroke-width="2"/>
 <rect x="70" y="200" width="700" height="410" rx="24" fill="#FFFFFF" stroke="#D5E0EA" stroke-width="2"/>
 <text x="110" y="255" font-size="31" fill="#102A43" font-weight="700" text-anchor="start">Keyframe-Focused Visual Imitation Learning</text>
 <text x="110" y="297" font-size="22" fill="#2F6FED" font-weight="700" text-anchor="start">Wen et al. · ICML 2021</text>
 <line x1="110" y1="325" x2="730" y2="325" stroke="#D5E0EA" stroke-width="2" stroke-linecap="round"/>
-<circle cx="115" cy="374" r="7" fill="#2F6FED"/>
-<text x="140" y="382" font-size="24" fill="#172B4D" font-weight="400" text-anchor="start">长序列中真正改变行为的动作变化点很少</text>
-<circle cx="115" cy="446" r="7" fill="#2F6FED"/>
-<text x="140" y="454" font-size="24" fill="#172B4D" font-weight="400" text-anchor="start">均匀采样容易复制上一动作或依赖惯性</text>
-<circle cx="115" cy="518" r="7" fill="#2F6FED"/>
-<text x="140" y="526" font-size="24" fill="#172B4D" font-weight="400" text-anchor="start">提高关键帧权重能改善视觉模仿控制</text>
+<circle cx="115" cy="382" r="7" fill="#2F6FED"/>
+<text x="140" y="390" font-size="24" fill="#172B4D" font-weight="400" text-anchor="start">长序列中，真正需要改变动作的时刻很少</text>
+<circle cx="115" cy="470" r="7" fill="#2F6FED"/>
+<text x="140" y="478" font-size="24" fill="#172B4D" font-weight="400" text-anchor="start">如果每一帧同样训练，模型容易照抄前一个动作</text>
+<circle cx="115" cy="558" r="7" fill="#2F6FED"/>
+<text x="140" y="566" font-size="24" fill="#172B4D" font-weight="400" text-anchor="start">让模型多练这些关键时刻，可以改善模仿效果</text>
 <rect x="830" y="200" width="700" height="410" rx="24" fill="#FFFFFF" stroke="#D5E0EA" stroke-width="2"/>
 <text x="870" y="255" font-size="31" fill="#102A43" font-weight="700" text-anchor="start">与本项目的对应</text>
-<text x="875" y="335" font-size="23" fill="#62748A" font-weight="400" text-anchor="start">稀少动作变化点</text>
+<text x="875" y="335" font-size="23" fill="#62748A" font-weight="400" text-anchor="start">需要换动作的时刻很少</text>
 <text x="1135" y="335" font-size="25" fill="#F59E0B" font-weight="700" text-anchor="middle">→</text>
-<text x="1180" y="335" font-size="23" fill="#172B4D" font-weight="700" text-anchor="start">左右目标的回转释放决策</text>
-<text x="875" y="399" font-size="23" fill="#62748A" font-weight="400" text-anchor="start">重复动作占多数</text>
+<text x="1160" y="335" font-size="20" fill="#172B4D" font-weight="700" text-anchor="start">回到右区后，模型才决定继续还是停下</text>
+<text x="875" y="399" font-size="23" fill="#62748A" font-weight="400" text-anchor="start">大多数动作都相同</text>
 <text x="1135" y="399" font-size="25" fill="#F59E0B" font-weight="700" text-anchor="middle">→</text>
-<text x="1180" y="399" font-size="23" fill="#172B4D" font-weight="700" text-anchor="start">共同挖掘、装载与卸料阶段</text>
-<text x="875" y="463" font-size="23" fill="#62748A" font-weight="400" text-anchor="start">关键帧重加权</text>
+<text x="1160" y="399" font-size="20" fill="#172B4D" font-weight="700" text-anchor="start">挖掘、装载和卸料时，模型给出相同动作</text>
+<text x="875" y="463" font-size="23" fill="#62748A" font-weight="400" text-anchor="start">多练关键时刻</text>
 <text x="1135" y="463" font-size="25" fill="#F59E0B" font-weight="700" text-anchor="middle">→</text>
-<text x="1180" y="463" font-size="23" fill="#172B4D" font-weight="700" text-anchor="start">目标阶段附加采样与掩码</text>
-<text x="875" y="527" font-size="23" fill="#62748A" font-weight="400" text-anchor="start">复制与惯性</text>
+<text x="1160" y="463" font-size="20" fill="#172B4D" font-weight="700" text-anchor="start">每铲多取一个目标开始影响动作的样本</text>
+<text x="875" y="527" font-size="23" fill="#62748A" font-weight="400" text-anchor="start">模型容易照抄旧动作</text>
 <text x="1135" y="527" font-size="25" fill="#F59E0B" font-weight="700" text-anchor="middle">→</text>
-<text x="1180" y="527" font-size="23" fill="#172B4D" font-weight="700" text-anchor="start">忽略目标并回到平均动作</text>
-<text x="80" y="665" font-size="27" fill="#102A43" font-weight="700" text-anchor="start">其他理论支撑</text>
+<text x="1160" y="527" font-size="20" fill="#172B4D" font-weight="700" text-anchor="start">模型忽略左右目标，最后给出折中的动作</text>
+<text x="80" y="665" font-size="27" fill="#102A43" font-weight="700" text-anchor="start">其他相关研究</text>
 <rect x="80" y="700" width="300" height="112" rx="24" fill="#FFFFFF" stroke="#D5E0EA" stroke-width="2"/>
 <rect x="80" y="700" width="8" height="112" fill="#2F6FED"/>
-<text x="108" y="738" font-size="23" fill="#2F6FED" font-weight="700" text-anchor="start">任务分段</text>
+<text x="108" y="738" font-size="23" fill="#2F6FED" font-weight="700" text-anchor="start">把任务拆成阶段</text>
 <text x="108" y="770" font-size="19" fill="#62748A" font-weight="700" text-anchor="start">TACO · CompILE</text>
-<text x="108" y="798" font-size="18" fill="#172B4D" font-weight="400" text-anchor="start">长周期按责任边界对齐</text>
+<text x="108" y="798" font-size="18" fill="#172B4D" font-weight="400" text-anchor="start">把长任务拆成几个动作阶段</text>
 <rect x="460" y="700" width="300" height="112" rx="24" fill="#FFFFFF" stroke="#D5E0EA" stroke-width="2"/>
 <rect x="460" y="700" width="8" height="112" fill="#12A594"/>
-<text x="488" y="738" font-size="23" fill="#12A594" font-weight="700" text-anchor="start">目标回溯</text>
+<text x="488" y="738" font-size="23" fill="#12A594" font-weight="700" text-anchor="start">按实际结果补目标</text>
 <text x="488" y="770" font-size="19" fill="#62748A" font-weight="700" text-anchor="start">HER · GCSL</text>
-<text x="488" y="798" font-size="18" fill="#172B4D" font-weight="400" text-anchor="start">用实际结果构造目标监督</text>
+<text x="488" y="798" font-size="18" fill="#172B4D" font-weight="400" text-anchor="start">用已经发生的结果补充目标样本</text>
 <rect x="840" y="700" width="300" height="112" rx="24" fill="#FFFFFF" stroke="#D5E0EA" stroke-width="2"/>
 <rect x="840" y="700" width="8" height="112" fill="#F59E0B"/>
-<text x="868" y="738" font-size="23" fill="#F59E0B" font-weight="700" text-anchor="start">条件模仿</text>
+<text x="868" y="738" font-size="23" fill="#F59E0B" font-weight="700" text-anchor="start">用目标控制动作</text>
 <text x="868" y="770" font-size="19" fill="#62748A" font-weight="700" text-anchor="start">Conditional Imitation</text>
-<text x="868" y="798" font-size="18" fill="#172B4D" font-weight="400" text-anchor="start">高层目标控制同一低层策略</text>
+<text x="868" y="798" font-size="18" fill="#172B4D" font-weight="400" text-anchor="start">同一模型按高层目标做不同动作</text>
 <rect x="1220" y="700" width="300" height="112" rx="24" fill="#FFFFFF" stroke="#D5E0EA" stroke-width="2"/>
 <rect x="1220" y="700" width="8" height="112" fill="#8356E8"/>
-<text x="1248" y="738" font-size="23" fill="#8356E8" font-weight="700" text-anchor="start">机械合同</text>
-<text x="1248" y="770" font-size="19" fill="#62748A" font-weight="700" text-anchor="start">本项目数据</text>
-<text x="1248" y="798" font-size="18" fill="#172B4D" font-weight="400" text-anchor="start">把理论原则落到执行器动作</text>
-<text x="800" y="866" font-size="24" fill="#D94848" font-weight="700" text-anchor="middle">关键帧研究解释了释放阶段为何需要更高训练密度；真机数据提供动作幅值与死区参数。</text>
+<text x="1248" y="738" font-size="23" fill="#8356E8" font-weight="700" text-anchor="start">真机数据</text>
+<text x="1248" y="770" font-size="19" fill="#62748A" font-weight="700" text-anchor="start">本项目</text>
+<text x="1248" y="798" font-size="18" fill="#172B4D" font-weight="400" text-anchor="start">这些数据决定动作大小和死区</text>
+<text x="800" y="866" font-size="24" fill="#D94848" font-weight="700" text-anchor="middle">论文说明为什么要多训练少数关键时刻。真机数据决定具体位置、动作大小和死区。</text>
 </svg>

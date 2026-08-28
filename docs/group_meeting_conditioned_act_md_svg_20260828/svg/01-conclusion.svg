@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 780" role="img" aria-labelledby="svg-title svg-desc">
-  <title id="svg-title">左右目标响应与死区能力</title>
-  <desc id="svg-desc">新损失在两套离线数据上建立左右目标响应，同时保留原模型跨越机械死区的能力。</desc>
+  <title id="svg-title">模型听从左右目标，也保持了原有表现</title>
+  <desc id="svg-desc">新模型在两套离线数据上都能按照左右目标给出不同动作，机器卡在死区时的表现也不低于原模型。</desc>
   <defs>
     <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
       <path d="M0,0 L0,6 L9,3 z" fill="#9FB1C2"/>
@@ -12,33 +12,33 @@
   <rect width="1600" height="780" fill="#F4F7FB"/>
   <rect width="1600" height="12" fill="#2F6FED"/>
   <text x="78" y="68" font-family="Noto Sans CJK SC, Source Han Sans SC, Microsoft YaHei, Arial, sans-serif" font-size="19" font-weight="700" fill="#2F6FED">本周组会 · 2026.08.28</text>
-  <text x="78" y="128" font-family="Noto Sans CJK SC, Source Han Sans SC, Microsoft YaHei, Arial, sans-serif" font-size="45" font-weight="700" fill="#102A43">左右目标响应与死区能力</text>
+  <text x="78" y="128" font-family="Noto Sans CJK SC, Source Han Sans SC, Microsoft YaHei, Arial, sans-serif" font-size="45" font-weight="700" fill="#102A43">模型听从左右目标，也保持了原有表现</text>
   <line x1="78" y1="154" x2="1522" y2="154" stroke="#D5E0EA" stroke-width="2"/>
-<text x="78" y="198" font-size="27" fill="#62748A" font-weight="400" text-anchor="start">新的回转释放损失同时建立了两类能力。</text>
+<text x="78" y="198" font-size="27" fill="#62748A" font-weight="400" text-anchor="start">离线测试表明，模型已经听从左右目标，也能像以前一样完成整铲动作。</text>
 <rect x="78" y="235" width="442" height="222" rx="24" fill="#FFFFFF" stroke="#D5E0EA" stroke-width="2"/>
 <rect x="78" y="235" width="10" height="222" fill="#12A594"/>
 <text x="299" y="315" font-size="50" fill="#12A594" font-weight="700" text-anchor="middle">99.0%</text>
 <text x="299" y="370" font-size="24" fill="#62748A" font-weight="700" text-anchor="middle">开发验证集</text>
-<text x="299" y="412" font-size="25" fill="#172B4D" font-weight="400" text-anchor="middle">左右目标成对命中</text>
+<text x="299" y="412" font-size="25" fill="#172B4D" font-weight="400" text-anchor="middle">左右动作同时正确</text>
 <rect x="579" y="235" width="442" height="222" rx="24" fill="#FFFFFF" stroke="#D5E0EA" stroke-width="2"/>
 <rect x="579" y="235" width="10" height="222" fill="#2F6FED"/>
 <text x="800" y="315" font-size="50" fill="#2F6FED" font-weight="700" text-anchor="middle">92.7%</text>
 <text x="800" y="370" font-size="24" fill="#62748A" font-weight="700" text-anchor="middle">独立留出集</text>
-<text x="800" y="412" font-size="25" fill="#172B4D" font-weight="400" text-anchor="middle">左右目标成对命中</text>
+<text x="800" y="412" font-size="25" fill="#172B4D" font-weight="400" text-anchor="middle">左右动作同时正确</text>
 <rect x="1080" y="235" width="442" height="222" rx="24" fill="#FFFFFF" stroke="#D5E0EA" stroke-width="2"/>
 <rect x="1080" y="235" width="10" height="222" fill="#F59E0B"/>
 <text x="1301" y="315" font-size="41" fill="#F59E0B" font-weight="700" text-anchor="middle">不低于原模型</text>
 <text x="1301" y="370" font-size="24" fill="#62748A" font-weight="700" text-anchor="middle">两套数据</text>
-<text x="1301" y="412" font-size="25" fill="#172B4D" font-weight="400" text-anchor="middle">冻结状态下跨越死区</text>
+<text x="1301" y="412" font-size="25" fill="#172B4D" font-weight="400" text-anchor="middle">机器卡住时再次发力</text>
 <rect x="78" y="500" width="1444" height="225" rx="24" fill="#FFFFFF" stroke="#D5E0EA" stroke-width="2"/>
-<text x="115" y="548" font-size="29" fill="#102A43" font-weight="700" text-anchor="start">明确的动作要求</text>
+<text x="115" y="548" font-size="29" fill="#102A43" font-weight="700" text-anchor="start">模型具体要做到什么</text>
 <rect x="115" y="560" width="154" height="46" rx="23" fill="#12A594" stroke="#12A594" stroke-width="2"/>
-<text x="192.0" y="590.56" font-size="21" fill="#FFFFFF" font-weight="700" text-anchor="middle">左区目标</text>
-<text x="300" y="595" font-size="26" fill="#172B4D" font-weight="600" text-anchor="start">继续负向回转，动作达到机械有效幅值</text>
+<text x="192.0" y="590.56" font-size="21" fill="#FFFFFF" font-weight="700" text-anchor="middle">目标在左区</text>
+<text x="300" y="595" font-size="26" fill="#172B4D" font-weight="600" text-anchor="start">模型继续负向回转，而且命令足以让机器转动</text>
 <rect x="115" y="617" width="154" height="46" rx="23" fill="#2F6FED" stroke="#2F6FED" stroke-width="2"/>
-<text x="192.0" y="647.56" font-size="21" fill="#FFFFFF" font-weight="700" text-anchor="middle">右区目标</text>
-<text x="300" y="652" font-size="26" fill="#172B4D" font-weight="600" text-anchor="start">在右区回零停止，不再继续回转</text>
+<text x="192.0" y="647.56" font-size="21" fill="#FFFFFF" font-weight="700" text-anchor="middle">目标在右区</text>
+<text x="300" y="652" font-size="26" fill="#172B4D" font-weight="600" text-anchor="start">模型把回转命令降到零，让机器停在右区</text>
 <rect x="115" y="674" width="154" height="46" rx="23" fill="#F59E0B" stroke="#F59E0B" stroke-width="2"/>
-<text x="192.0" y="704.56" font-size="21" fill="#FFFFFF" font-weight="700" text-anchor="middle">死区能力</text>
-<text x="300" y="709" font-size="26" fill="#172B4D" font-weight="600" text-anchor="start">冻结观测后仍能自行再次输出越过死区的动作</text>
+<text x="192.0" y="704.56" font-size="21" fill="#FFFFFF" font-weight="700" text-anchor="middle">机器卡住</text>
+<text x="300" y="709" font-size="26" fill="#172B4D" font-weight="600" text-anchor="start">即使机器没动，模型也能再次给出越过死区的命令</text>
 </svg>

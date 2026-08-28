@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 920" role="img" aria-labelledby="svg-title svg-desc">
-  <title id="svg-title">离线结果</title>
-  <desc id="svg-desc">左右目标成对命中率达到百分之九十九和百分之九十二点七，冻结状态下跨越死区的动作复现不低于原模型。</desc>
+  <title id="svg-title">离线测试结果</title>
+  <desc id="svg-desc">在相同状态下分别输入左右目标时，两种动作同时正确的比例达到百分之九十九和百分之九十二点七；机器卡住时再次给出有效命令的比例也不低于原模型。</desc>
   <defs>
     <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
       <path d="M0,0 L0,6 L9,3 z" fill="#9FB1C2"/>
@@ -12,30 +12,30 @@
   <rect width="1600" height="920" fill="#F4F7FB"/>
   <rect width="1600" height="12" fill="#2F6FED"/>
   <text x="78" y="68" font-family="Noto Sans CJK SC, Source Han Sans SC, Microsoft YaHei, Arial, sans-serif" font-size="19" font-weight="700" fill="#2F6FED">本周组会 · 2026.08.28</text>
-  <text x="78" y="128" font-family="Noto Sans CJK SC, Source Han Sans SC, Microsoft YaHei, Arial, sans-serif" font-size="45" font-weight="700" fill="#102A43">离线结果</text>
+  <text x="78" y="128" font-family="Noto Sans CJK SC, Source Han Sans SC, Microsoft YaHei, Arial, sans-serif" font-size="45" font-weight="700" fill="#102A43">离线测试结果</text>
   <line x1="78" y1="154" x2="1522" y2="154" stroke="#D5E0EA" stroke-width="2"/>
 <rect x="70" y="195" width="350" height="190" rx="24" fill="#FFFFFF" stroke="#D5E0EA" stroke-width="2"/>
 <rect x="70" y="195" width="9" height="190" fill="#12A594"/>
 <text x="245.0" y="270" font-size="51" fill="#12A594" font-weight="700" text-anchor="middle">99.0%</text>
 <text x="245.0" y="322" font-size="22" fill="#62748A" font-weight="700" text-anchor="middle">开发验证集</text>
-<text x="245.0" y="356" font-size="22" fill="#172B4D" font-weight="400" text-anchor="middle">左右目标成对命中</text>
+<text x="245.0" y="356" font-size="22" fill="#172B4D" font-weight="400" text-anchor="middle">左右动作同时正确</text>
 <rect x="450" y="195" width="350" height="190" rx="24" fill="#FFFFFF" stroke="#D5E0EA" stroke-width="2"/>
 <rect x="450" y="195" width="9" height="190" fill="#2F6FED"/>
 <text x="625.0" y="270" font-size="51" fill="#2F6FED" font-weight="700" text-anchor="middle">92.7%</text>
 <text x="625.0" y="322" font-size="22" fill="#62748A" font-weight="700" text-anchor="middle">独立留出集</text>
-<text x="625.0" y="356" font-size="22" fill="#172B4D" font-weight="400" text-anchor="middle">左右目标成对命中</text>
+<text x="625.0" y="356" font-size="22" fill="#172B4D" font-weight="400" text-anchor="middle">左右动作同时正确</text>
 <rect x="830" y="195" width="350" height="190" rx="24" fill="#FFFFFF" stroke="#D5E0EA" stroke-width="2"/>
 <rect x="830" y="195" width="9" height="190" fill="#F59E0B"/>
 <text x="1005.0" y="270" font-size="51" fill="#F59E0B" font-weight="700" text-anchor="middle">100%</text>
 <text x="1005.0" y="322" font-size="22" fill="#62748A" font-weight="700" text-anchor="middle">两套数据</text>
-<text x="1005.0" y="356" font-size="22" fill="#172B4D" font-weight="400" text-anchor="middle">右区目标回零</text>
+<text x="1005.0" y="356" font-size="22" fill="#172B4D" font-weight="400" text-anchor="middle">回转命令降到零</text>
 <rect x="1210" y="195" width="320" height="190" rx="24" fill="#FFFFFF" stroke="#D5E0EA" stroke-width="2"/>
 <rect x="1210" y="195" width="9" height="190" fill="#183B56"/>
 <text x="1370.0" y="270" font-size="51" fill="#183B56" font-weight="700" text-anchor="middle">0</text>
 <text x="1370.0" y="322" font-size="22" fill="#62748A" font-weight="700" text-anchor="middle">两套数据</text>
-<text x="1370.0" y="356" font-size="22" fill="#172B4D" font-weight="400" text-anchor="middle">策略错误 / 保护触发</text>
+<text x="1370.0" y="356" font-size="22" fill="#172B4D" font-weight="400" text-anchor="middle">报错或保护触发次数</text>
 <rect x="70" y="425" width="720" height="405" rx="24" fill="#FFFFFF" stroke="#D5E0EA" stroke-width="2"/>
-<text x="105" y="474" font-size="29" fill="#102A43" font-weight="700" text-anchor="start">完整序列动作保持</text>
+<text x="105" y="474" font-size="29" fill="#102A43" font-weight="700" text-anchor="start">模型完成一铲的表现</text>
 <rect x="105" y="505" width="650" height="56" fill="#EAF1FF"/>
 <text x="120" y="542" font-size="21" fill="#102A43" font-weight="700" text-anchor="start">指标</text>
 <text x="430" y="542" font-size="21" fill="#102A43" font-weight="700" text-anchor="start">开发验证集</text>
@@ -47,7 +47,7 @@
 <text x="120" y="662" font-size="22" fill="#172B4D" font-weight="400" text-anchor="start">挖掘阶段有效率</text>
 <text x="430" y="662" font-size="22" fill="#172B4D" font-weight="400" text-anchor="start">23.4%</text>
 <text x="635" y="662" font-size="22" fill="#172B4D" font-weight="400" text-anchor="start">24.7%</text>
-<text x="120" y="724" font-size="22" fill="#172B4D" font-weight="400" text-anchor="start">回转阶段有效率</text>
+<text x="120" y="724" font-size="22" fill="#172B4D" font-weight="400" text-anchor="start">回转动作有效率</text>
 <text x="430" y="724" font-size="22" fill="#172B4D" font-weight="400" text-anchor="start">66.8%</text>
 <text x="635" y="724" font-size="22" fill="#172B4D" font-weight="400" text-anchor="start">60.9%</text>
 <rect x="105" y="748" width="650" height="58" fill="#F5F8FB"/>
@@ -55,18 +55,18 @@
 <text x="430" y="786" font-size="22" fill="#172B4D" font-weight="400" text-anchor="start">0.107</text>
 <text x="635" y="786" font-size="22" fill="#172B4D" font-weight="400" text-anchor="start">0.114</text>
 <rect x="830" y="425" width="700" height="405" rx="24" fill="#FFFFFF" stroke="#D5E0EA" stroke-width="2"/>
-<text x="865" y="474" font-size="25" fill="#102A43" font-weight="700" text-anchor="start">机器没动时，20 次内重新给出同向有效动作</text>
+<text x="865" y="474" font-size="24" fill="#102A43" font-weight="700" text-anchor="start">机器没动时，模型能否在 20 次内再次给对动作</text>
 <text x="865" y="516" font-size="22" fill="#62748A" font-weight="700" text-anchor="start">开发验证集</text>
-<text x="1120" y="516" font-size="17" fill="#D94848" font-weight="700" text-anchor="start">第一次就给错方向或多余动作：38 → 26</text>
+<text x="1120" y="516" font-size="16" fill="#D94848" font-weight="700" text-anchor="start">模型第一次就给错方向或产生多余动作：38 → 26</text>
 <rect x="865" y="550" width="387.8" height="34" rx="17" fill="#B6C7D8" stroke="#B6C7D8" stroke-width="2"/>
 <text x="1262.8" y="575" font-size="19" fill="#102A43" font-weight="700" text-anchor="start">原模型 55.4%</text>
 <rect x="865" y="598" width="472.5" height="34" rx="17" fill="#12A594" stroke="#12A594" stroke-width="2"/>
 <text x="1347.5" y="623" font-size="19" fill="#12A594" font-weight="700" text-anchor="start">新模型 67.5%</text>
 <text x="865" y="656" font-size="22" fill="#62748A" font-weight="700" text-anchor="start">独立留出集</text>
-<text x="1120" y="656" font-size="17" fill="#D94848" font-weight="700" text-anchor="start">第一次就给错方向或多余动作：53 → 29</text>
+<text x="1120" y="656" font-size="16" fill="#D94848" font-weight="700" text-anchor="start">模型第一次就给错方向或产生多余动作：53 → 29</text>
 <rect x="865" y="690" width="408.8" height="34" rx="17" fill="#B6C7D8" stroke="#B6C7D8" stroke-width="2"/>
 <text x="1283.8" y="715" font-size="19" fill="#102A43" font-weight="700" text-anchor="start">原模型 58.4%</text>
 <rect x="865" y="738" width="417.90000000000003" height="34" rx="17" fill="#12A594" stroke="#12A594" stroke-width="2"/>
 <text x="1292.9" y="763" font-size="19" fill="#12A594" font-weight="700" text-anchor="start">新模型 59.7%</text>
-<text x="800" y="875" font-size="27" fill="#12A594" font-weight="700" text-anchor="middle">两项测试共同说明：模型开始听从左右目标，原有死区能力没有退化。</text>
+<text x="800" y="875" font-size="27" fill="#12A594" font-weight="700" text-anchor="middle">模型已经听从左右目标，而且机器卡住时再次发力的表现不低于原模型。</text>
 </svg>
