@@ -53,12 +53,42 @@ sha256sum -c SHA256SUMS
 模型包位于 `policy_bundles/`，不进入 git；现场通过已审核的文件复制流程单独同步，并在
 Jetson 上再次运行 `sha256sum -c SHA256SUMS`。
 
+## 外置盘自动发现
+
+真机只需要从 GitHub 更新代码，模型包由外置盘提供。外置盘使用下面的相对目录结构：
+
+```text
+Excavator_real_stack_runtime/
+└── real_transition_target_release_v2_<日期>_<代码提交>/
+    └── policy_bundles/
+        └── real_transition_target_release_v2/
+            ├── policy_accepted.ckpt
+            ├── dataset_stats.pkl
+            ├── resolved_config.yaml
+            ├── accepted_model.json
+            ├── runtime_bundle_manifest.json
+            ├── SHA256SUMS
+            ├── contracts/
+            └── evaluation/
+```
+
+`run_real_transition_target_release_policy.sh` 会扫描
+`/media/*/EXTERNAL_USB*`、`/run/media/*/EXTERNAL_USB*` 和
+`/mnt/EXTERNAL_USB*`。它优先使用外置盘上唯一的已验收模型包，并把运行日志写入同一块盘
+的 `policy_control_tests/`。新拉取的仓库不需要再复制 `policy_bundles`。
+
+如果找到多个目标释放模型包，脚本会停止并要求人工设置 `BUNDLE_DIR`，不会自行猜测版本。
+显式设置的 `BUNDLE_DIR` 和 `LOG_ROOT` 始终优先。没有找到外置盘模型时，开发机才会回退到
+仓库内的本地模型包。
+
 ## shadow_zero
 
 从端仓库和模型包到位后：
 
 ```bash
 cd /media/mundane/D/Excavator_real_stack
+git switch fs/v2.0.1
+git pull --ff-only origin fs/v2.0.1
 export MODE=shadow
 export CYCLE_SCRIPT=testbed/testbed/configs/real_transition_cycle_script_v1.json
 ./scripts/run_real_transition_target_release_policy.sh

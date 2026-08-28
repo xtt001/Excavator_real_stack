@@ -14,8 +14,10 @@ if [[ -z "${PYTHON:-}" ]]; then
 fi
 export PYTHONPATH="${ROOT}/testbed${PYTHONPATH:+:${PYTHONPATH}}"
 
-BUNDLE_DIR="${BUNDLE_DIR:-policy_bundles/real_transition_target_release_v2}"
-LOG_ROOT="${LOG_ROOT:-/media/mundane/EXTERNAL_USB/policy_control_tests}"
+source "${ROOT}/scripts/real_transition_target_release_paths.sh"
+real_transition_resolve_runtime_paths "${ROOT}"
+BUNDLE_DIR="${REAL_TRANSITION_BUNDLE_DIR}"
+LOG_ROOT="${REAL_TRANSITION_LOG_ROOT}"
 MODE="${MODE:-shadow}"
 
 if [[ "${MODE}" == "shadow" ]]; then

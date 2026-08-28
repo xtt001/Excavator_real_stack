@@ -656,10 +656,17 @@ export MAX_STEPS=400
 
 ```bash
 cd /media/mundane/D/Excavator_real_stack
+git switch fs/v2.0.1
+git pull --ff-only origin fs/v2.0.1
 export MODE=shadow
 export CYCLE_SCRIPT=testbed/testbed/configs/real_transition_cycle_script_v1.json
 ./scripts/run_real_transition_target_release_policy.sh
 ```
+
+模型包不进入 git。插入交付硬盘后，脚本会从硬盘的
+`Excavator_real_stack_runtime/real_transition_target_release_v2_*/policy_bundles/`
+中找到唯一的已验收模型，并把日志写回同一块硬盘。如果存在多个候选，脚本会停止并要求
+人工设置 `BUNDLE_DIR`。
 
 shadow 通过后，受控运动必须改用已审核的短脚本并显式设置
 `CONFIRM_HARDWARE_MOTION=YES`、`CONFIRM_SCRIPT_REVIEWED=YES`。完整模型包生成、预检、

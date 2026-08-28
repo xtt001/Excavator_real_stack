@@ -22,10 +22,17 @@ export PYTHON
 export PYTHONPATH="${ROOT}/testbed${PYTHONPATH:+:${PYTHONPATH}}"
 
 BASE_CONFIG="${BASE_CONFIG:-testbed/testbed/configs/policy_real_transition_target_release_v2.yaml}"
-BUNDLE_DIR="${BUNDLE_DIR:-policy_bundles/real_transition_target_release_v2}"
 CYCLE_SCRIPT="${CYCLE_SCRIPT:-testbed/testbed/configs/real_transition_cycle_script_v1.json}"
-LOG_ROOT="${LOG_ROOT:-/media/mundane/EXTERNAL_USB/policy_control_tests}"
 POLICY_REMOTE_MAX_STEPS="${REAL_TRANSITION_POLICY_MAX_STEPS:-50000}"
+
+# A fresh git checkout does not contain the ignored model bundle. Prefer the
+# unique accepted bundle on an inserted field drive, then fall back to a local
+# bundle for development. Explicit BUNDLE_DIR/LOG_ROOT values still win.
+source "${ROOT}/scripts/real_transition_target_release_paths.sh"
+real_transition_resolve_runtime_paths "${ROOT}"
+BUNDLE_DIR="${REAL_TRANSITION_BUNDLE_DIR}"
+LOG_ROOT="${REAL_TRANSITION_LOG_ROOT}"
+export BUNDLE_DIR LOG_ROOT
 
 if [[ "${MODE}" == "control" ]]; then
   if [[ "${CONFIRM_HARDWARE_MOTION:-}" != "YES" ]]; then
@@ -101,6 +108,8 @@ echo "Planner-conditioned Real Transition ACT"
 echo "  mode=${MODE}"
 echo "  runtime_config=${RUNTIME_CONFIG}"
 echo "  bundle=${BUNDLE_DIR}/policy_accepted.ckpt"
+echo "  bundle_source=${REAL_TRANSITION_BUNDLE_SOURCE}"
+echo "  external_drive=${REAL_TRANSITION_DRIVE_ROOT:-none}"
 echo "  cycle_script=${CYCLE_SCRIPT}"
 echo "  session=${SESSION_ROOT}"
 echo "  receiver=127.0.0.1:8770, initial mode=manual"

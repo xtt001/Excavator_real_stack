@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -18,6 +20,10 @@ from scripts.summarize_policy_test_log import (
 from scripts.verify_real_transition_target_release_runtime import verify_runtime
 
 from testbed.tasks.home_side_contract import build_rule_ready_contract
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+PATH_RESOLVER = REPO_ROOT / "scripts/real_transition_target_release_paths.sh"
 
 
 def _sha256(path: Path) -> str:
@@ -138,6 +144,60 @@ def _runtime_config(root: Path, bundle: Path) -> Path:
     return config
 
 
+def _drive_bundle(drive: Path, version: str) -> Path:
+    bundle = (
+        drive
+        / "Excavator_real_stack_runtime"
+        / version
+        / "policy_bundles"
+        / "real_transition_target_release_v2"
+    )
+    bundle.mkdir(parents=True)
+    (bundle / "policy_accepted.ckpt").write_bytes(b"accepted")
+    return bundle
+
+
+def _run_path_resolver(
+    *,
+    repo_root: Path,
+    search_roots: list[Path],
+    bundle_dir: Path | None = None,
+    log_root: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env.pop("BUNDLE_DIR", None)
+    env.pop("LOG_ROOT", None)
+    env["EXCAVATOR_RUNTIME_SEARCH_ROOTS"] = os.pathsep.join(
+        str(path) for path in search_roots
+    )
+    if bundle_dir is not None:
+        env["BUNDLE_DIR"] = str(bundle_dir)
+    if log_root is not None:
+        env["LOG_ROOT"] = str(log_root)
+    return subprocess.run(
+        [
+            "bash",
+            "-c",
+            (
+                "set -euo pipefail\n"
+                'source "$1"\n'
+                'real_transition_resolve_runtime_paths "$2"\n'
+                'printf "%s\\n" "$REAL_TRANSITION_BUNDLE_DIR" '
+                '"$REAL_TRANSITION_LOG_ROOT" '
+                '"$REAL_TRANSITION_DRIVE_ROOT" '
+                '"$REAL_TRANSITION_BUNDLE_SOURCE"\n'
+            ),
+            "resolver-test",
+            str(PATH_RESOLVER),
+            str(repo_root),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+
 def test_portable_bundle_and_runtime_preflight(tmp_path: Path) -> None:
     source = _source_bundle(tmp_path)
     output = tmp_path / "real_transition_target_release_v2"
@@ -170,6 +230,73 @@ def test_runtime_preflight_rejects_training_best_checkpoint(tmp_path: Path) -> N
             bundle=output,
             expected_output_mode="shadow_zero",
         )
+
+
+def test_runtime_path_resolver_prefers_unique_external_bundle(
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "checkout"
+    local_bundle = repo_root / "policy_bundles/real_transition_target_release_v2"
+    local_bundle.mkdir(parents=True)
+    (local_bundle / "policy_accepted.ckpt").write_bytes(b"local")
+    drive = tmp_path / "EXTERNAL_USB"
+    external_bundle = _drive_bundle(
+        drive, "real_transition_target_release_v2_20260828_test"
+    )
+
+    result = _run_path_resolver(repo_root=repo_root, search_roots=[drive])
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [
+        str(external_bundle.resolve()),
+        str((drive / "policy_control_tests").resolve()),
+        str(drive.resolve()),
+        "external",
+    ]
+
+
+def test_runtime_path_resolver_rejects_multiple_external_bundles(
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "checkout"
+    repo_root.mkdir()
+    drive = tmp_path / "EXTERNAL_USB"
+    _drive_bundle(drive, "real_transition_target_release_v2_20260828_a")
+    _drive_bundle(drive, "real_transition_target_release_v2_20260828_b")
+
+    result = _run_path_resolver(repo_root=repo_root, search_roots=[drive])
+
+    assert result.returncode == 2
+    assert "Multiple target-release runtime bundles" in result.stderr
+
+
+def test_runtime_path_resolver_allows_explicit_override(
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "checkout"
+    repo_root.mkdir()
+    drive = tmp_path / "EXTERNAL_USB"
+    _drive_bundle(drive, "real_transition_target_release_v2_20260828_a")
+    _drive_bundle(drive, "real_transition_target_release_v2_20260828_b")
+    override = tmp_path / "reviewed_bundle"
+    override.mkdir()
+    (override / "policy_accepted.ckpt").write_bytes(b"override")
+    log_root = tmp_path / "reviewed_logs"
+
+    result = _run_path_resolver(
+        repo_root=repo_root,
+        search_roots=[drive],
+        bundle_dir=override,
+        log_root=log_root,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [
+        str(override.resolve()),
+        str(log_root.resolve()),
+        "",
+        "explicit",
+    ]
 
 
 def test_log_verdict_requires_clean_scripted_cycle_status() -> None:
