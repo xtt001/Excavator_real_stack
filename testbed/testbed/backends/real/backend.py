@@ -19,11 +19,6 @@ from testbed.backends.real.bridge import (
     InProcessMockBridgeClient,
     RealBridgeClient,
 )
-from testbed.backends.real.contracts import (
-    REAL_ACTION_ORDER,
-    REAL_QPOS_ORDER,
-    REAL_QVEL_ORDER,
-)
 from testbed.backends.real.control import (
     ACTION_DIM,
     ControlResult,

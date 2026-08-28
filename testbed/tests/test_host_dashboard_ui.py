@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,7 +16,6 @@ from PyQt5 import QtCore, QtWidgets
 
 from testbed.cli.host_dashboard import (
     REC_ORANGE,
-    RED,
     HostDashboard,
     _load_config,
     _parse_args,

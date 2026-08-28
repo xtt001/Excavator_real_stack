@@ -97,8 +97,6 @@ def gohome_event_metrics(
             "steps_before_t_go": "",
         }
 
-    eligible_start = int(positive_idx[0])
-    eligible_end = int(positive_idx[-1])
     active = consecutive_active_mask(prob, threshold=threshold, consecutive_steps=consecutive_steps)
     return gohome_event_metrics_from_active_mask(
         episode_id=episode_id,

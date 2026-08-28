@@ -827,7 +827,8 @@ class GoHomeController:
         if np.any(coast_axis):
             self._axis_coast_until_s = np.where(
                 coast_axis,
-                now + self.config.coast_reactivation_delay_s,
+                now
+                + self.config.coast_reactivation_delay_s.astype(np.float64),
                 self._axis_coast_until_s,
             )
         self._axis_active = np.where(coast_axis, False, self._axis_active)
@@ -1280,7 +1281,13 @@ class GoHomeController:
                 blocked,
                 np.maximum(
                     self._axis_coast_until_s,
-                    now_s + self.config.sign_reversal_delay_s,
+                    # The timer arrays are float64 because ``monotonic()`` is
+                    # already several million seconds on a long-lived host;
+                    # adding float32 durations would round deadlines by
+                    # hundreds of milliseconds and make an exact boundary
+                    # spuriously remain blocked.
+                    now_s
+                    + self.config.sign_reversal_delay_s.astype(np.float64),
                 ),
                 self._axis_coast_until_s,
             )
@@ -1327,7 +1334,8 @@ class GoHomeController:
             wrong,
             np.maximum(
                 self._axis_coast_until_s,
-                now_s + self.config.wrong_direction_cooldown_s,
+                now_s
+                + self.config.wrong_direction_cooldown_s.astype(np.float64),
             ),
             self._axis_coast_until_s,
         )
