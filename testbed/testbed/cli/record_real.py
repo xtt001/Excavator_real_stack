@@ -28,6 +28,7 @@ from typing import Any
 import numpy as np
 
 from testbed.actions.base import ActionInfo
+from testbed.config_loader import deep_merge_config, load_yaml_config
 from testbed.data.schema import (
     ATTR_ACTION_ORDER,
     ATTR_ACTION_SEMANTICS,
@@ -60,7 +61,7 @@ from testbed.data.schema import (
     ATTR_TELEOP_INPUT,
     DEFAULT_PLATFORM,
 )
-from testbed.config_loader import deep_merge_config, load_yaml_config
+from testbed.tasks.real_transition import TransitionContractError
 
 log = logging.getLogger(__name__)
 
@@ -451,6 +452,14 @@ def _policy_remote_status_payload(
     ):
         if key in extras:
             payload[key] = extras[key]
+    for key, value in extras.items():
+        if key.startswith("scripted_cycle_") or key in {
+            "planner_cycle_index",
+            "planner_goal_epoch",
+            "planner_target_side",
+            "planner_condition",
+        }:
+            payload[key] = _status_jsonable(value)
     for key, width in (
         ("policy_action", 4),
         ("policy_assisted_action", 4),
@@ -3360,6 +3369,7 @@ class ReceiverTestLogger:
                 extras.get("policy_remote_activation_step", -1) or -1
             ),
         }
+        _add_scripted_cycle_diagnostics(payload, extras)
         imu_vendor = _imu_vendor_payload_from_obs(obs)
         if imu_vendor is not None:
             payload["imu_vendor"] = imu_vendor
@@ -4756,6 +4766,7 @@ def _build_step_diagnostics(
     _add_remote_action_diagnostics(diagnostics, extras)
     _add_policy_action_diagnostics(diagnostics, extras)
     _add_policy_remote_diagnostics(diagnostics, extras)
+    _add_scripted_cycle_diagnostics(diagnostics, extras)
     return diagnostics
 
 
@@ -5105,6 +5116,51 @@ def _add_policy_remote_diagnostics(
             extras.get("policy_remote_remote_action", np.zeros(4)),
             dtype=np.float32,
         )
+
+
+def _add_scripted_cycle_diagnostics(
+    diagnostics: dict[str, Any], extras: dict[str, Any]
+) -> None:
+    if "scripted_cycle_enabled" not in extras:
+        return
+    int_keys = (
+        "scripted_cycle_enabled",
+        "scripted_cycle_active",
+        "scripted_cycle_completed",
+        "scripted_cycle_goal_changed",
+        "scripted_cycle_excursion_observed",
+        "scripted_cycle_review_due",
+        "scripted_cycle_ready_window_complete",
+        "scripted_cycle_ready_swing_stable",
+        "scripted_cycle_ready_target_supported",
+        "scripted_cycle_stop_latched",
+        "planner_cycle_index",
+        "planner_goal_epoch",
+    )
+    float_keys = (
+        "scripted_cycle_cycle_elapsed_s",
+        "scripted_cycle_run_elapsed_s",
+        "scripted_cycle_ready_swing_qpos_rad",
+        "scripted_cycle_ready_swing_qvel_abs_max_rad_s",
+    )
+    string_keys = (
+        "scripted_cycle_fault",
+        "scripted_cycle_stop_reason",
+        "scripted_cycle_event",
+        "scripted_cycle_ready_side",
+        "scripted_cycle_ready_blockers",
+        "scripted_cycle_activation_rejected_reason",
+        "planner_target_side",
+    )
+    for key in int_keys:
+        diagnostics[key] = int(extras.get(key, 0) or 0)
+    for key in float_keys:
+        diagnostics[key] = float(extras.get(key, 0.0) or 0.0)
+    for key in string_keys:
+        diagnostics[key] = str(extras.get(key, "") or "")
+    diagnostics["planner_condition"] = np.asarray(
+        extras.get("planner_condition", np.zeros(2)), dtype=np.float32
+    ).reshape(2)
 
 
 def _action_sample_timestamp_ns(action_info) -> int:

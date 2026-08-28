@@ -22,6 +22,7 @@ from testbed.cli.record_real import (
     ReceiverHealthSnapshot,
     ReceiverTestLogger,
     _add_policy_action_diagnostics,
+    _add_scripted_cycle_diagnostics,
     _pace_before_observation,
     _policy_frame_alignment_active,
     _policy_remote_status_payload,
@@ -433,6 +434,17 @@ class PolicyActionSourceTests(unittest.TestCase):
                 "policy_assisted_action": np.array([0.1, 0.2, 0.3, 0.42]),
                 "policy_returned_action": np.array([0.1, 0.2, 0.3, 0.4]),
                 "policy_intent_probabilities": np.arange(8) / 10.0,
+                "scripted_cycle_enabled": 1,
+                "scripted_cycle_active": 1,
+                "scripted_cycle_ready_side": "B",
+                "scripted_cycle_ready_blockers": "swing_not_stable",
+                "scripted_cycle_excursion_observed": 1,
+                "scripted_cycle_review_due": 0,
+                "scripted_cycle_event": "goal_committed",
+                "scripted_cycle_fault": "",
+                "scripted_cycle_activation_rejected_reason": "",
+                "planner_cycle_index": 0,
+                "planner_target_side": "A",
             },
         )
         payload = _policy_remote_status_payload(object(), action_info)
@@ -450,6 +462,9 @@ class PolicyActionSourceTests(unittest.TestCase):
         self.assertIn("commanded=", text)
         self.assertIn("intent8(sw+,sw-,bo+,bo-,st+,st-,bk+,bk-)=", text)
         self.assertIn("bucket_intent=+0.60/-0.70", text)
+        self.assertIn("scripted_cycle=active", text)
+        self.assertIn("cycle=0", text)
+        self.assertIn("goal=A(left)", text)
 
     def test_runtime_gates_keep_shadow_zero_and_expose_raw_gohome_decision(self) -> None:
         policy = DummyIntentPolicy([0.5, -0.25, 0.1, -0.9])
@@ -882,6 +897,42 @@ class PolicyActionSourceTests(unittest.TestCase):
             "policy_bundles/real_one_dig_v1",
         )
 
+    def test_scripted_cycle_diagnostics_are_added_to_record_step(self) -> None:
+        diagnostics: dict = {}
+
+        _add_scripted_cycle_diagnostics(
+            diagnostics,
+            {
+                "scripted_cycle_enabled": 1,
+                "scripted_cycle_active": 1,
+                "scripted_cycle_completed": 0,
+                "scripted_cycle_goal_changed": 1,
+                "scripted_cycle_excursion_observed": 1,
+                "scripted_cycle_review_due": 0,
+                "scripted_cycle_ready_window_complete": 1,
+                "scripted_cycle_ready_swing_stable": 1,
+                "scripted_cycle_cycle_elapsed_s": 12.5,
+                "scripted_cycle_run_elapsed_s": 24.5,
+                "scripted_cycle_ready_swing_qpos_rad": 0.2,
+                "scripted_cycle_ready_swing_qvel_abs_max_rad_s": 0.01,
+                "scripted_cycle_ready_side": "B",
+                "scripted_cycle_ready_blockers": "",
+                "scripted_cycle_event": "cycle_advanced",
+                "scripted_cycle_fault": "",
+                "scripted_cycle_stop_reason": "",
+                "scripted_cycle_activation_rejected_reason": "",
+                "planner_cycle_index": 1,
+                "planner_goal_epoch": 2,
+                "planner_target_side": "A",
+                "planner_condition": np.asarray([-1.0, 1.0]),
+            },
+        )
+
+        self.assertEqual(diagnostics["planner_cycle_index"], 1)
+        self.assertEqual(diagnostics["planner_target_side"], "A")
+        self.assertEqual(diagnostics["scripted_cycle_ready_side"], "B")
+        np.testing.assert_allclose(diagnostics["planner_condition"], [-1.0, 1.0])
+
     def test_runtime_gate_diagnostics_are_added_to_hdf5_step(self) -> None:
         diagnostics: dict = {}
         _add_policy_action_diagnostics(
@@ -972,6 +1023,26 @@ class PolicyActionSourceTests(unittest.TestCase):
                         "remote_action_stale": 0,
                         "remote_action_drop_count": 2,
                         "remote_action_connected": 1,
+                        "scripted_cycle_enabled": 1,
+                        "scripted_cycle_active": 1,
+                        "scripted_cycle_completed": 0,
+                        "scripted_cycle_goal_changed": 1,
+                        "scripted_cycle_excursion_observed": 1,
+                        "scripted_cycle_review_due": 0,
+                        "scripted_cycle_ready_window_complete": 1,
+                        "scripted_cycle_ready_swing_stable": 1,
+                        "scripted_cycle_ready_target_supported": 1,
+                        "scripted_cycle_stop_latched": 0,
+                        "scripted_cycle_ready_side": "B",
+                        "scripted_cycle_ready_blockers": "",
+                        "scripted_cycle_fault": "",
+                        "scripted_cycle_stop_reason": "",
+                        "scripted_cycle_event": "goal_committed",
+                        "scripted_cycle_activation_rejected_reason": "",
+                        "planner_cycle_index": 0,
+                        "planner_goal_epoch": 1,
+                        "planner_target_side": "A",
+                        "planner_condition": np.array([-1.0, 1.0]),
                     },
                 ),
                 action_sample_timestamp_ns=11,
@@ -1020,6 +1091,9 @@ class PolicyActionSourceTests(unittest.TestCase):
         self.assertIn('"remote_action_seq": 7', step_lines[0])
         self.assertIn('"remote_action_host_sample_ns": 100', step_lines[0])
         self.assertIn('"remote_action_receive_ns": 110', step_lines[0])
+        self.assertIn('"scripted_cycle_enabled": 1', step_lines[0])
+        self.assertIn('"planner_target_side": "A"', step_lines[0])
+        self.assertIn('"planner_condition": [-1.0, 1.0]', step_lines[0])
         self.assertIn('"raw_low_level_command": [0.0, 1.0, 2.0', step_lines[0])
         self.assertEqual(summary["steps"], 1)
         self.assertTrue(summary["zero_command_confirmed"])
@@ -1155,6 +1229,42 @@ class PolicyActionSourceTests(unittest.TestCase):
         self.assertEqual(kwargs["inference_compile_mode"], "reduce-overhead")
         self.assertFalse(kwargs["inference_compile_dynamic"])
         self.assertTrue(kwargs["device_uint8_preprocess"])
+
+    def test_load_act_policy_resolves_relative_checkpoint_inside_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle = Path(tmp)
+            accepted = bundle / "policy_accepted.ckpt"
+            accepted.write_bytes(b"accepted")
+            (bundle / "dataset_stats.pkl").write_bytes(b"stats")
+            (bundle / "resolved_config.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "task": {
+                            "camera_names": ["fpv"],
+                            "episode_len": 20,
+                        },
+                        "policy": {
+                            "device": "cpu",
+                            "low_dim_keys": ["qpos"],
+                            "act_params": {"chunk_size": 20},
+                        },
+                        "train": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch(
+                "testbed.policies.act.adapter.ACTAdapter.from_checkpoint",
+                return_value="accepted-loaded",
+            ) as from_checkpoint:
+                loaded = load_act_policy_from_bundle(
+                    bundle_dir=bundle,
+                    ckpt_path="policy_accepted.ckpt",
+                )
+
+        self.assertEqual(loaded, "accepted-loaded")
+        self.assertEqual(from_checkpoint.call_args.kwargs["ckpt_path"], accepted)
 
     def test_load_act_policy_from_bundle_allows_null_episode_len(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

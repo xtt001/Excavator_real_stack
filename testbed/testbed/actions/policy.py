@@ -733,7 +733,15 @@ def load_act_policy_from_bundle(
         if resolved_config_path
         else bundle / "resolved_config.yaml"
     )
-    ckpt = Path(ckpt_path) if ckpt_path else bundle / "policy_best.ckpt"
+    if ckpt_path:
+        checkpoint_source = Path(ckpt_path)
+        ckpt = (
+            checkpoint_source
+            if checkpoint_source.is_absolute() or checkpoint_source.exists()
+            else bundle / checkpoint_source
+        )
+    else:
+        ckpt = bundle / "policy_best.ckpt"
     stats = Path(stats_path) if stats_path else bundle / "dataset_stats.pkl"
     missing = [path for path in (resolved_path, ckpt, stats) if not path.exists()]
     if missing:

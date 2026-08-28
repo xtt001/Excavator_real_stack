@@ -646,6 +646,26 @@ export MAX_STEPS=400
 `control`。未来短程动作实验必须另行填写并通过
 `short_horizon_g49_n5_field_adapter_v1.yaml`，且仍需独立 runtime arming。
 
+### 左右目标脚本 ACT
+
+当前左右目标候选使用 `policy_accepted.ckpt`，由非循环脚本逐铲提交左区或右区目标。
+运行时必须先确认脚本初始区域稳定，再提交第一目标；每铲只有在真实回转位移完成、目标
+区域且处于本批训练终点覆盖内连续稳定 0.5 秒后才推进。精确位置控制不属于本流程。
+
+从端统一入口：
+
+```bash
+cd /media/mundane/D/Excavator_real_stack
+export MODE=shadow
+export CYCLE_SCRIPT=testbed/testbed/configs/real_transition_cycle_script_v1.json
+./scripts/run_real_transition_target_release_policy.sh
+```
+
+shadow 通过后，受控运动必须改用已审核的短脚本并显式设置
+`CONFIRM_HARDWARE_MOTION=YES`、`CONFIRM_SCRIPT_REVIEWED=YES`。完整模型包生成、预检、
+按钮语义、锁零和日志检查见
+[`docs/real_transition_target_release_field_runtime.md`](real_transition_target_release_field_runtime.md)。
+
 ## 运行分工
 
 | 端 | 负责内容 | 不应启动 |

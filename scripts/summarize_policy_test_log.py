@@ -18,7 +18,6 @@ import yaml
 
 
 REQUIRED_BUNDLE_FILES = (
-    "policy_best.ckpt",
     "dataset_stats.pkl",
     "resolved_config.yaml",
 )
@@ -42,6 +41,11 @@ def main() -> int:
         help="Optional policy bundle directory to check before log summary.",
     )
     parser.add_argument(
+        "--checkpoint-name",
+        default="policy_best.ckpt",
+        help="Checkpoint filename required inside --bundle-dir.",
+    )
+    parser.add_argument(
         "--expect-camera-names",
         type=str,
         default=None,
@@ -62,6 +66,7 @@ def main() -> int:
     )
     parser.add_argument("--require-shadow-zero", action="store_true")
     parser.add_argument("--expect-policy-remote", action="store_true")
+    parser.add_argument("--expect-scripted-cycle", action="store_true")
     parser.add_argument("--min-steps", type=int, default=1)
     parser.add_argument("--warmup-steps", type=int, default=1)
     parser.add_argument(
@@ -76,6 +81,7 @@ def main() -> int:
     if args.bundle_dir is not None:
         ok = _print_bundle_check(
             args.bundle_dir,
+            checkpoint_name=str(args.checkpoint_name),
             expected_camera_names=_parse_expected_camera_names(args.expect_camera_names),
         ) and ok
 
@@ -93,6 +99,7 @@ def main() -> int:
         allow_stop_reasons=set(str(reason) for reason in args.allow_stop_reason),
         require_shadow_zero=bool(args.require_shadow_zero),
         expect_policy_remote=bool(args.expect_policy_remote),
+        expect_scripted_cycle=bool(args.expect_scripted_cycle),
         min_steps=int(args.min_steps),
         max_shadow_command_abs=float(args.max_shadow_command_abs),
     )
@@ -110,12 +117,13 @@ def _parse_expected_camera_names(raw: str | None) -> list[str] | None:
 def _print_bundle_check(
     bundle_dir: Path,
     *,
+    checkpoint_name: str = "policy_best.ckpt",
     expected_camera_names: list[str] | None = None,
 ) -> bool:
     bundle = Path(bundle_dir)
     print(f"Bundle: {bundle}")
     ok = True
-    for name in REQUIRED_BUNDLE_FILES:
+    for name in (str(checkpoint_name), *REQUIRED_BUNDLE_FILES):
         path = bundle / name
         if not path.exists():
             print(f"  MISSING {name}")
@@ -166,11 +174,13 @@ def _resolve_run_dir(run_dir: Path | None, latest_root: Path | None) -> Path | N
     if latest_root is None:
         return None
     root = Path(latest_root)
-    candidates = [
-        path
-        for path in root.iterdir()
-        if path.is_dir() and (path / "steps.jsonl").exists()
-    ]
+    candidates = sorted(
+        {
+            steps_path.parent
+            for steps_path in root.rglob("steps.jsonl")
+            if steps_path.is_file()
+        }
+    )
     if not candidates:
         raise SystemExit(f"No receiver test runs with steps.jsonl under {root}")
     return max(candidates, key=lambda path: path.stat().st_mtime)
@@ -227,7 +237,12 @@ def _compute_metrics(steps: list[dict[str, Any]], *, warmup_steps: int) -> dict[
         for axis in str(step.get("policy_deadzone_assist_axes", "")).split(",")
         if axis
     )
-    modes = _counts(str(step.get("policy_output_mode", "")) for step in steps)
+    modes = _counts(
+        mode
+        for step in steps
+        for mode in [str(step.get("policy_output_mode", ""))]
+        if mode
+    )
     remote_modes = _counts(str(step.get("policy_remote_mode", "")) for step in steps)
     activated_steps = [
         int(step.get("local_step", idx))
@@ -335,6 +350,31 @@ def _compute_metrics(steps: list[dict[str, Any]], *, warmup_steps: int) -> dict[
         "output_modes": modes,
         "policy_remote_modes": remote_modes,
         "policy_remote_activated_steps": activated_steps,
+        "scripted_cycle_enabled_count": sum(
+            int(step.get("scripted_cycle_enabled", 0) or 0) for step in checked
+        ),
+        "scripted_cycle_active_count": sum(
+            int(step.get("scripted_cycle_active", 0) or 0) for step in checked
+        ),
+        "scripted_cycle_goal_changed_count": sum(
+            int(step.get("scripted_cycle_goal_changed", 0) or 0)
+            for step in checked
+        ),
+        "scripted_cycle_faults": _counts(
+            str(step.get("scripted_cycle_fault", ""))
+            for step in checked
+            if str(step.get("scripted_cycle_fault", "")).strip()
+        ),
+        "scripted_cycle_activation_rejections": _counts(
+            str(step.get("scripted_cycle_activation_rejected_reason", ""))
+            for step in checked
+            if str(step.get("scripted_cycle_activation_rejected_reason", "")).strip()
+        ),
+        "scripted_cycle_targets": _counts(
+            str(step.get("planner_target_side", ""))
+            for step in checked
+            if str(step.get("planner_target_side", "")).strip()
+        ),
         "policy_action_mean": _vector_mean(policy_actions),
         "policy_action_max_abs": _vectors_max_abs(policy_actions),
         "deadzone_assist_enabled_count": sum(
@@ -362,6 +402,7 @@ def _verdict(
     allow_stop_reasons: set[str],
     require_shadow_zero: bool,
     expect_policy_remote: bool,
+    expect_scripted_cycle: bool,
     min_steps: int,
     max_shadow_command_abs: float,
 ) -> tuple[bool, list[str]]:
@@ -389,8 +430,11 @@ def _verdict(
         )
     if expect_output_mode:
         modes = set(metrics["output_modes"].keys())
-        if modes != {expect_output_mode}:
-            reasons.append(f"policy_output_modes={sorted(modes)} expected={expect_output_mode}")
+        allowed_modes = {expect_output_mode, "script_stop_zero"}
+        if expect_output_mode not in modes or not modes.issubset(allowed_modes):
+            reasons.append(
+                f"policy_output_modes={sorted(modes)} expected={expect_output_mode}"
+            )
     if require_shadow_zero:
         for key in ("returned_action_max_abs", "raw_action_max_abs", "safe_action_max_abs", "commanded_action_max_abs"):
             if float(metrics[key]) > max_shadow_command_abs:
@@ -400,6 +444,22 @@ def _verdict(
             reasons.append("policy_remote never entered policy mode")
         if not metrics["policy_remote_activated_steps"]:
             reasons.append("policy_remote_activated was never observed")
+    if expect_scripted_cycle:
+        if not int(metrics["scripted_cycle_enabled_count"]):
+            reasons.append("scripted-cycle runtime was never observed")
+        if not int(metrics["scripted_cycle_active_count"]):
+            reasons.append("scripted-cycle runtime never became active")
+        if metrics["scripted_cycle_faults"]:
+            reasons.append(
+                f"scripted_cycle_faults={metrics['scripted_cycle_faults']}"
+            )
+        if metrics["scripted_cycle_activation_rejections"]:
+            reasons.append(
+                "scripted_cycle_activation_rejections="
+                f"{metrics['scripted_cycle_activation_rejections']}"
+            )
+        if not metrics["scripted_cycle_targets"]:
+            reasons.append("scripted-cycle planner target was never logged")
     return (not reasons), reasons
 
 
@@ -479,6 +539,16 @@ def _print_log_summary(
         f"policy_output={metrics['output_modes'] or '-'} "
         f"policy_remote={metrics['policy_remote_modes'] or '-'} "
         f"activated_steps={metrics['policy_remote_activated_steps'] or '-'}"
+    )
+    print(
+        "Scripted cycle: "
+        f"enabled_steps={metrics['scripted_cycle_enabled_count']} "
+        f"active_steps={metrics['scripted_cycle_active_count']} "
+        f"goal_changes={metrics['scripted_cycle_goal_changed_count']} "
+        f"targets={metrics['scripted_cycle_targets'] or '-'} "
+        f"faults={metrics['scripted_cycle_faults'] or '-'} "
+        f"activation_rejections="
+        f"{metrics['scripted_cycle_activation_rejections'] or '-'}"
     )
     print(f"Verdict: {'OK' if ok else 'NOT OK'}")
     if reasons:

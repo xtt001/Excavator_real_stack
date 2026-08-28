@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import yaml
 
 from testbed.actions.base import ActionInfo, ActionSource
 from testbed.actions.gamepad import JoystickActionSource
@@ -21,13 +20,13 @@ from testbed.actions.remote import (
     DEFAULT_REMOTE_ACTION_PORT,
     RemoteActionClient,
 )
+from testbed.config_loader import load_yaml_config
 from testbed.host_status import (
     DEFAULT_HOST_STATUS_HOST,
     DEFAULT_HOST_STATUS_PORT,
     LocalHostStatusPublisher,
     build_host_status_snapshot,
 )
-from testbed.config_loader import load_yaml_config
 
 log = logging.getLogger(__name__)
 
@@ -784,8 +783,27 @@ def _format_receiver_policy_status(receiver_status: Any | None) -> str:
     assisted = _status_vector(payload.get("policy_assisted_action"), width=4)
     commanded = _status_vector(payload.get("commanded_action"), width=4)
     intent = _status_vector(payload.get("policy_intent_probabilities"), width=8)
+    cycle_text = ""
+    if int(payload.get("scripted_cycle_enabled", 0) or 0):
+        goal_side = _format_script_side(payload.get("planner_target_side"))
+        ready_side = _format_script_side(payload.get("scripted_cycle_ready_side"))
+        cycle_text = (
+            "scripted_cycle="
+            f"{'active' if int(payload.get('scripted_cycle_active', 0) or 0) else 'waiting'} "
+            f"cycle={int(payload.get('planner_cycle_index', -1))} "
+            f"goal={goal_side} "
+            f"ready={ready_side} "
+            "ready_blockers="
+            f"{str(payload.get('scripted_cycle_ready_blockers', '-') or '-')} "
+            f"excursion={int(payload.get('scripted_cycle_excursion_observed', 0) or 0)} "
+            f"review={int(payload.get('scripted_cycle_review_due', 0) or 0)} "
+            f"event={str(payload.get('scripted_cycle_event', '-') or '-')} "
+            f"fault={str(payload.get('scripted_cycle_fault', '-') or '-')} "
+            "start_error="
+            f"{str(payload.get('scripted_cycle_activation_rejected_reason', '-') or '-')} "
+        )
     if action is None:
-        return "model_report=inactive"
+        return cycle_text + "model_report=inactive"
     action_text = _format_action(action)
     assisted_text = "-" if assisted is None else _format_action(assisted)
     commanded_text = "-" if commanded is None else _format_action(commanded)
@@ -796,7 +814,7 @@ def _format_receiver_policy_status(receiver_status: Any | None) -> str:
         intent_text = "[" + ",".join(f"{value:.2f}" for value in intent) + "]"
         bucket_text = f"+{intent[6]:.2f}/-{intent[7]:.2f}"
     return (
-        f"model_raw={action_text} assisted={assisted_text} "
+        cycle_text + f"model_raw={action_text} assisted={assisted_text} "
         f"commanded={commanded_text} "
         f"intent8(sw+,sw-,bo+,bo-,st+,st-,bk+,bk-)={intent_text} "
         f"bucket_intent={bucket_text}"
@@ -810,6 +828,15 @@ def _status_vector(value: Any, *, width: int) -> list[float] | None:
         return [float(item) for item in value]
     except (TypeError, ValueError):
         return None
+
+
+def _format_script_side(value: Any) -> str:
+    side = str(value or "-")
+    if side == "A":
+        return "A(left)"
+    if side == "B":
+        return "B(right)"
+    return side
 
 
 if __name__ == "__main__":
