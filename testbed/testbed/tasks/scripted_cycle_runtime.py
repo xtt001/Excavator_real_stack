@@ -1,10 +1,10 @@
 """Live lifecycle owner for a planner-conditioned scripted ACT sequence.
 
 The neural policy owns continuous joint actions for one committed cycle.  This
-module owns only the goal/ready lifecycle around it: verify the initial ready
-side, commit the next scripted goal, require a real swing excursion, accept a
-stable target-side ready window, and then commit the following goal.  It never
-invents state from policy actions and never sends actuator commands itself.
+module owns the goal/ready lifecycle around it and an optional measured-state
+swing landing layer: verify the initial ready side, commit the next scripted
+goal, require a real swing excursion, taper swing near the target, accept a
+stable target-side ready window, and then commit the following goal.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ import math
 import time
 from collections import deque
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,111 @@ from testbed.tasks.home_side_contract import (
 
 class ScriptedCycleRuntimeError(RuntimeError):
     """Raised when a live scripted-cycle contract cannot be satisfied."""
+
+
+@dataclass(frozen=True)
+class SwingLandingConfig:
+    """Data-calibrated swing release and low-authority endpoint correction."""
+
+    enabled: bool
+    coast_stop_time_s: float
+    edge_margin_rad: float
+    p_gain: float
+    d_gain: float
+    return_confirm_drop_rad: float
+    return_min_qvel_rad_s: float
+    pd_blend_width_rad: float
+    pd_blend_time_s: float
+    policy_gain_time_s: float
+    min_action_positive: float
+    min_action_negative: float
+    max_action_positive: float
+    max_action_negative: float
+    qvel_stable_rad_s: float
+
+    @classmethod
+    def from_mapping(cls, raw: Mapping[str, Any] | None) -> SwingLandingConfig:
+        cfg = dict(raw or {})
+        result = cls(
+            enabled=bool(cfg.get("enabled", False)),
+            coast_stop_time_s=float(cfg.get("coast_stop_time_s", 0.50)),
+            edge_margin_rad=float(cfg.get("edge_margin_rad", 0.03)),
+            p_gain=float(cfg.get("p_gain", 0.60)),
+            d_gain=float(cfg.get("d_gain", 0.12)),
+            return_confirm_drop_rad=float(cfg.get("return_confirm_drop_rad", 0.05)),
+            return_min_qvel_rad_s=float(cfg.get("return_min_qvel_rad_s", 0.05)),
+            pd_blend_width_rad=float(cfg.get("pd_blend_width_rad", 0.03)),
+            pd_blend_time_s=float(cfg.get("pd_blend_time_s", 0.25)),
+            policy_gain_time_s=float(cfg.get("policy_gain_time_s", 0.25)),
+            min_action_positive=float(cfg.get("min_action_positive", 0.661)),
+            min_action_negative=float(cfg.get("min_action_negative", 0.721)),
+            max_action_positive=float(cfg.get("max_action_positive", 0.72)),
+            max_action_negative=float(cfg.get("max_action_negative", 0.78)),
+            qvel_stable_rad_s=float(cfg.get("qvel_stable_rad_s", 0.015)),
+        )
+        finite = (
+            result.coast_stop_time_s,
+            result.edge_margin_rad,
+            result.p_gain,
+            result.d_gain,
+            result.return_confirm_drop_rad,
+            result.return_min_qvel_rad_s,
+            result.pd_blend_width_rad,
+            result.pd_blend_time_s,
+            result.policy_gain_time_s,
+            result.min_action_positive,
+            result.min_action_negative,
+            result.max_action_positive,
+            result.max_action_negative,
+            result.qvel_stable_rad_s,
+        )
+        if not all(math.isfinite(value) for value in finite):
+            raise ScriptedCycleRuntimeError("swing_landing values must be finite")
+        if result.coast_stop_time_s <= 0.0:
+            raise ScriptedCycleRuntimeError(
+                "swing_landing.coast_stop_time_s must be positive"
+            )
+        if result.edge_margin_rad < 0.0:
+            raise ScriptedCycleRuntimeError(
+                "swing_landing.edge_margin_rad must be non-negative"
+            )
+        if result.p_gain < 0.0 or result.d_gain < 0.0:
+            raise ScriptedCycleRuntimeError(
+                "swing_landing P/D gains must be non-negative"
+            )
+        if result.return_confirm_drop_rad <= 0.0:
+            raise ScriptedCycleRuntimeError(
+                "swing_landing.return_confirm_drop_rad must be positive"
+            )
+        if result.return_min_qvel_rad_s <= 0.0:
+            raise ScriptedCycleRuntimeError(
+                "swing_landing.return_min_qvel_rad_s must be positive"
+            )
+        if result.pd_blend_width_rad <= 0.0:
+            raise ScriptedCycleRuntimeError(
+                "swing_landing.pd_blend_width_rad must be positive"
+            )
+        if result.pd_blend_time_s <= 0.0:
+            raise ScriptedCycleRuntimeError(
+                "swing_landing.pd_blend_time_s must be positive"
+            )
+        if result.policy_gain_time_s <= 0.0:
+            raise ScriptedCycleRuntimeError(
+                "swing_landing.policy_gain_time_s must be positive"
+            )
+        if result.qvel_stable_rad_s <= 0.0:
+            raise ScriptedCycleRuntimeError(
+                "swing_landing.qvel_stable_rad_s must be positive"
+            )
+        if not 0.0 <= result.min_action_positive <= result.max_action_positive <= 1.0:
+            raise ScriptedCycleRuntimeError(
+                "swing_landing positive action limits are invalid"
+            )
+        if not 0.0 <= result.min_action_negative <= result.max_action_negative <= 1.0:
+            raise ScriptedCycleRuntimeError(
+                "swing_landing negative action limits are invalid"
+            )
+        return result
 
 
 class ReadySideWindow:
@@ -194,6 +300,7 @@ class ScriptedCycleRuntime:
         policy_source: Any,
         ready_contract: Mapping[str, Any],
         target_ranges: Mapping[str, tuple[float, float]] | None = None,
+        swing_landing: Mapping[str, Any] | SwingLandingConfig | None = None,
         cycle_review_s: float = 45.0,
         cycle_stop_s: float = 60.0,
         run_stop_s: float = 240.0,
@@ -219,6 +326,11 @@ class ScriptedCycleRuntime:
         self.ready = ReadySideWindow(
             ready_contract,
             target_ranges=target_ranges,
+        )
+        self.swing_landing = (
+            swing_landing
+            if isinstance(swing_landing, SwingLandingConfig)
+            else SwingLandingConfig.from_mapping(swing_landing)
         )
         self.cycle_review_s = float(cycle_review_s)
         self.cycle_stop_s = float(cycle_stop_s)
@@ -263,6 +375,7 @@ class ScriptedCycleRuntime:
             policy_source=policy_source,
             ready_contract=payload,
             target_ranges=target_ranges,
+            swing_landing=cfg.get("swing_landing"),
             cycle_review_s=float(cfg.get("cycle_review_s", 45.0)),
             cycle_stop_s=float(cfg.get("cycle_stop_s", 60.0)),
             run_stop_s=float(cfg.get("run_stop_s", 240.0)),
@@ -287,6 +400,15 @@ class ScriptedCycleRuntime:
             qvel=observation.get("qvel"),
         )
         self._last_ready = status
+        current_swing = self.ready.latest_swing_qpos
+        if self._active and current_swing is not None:
+            if self._goal_max_swing_qpos is None:
+                self._goal_max_swing_qpos = float(current_swing)
+            else:
+                self._goal_max_swing_qpos = max(
+                    self._goal_max_swing_qpos,
+                    float(current_swing),
+                )
         return self.status()
 
     def activation_blocker(self) -> str:
@@ -295,6 +417,13 @@ class ScriptedCycleRuntime:
         if blockers:
             return "initial_ready:" + ",".join(str(value) for value in blockers)
         actual_side = str(ready.get("actual_side", "unknown"))
+        available_sides = tuple(
+            getattr(self.planner, "available_initial_sides", ()) or ()
+        )
+        if available_sides:
+            if actual_side not in available_sides:
+                return f"initial_side_unavailable:actual_{actual_side}"
+            return ""
         initial_side = str(getattr(self.planner, "initial_side", ""))
         if actual_side != initial_side:
             return f"initial_side_mismatch:expected_{initial_side}:actual_{actual_side}"
@@ -308,8 +437,11 @@ class ScriptedCycleRuntime:
         now = float(self._clock())
         self._active = True
         self._run_started_s = now
-        goal = self.policy_source.commit_cycle_goal()
         actual_side = str(self._last_ready["actual_side"])
+        select_initial_side = getattr(self.planner, "select_initial_side", None)
+        if callable(select_initial_side):
+            select_initial_side(actual_side)
+        goal = self.policy_source.commit_cycle_goal()
         if str(goal.current_side) != actual_side:
             return self._fault(
                 "planner_current_side_mismatch:"
@@ -358,6 +490,12 @@ class ScriptedCycleRuntime:
             self._last_event = "cycle_excursion_confirmed"
             return self.status()
 
+        if self.swing_landing.enabled and not self._return_phase_latched:
+            # A/B endpoint ranges are crossed during outbound excavation as
+            # well as during the final leftward return.  Never close a cycle
+            # on the outbound crossing.
+            return self.status()
+
         ready = self._last_ready
         if list(ready.get("blockers", ())):
             return self.status()
@@ -381,6 +519,214 @@ class ScriptedCycleRuntime:
         self._commit_goal_state(goal=next_goal, now_s=now)
         self._last_event = "cycle_advanced"
         return self.status(goal_changed=True)
+
+    def shape_policy_action(
+        self,
+        action: Any,
+        observation: Mapping[str, Any],
+    ) -> tuple[np.ndarray, dict[str, Any]]:
+        """Blend ACT swing after measured target entry and bound PD correction."""
+
+        shaped = np.asarray(action, dtype=np.float32).reshape(4).copy()
+        diagnostics: dict[str, Any] = {
+            "swing_landing_enabled": int(self.swing_landing.enabled),
+            "swing_landing_active": 0,
+            "swing_landing_mode": "disabled",
+            "swing_landing_scale": 1.0,
+            "swing_landing_policy_gain": 1.0,
+            "swing_landing_policy_gain_desired": 1.0,
+            "swing_landing_original_action": float(shaped[0]),
+            "swing_landing_output_action": float(shaped[0]),
+        }
+        if not self.swing_landing.enabled or not self._active:
+            return shaped, diagnostics
+        goal = getattr(self.planner, "committed_goal", None)
+        target_side = "" if goal is None else str(goal.target_side)
+        if target_side not in {"A", "B"}:
+            diagnostics["swing_landing_mode"] = "no_committed_target"
+            return shaped, diagnostics
+        bounds = self.ready.target_ranges.get(target_side)
+        if bounds is None:
+            diagnostics["swing_landing_mode"] = "target_range_missing"
+            return shaped, diagnostics
+
+        qpos = np.asarray(observation.get("qpos"), dtype=np.float64).reshape(-1)
+        qvel = np.asarray(observation.get("qvel"), dtype=np.float64).reshape(-1)
+        if qpos.shape != (4,) or qvel.shape != (4,):
+            raise ScriptedCycleRuntimeError(
+                "swing landing requires qpos/qvel shape (4,)"
+            )
+        if not np.isfinite(qpos).all() or not np.isfinite(qvel).all():
+            raise ScriptedCycleRuntimeError(
+                "swing landing requires finite qpos/qvel"
+            )
+
+        low, high = [float(value) for value in bounds]
+        width = high - low
+        if self.swing_landing.edge_margin_rad * 2.0 >= width:
+            raise ScriptedCycleRuntimeError(
+                "swing_landing.edge_margin_rad is too large for target range"
+            )
+        # Field cycles reach both A and B endpoints on the same return stroke:
+        # swing qpos falls from the right-hand excavation excursion.  The
+        # target side changes the endpoint range, not the landing direction.
+        entry_edge = high
+        far_edge = low
+        center = 0.5 * (low + high)
+        guard_edge = low
+        swing_qpos = float(qpos[0])
+        swing_qvel = float(qvel[0])
+        timestamp_ns = _observation_timestamp_ns(observation)
+        if self._landing_last_timestamp_ns is None:
+            blend_dt_s = 0.0
+        else:
+            blend_dt_s = float(
+                np.clip(
+                    (timestamp_ns - self._landing_last_timestamp_ns) / 1e9,
+                    0.0,
+                    0.1,
+                )
+            )
+        self._landing_last_timestamp_ns = timestamp_ns
+
+        peak_qpos = (
+            swing_qpos
+            if self._goal_max_swing_qpos is None
+            else float(self._goal_max_swing_qpos)
+        )
+        return_drop = max(0.0, peak_qpos - swing_qpos)
+        if (
+            not self._return_phase_latched
+            and self._excursion_observed
+            and return_drop >= self.swing_landing.return_confirm_drop_rad
+            and swing_qvel <= -self.swing_landing.return_min_qvel_rad_s
+            and float(shaped[0]) < 0.0
+        ):
+            self._return_phase_latched = True
+
+        if not self._return_phase_latched:
+            diagnostics.update(
+                {
+                    "swing_landing_mode": "waiting_return_phase",
+                    "swing_landing_target_side": target_side,
+                    "swing_landing_target_low_rad": low,
+                    "swing_landing_target_high_rad": high,
+                    "swing_landing_target_center_rad": center,
+                    "swing_landing_guard_edge_rad": guard_edge,
+                    "swing_landing_original_action": float(action[0]),
+                    "swing_landing_output_action": float(shaped[0]),
+                    "swing_landing_qpos_rad": swing_qpos,
+                    "swing_landing_qvel_rad_s": swing_qvel,
+                    "swing_landing_far_edge_rad": far_edge,
+                    "swing_landing_return_phase": 0,
+                    "swing_landing_peak_qpos_rad": peak_qpos,
+                    "swing_landing_return_drop_rad": return_drop,
+                    "swing_landing_pd_blend": 0.0,
+                    "swing_landing_pd_blend_desired": 0.0,
+                }
+            )
+            return shaped, diagnostics
+
+        projected_qpos = swing_qpos + (
+            self.swing_landing.coast_stop_time_s * swing_qvel
+        )
+        approach_span = entry_edge - center
+        progress = (
+            (entry_edge - swing_qpos) / approach_span
+            if approach_span > 0.0
+            else 0.0
+        )
+        # Do not attenuate ACT before the measured joint has entered the
+        # target's supported range.  A coast projection is useful telemetry,
+        # but the hydraulic stopping distance is load-dependent; using it as
+        # the gain boundary can leave the machine stalled outside the target.
+        linear_scale = float(1.0 - np.clip(progress, 0.0, 1.0))
+        mode = "model"
+        desired_policy_gain = (
+            linear_scale if float(shaped[0]) < 0.0 else self._landing_policy_gain
+        )
+        if desired_policy_gain < self._landing_policy_gain:
+            self._landing_policy_gain = max(
+                desired_policy_gain,
+                self._landing_policy_gain
+                - (blend_dt_s / self.swing_landing.policy_gain_time_s),
+            )
+        if float(shaped[0]) < 0.0 and self._landing_policy_gain < 1.0:
+            shaped[0] = np.float32(
+                float(shaped[0]) * self._landing_policy_gain
+            )
+            mode = "policy_gain"
+
+        # PD is not permitted inside the supported endpoint range.  It starts
+        # only after measured qpos has crossed the low/left boundary, then
+        # blends in over time so it cannot replace ACT in one control tick.
+        overshoot_depth = max(0.0, low - swing_qpos)
+        desired_blend = float(
+            np.clip(
+                overshoot_depth / self.swing_landing.pd_blend_width_rad,
+                0.0,
+                1.0,
+            )
+        )
+        max_blend_delta = blend_dt_s / self.swing_landing.pd_blend_time_s
+        self._landing_pd_blend = float(
+            self._landing_pd_blend
+            + np.clip(
+                desired_blend - self._landing_pd_blend,
+                -max_blend_delta,
+                max_blend_delta,
+            )
+        )
+        pd_raw = (
+            self.swing_landing.p_gain * (low - swing_qpos)
+            - self.swing_landing.d_gain * swing_qvel
+        )
+        pd_action = 0.0
+        if overshoot_depth > 0.0 and pd_raw > 0.0:
+            pd_action = float(
+                np.clip(
+                    pd_raw,
+                    self.swing_landing.min_action_positive,
+                    self.swing_landing.max_action_positive,
+                )
+            )
+        if self._landing_pd_blend > 0.0:
+            policy_component = float(shaped[0])
+            shaped[0] = np.float32(
+                (1.0 - self._landing_pd_blend) * policy_component
+                + self._landing_pd_blend * pd_action
+            )
+            mode = "pd_blend" if pd_action > 0.0 else "overshoot_gain_hold"
+
+        diagnostics.update(
+            {
+                "swing_landing_active": int(mode != "model"),
+                "swing_landing_mode": mode,
+                "swing_landing_target_side": target_side,
+                "swing_landing_target_low_rad": low,
+                "swing_landing_target_high_rad": high,
+                "swing_landing_target_center_rad": center,
+                "swing_landing_guard_edge_rad": guard_edge,
+                "swing_landing_projected_qpos_rad": projected_qpos,
+                "swing_landing_scale": linear_scale,
+                "swing_landing_policy_gain": self._landing_policy_gain,
+                "swing_landing_policy_gain_desired": desired_policy_gain,
+                "swing_landing_pd_raw": pd_raw,
+                "swing_landing_pd_action": pd_action,
+                "swing_landing_pd_blend": self._landing_pd_blend,
+                "swing_landing_pd_blend_desired": desired_blend,
+                "swing_landing_overshoot_depth_rad": overshoot_depth,
+                "swing_landing_original_action": float(action[0]),
+                "swing_landing_output_action": float(shaped[0]),
+                "swing_landing_qpos_rad": swing_qpos,
+                "swing_landing_qvel_rad_s": swing_qvel,
+                "swing_landing_far_edge_rad": far_edge,
+                "swing_landing_return_phase": 1,
+                "swing_landing_peak_qpos_rad": peak_qpos,
+                "swing_landing_return_drop_rad": return_drop,
+            }
+        )
+        return shaped, diagnostics
 
     def deactivate(self, reason: str) -> dict[str, Any]:
         if self._active:
@@ -413,6 +759,10 @@ class ScriptedCycleRuntime:
             "excursion_observed": bool(self._excursion_observed),
             "excursion_candidate_count": int(self._excursion_candidate_count),
             "goal_anchor_swing_qpos_rad": self._goal_anchor_swing_qpos,
+            "goal_max_swing_qpos_rad": self._goal_max_swing_qpos,
+            "return_phase_latched": bool(self._return_phase_latched),
+            "landing_policy_gain": float(self._landing_policy_gain),
+            "landing_pd_blend": float(self._landing_pd_blend),
             "cycle_elapsed_s": (
                 0.0
                 if self._cycle_started_s is None
@@ -448,6 +798,11 @@ class ScriptedCycleRuntime:
                 "goal commit requires a current swing observation"
             )
         self._goal_anchor_swing_qpos = float(current_swing)
+        self._goal_max_swing_qpos = float(current_swing)
+        self._return_phase_latched = False
+        self._landing_policy_gain = 1.0
+        self._landing_pd_blend = 0.0
+        self._landing_last_timestamp_ns = None
         self._cycle_started_s = float(now_s)
         self._excursion_candidate_count = 0
         self._excursion_observed = False
@@ -467,6 +822,11 @@ class ScriptedCycleRuntime:
         self._run_started_s: float | None = None
         self._cycle_started_s: float | None = None
         self._goal_anchor_swing_qpos: float | None = None
+        self._goal_max_swing_qpos: float | None = None
+        self._return_phase_latched = False
+        self._landing_policy_gain = 1.0
+        self._landing_pd_blend = 0.0
+        self._landing_last_timestamp_ns: int | None = None
         self._excursion_candidate_count = 0
         self._excursion_observed = False
         self._last_ready = self.ready.snapshot()

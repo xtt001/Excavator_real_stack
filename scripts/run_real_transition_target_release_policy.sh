@@ -21,8 +21,20 @@ fi
 export PYTHON
 export PYTHONPATH="${ROOT}/testbed${PYTHONPATH:+:${PYTHONPATH}}"
 
+# This runner is independent of expert-recording sessions.  Operators often
+# launch it from a shell that still exports ctxXX variables; never let those
+# variables turn policy_remote back into a transition recorder.
+unset EXCAVATOR_TRANSITION_SESSION_DIR
+unset EXCAVATOR_TRANSITION_CONTROL_PORT
+unset EXCAVATOR_TRANSITION_CONTROL_BIND_HOST
+
+CU12_LIB="${ROOT}/.venv/lib/python3.10/site-packages/nvidia/cu12/lib"
+if [[ -d "${CU12_LIB}" ]]; then
+  export LD_LIBRARY_PATH="${CU12_LIB}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+fi
+
 BASE_CONFIG="${BASE_CONFIG:-testbed/testbed/configs/policy_real_transition_target_release_v2.yaml}"
-CYCLE_SCRIPT="${CYCLE_SCRIPT:-testbed/testbed/configs/real_transition_single_cycle_right_to_left_v1.json}"
+CYCLE_SCRIPT="${CYCLE_SCRIPT:-}"
 POLICY_REMOTE_MAX_STEPS="${REAL_TRANSITION_POLICY_MAX_STEPS:-50000}"
 
 # A fresh git checkout does not contain the ignored model bundle. Prefer the
@@ -40,7 +52,7 @@ if [[ "${MODE}" == "control" ]]; then
     exit 2
   fi
   if [[ "${CONFIRM_SCRIPT_REVIEWED:-}" != "YES" ]]; then
-    echo "Refusing control mode: review CYCLE_SCRIPT and set CONFIRM_SCRIPT_REVIEWED=YES." >&2
+    echo "Refusing control mode: review the configured cycle script(s) and set CONFIRM_SCRIPT_REVIEWED=YES." >&2
     exit 2
   fi
 fi
@@ -49,12 +61,16 @@ if ! [[ "${POLICY_REMOTE_MAX_STEPS}" =~ ^[1-9][0-9]*$ ]]; then
   echo "REAL_TRANSITION_POLICY_MAX_STEPS must be a positive integer." >&2
   exit 2
 fi
-for required in "${BASE_CONFIG}" "${CYCLE_SCRIPT}" "${BUNDLE_DIR}/policy_accepted.ckpt"; do
+for required in "${BASE_CONFIG}" "${BUNDLE_DIR}/policy_accepted.ckpt"; do
   if [[ ! -f "${required}" ]]; then
     echo "Required file does not exist: ${required}" >&2
     exit 2
   fi
 done
+if [[ -n "${CYCLE_SCRIPT}" && ! -f "${CYCLE_SCRIPT}" ]]; then
+  echo "Required cycle script does not exist: ${CYCLE_SCRIPT}" >&2
+  exit 2
+fi
 
 OUTPUT_MODE="shadow_zero"
 if [[ "${MODE}" == "control" ]]; then
@@ -72,7 +88,12 @@ from pathlib import Path
 
 import yaml
 
-source, target, bundle, script, session, output_mode = [Path(value) for value in sys.argv[1:6]] + [sys.argv[6]]
+source = Path(sys.argv[1])
+target = Path(sys.argv[2])
+bundle = Path(sys.argv[3])
+script_arg = str(sys.argv[4]).strip()
+session = Path(sys.argv[5])
+output_mode = sys.argv[6]
 config = yaml.safe_load(source.read_text(encoding="utf-8")) or {}
 teleop = config.setdefault("teleop", {})
 policy = teleop.setdefault("policy", {})
@@ -83,14 +104,18 @@ policy["action_scale"] = [1.0, 1.0, 1.0, 1.0]
 policy.setdefault("deadzone_assist", {})["enabled"] = False
 policy["reset_policy_on_goal"] = True
 planner = policy.setdefault("cycle_planner", {})
-planner.update({"enabled": True, "script_path": str(script.resolve()), "loop": False})
+planner.update({"enabled": True, "loop": False})
+if script_arg:
+    script = Path(script_arg)
+    planner.pop("script_paths_by_initial_side", None)
+    planner["script_path"] = str(script.resolve())
 policy_remote = teleop.setdefault("policy_remote", {})
 policy_remote["start_in_policy"] = False
 policy_remote.setdefault("scripted_cycle", {})["enabled"] = True
 teleop.setdefault("test_log", {})["output_dir"] = str(session.resolve())
 teleop.setdefault("metadata", {})["notes"] = (
     f"planner-conditioned target-release ACT; output_mode={output_mode}; "
-    f"script={script.resolve()}"
+    f"script={Path(script_arg).resolve() if script_arg else 'auto-by-ready-side'}"
 )
 target.write_text(
     yaml.safe_dump(config, sort_keys=False, allow_unicode=True),
@@ -110,17 +135,17 @@ echo "  runtime_config=${RUNTIME_CONFIG}"
 echo "  bundle=${BUNDLE_DIR}/policy_accepted.ckpt"
 echo "  bundle_source=${REAL_TRANSITION_BUNDLE_SOURCE}"
 echo "  external_drive=${REAL_TRANSITION_DRIVE_ROOT:-none}"
-echo "  cycle_script=${CYCLE_SCRIPT}"
+echo "  cycle_script=${CYCLE_SCRIPT:-auto-by-ready-side}"
 echo "  session=${SESSION_ROOT}"
 echo "  receiver=127.0.0.1:8770, initial mode=manual"
 echo
-echo "Before pressing policy button 4:"
+echo "Before pressing left-hand policy button 7:"
 echo "  1. Connect the host teleop_remote sender and verify deadman/stop controls."
-echo "  2. Place the machine at the script initial side and hold it stable for 0.5 s."
-echo "  3. Confirm the displayed script and first target."
-echo "  4. Press policy button 4 once. A rejected initial-ready leaves manual control active."
-echo "During a run, button 4 returns to manual. Script completion/fault latches zero;"
-echo "press button 4 once to acknowledge the latch and remain in manual mode."
+echo "  2. Press left-hand button 7 once to ARM automatic script selection."
+echo "  3. Hold the machine stable in A or B for 0.5 s."
+echo "  4. The matching finite script is selected and ACT starts automatically."
+echo "During a run, left-hand button 7 returns to manual. Script completion/fault latches zero;"
+echo "press left-hand button 7 once to acknowledge the latch and remain in manual mode."
 if [[ "${MODE}" == "shadow" ]]; then
   echo "shadow_zero does not move the machine; it validates loading, first-goal commit and logs."
 fi

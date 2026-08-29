@@ -15,6 +15,7 @@ import yaml
 
 from testbed.tasks.act_cycle_planner import ScriptCyclePlanner
 from testbed.tasks.home_side_contract import validate_rule_ready_contract
+from testbed.tasks.scripted_cycle_runtime import SwingLandingConfig
 
 
 CAMERAS = ["video4", "video5", "video6", "video7"]
@@ -52,6 +53,7 @@ def verify_runtime(
     policy = dict(teleop.get("policy", {}) or {})
     remote_mode = dict(teleop.get("policy_remote", {}) or {})
     scripted = dict(remote_mode.get("scripted_cycle", {}) or {})
+    swing_landing = dict(scripted.get("swing_landing", {}) or {})
     planner = dict(policy.get("cycle_planner", {}) or {})
 
     _check(
@@ -122,9 +124,52 @@ def verify_runtime(
     )
     _check(
         errors,
+        bool(scripted.get("auto_start_after_arm", False)),
+        "scripted-cycle must auto start after one ARM request",
+    )
+    _check(
+        errors,
         bool(scripted.get("stop_on_wrong_ready", False)),
         "wrong stable side must stop the script",
     )
+    _check(
+        errors,
+        bool(swing_landing.get("enabled", False)),
+        "predictive swing landing must be enabled",
+    )
+    try:
+        landing_cfg = SwingLandingConfig.from_mapping(swing_landing)
+        _check(
+            errors,
+            landing_cfg.coast_stop_time_s == 0.50,
+            "swing landing coast horizon must remain 0.50 s",
+        )
+        _check(
+            errors,
+            landing_cfg.edge_margin_rad == 0.03,
+            "swing landing edge margin must remain 0.03 rad",
+        )
+        _check(
+            errors,
+            landing_cfg.return_confirm_drop_rad == 0.05
+            and landing_cfg.return_min_qvel_rad_s == 0.05,
+            "swing landing return-phase gate mismatch",
+        )
+        _check(
+            errors,
+            landing_cfg.pd_blend_width_rad == 0.03
+            and landing_cfg.pd_blend_time_s == 0.25
+            and landing_cfg.policy_gain_time_s == 0.25,
+            "swing landing PD blend contract mismatch",
+        )
+        _check(
+            errors,
+            landing_cfg.min_action_positive == EXPECTED_DEADZONE_POSITIVE[0]
+            and landing_cfg.min_action_negative == EXPECTED_DEADZONE_NEGATIVE[0],
+            "swing landing effective action thresholds mismatch",
+        )
+    except Exception as exc:
+        errors.append(f"swing landing config invalid: {type(exc).__name__}: {exc}")
 
     checkpoint = bundle / "policy_accepted.ckpt"
     accepted_path = bundle / "accepted_model.json"
@@ -182,16 +227,67 @@ def verify_runtime(
         "bundle low-dimensional input contract mismatch",
     )
 
-    script_path = Path(str(planner.get("script_path", "")))
-    _check(errors, script_path.is_file(), f"cycle script does not exist: {script_path}")
     script_manifest: dict[str, Any] = {}
-    if script_path.is_file():
-        try:
-            script_manifest = ScriptCyclePlanner.from_script(
-                script_path, loop=False
-            ).manifest()
-        except Exception as exc:
-            errors.append(f"cycle script invalid: {type(exc).__name__}: {exc}")
+    script_path_raw = str(planner.get("script_path", "") or "").strip()
+    script_paths_by_side = planner.get("script_paths_by_initial_side")
+    _check(
+        errors,
+        not (script_path_raw and script_paths_by_side),
+        "cycle planner cannot configure both one script and side-matched scripts",
+    )
+    if script_paths_by_side is not None:
+        if not isinstance(script_paths_by_side, dict):
+            errors.append("script_paths_by_initial_side must be a mapping")
+        elif set(str(side).upper() for side in script_paths_by_side) != {"A", "B"}:
+            errors.append("side-matched scripts must provide exactly A and B")
+        else:
+            scripts: dict[str, Any] = {}
+            for raw_side, raw_path in script_paths_by_side.items():
+                side = str(raw_side).upper()
+                path = Path(str(raw_path))
+                _check(errors, path.is_file(), f"cycle script does not exist: {path}")
+                if not path.is_file():
+                    continue
+                try:
+                    manifest = ScriptCyclePlanner.from_script(path, loop=False).manifest()
+                    declared_side = str(manifest["script"]["initial_side"])
+                    cycles = list(manifest.get("cycles", ()))
+                    _check(
+                        errors,
+                        declared_side == side,
+                        f"script key {side} disagrees with initial side {declared_side}",
+                    )
+                    _check(
+                        errors,
+                        len(cycles) == 4,
+                        f"side-matched script {side} must contain four cycles",
+                    )
+                    _check(
+                        errors,
+                        all(row.get("current_side") != row.get("target_side") for row in cycles),
+                        f"side-matched script {side} must alternate A/B",
+                    )
+                    scripts[side] = manifest["script"]
+                except Exception as exc:
+                    errors.append(
+                        f"cycle script {side} invalid: {type(exc).__name__}: {exc}"
+                    )
+            script_manifest = {
+                "planner_type": "side_matched_script",
+                "scripts": scripts,
+            }
+    elif script_path_raw:
+        script_path = Path(script_path_raw)
+        _check(errors, script_path.is_file(), f"cycle script does not exist: {script_path}")
+        if script_path.is_file():
+            try:
+                script_manifest = ScriptCyclePlanner.from_script(
+                    script_path, loop=False
+                ).manifest()
+            except Exception as exc:
+                errors.append(f"cycle script invalid: {type(exc).__name__}: {exc}")
+    else:
+        errors.append("cycle planner requires script_path or side-matched scripts")
 
     ready_source = Path(str(scripted.get("ready_contract", "")))
     ready_candidates = (
@@ -258,7 +354,8 @@ def verify_runtime(
         "bundle": str(bundle),
         "output_mode": expected_output_mode,
         "checkpoint": str(checkpoint),
-        "script": script_manifest.get("script", {}),
+        "script": script_manifest.get("script", script_manifest),
+        "swing_landing": swing_landing,
         "errors": errors,
         "evidence_boundary": (
             "This verifies files and runtime contracts only; it does not prove "

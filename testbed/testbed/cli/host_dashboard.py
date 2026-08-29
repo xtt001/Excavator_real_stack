@@ -674,8 +674,89 @@ class HostDashboard(QtWidgets.QMainWindow):
             f"成功容差显示在各轴下方\n配置来源：{source}"
         )
 
-    def _update_transition_panel(self, transition: dict[str, Any]) -> None:
+    def _update_transition_panel(
+        self,
+        transition: dict[str, Any],
+        receiver: dict[str, Any] | None = None,
+    ) -> None:
         transition = dict(transition or {})
+        receiver = dict(receiver or {})
+        if not transition and bool(receiver.get("scripted_cycle_enabled", 0)):
+            mode = str(receiver.get("policy_remote_mode", "manual") or "manual")
+            auto_armed = bool(receiver.get("scripted_cycle_auto_armed", 0))
+            selected = str(
+                receiver.get("planner_selected_initial_side", "") or "待选择"
+            )
+            actual = str(receiver.get("scripted_cycle_ready_side", "unknown") or "unknown")
+            target = str(receiver.get("planner_target_side", "") or "-")
+            script_id = str(receiver.get("planner_script_id", "") or "待自动选择")
+            cycle_index = _int(receiver.get("planner_cycle_index"), -1)
+            cycle_total = _int(receiver.get("planner_planned_cycle_count"), 0)
+            cycle_current = (
+                min(cycle_total, max(0, cycle_index + 1)) if cycle_total else 0
+            )
+            if mode == "policy":
+                headline, color = "● 模型正在执行多铲剧本", REC_ORANGE
+                instruction = (
+                    f"当前目标 {target}；到区停稳后自动推进。"
+                    "左手柄物理按钮 7：立即退出模型控制"
+                )
+            elif mode == "script_stop":
+                headline, color = "剧本结束/停止，控制已锁零", AMBER
+                instruction = "确认机器状态后按左手柄物理按钮 7，解除锁零并保持人工模式"
+            elif auto_armed:
+                headline, color = "已 ARM，等待稳定区位后自动开始", BLUE
+                instruction = (
+                    "机器在 A 或 B 区保持稳定 0.5 秒；程序自动选择匹配剧本。"
+                    "再次按按钮 7 可撤销 ARM"
+                )
+            else:
+                headline, color = "人工模式，模型剧本未 ARM", GRAY
+                instruction = "准备完成后按一次左手柄物理按钮 7；随后稳定区位将自动选剧本并开始"
+            self.transition_state.setText(
+                f"{headline}  |  script={script_id}  |  当前起始点={selected}  |  "
+                f"当前位置={actual}  |  下次目标位置={target}  |  "
+                f"cycle={cycle_current}/{cycle_total or '-'}"
+            )
+            self.transition_state.setStyleSheet(
+                "font-size:16px; font-weight:800; padding:5px; "
+                f"background:#11181d; border:2px solid {color}; border-radius:5px;"
+            )
+            self.transition_instruction.setText(instruction)
+            self.transition_instruction.setStyleSheet(
+                "font-size:15px; font-weight:800; padding:6px; color:#f2f5f7; "
+                "background:#11181d; border:1px solid #46535e; border-radius:5px;"
+            )
+            wait_reason = str(
+                receiver.get("scripted_cycle_auto_wait_reason", "") or "-"
+            )
+            return_phase = _yes_no(
+                receiver.get(
+                    "swing_landing_return_phase",
+                    receiver.get("scripted_cycle_return_phase_latched", 0),
+                )
+            )
+            policy_gain = _float(
+                receiver.get(
+                    "swing_landing_policy_gain",
+                    receiver.get("scripted_cycle_landing_policy_gain", 1.0),
+                ),
+                1.0,
+            )
+            pd_blend = _float(
+                receiver.get(
+                    "swing_landing_pd_blend",
+                    receiver.get("scripted_cycle_landing_pd_blend", 0.0),
+                ),
+                0.0,
+            )
+            self.transition_context.setText(
+                f"候选起点: {receiver.get('planner_available_initial_sides') or 'A,B'}\n"
+                f"自动等待: {wait_reason}\n"
+                f"落点控制: {receiver.get('swing_landing_mode') or '-'}  "
+                f"回程={return_phase}  policy_gain={policy_gain:.2f}  PD={pd_blend:.2f}"
+            )
+            return
         phase = str(transition.get("phase", "") or "")
         ready = dict(transition.get("ready_state", {}) or {})
         blockers = [str(item) for item in ready.get("blockers", []) or []]
@@ -1116,8 +1197,25 @@ class HostDashboard(QtWidgets.QMainWindow):
             f"border:2px solid {machine_color}; border-radius:5px; "
             "font-family:monospace; font-size:13px; font-weight:800;"
         )
+        scripted_enabled = bool(receiver.get("scripted_cycle_enabled", 0))
+        auto_armed = bool(receiver.get("scripted_cycle_auto_armed", 0))
+        selected_side = str(
+            receiver.get("planner_selected_initial_side", "") or "等待稳定 A/B"
+        )
+        script_id = str(receiver.get("planner_script_id", "") or "等待自动选择")
+        cycle_index = _int(receiver.get("planner_cycle_index"), -1)
+        cycle_total = _int(receiver.get("planner_planned_cycle_count"), 0)
+        target_side = str(receiver.get("planner_target_side", "") or "-")
+        script_line = (
+            f"script     {script_id} | 起点={selected_side} | "
+            f"cycle={min(cycle_total, max(0, cycle_index + 1)) if cycle_total else 0}/{cycle_total or '-'} "
+            f"| target={target_side} | ARM={'YES' if auto_armed else 'NO'}"
+            if scripted_enabled
+            else "script     -"
+        )
         self.control_text.setText(
             f"mode       {receiver.get('control_mode') or 'manual'}\n"
+            f"{script_line}\n"
             f"sender     {_format_action(sender_action)}\n"
             f"policy     {_format_action(raw_action)}\n"
             f"safe       {_format_action(safe_action)}\n"
@@ -1149,7 +1247,7 @@ class HostDashboard(QtWidgets.QMainWindow):
                 _item(live_qpos, index),
             )
         self._update_home_panel(dict(receiver.get("home", {}) or {}))
-        self._update_transition_panel(transition)
+        self._update_transition_panel(transition, receiver)
 
         warnings = qc.get("warning_codes") or []
         self.qc_text.setText(

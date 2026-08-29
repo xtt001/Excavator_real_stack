@@ -4,7 +4,10 @@ import numpy as np
 
 from testbed.actions.base import ActionInfo, ActionSource
 from testbed.actions.policy_remote import RemoteArmedPolicyActionSource
-from testbed.tasks.act_cycle_planner import ScriptCyclePlanner
+from testbed.tasks.act_cycle_planner import (
+    ScriptCyclePlanner,
+    SideMatchedScriptCyclePlanner,
+)
 from testbed.tasks.home_side_contract import build_rule_ready_contract
 from testbed.tasks.scripted_cycle_runtime import ScriptedCycleRuntime
 
@@ -31,11 +34,24 @@ class _Remote(ActionSource):
 
 
 class _Policy(ActionSource):
-    def __init__(self) -> None:
-        self.cycle_planner = ScriptCyclePlanner(
-            initial_side="B",
-            steps=[{"target_side": "B"}, {"target_side": "A"}],
-            loop=False,
+    def __init__(self, *, side_matched: bool = False) -> None:
+        self.cycle_planner = (
+            SideMatchedScriptCyclePlanner(
+                {
+                    "A": ScriptCyclePlanner(
+                        initial_side="A", steps=[{"target_side": "B"}]
+                    ),
+                    "B": ScriptCyclePlanner(
+                        initial_side="B", steps=[{"target_side": "A"}]
+                    ),
+                }
+            )
+            if side_matched
+            else ScriptCyclePlanner(
+                initial_side="B",
+                steps=[{"target_side": "B"}, {"target_side": "A"}],
+                loop=False,
+            )
         )
         self.reset_count = 0
         self.seen_targets: list[str] = []
@@ -88,9 +104,11 @@ class _Policy(ActionSource):
         }
 
 
-def _source() -> tuple[RemoteArmedPolicyActionSource, _Remote, _Policy]:
+def _source(
+    *, auto_start_after_arm: bool = False, side_matched: bool = False
+) -> tuple[RemoteArmedPolicyActionSource, _Remote, _Policy]:
     remote = _Remote()
-    policy = _Policy()
+    policy = _Policy(side_matched=side_matched)
     runtime = ScriptedCycleRuntime(
         policy_source=policy,
         ready_contract=build_rule_ready_contract(),
@@ -100,6 +118,7 @@ def _source() -> tuple[RemoteArmedPolicyActionSource, _Remote, _Policy]:
         policy=policy,
         infer_on_new_frame=False,
         scripted_cycle_runtime=runtime,
+        scripted_cycle_auto_start_after_arm=auto_start_after_arm,
     )
     return source, remote, policy
 
@@ -161,6 +180,56 @@ def test_remote_activation_is_rejected_until_initial_ready() -> None:
     assert info.extras["scripted_cycle_activation_rejected_reason"].startswith(
         "initial_ready:"
     )
+    assert policy.seen_targets == []
+
+
+def test_one_arm_request_waits_then_auto_selects_ready_side_and_starts() -> None:
+    source, remote, policy = _source(
+        auto_start_after_arm=True,
+        side_matched=True,
+    )
+    remote.start_requested = True
+
+    _action, waiting = source.next_action(
+        _obs(timestamp_ns=1_000_000_000, swing_qpos=0.0)
+    )
+
+    assert waiting.extras["policy_remote_mode"] == "manual"
+    assert waiting.extras["scripted_cycle_auto_armed"] == 1
+    assert waiting.extras["scripted_cycle_auto_wait_reason"].startswith(
+        "initial_ready:"
+    )
+
+    timestamp_ns, started = _step_window(
+        source,
+        start_ns=1_050_000_000,
+        swing_qpos=-0.2,
+    )
+
+    assert timestamp_ns > 1_050_000_000
+    assert started is not None
+    _action, info = started
+    assert info.extras["policy_remote_mode"] == "policy"
+    assert info.extras["scripted_cycle_auto_armed"] == 0
+    assert policy.cycle_planner.selected_initial_side == "A"
+    assert info.extras["planner_target_side"] == "B"
+
+
+def test_second_arm_press_cancels_pending_auto_start() -> None:
+    source, remote, policy = _source(
+        auto_start_after_arm=True,
+        side_matched=True,
+    )
+    remote.start_requested = True
+    source.next_action(_obs(timestamp_ns=1_000_000_000, swing_qpos=0.0))
+    remote.start_requested = True
+
+    _action, info = source.next_action(
+        _obs(timestamp_ns=1_050_000_000, swing_qpos=0.0)
+    )
+
+    assert info.extras["policy_remote_mode"] == "manual"
+    assert info.extras["scripted_cycle_auto_armed"] == 0
     assert policy.seen_targets == []
 
 

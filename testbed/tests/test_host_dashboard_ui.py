@@ -263,6 +263,13 @@ def test_v2_record_count_and_compact_details_use_transition_status() -> None:
             "episode_idx": 1,
             "record_steps": 0,
             "saved": 1,
+            "scripted_cycle_enabled": 1,
+            "scripted_cycle_auto_armed": 1,
+            "planner_selected_initial_side": "A",
+            "planner_script_id": "four-cycle-left-start-field-v1",
+            "planner_cycle_index": 0,
+            "planner_planned_cycle_count": 4,
+            "planner_target_side": "B",
             "health": {
                 "imu": {
                     "online": [1, 1, 1, 1],
@@ -300,6 +307,11 @@ def test_v2_record_count_and_compact_details_use_transition_status() -> None:
     assert window.imu_cards[3].state.text() == "+0.239 rad"
     assert "ONLINE · age=7.0 ms" in window.imu_cards[0].detail.text()
     assert "loss=" not in window.imu_cards[0].detail.text()
+    assert "four-cycle-left-start-field-v1" in window.control_text.text()
+    assert "起点=A" in window.control_text.text()
+    assert "cycle=1/4" in window.control_text.text()
+    assert "target=B" in window.control_text.text()
+    assert "ARM=YES" in window.control_text.text()
 
     window.latest_status["receiver"]["recording"] = 1
     window.latest_status["receiver"]["receiver_mode"] = "recording"
@@ -308,6 +320,14 @@ def test_v2_record_count_and_compact_details_use_transition_status() -> None:
     assert "物理4号键取消" in window.prominent_cards["recording"].detail.text()
     assert "4px solid" in window.video_label.styleSheet()
     assert REC_ORANGE in window.video_label.styleSheet()
+
+    transition = window.latest_status["receiver"].pop("real_transition")
+    window._update_status_panels()
+    assert "已 ARM，等待稳定区位后自动开始" in window.transition_state.text()
+    assert "当前起始点=A" in window.transition_state.text()
+    assert "下次目标位置=B" in window.transition_state.text()
+    assert "按钮 7" in window.transition_instruction.text()
+    window.latest_status["receiver"]["real_transition"] = transition
 
     for label in (
         window.record_text,

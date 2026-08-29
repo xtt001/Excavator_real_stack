@@ -30,6 +30,7 @@ class RemoteArmedPolicyActionSource(ActionSource):
         start_in_policy: bool = False,
         infer_on_new_frame: bool = False,
         scripted_cycle_runtime: Any | None = None,
+        scripted_cycle_auto_start_after_arm: bool = False,
     ) -> None:
         self._remote = remote
         self._policy = policy
@@ -37,6 +38,11 @@ class RemoteArmedPolicyActionSource(ActionSource):
         self._start_in_policy = bool(start_in_policy)
         self._infer_on_new_frame = bool(infer_on_new_frame)
         self._scripted_cycle_runtime = scripted_cycle_runtime
+        self._scripted_cycle_auto_start_after_arm = bool(
+            scripted_cycle_auto_start_after_arm
+        )
+        if self._scripted_cycle_auto_start_after_arm and scripted_cycle_runtime is None:
+            raise ValueError("scripted-cycle auto start requires scripted_cycle_runtime")
         if self._scripted_cycle_runtime is not None and self._start_in_policy:
             raise ValueError("scripted-cycle policy_remote must start in manual mode")
         self._policy_active = bool(start_in_policy)
@@ -49,6 +55,8 @@ class RemoteArmedPolicyActionSource(ActionSource):
         self._policy_frame_reuse_count = 0
         self._script_stop_latched = False
         self._script_stop_reason = ""
+        self._script_auto_armed = False
+        self._script_auto_wait_reason = ""
         self._scripted_cycle_activation_rejected_reason = ""
         self._scripted_cycle_last_status = (
             _disabled_scripted_cycle_status()
@@ -79,6 +87,11 @@ class RemoteArmedPolicyActionSource(ActionSource):
             start_in_policy=bool(mode_cfg.get("start_in_policy", False)),
             infer_on_new_frame=bool(frame_alignment_cfg.get("enabled", False)),
             scripted_cycle_runtime=scripted_cycle_runtime,
+            scripted_cycle_auto_start_after_arm=bool(
+                dict(mode_cfg.get("scripted_cycle", {}) or {}).get(
+                    "auto_start_after_arm", False
+                )
+            ),
         )
 
     def reset(self) -> None:
@@ -90,6 +103,8 @@ class RemoteArmedPolicyActionSource(ActionSource):
         self._toggle_count = 0
         self._script_stop_latched = False
         self._script_stop_reason = ""
+        self._script_auto_armed = False
+        self._script_auto_wait_reason = ""
         self._scripted_cycle_activation_rejected_reason = ""
         if self._scripted_cycle_runtime is not None:
             self._scripted_cycle_runtime.reset()
@@ -134,6 +149,8 @@ class RemoteArmedPolicyActionSource(ActionSource):
         if start_requested and self._script_stop_latched:
             self._script_stop_latched = False
             self._script_stop_reason = ""
+            self._script_auto_armed = False
+            self._script_auto_wait_reason = ""
             self._scripted_cycle_activation_rejected_reason = ""
             if self._scripted_cycle_runtime is not None:
                 self._scripted_cycle_runtime.prepare_new_run()
@@ -142,6 +159,12 @@ class RemoteArmedPolicyActionSource(ActionSource):
         elif start_requested and not self._policy_active:
             if self._scripted_cycle_runtime is None:
                 activated_now = self._set_policy_active_state(True)
+            elif self._scripted_cycle_auto_start_after_arm:
+                self._script_auto_armed = not self._script_auto_armed
+                self._script_auto_wait_reason = (
+                    "" if not self._script_auto_armed else "waiting_initial_ready"
+                )
+                self._scripted_cycle_activation_rejected_reason = ""
             else:
                 activation_rejected_reason = (
                     activation_rejected_reason
@@ -172,6 +195,8 @@ class RemoteArmedPolicyActionSource(ActionSource):
                         )
                         self._set_policy_active_state(False)
         elif start_requested and self._policy_active:
+            self._script_auto_armed = False
+            self._script_auto_wait_reason = ""
             if self._scripted_cycle_runtime is not None:
                 self._scripted_cycle_last_status = (
                     self._scripted_cycle_runtime.deactivate("operator_toggle")
@@ -179,6 +204,52 @@ class RemoteArmedPolicyActionSource(ActionSource):
             deactivated_now = self._set_policy_active_state(False)
         if activation_rejected_reason:
             self._scripted_cycle_activation_rejected_reason = activation_rejected_reason
+
+        if (
+            self._script_auto_armed
+            and not self._policy_active
+            and not self._script_stop_latched
+            and self._scripted_cycle_runtime is not None
+        ):
+            wait_reason = (
+                activation_rejected_reason
+                or self._scripted_cycle_runtime.activation_blocker()
+            )
+            self._script_auto_wait_reason = wait_reason
+            if not wait_reason:
+                activated_now = self._set_policy_active_state(True)
+                try:
+                    self._scripted_cycle_last_status = (
+                        self._scripted_cycle_runtime.activate()
+                    )
+                    self._script_auto_armed = False
+                    self._script_auto_wait_reason = ""
+                    self._scripted_cycle_activation_rejected_reason = ""
+                    if bool(
+                        self._scripted_cycle_last_status.get("stop_policy", False)
+                    ):
+                        self._latch_script_stop(
+                            str(
+                                self._scripted_cycle_last_status.get("fault")
+                                or "scripted_cycle_activation_failed"
+                            )
+                        )
+                except Exception as exc:
+                    activation_rejected_reason = (
+                        "scripted_cycle_activation_error:"
+                        f"{type(exc).__name__}:{exc}"
+                    )
+                    self._script_auto_armed = False
+                    self._script_auto_wait_reason = ""
+                    self._scripted_cycle_activation_rejected_reason = (
+                        activation_rejected_reason
+                    )
+                    self._scripted_cycle_last_status = (
+                        self._scripted_cycle_runtime.deactivate(
+                            activation_rejected_reason
+                        )
+                    )
+                    self._set_policy_active_state(False)
 
         if self._policy_active and self._scripted_cycle_runtime is not None:
             self._scripted_cycle_last_status = self._scripted_cycle_runtime.evaluate()
@@ -206,6 +277,13 @@ class RemoteArmedPolicyActionSource(ActionSource):
                     "policy_remote_toggle_count": int(self._toggle_count),
                     "model_control": 0,
                     "scripted_cycle_stop_latched": 1,
+                    "scripted_cycle_auto_start_after_arm": int(
+                        self._scripted_cycle_auto_start_after_arm
+                    ),
+                    "scripted_cycle_auto_armed": int(self._script_auto_armed),
+                    "scripted_cycle_auto_wait_reason": str(
+                        self._script_auto_wait_reason
+                    ),
                     "policy_action": zero.copy(),
                     "policy_scaled_action": zero.copy(),
                     "policy_assisted_action": zero.copy(),
@@ -250,6 +328,17 @@ class RemoteArmedPolicyActionSource(ActionSource):
                     self._cached_policy_info = policy_info
                 self._policy_frame_reuse_count = 0
             policy_extras = dict(getattr(policy_info, "extras", {}) or {})
+            if self._scripted_cycle_runtime is not None:
+                policy_action, swing_landing_diagnostics = (
+                    self._scripted_cycle_runtime.shape_policy_action(
+                        policy_action,
+                        obs,
+                    )
+                )
+                policy_extras.update(swing_landing_diagnostics)
+                policy_extras["policy_returned_action"] = np.asarray(
+                    policy_action, dtype=np.float32
+                ).copy()
             if reuse_policy_frame:
                 # Requests are edge-triggered. Reusing the held action must not
                 # replay a one-shot record/go-home event from the first pass.
@@ -278,6 +367,13 @@ class RemoteArmedPolicyActionSource(ActionSource):
             extras["policy_remote_toggle_count"] = int(self._toggle_count)
             extras["model_control"] = 1
             extras["scripted_cycle_stop_latched"] = 0
+            extras["scripted_cycle_auto_start_after_arm"] = int(
+                self._scripted_cycle_auto_start_after_arm
+            )
+            extras["scripted_cycle_auto_armed"] = int(self._script_auto_armed)
+            extras["scripted_cycle_auto_wait_reason"] = str(
+                self._script_auto_wait_reason
+            )
             extras["scripted_cycle_activation_rejected_reason"] = (
                 activation_rejected_reason
                 or self._scripted_cycle_activation_rejected_reason
@@ -303,6 +399,13 @@ class RemoteArmedPolicyActionSource(ActionSource):
         extras["policy_remote_toggle_count"] = int(self._toggle_count)
         extras["model_control"] = 0
         extras["scripted_cycle_stop_latched"] = int(self._script_stop_latched)
+        extras["scripted_cycle_auto_start_after_arm"] = int(
+            self._scripted_cycle_auto_start_after_arm
+        )
+        extras["scripted_cycle_auto_armed"] = int(self._script_auto_armed)
+        extras["scripted_cycle_auto_wait_reason"] = str(
+            self._script_auto_wait_reason
+        )
         extras["scripted_cycle_activation_rejected_reason"] = (
             activation_rejected_reason
             or self._scripted_cycle_activation_rejected_reason
@@ -371,6 +474,13 @@ class RemoteArmedPolicyActionSource(ActionSource):
             "policy_remote_toggle_count": int(self._toggle_count),
             "scripted_cycle_stop_latched": int(self._script_stop_latched),
             "scripted_cycle_stop_reason": str(self._script_stop_reason),
+            "scripted_cycle_auto_start_after_arm": int(
+                self._scripted_cycle_auto_start_after_arm
+            ),
+            "scripted_cycle_auto_armed": int(self._script_auto_armed),
+            "scripted_cycle_auto_wait_reason": str(
+                self._script_auto_wait_reason
+            ),
             "scripted_cycle_activation_rejected_reason": str(
                 self._scripted_cycle_activation_rejected_reason
             ),
@@ -385,6 +495,8 @@ class RemoteArmedPolicyActionSource(ActionSource):
         self._activation_step = None
         self._script_stop_latched = True
         self._script_stop_reason = str(reason)
+        self._script_auto_armed = False
+        self._script_auto_wait_reason = ""
         self._clear_policy_frame_cache()
 
     def _clear_policy_frame_cache(self) -> None:
@@ -445,6 +557,15 @@ def _scripted_cycle_extras(status: Mapping[str, Any] | None) -> dict[str, Any]:
         "scripted_cycle_excursion_observed": int(
             bool(value.get("excursion_observed", False))
         ),
+        "scripted_cycle_return_phase_latched": int(
+            bool(value.get("return_phase_latched", False))
+        ),
+        "scripted_cycle_landing_pd_blend": float(
+            value.get("landing_pd_blend", 0.0) or 0.0
+        ),
+        "scripted_cycle_landing_policy_gain": float(
+            value.get("landing_policy_gain", 1.0)
+        ),
         "scripted_cycle_review_due": int(bool(value.get("review_due", False))),
         "scripted_cycle_cycle_elapsed_s": float(
             value.get("cycle_elapsed_s", 0.0) or 0.0
@@ -469,6 +590,18 @@ def _scripted_cycle_extras(status: Mapping[str, Any] | None) -> dict[str, Any]:
         ),
         "planner_cycle_index": int(planner.get("cycle_index", -1)),
         "planner_goal_epoch": int(planner.get("goal_epoch", -1)),
+        "planner_type": str(planner.get("planner_type", "") or ""),
+        "planner_selected_initial_side": str(
+            planner.get("selected_initial_side", "") or ""
+        ),
+        "planner_available_initial_sides": ",".join(
+            str(side) for side in planner.get("available_initial_sides", ())
+        ),
+        "planner_script_id": str(planner.get("script_id", "") or ""),
+        "planner_script_path": str(planner.get("script_path", "") or ""),
+        "planner_planned_cycle_count": int(
+            planner.get("planned_cycle_count", 0) or 0
+        ),
         "planner_target_side": str(planner.get("target_side") or ""),
         "planner_condition": np.asarray(
             planner.get("condition") or [0.0, 0.0], dtype=np.float32

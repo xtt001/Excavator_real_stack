@@ -14,6 +14,7 @@ from scripts.summarize_policy_test_log import _compute_metrics
 from testbed.actions.base import ActionInfo
 from testbed.actions.policy import (
     PolicyActionSource,
+    _build_cycle_planner,
     _policy_obs_from_real_obs,
     load_act_policy_from_bundle,
 )
@@ -30,7 +31,7 @@ from testbed.cli.record_real import (
 from testbed.cli.teleop_remote import _format_receiver_policy_status
 from testbed.data.recorder import EpisodeRecorder
 from testbed.policies.runtime_gate_stack import RuntimeGateResult
-from testbed.tasks.act_cycle_planner import ABCyclePlanner
+from testbed.tasks.act_cycle_planner import ABCyclePlanner, SideMatchedScriptCyclePlanner
 
 
 class DummyPolicy:
@@ -825,6 +826,37 @@ class PolicyActionSourceTests(unittest.TestCase):
 
         assert result["planner_waiting_for_commit"] == 1
         assert result["warmup_steps"] == 0
+
+    def test_cycle_planner_builder_wires_side_matched_script_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = {}
+            for side, target in (("A", "B"), ("B", "A")):
+                path = root / f"{side}.yaml"
+                path.write_text(
+                    yaml.safe_dump(
+                        {
+                            "schema": "act_cycle_script_v1",
+                            "initial_side": side,
+                            "steps": [{"target_side": target}],
+                            "loop": False,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                paths[side] = str(path)
+
+            planner = _build_cycle_planner(
+                {
+                    "enabled": True,
+                    "script_paths_by_initial_side": paths,
+                    "loop": False,
+                }
+            )
+
+        assert isinstance(planner, SideMatchedScriptCyclePlanner)
+        planner.select_initial_side("B")
+        assert planner.commit_goal().transition == "B->A"
 
     @patch("testbed.actions.policy.load_act_policy_from_bundle")
     def test_policy_source_from_config_wires_inline_variable_script(

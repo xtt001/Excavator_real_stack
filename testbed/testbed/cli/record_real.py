@@ -453,9 +453,15 @@ def _policy_remote_status_payload(
         if key in extras:
             payload[key] = extras[key]
     for key, value in extras.items():
-        if key.startswith("scripted_cycle_") or key in {
+        if key.startswith("scripted_cycle_") or key.startswith("swing_landing_") or key in {
             "planner_cycle_index",
             "planner_goal_epoch",
+            "planner_type",
+            "planner_selected_initial_side",
+            "planner_available_initial_sides",
+            "planner_script_id",
+            "planner_script_path",
+            "planner_planned_cycle_count",
             "planner_target_side",
             "planner_condition",
         }:
@@ -473,7 +479,7 @@ def _policy_remote_status_payload(
     status = getattr(action_source, "policy_status", None)
     if callable(status):
         try:
-            payload.update(dict(status()))
+            payload.update(_status_jsonable(dict(status())))
         except Exception:
             log.debug("Failed to query policy_remote status.", exc_info=True)
     mode = str(payload.get("policy_remote_mode", "") or "")
@@ -481,7 +487,7 @@ def _policy_remote_status_payload(
         model_control = int(mode == "policy")
         payload["model_control"] = int(payload.get("model_control", model_control) or 0)
         payload["control_mode"] = "model" if int(payload["model_control"]) else "manual"
-    return payload
+    return _status_jsonable(payload)
 
 
 def _hold_remote_control_zero(remote_control_loop: Any | None) -> None:
@@ -4934,6 +4940,41 @@ def _add_policy_action_diagnostics(
         extras.get("policy_returned_action", np.zeros(4)),
         dtype=np.float32,
     )
+    for key in (
+        "swing_landing_enabled",
+        "swing_landing_active",
+        "swing_landing_return_phase",
+    ):
+        diagnostics[key] = int(extras.get(key, 0) or 0)
+    diagnostics["swing_landing_mode"] = str(
+        extras.get("swing_landing_mode", "disabled") or "disabled"
+    )
+    diagnostics["swing_landing_target_side"] = str(
+        extras.get("swing_landing_target_side", "") or ""
+    )
+    for key in (
+        "swing_landing_scale",
+        "swing_landing_policy_gain",
+        "swing_landing_policy_gain_desired",
+        "swing_landing_original_action",
+        "swing_landing_output_action",
+        "swing_landing_target_low_rad",
+        "swing_landing_target_high_rad",
+        "swing_landing_target_center_rad",
+        "swing_landing_guard_edge_rad",
+        "swing_landing_projected_qpos_rad",
+        "swing_landing_pd_raw",
+        "swing_landing_pd_action",
+        "swing_landing_pd_blend",
+        "swing_landing_pd_blend_desired",
+        "swing_landing_overshoot_depth_rad",
+        "swing_landing_qpos_rad",
+        "swing_landing_qvel_rad_s",
+        "swing_landing_far_edge_rad",
+        "swing_landing_peak_qpos_rad",
+        "swing_landing_return_drop_rad",
+    ):
+        diagnostics[key] = float(extras.get(key, 0.0) or 0.0)
     diagnostics["policy_intent_probabilities"] = np.asarray(
         extras.get("policy_intent_probabilities", np.zeros(8)),
         dtype=np.float32,
@@ -5129,17 +5170,23 @@ def _add_scripted_cycle_diagnostics(
         "scripted_cycle_completed",
         "scripted_cycle_goal_changed",
         "scripted_cycle_excursion_observed",
+        "scripted_cycle_return_phase_latched",
         "scripted_cycle_review_due",
         "scripted_cycle_ready_window_complete",
         "scripted_cycle_ready_swing_stable",
         "scripted_cycle_ready_target_supported",
         "scripted_cycle_stop_latched",
+        "scripted_cycle_auto_start_after_arm",
+        "scripted_cycle_auto_armed",
         "planner_cycle_index",
         "planner_goal_epoch",
+        "planner_planned_cycle_count",
     )
     float_keys = (
         "scripted_cycle_cycle_elapsed_s",
         "scripted_cycle_run_elapsed_s",
+        "scripted_cycle_landing_pd_blend",
+        "scripted_cycle_landing_policy_gain",
         "scripted_cycle_ready_swing_qpos_rad",
         "scripted_cycle_ready_swing_qvel_abs_max_rad_s",
     )
@@ -5150,6 +5197,12 @@ def _add_scripted_cycle_diagnostics(
         "scripted_cycle_ready_side",
         "scripted_cycle_ready_blockers",
         "scripted_cycle_activation_rejected_reason",
+        "scripted_cycle_auto_wait_reason",
+        "planner_type",
+        "planner_selected_initial_side",
+        "planner_available_initial_sides",
+        "planner_script_id",
+        "planner_script_path",
         "planner_target_side",
     )
     for key in int_keys:

@@ -244,6 +244,34 @@ def test_structured_receiver_status_is_remote_protocol_jsonable(tmp_path) -> Non
     assert encode_remote_receiver_status(sink.payload).endswith(b"\n")
 
 
+def test_policy_status_numpy_values_are_remote_protocol_jsonable(tmp_path) -> None:
+    class Sink:
+        payload = None
+
+        def policy_status(self):
+            return {
+                "policy_remote_mode": "manual",
+                "planner_condition": np.asarray([-1.0, 1.0], dtype=np.float32),
+            }
+
+        def publish_status(self, payload):
+            self.payload = payload
+
+    sink = Sink()
+    _publish_remote_receiver_status(
+        sink,
+        receiver_mode="armed",
+        episode_idx=0,
+        saved=0,
+        record_session=None,
+        storage_path=tmp_path,
+    )
+
+    assert sink.payload is not None
+    assert sink.payload["planner_condition"] == [-1.0, 1.0]
+    assert encode_remote_receiver_status(sink.payload).endswith(b"\n")
+
+
 def test_saving_status_marks_recording_as_finished(tmp_path) -> None:
     class Sink:
         payload = None

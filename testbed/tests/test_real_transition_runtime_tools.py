@@ -129,11 +129,29 @@ def _runtime_config(root: Path, bundle: Path) -> Path:
                         "start_in_policy": False,
                         "scripted_cycle": {
                             "enabled": True,
+                            "auto_start_after_arm": True,
                             "ready_contract": "contracts/ready_contract.json",
                             "target_region_contract": (
                                 "contracts/target_release_contract_v2.json"
                             ),
                             "stop_on_wrong_ready": True,
+                            "swing_landing": {
+                                "enabled": True,
+                                "coast_stop_time_s": 0.50,
+                                "edge_margin_rad": 0.03,
+                                "p_gain": 0.60,
+                                "d_gain": 0.12,
+                                "return_confirm_drop_rad": 0.05,
+                                "return_min_qvel_rad_s": 0.05,
+                                "pd_blend_width_rad": 0.03,
+                                "pd_blend_time_s": 0.25,
+                                "policy_gain_time_s": 0.25,
+                                "min_action_positive": 0.661,
+                                "min_action_negative": 0.721,
+                                "max_action_positive": 0.72,
+                                "max_action_negative": 0.78,
+                                "qvel_stable_rad_s": 0.015,
+                            },
                         },
                     },
                 }

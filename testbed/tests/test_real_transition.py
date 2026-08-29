@@ -152,12 +152,12 @@ class RealTransitionPlanTest(unittest.TestCase):
         )
         config = _load_yaml_config(config_path)
         self.assertEqual(config["teleop"]["input"], "joystick")
-        self.assertIsNone(config["teleop"]["joystick"]["policy_start_button"])
+        self.assertEqual(config["teleop"]["joystick"]["policy_start_button"], 6)
         self.assertIsNone(config["teleop"]["joystick"]["record_start_button"])
         self.assertEqual(config["teleop"]["joystick"]["go_home_button"], 2)
         self.assertEqual(config["teleop"]["joystick"]["discard_button"], 3)
         self.assertEqual(
-            config["teleop"]["joystick"]["status_reserved_buttons"], [1, 3]
+            config["teleop"]["joystick"]["status_reserved_buttons"], [1, 3, 6]
         )
         self.assertTrue(config["teleop"]["recording"]["go_home"]["enabled"])
         self.assertEqual(

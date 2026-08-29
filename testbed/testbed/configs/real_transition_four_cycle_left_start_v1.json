@@ -1,0 +1,12 @@
+{
+  "schema": "act_cycle_script_v1",
+  "script_id": "four-cycle-left-start-field-v1",
+  "initial_side": "A",
+  "steps": [
+    {"step_id": "cycle_001_right", "target_side": "B", "label": "右区"},
+    {"step_id": "cycle_002_left", "target_side": "A", "label": "左区"},
+    {"step_id": "cycle_003_right", "target_side": "B", "label": "右区"},
+    {"step_id": "cycle_004_left", "target_side": "A", "label": "左区"}
+  ],
+  "loop": false
+}

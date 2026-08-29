@@ -549,6 +549,185 @@ class ScriptCyclePlanner(ABCyclePlanner):
         )
 
 
+class SideMatchedScriptCyclePlanner:
+    """Select one finite script from the observed stable initial side.
+
+    Selection is deliberately unavailable until the ready gate has classified
+    the machine as A or B.  Once selected, this object exposes the same planner
+    interface as :class:`ScriptCyclePlanner` and keeps that selection fixed for
+    the whole run.
+    """
+
+    def __init__(self, scripts: Mapping[str, ScriptCyclePlanner]) -> None:
+        normalized: dict[str, ScriptCyclePlanner] = {}
+        for side, planner in dict(scripts).items():
+            key = str(side or "").upper()
+            if key not in SIDE_CODES:
+                raise CyclePlannerError("side-matched script key must be A or B")
+            if not isinstance(planner, ScriptCyclePlanner):
+                raise CyclePlannerError("side-matched entries must be script planners")
+            if planner.initial_side != key:
+                raise CyclePlannerError(
+                    f"script for side {key} declares initial_side={planner.initial_side}"
+                )
+            if planner.loop:
+                raise CyclePlannerError("side-matched field scripts must be finite")
+            normalized[key] = planner
+        if set(normalized) != set(SIDE_CODES):
+            raise CyclePlannerError("side-matched scripts require exactly A and B")
+        self.scripts = normalized
+        self._selected_side: str | None = None
+        self.reset()
+
+    @classmethod
+    def from_script_paths(
+        cls,
+        value: Mapping[str, Any],
+        *,
+        loop: bool | None = None,
+        max_cycles: int | None = None,
+    ) -> SideMatchedScriptCyclePlanner:
+        if not isinstance(value, Mapping):
+            raise CyclePlannerError("script_paths_by_initial_side must be a mapping")
+        return cls(
+            {
+                str(side).upper(): ScriptCyclePlanner.from_script(
+                    str(path), loop=loop, max_cycles=max_cycles
+                )
+                for side, path in value.items()
+            }
+        )
+
+    @property
+    def selected_initial_side(self) -> str | None:
+        return self._selected_side
+
+    @property
+    def available_initial_sides(self) -> tuple[str, ...]:
+        return tuple(sorted(self.scripts))
+
+    @property
+    def selected_planner(self) -> ScriptCyclePlanner | None:
+        if self._selected_side is None:
+            return None
+        return self.scripts[self._selected_side]
+
+    @property
+    def initial_side(self) -> str:
+        return "" if self._selected_side is None else self._selected_side
+
+    @property
+    def cycle_index(self) -> int:
+        planner = self.selected_planner
+        return 0 if planner is None else planner.cycle_index
+
+    @property
+    def goal_epoch(self) -> int:
+        planner = self.selected_planner
+        return 0 if planner is None else planner.goal_epoch
+
+    @property
+    def done(self) -> bool:
+        planner = self.selected_planner
+        return False if planner is None else planner.done
+
+    @property
+    def committed_goal(self) -> PlannedCycle | None:
+        planner = self.selected_planner
+        return None if planner is None else planner.committed_goal
+
+    @property
+    def script_id(self) -> str:
+        planner = self.selected_planner
+        return "" if planner is None else planner.script_id
+
+    @property
+    def source_path(self) -> str | None:
+        planner = self.selected_planner
+        return None if planner is None else planner.source_path
+
+    def select_initial_side(self, side: str) -> ScriptCyclePlanner:
+        key = str(side or "").upper()
+        if key not in self.scripts:
+            raise CyclePlannerError(f"no cycle script is available for initial side {key}")
+        if self.committed_goal is not None or self.cycle_index != 0:
+            raise CyclePlannerError("cannot change script after a run has started")
+        if self._selected_side is not None and self._selected_side != key:
+            raise CyclePlannerError("cannot change an already selected initial side")
+        self._selected_side = key
+        planner = self.scripts[key]
+        planner.reset()
+        return planner
+
+    def reset(self) -> None:
+        for planner in self.scripts.values():
+            planner.reset()
+        self._selected_side = None
+
+    def _require_selected(self) -> ScriptCyclePlanner:
+        planner = self.selected_planner
+        if planner is None:
+            raise CyclePlannerError("cycle script has not been selected from ready side")
+        return planner
+
+    def peek_goal(self) -> PlannedCycle | None:
+        return self._require_selected().peek_goal()
+
+    def commit_goal(self) -> PlannedCycle:
+        return self._require_selected().commit_goal()
+
+    def mark_target_ready(self, realized_side: str) -> PlannedCycle | None:
+        return self._require_selected().mark_target_ready(realized_side)
+
+    def condition(self) -> np.ndarray:
+        return self._require_selected().condition()
+
+    def apply_condition(self, observation: Mapping[str, Any]) -> dict[str, Any]:
+        return self._require_selected().apply_condition(observation)
+
+    def snapshot_state(self) -> dict[str, Any]:
+        return {
+            "selected_initial_side": self._selected_side,
+            "scripts": {
+                side: planner.snapshot_state()
+                for side, planner in sorted(self.scripts.items())
+            },
+        }
+
+    def restore_state(self, state: Mapping[str, Any]) -> None:
+        if not isinstance(state, Mapping):
+            raise CyclePlannerError("side-matched planner state must be a mapping")
+        selected = state.get("selected_initial_side")
+        if selected is not None and str(selected) not in self.scripts:
+            raise CyclePlannerError("side-matched planner selected side is invalid")
+        script_states = state.get("scripts")
+        if not isinstance(script_states, Mapping) or set(script_states) != set(self.scripts):
+            raise CyclePlannerError("side-matched planner script states mismatch")
+        for side, planner in self.scripts.items():
+            planner.restore_state(script_states[side])
+        self._selected_side = None if selected is None else str(selected)
+
+    def manifest(self) -> dict[str, Any]:
+        return {
+            "schema": PLANNER_SCHEMA,
+            "condition_schema": CONDITION_KEY,
+            "planner_type": "side_matched_script",
+            "selected_initial_side": self._selected_side,
+            "available_initial_sides": list(self.available_initial_sides),
+            "scripts": {
+                side: planner.manifest()["script"]
+                for side, planner in sorted(self.scripts.items())
+            },
+            "cycles": (
+                []
+                if self.selected_planner is None
+                else self.selected_planner.manifest()["cycles"]
+            ),
+            "policy_input_boundary": [CONDITION_KEY],
+            "action_owner": "ACT",
+        }
+
+
 def _coerce_script_step(value: Any, index: int) -> ScriptStep:
     if isinstance(value, ScriptStep):
         target = value.target_side

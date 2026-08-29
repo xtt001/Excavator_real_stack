@@ -15,14 +15,16 @@ teleop:
     # Physical left-hand button 2 (pygame index 1) ARMs the whole session once.
     # Further presses do not create cycle annotations.
     mark_button: 1
-    policy_start_button: null
+    # Physical left-hand button 7 (pygame index 6) toggles manual/model control.
+    # Keep it separate from the already assigned physical buttons 1..6.
+    policy_start_button: 6
     # Keep the field-proven physical button 3 and the established go-home flow.
     go_home_button: 2
     # Physical left-hand button 4 cancels the current run. A partial recording
     # is archived for diagnosis but does not consume the frozen run entry.
     discard_button: 3
-    # Buttons 2/4 are task-reserved and must never become machine status toggles.
-    status_reserved_buttons: [1, 3]
+    # Buttons 2/4/7 are task-reserved and must never become machine status toggles.
+    status_reserved_buttons: [1, 3, 6]
   recording:
     enabled: true
     wait_for_start: true

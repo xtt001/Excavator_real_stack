@@ -10,6 +10,7 @@ from testbed.tasks.act_cycle_planner import (
     ABCyclePlanner,
     CyclePlannerError,
     ScriptCyclePlanner,
+    SideMatchedScriptCyclePlanner,
     parse_side_pattern,
 )
 
@@ -196,3 +197,46 @@ def test_field_single_cycle_scripts_are_finite_and_directionally_explicit(
     assert len(manifest["cycles"]) == 1
     assert manifest["cycles"][0]["transition"] == transition
     assert manifest["cycles"][0]["target_side"] == target_side
+
+
+def test_side_matched_field_scripts_select_from_observed_initial_side() -> None:
+    config_dir = REPO_ROOT / "testbed/testbed/configs"
+    planner = SideMatchedScriptCyclePlanner.from_script_paths(
+        {
+            "A": config_dir / "real_transition_four_cycle_left_start_v1.json",
+            "B": config_dir / "real_transition_four_cycle_right_start_v1.json",
+        },
+        loop=False,
+    )
+
+    assert planner.selected_initial_side is None
+    assert planner.available_initial_sides == ("A", "B")
+    with pytest.raises(CyclePlannerError, match="has not been selected"):
+        planner.commit_goal()
+
+    planner.select_initial_side("A")
+    manifest = planner.manifest()
+    assert manifest["selected_initial_side"] == "A"
+    assert [row["transition"] for row in manifest["cycles"]] == [
+        "A->B",
+        "B->A",
+        "A->B",
+        "B->A",
+    ]
+    assert planner.commit_goal().transition == "A->B"
+
+
+def test_side_matched_planner_reset_allows_new_side_selection() -> None:
+    planner = SideMatchedScriptCyclePlanner(
+        {
+            "A": ScriptCyclePlanner(initial_side="A", steps=["B"]),
+            "B": ScriptCyclePlanner(initial_side="B", steps=["A"]),
+        }
+    )
+    planner.select_initial_side("B")
+    planner.commit_goal()
+
+    planner.reset()
+    planner.select_initial_side("A")
+
+    assert planner.commit_goal().transition == "A->B"

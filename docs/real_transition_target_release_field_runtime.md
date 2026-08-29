@@ -12,14 +12,14 @@
 
 ```text
 人工模式稳定在脚本初始区域
-→ 按按钮 4 请求模型控制
+→ 按左手柄物理按钮 7 请求模型控制
 → 运行时提交第一铲目标并清空 ACT 历史
 → ACT 执行挖掘、卸料和回程
 → 必须先观察到一次真实回转位移
 → 训练数据支持的目标区域内连续稳定 0.5 秒
 → 结束当前一铲并提交下一目标
 → 脚本结束、错误区域或超时：锁定零动作
-→ 再按一次按钮 4：确认锁零并留在人工模式
+→ 再按一次左手柄物理按钮 7：确认锁零并留在人工模式
 ```
 
 同侧连续目标也必须先完成真实回转位移，不会因为起点已经位于目标区域而跳过一铲。
@@ -34,6 +34,7 @@
 - 模型包生成：`scripts/build_real_transition_target_release_bundle.py`
 - 静态预检：`scripts/verify_real_transition_target_release_runtime.py`
 - 日志检查：`scripts/check_real_transition_target_release_log.sh`
+- 真机部署问题反馈：`docs/real_transition_target_release_deployment_feedback_20260829.md`
 
 内部 A 表示左区，B 表示右区。示例脚本从右区开始，依次执行左、右、左三铲；它不循环。
 示例脚本不用于首次运动。首次运动使用已经准备好的两个单铲脚本，其他顺序仍需单独审核。
@@ -96,7 +97,7 @@ export CYCLE_SCRIPT=testbed/testbed/configs/real_transition_single_cycle_right_t
 ./scripts/run_real_transition_target_release_policy.sh
 ```
 
-机器在脚本初始区域稳定 0.5 秒后，主端按按钮 4。`shadow_zero` 验证以下内容：
+机器在脚本初始区域稳定 0.5 秒后，主端按左手柄物理按钮 7。`shadow_zero` 验证以下内容：
 
 - 明确加载 `policy_accepted.ckpt`；
 - 四路相机顺序、qpos 输入和推理正常；
@@ -124,11 +125,11 @@ export CONFIRM_SCRIPT_REVIEWED=YES
 `real_transition_single_cycle_left_to_right_v1.json` 单独测试反方向。两个脚本都只有一个
 目标且 `loop=false`，不会自动开始第二铲。
 
-按钮 4 的语义：
+左手柄物理按钮 7（pygame index 6）的语义：
 
 - 人工模式且初始区域稳定：提交第一目标并进入 ACT；
 - ACT 运行中：立即退出到人工；
-- 脚本完成、错误区域或超时后：系统锁零；按一次按钮 4 只解除锁零并停留在人工模式。
+- 脚本完成、错误区域或超时后：系统锁零；按一次左手柄物理按钮 7 只解除锁零并停留在人工模式。
 
 以下情况不会推进到下一目标：没有完成真实回转位移、目标区域错误、虽在左/右侧但超出
 本批训练终点范围、稳定窗不足、传感器时间断裂、周期 60 秒超时或总运行 240 秒超时。

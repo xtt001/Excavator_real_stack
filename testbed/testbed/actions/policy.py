@@ -398,12 +398,34 @@ class PolicyActionSource(ActionSource):
         if planner is None:
             return {"enabled": False}
         goal = getattr(planner, "committed_goal", None)
+        selected_planner = getattr(planner, "selected_planner", None)
+        active_planner = selected_planner or planner
+        planned_cycle_count = getattr(active_planner, "max_cycles", None)
+        if planned_cycle_count is None:
+            steps = getattr(active_planner, "steps", ()) or ()
+            planned_cycle_count = len(steps) if steps else None
         return {
             "enabled": True,
             "cycle_index": int(getattr(planner, "cycle_index", -1)),
             "goal_epoch": int(getattr(planner, "goal_epoch", -1)),
             "done": bool(getattr(planner, "done", False)),
             "committed": goal is not None,
+            "planner_type": (
+                "side_matched_script"
+                if hasattr(planner, "available_initial_sides")
+                else "script"
+            ),
+            "selected_initial_side": str(
+                getattr(planner, "selected_initial_side", "") or ""
+            ),
+            "available_initial_sides": list(
+                getattr(planner, "available_initial_sides", ()) or ()
+            ),
+            "script_id": str(getattr(planner, "script_id", "") or ""),
+            "script_path": str(getattr(planner, "source_path", "") or ""),
+            "planned_cycle_count": (
+                None if planned_cycle_count is None else int(planned_cycle_count)
+            ),
             "target_side": None if goal is None else str(goal.target_side),
             "condition": (
                 None
@@ -1197,7 +1219,11 @@ def _build_cycle_planner(raw_config: Any) -> Any | None:
         raise ValueError("teleop.policy.cycle_planner must be a mapping")
     if not bool(raw_config.get("enabled", False)):
         return None
-    from testbed.tasks.act_cycle_planner import ABCyclePlanner, ScriptCyclePlanner
+    from testbed.tasks.act_cycle_planner import (
+        ABCyclePlanner,
+        ScriptCyclePlanner,
+        SideMatchedScriptCyclePlanner,
+    )
 
     loop = None if "loop" not in raw_config else bool(raw_config["loop"])
     max_cycles = (
@@ -1206,6 +1232,18 @@ def _build_cycle_planner(raw_config: Any) -> Any | None:
         else int(raw_config["max_cycles"])
     )
     script_path = raw_config.get("script_path")
+    script_paths_by_side = raw_config.get("script_paths_by_initial_side")
+    if script_path and script_paths_by_side:
+        raise ValueError(
+            "cycle_planner cannot set both script_path and "
+            "script_paths_by_initial_side"
+        )
+    if script_paths_by_side is not None:
+        return SideMatchedScriptCyclePlanner.from_script_paths(
+            script_paths_by_side,
+            loop=loop,
+            max_cycles=max_cycles,
+        )
     if script_path:
         return ScriptCyclePlanner.from_script(
             str(script_path), loop=loop, max_cycles=max_cycles
