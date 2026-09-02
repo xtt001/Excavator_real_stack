@@ -411,7 +411,7 @@ class TransitionTaskRuntime:
                 required_samples = int(
                     swing_cfg["cycle_excursion_min_consecutive_samples"]
                 )
-                if abs(swing_delta) < threshold:
+                if swing_delta < threshold:
                     self._excursion_candidate_count = 0
                     self._automatic_wait_reason = "waiting_cycle_excursion"
                     return None

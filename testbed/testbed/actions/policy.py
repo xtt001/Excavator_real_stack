@@ -14,6 +14,15 @@ import yaml
 
 from testbed.actions.base import ActionInfo, ActionSource
 from testbed.backends.real.contracts import as_real_action
+from testbed.data.action_primitive_islands import (
+    ACTION_PRIMITIVE_KEY,
+    PRIMITIVE_NAMES,
+)
+from testbed.data.task_state_v2 import TASK_STATE_V2_KEY, task_state_vector
+from testbed.data.work_return_context import WORK_CONTEXT_KEY
+from testbed.tasks.real_transition_excursion import EXCURSION_OBSERVED_KEY
+from testbed.tasks.real_transition_phase import CYCLE_PHASE_KEY
+from testbed.tasks.real_transition_return_commit import RETURN_COMMIT_KEY
 
 POLICY_OUTPUT_MODES = ("control", "shadow_zero")
 POLICY_QVEL_MODES = ("raw", "zero", "qpos_diff")
@@ -45,6 +54,15 @@ class PolicyActionSourceState:
     policy_state: Any
     runtime_gate_state: Any | None
     planner_state: Any | None = None
+    excursion_observed: float = 0.0
+    excursion_observed_epoch: int = 0
+    cycle_phase: float = 0.0
+    cycle_phase_epoch: int = 0
+    return_commit: float = 0.0
+    return_commit_epoch: int = 0
+    task_dig_complete: float = 0.0
+    task_return_commit: float = 0.0
+    task_state_epoch: int = 0
 
 
 class PolicyActionSource(ActionSource):
@@ -82,6 +100,7 @@ class PolicyActionSource(ActionSource):
         frame_alignment_enabled: bool = False,
         cycle_planner: Any | None = None,
         reset_policy_on_goal: bool = True,
+        reset_policy_on_phase_change: bool = True,
     ) -> None:
         if output_mode not in POLICY_OUTPUT_MODES:
             raise ValueError(
@@ -113,6 +132,23 @@ class PolicyActionSource(ActionSource):
         self._frame_alignment_enabled = bool(frame_alignment_enabled)
         self._cycle_planner = cycle_planner
         self._reset_policy_on_goal = bool(reset_policy_on_goal)
+        self._reset_policy_on_phase_change = bool(reset_policy_on_phase_change)
+        policy_low_dim_keys = list(
+            getattr(policy, "low_dim_keys", getattr(policy, "_low_dim_keys", ())) or ()
+        )
+        self._cycle_phase_enabled = CYCLE_PHASE_KEY in policy_low_dim_keys
+        self._excursion_observed_enabled = EXCURSION_OBSERVED_KEY in policy_low_dim_keys
+        self._return_commit_enabled = RETURN_COMMIT_KEY in policy_low_dim_keys
+        self._task_state_v2_enabled = TASK_STATE_V2_KEY in policy_low_dim_keys
+        self._excursion_observed = 0.0
+        self._excursion_observed_epoch = 0
+        self._cycle_phase = 0.0
+        self._cycle_phase_epoch = 0
+        self._return_commit = 0.0
+        self._return_commit_epoch = 0
+        self._task_dig_complete = 0.0
+        self._task_return_commit = 0.0
+        self._task_state_epoch = 0
         if self._cycle_planner is not None:
             for method_name in (
                 "apply_condition",
@@ -121,10 +157,7 @@ class PolicyActionSource(ActionSource):
                 "reset",
             ):
                 if not callable(getattr(self._cycle_planner, method_name, None)):
-                    raise TypeError(
-                        "cycle_planner must implement "
-                        f"{method_name}()"
-                    )
+                    raise TypeError(f"cycle_planner must implement {method_name}()")
         if self._inference_warmup_steps < 0:
             raise ValueError("inference_warmup_steps must be non-negative")
         self._inference_prepared = False
@@ -155,12 +188,8 @@ class PolicyActionSource(ActionSource):
             inference_compile_mode=str(
                 cfg.get("inference_compile_mode", "reduce-overhead")
             ),
-            inference_compile_dynamic=bool(
-                cfg.get("inference_compile_dynamic", False)
-            ),
-            device_uint8_preprocess=bool(
-                cfg.get("device_uint8_preprocess", False)
-            ),
+            inference_compile_dynamic=bool(cfg.get("inference_compile_dynamic", False)),
+            device_uint8_preprocess=bool(cfg.get("device_uint8_preprocess", False)),
             temporal_aggregation_diagnostics=bool(
                 cfg.get("temporal_aggregation_diagnostics", False)
             ),
@@ -217,6 +246,9 @@ class PolicyActionSource(ActionSource):
             ),
             cycle_planner=cycle_planner,
             reset_policy_on_goal=bool(cfg.get("reset_policy_on_goal", True)),
+            reset_policy_on_phase_change=bool(
+                cfg.get("reset_policy_on_phase_change", True)
+            ),
         )
 
     def reset(self) -> None:
@@ -227,6 +259,15 @@ class PolicyActionSource(ActionSource):
         self._filtered_qvel.fill(0.0)
         self._assist_last_sign.fill(0)
         self._assist_consecutive_steps.fill(0)
+        self._excursion_observed = 0.0
+        self._excursion_observed_epoch = 0
+        self._cycle_phase = 0.0
+        self._cycle_phase_epoch = 0
+        self._return_commit = 0.0
+        self._return_commit_epoch = 0
+        self._task_dig_complete = 0.0
+        self._task_return_commit = 0.0
+        self._task_state_epoch = 0
         if self._cycle_planner is not None:
             self._cycle_planner.reset()
         if self._runtime_gate_stack is not None:
@@ -261,13 +302,28 @@ class PolicyActionSource(ActionSource):
             policy_obs, _ = self._policy_obs(obs)
             if self._cycle_planner is not None:
                 policy_obs = self._cycle_planner.apply_condition(policy_obs)
+            if self._cycle_phase_enabled:
+                policy_obs[CYCLE_PHASE_KEY] = np.asarray(
+                    [self._cycle_phase], dtype=np.float32
+                )
+            if self._excursion_observed_enabled:
+                policy_obs[EXCURSION_OBSERVED_KEY] = np.asarray(
+                    [self._excursion_observed], dtype=np.float32
+                )
+            if self._return_commit_enabled:
+                policy_obs[RETURN_COMMIT_KEY] = np.asarray(
+                    [self._return_commit], dtype=np.float32
+                )
+            self._apply_task_state_v2(policy_obs)
             inference = (
                 getattr(self._policy, "predict_action_and_intent", None)
                 if self._runtime_gate_stack is not None or self._report_intent
                 else getattr(self._policy, "predict", None)
             )
             if not callable(inference):
-                raise TypeError("policy does not implement the configured inference API")
+                raise TypeError(
+                    "policy does not implement the configured inference API"
+                )
             for _ in range(self._inference_warmup_steps):
                 inference(policy_obs)
                 completed += 1
@@ -290,7 +346,9 @@ class PolicyActionSource(ActionSource):
         if self._runtime_gate_stack is not None:
             gate_snapshot = getattr(self._runtime_gate_stack, "snapshot_state", None)
             if not callable(gate_snapshot):
-                raise TypeError("runtime gate stack does not implement snapshot_state()")
+                raise TypeError(
+                    "runtime gate stack does not implement snapshot_state()"
+                )
             gate_state = gate_snapshot()
         planner_state = None
         if self._cycle_planner is not None:
@@ -301,13 +359,9 @@ class PolicyActionSource(ActionSource):
         return PolicyActionSourceState(
             step=int(self._step),
             record_start_pending=bool(self._record_start_pending),
-            last_qpos=(
-                None if self._last_qpos is None else self._last_qpos.copy()
-            ),
+            last_qpos=(None if self._last_qpos is None else self._last_qpos.copy()),
             last_obs_time_ns=(
-                None
-                if self._last_obs_time_ns is None
-                else int(self._last_obs_time_ns)
+                None if self._last_obs_time_ns is None else int(self._last_obs_time_ns)
             ),
             filtered_qvel=self._filtered_qvel.copy(),
             assist_last_sign=self._assist_last_sign.copy(),
@@ -315,6 +369,15 @@ class PolicyActionSource(ActionSource):
             policy_state=policy_snapshot(),
             runtime_gate_state=gate_state,
             planner_state=planner_state,
+            excursion_observed=float(self._excursion_observed),
+            excursion_observed_epoch=int(self._excursion_observed_epoch),
+            cycle_phase=float(self._cycle_phase),
+            cycle_phase_epoch=int(self._cycle_phase_epoch),
+            return_commit=float(self._return_commit),
+            return_commit_epoch=int(self._return_commit_epoch),
+            task_dig_complete=float(self._task_dig_complete),
+            task_return_commit=float(self._task_return_commit),
+            task_state_epoch=int(self._task_state_epoch),
         )
 
     def restore_state(self, state: PolicyActionSourceState) -> None:
@@ -331,23 +394,26 @@ class PolicyActionSource(ActionSource):
             raise ValueError("cycle planner state/config mismatch")
         self._step = int(state.step)
         self._record_start_pending = bool(state.record_start_pending)
-        self._last_qpos = (
-            None if state.last_qpos is None else state.last_qpos.copy()
-        )
+        self._last_qpos = None if state.last_qpos is None else state.last_qpos.copy()
         self._last_obs_time_ns = (
-            None
-            if state.last_obs_time_ns is None
-            else int(state.last_obs_time_ns)
+            None if state.last_obs_time_ns is None else int(state.last_obs_time_ns)
         )
-        self._filtered_qvel = np.asarray(
-            state.filtered_qvel, dtype=np.float32
-        ).copy()
+        self._filtered_qvel = np.asarray(state.filtered_qvel, dtype=np.float32).copy()
         self._assist_last_sign = np.asarray(
             state.assist_last_sign, dtype=np.int8
         ).copy()
         self._assist_consecutive_steps = np.asarray(
             state.assist_consecutive_steps, dtype=np.int32
         ).copy()
+        self._excursion_observed = float(state.excursion_observed)
+        self._excursion_observed_epoch = int(state.excursion_observed_epoch)
+        self._cycle_phase = float(state.cycle_phase)
+        self._cycle_phase_epoch = int(state.cycle_phase_epoch)
+        self._return_commit = float(state.return_commit)
+        self._return_commit_epoch = int(state.return_commit_epoch)
+        self._task_dig_complete = float(state.task_dig_complete)
+        self._task_return_commit = float(state.task_return_commit)
+        self._task_state_epoch = int(state.task_state_epoch)
         policy_restore(state.policy_state)
         if self._runtime_gate_stack is not None:
             gate_restore = getattr(self._runtime_gate_stack, "restore_state", None)
@@ -366,12 +432,27 @@ class PolicyActionSource(ActionSource):
 
         return self._cycle_planner
 
+    @property
+    def task_state_v2_enabled(self) -> bool:
+        """Whether the loaded ACT checkpoint requires the five-value task token."""
+
+        return bool(self._task_state_v2_enabled)
+
     def commit_cycle_goal(self) -> Any:
         """Commit the next planner goal before requesting policy actions."""
 
         if self._cycle_planner is None:
             raise RuntimeError("no cycle planner is attached")
         goal = self._cycle_planner.commit_goal()
+        self._excursion_observed = 0.0
+        self._excursion_observed_epoch = int(getattr(goal, "goal_epoch", 0)) * 2
+        self._cycle_phase = 0.0
+        self._cycle_phase_epoch = int(getattr(goal, "goal_epoch", 0)) * 2
+        self._return_commit = 0.0
+        self._return_commit_epoch = int(getattr(goal, "goal_epoch", 0)) * 2
+        self._task_dig_complete = 0.0
+        self._task_return_commit = 0.0
+        self._task_state_epoch = int(getattr(goal, "goal_epoch", 0)) * 3
         # A committed goal starts a new causal action sequence.  ACT's
         # temporal aggregation, cached chunk, visual history, and any
         # factorized aggregator must not carry proposals generated under the
@@ -383,6 +464,117 @@ class PolicyActionSource(ActionSource):
             if callable(policy_reset):
                 policy_reset()
         return goal
+
+    def set_cycle_excursion_observed(self, *, observed: bool) -> bool:
+        """Latch causal positive excursion and reset conditioned ACT state."""
+
+        if not self._excursion_observed_enabled:
+            return False
+        if (
+            self._cycle_planner is not None
+            and self._cycle_planner.committed_goal is None
+        ):
+            raise RuntimeError(
+                "cycle excursion state requires a committed planner goal"
+            )
+        value = 1.0 if bool(observed) else 0.0
+        if value == self._excursion_observed:
+            return False
+        if self._excursion_observed == 1.0 and value == 0.0:
+            raise RuntimeError("cycle excursion state is monotonic within one goal")
+        self._excursion_observed = value
+        self._excursion_observed_epoch += 1
+        if self._reset_policy_on_phase_change:
+            policy_reset = getattr(self._policy, "reset", None)
+            if callable(policy_reset):
+                policy_reset()
+        return True
+
+    def set_cycle_phase(self, *, return_phase: bool) -> bool:
+        """Latch the causal return phase and reset phase-conditioned ACT state."""
+
+        if not self._cycle_phase_enabled:
+            return False
+        if (
+            self._cycle_planner is not None
+            and self._cycle_planner.committed_goal is None
+        ):
+            raise RuntimeError("cycle phase requires a committed planner goal")
+        value = 1.0 if bool(return_phase) else 0.0
+        if value == self._cycle_phase:
+            return False
+        if self._cycle_phase == 1.0 and value == 0.0:
+            raise RuntimeError("cycle phase is monotonic within one committed goal")
+        self._cycle_phase = value
+        self._cycle_phase_epoch += 1
+        if self._reset_policy_on_phase_change:
+            policy_reset = getattr(self._policy, "reset", None)
+            if callable(policy_reset):
+                policy_reset()
+        return True
+
+    def set_return_commit(self, *, committed: bool) -> bool:
+        """Latch planner-owned return intent without deriving it from observations."""
+
+        if not self._return_commit_enabled:
+            return False
+        if (
+            self._cycle_planner is not None
+            and self._cycle_planner.committed_goal is None
+        ):
+            raise RuntimeError("return commit requires a committed planner goal")
+        value = 1.0 if bool(committed) else 0.0
+        if value == self._return_commit:
+            return False
+        if self._return_commit == 1.0 and value == 0.0:
+            raise RuntimeError("return commit is monotonic within one committed goal")
+        self._return_commit = value
+        self._return_commit_epoch += 1
+        if self._reset_policy_on_phase_change:
+            policy_reset = getattr(self._policy, "reset", None)
+            if callable(policy_reset):
+                policy_reset()
+        return True
+
+    def set_task_dig_complete(self, *, completed: bool) -> bool:
+        """Latch the operator/planner-owned work-complete event for task-state-v2."""
+
+        if not self._task_state_v2_enabled:
+            return False
+        if (
+            self._cycle_planner is not None
+            and self._cycle_planner.committed_goal is None
+        ):
+            raise RuntimeError("task-state work complete requires a committed goal")
+        value = 1.0 if bool(completed) else 0.0
+        if value == self._task_dig_complete:
+            return False
+        if self._task_dig_complete == 1.0 and value == 0.0:
+            raise RuntimeError("task-state work complete is monotonic within one goal")
+        self._task_dig_complete = value
+        self._task_state_epoch += 1
+        self._reset_policy_for_task_state_change()
+        return True
+
+    def set_task_return_commit(self, *, committed: bool) -> bool:
+        """Latch permission to expose the next target in task-state-v2."""
+
+        if not self._task_state_v2_enabled:
+            return False
+        if (
+            self._cycle_planner is not None
+            and self._cycle_planner.committed_goal is None
+        ):
+            raise RuntimeError("task-state return commit requires a committed goal")
+        value = 1.0 if bool(committed) else 0.0
+        if value == self._task_return_commit:
+            return False
+        if self._task_return_commit == 1.0 and value == 0.0:
+            raise RuntimeError("task-state return commit is monotonic within one goal")
+        self._task_return_commit = value
+        self._task_state_epoch += 1
+        self._reset_policy_for_task_state_change()
+        return True
 
     def mark_cycle_target_ready(self, realized_side: str) -> Any:
         """Advance the planner after an independently verified ready boundary."""
@@ -428,10 +620,22 @@ class PolicyActionSource(ActionSource):
             ),
             "target_side": None if goal is None else str(goal.target_side),
             "condition": (
-                None
-                if goal is None
-                else [float(value) for value in goal.condition]
+                None if goal is None else [float(value) for value in goal.condition]
             ),
+            "cycle_phase_enabled": bool(self._cycle_phase_enabled),
+            "return_commit_enabled": bool(self._return_commit_enabled),
+            "task_state_v2_enabled": bool(self._task_state_v2_enabled),
+            "excursion_observed_enabled": bool(self._excursion_observed_enabled),
+            "excursion_observed": float(self._excursion_observed),
+            "excursion_observed_epoch": int(self._excursion_observed_epoch),
+            "cycle_phase": float(self._cycle_phase),
+            "cycle_phase_epoch": int(self._cycle_phase_epoch),
+            "return_commit": float(self._return_commit),
+            "return_commit_epoch": int(self._return_commit_epoch),
+            "task_dig_complete": float(self._task_dig_complete),
+            "task_return_commit": float(self._task_return_commit),
+            "task_state_epoch": int(self._task_state_epoch),
+            "task_state_v2": self._task_state_v2_for_goal(goal),
         }
 
     def next_action(self, obs: dict[str, Any]) -> tuple[np.ndarray, ActionInfo]:
@@ -444,6 +648,19 @@ class PolicyActionSource(ActionSource):
             if self._cycle_planner is not None:
                 policy_obs = self._cycle_planner.apply_condition(policy_obs)
                 planner_goal = self._cycle_planner.committed_goal
+            if self._cycle_phase_enabled:
+                policy_obs[CYCLE_PHASE_KEY] = np.asarray(
+                    [self._cycle_phase], dtype=np.float32
+                )
+            if self._excursion_observed_enabled:
+                policy_obs[EXCURSION_OBSERVED_KEY] = np.asarray(
+                    [self._excursion_observed], dtype=np.float32
+                )
+            if self._return_commit_enabled:
+                policy_obs[RETURN_COMMIT_KEY] = np.asarray(
+                    [self._return_commit], dtype=np.float32
+                )
+            self._apply_task_state_v2(policy_obs)
             gate_extras: dict[str, Any] = {}
             raw_gohome_requested = False
             intent_probabilities: np.ndarray | None = None
@@ -506,13 +723,30 @@ class PolicyActionSource(ActionSource):
                     dtype=np.float32,
                 ).copy(),
                 "policy_inference_latency_ms": latency_ms,
-                "policy_frame_alignment_enabled": int(
-                    self._frame_alignment_enabled
-                ),
+                "policy_frame_alignment_enabled": int(self._frame_alignment_enabled),
                 "policy_frame_reused": 0,
                 "policy_frame_reuse_count": 0,
                 "policy_step": int(self._step),
                 "policy_error": "",
+                "policy_cycle_phase_enabled": int(self._cycle_phase_enabled),
+                "policy_return_commit_enabled": int(self._return_commit_enabled),
+                "policy_task_state_v2_enabled": int(self._task_state_v2_enabled),
+                "policy_excursion_observed_enabled": int(
+                    self._excursion_observed_enabled
+                ),
+                "policy_excursion_observed": float(self._excursion_observed),
+                "policy_excursion_observed_epoch": int(self._excursion_observed_epoch),
+                "policy_cycle_phase": float(self._cycle_phase),
+                "policy_cycle_phase_epoch": int(self._cycle_phase_epoch),
+                "policy_return_commit": float(self._return_commit),
+                "policy_return_commit_epoch": int(self._return_commit_epoch),
+                "policy_task_dig_complete": float(self._task_dig_complete),
+                "policy_task_return_commit": float(self._task_return_commit),
+                "policy_task_state_epoch": int(self._task_state_epoch),
+                "policy_task_state_v2": np.asarray(
+                    policy_obs.get(TASK_STATE_V2_KEY, np.zeros(5)),
+                    dtype=np.float32,
+                ).copy(),
                 **assist_extras,
                 **gate_extras,
             }
@@ -523,9 +757,7 @@ class PolicyActionSource(ActionSource):
                         "planner_goal_epoch": int(planner_goal.goal_epoch),
                         "planner_current_side": str(planner_goal.current_side),
                         "planner_target_side": str(planner_goal.target_side),
-                        "planner_target_side_code": int(
-                            planner_goal.target_side_code
-                        ),
+                        "planner_target_side_code": int(planner_goal.target_side_code),
                         "planner_condition": np.asarray(
                             planner_goal.condition, dtype=np.float32
                         ),
@@ -586,19 +818,19 @@ class PolicyActionSource(ActionSource):
                 "policy_qvel_input": zero.copy(),
                 "policy_previous_final_command_input": zero.copy(),
                 "policy_inference_latency_ms": latency_ms,
-                "policy_frame_alignment_enabled": int(
-                    self._frame_alignment_enabled
-                ),
+                "policy_frame_alignment_enabled": int(self._frame_alignment_enabled),
                 "policy_frame_reused": 0,
                 "policy_frame_reuse_count": 0,
                 "policy_step": int(self._step),
                 "policy_error": f"{type(exc).__name__}: {exc}",
+                "policy_task_state_v2_enabled": int(self._task_state_v2_enabled),
+                "policy_task_dig_complete": float(self._task_dig_complete),
+                "policy_task_return_commit": float(self._task_return_commit),
+                "policy_task_state_epoch": int(self._task_state_epoch),
                 **_deadzone_assist_disabled_extras(self._deadzone_assist),
             }
             if self._report_intent:
-                extras["policy_intent_probabilities"] = np.zeros(
-                    8, dtype=np.float32
-                )
+                extras["policy_intent_probabilities"] = np.zeros(8, dtype=np.float32)
             if self._bundle_dir is not None:
                 extras["policy_bundle_dir"] = self._bundle_dir
             self._step += 1
@@ -621,6 +853,41 @@ class PolicyActionSource(ActionSource):
             qvel_override=qvel,
         )
         return policy_obs, qvel
+
+    def _apply_task_state_v2(self, policy_obs: dict[str, Any]) -> None:
+        if not self._task_state_v2_enabled:
+            return
+        goal = (
+            None
+            if self._cycle_planner is None
+            else getattr(self._cycle_planner, "committed_goal", None)
+        )
+        if goal is None:
+            if TASK_STATE_V2_KEY not in policy_obs:
+                raise RuntimeError(
+                    "task-state-v2 ACT requires either a committed cycle goal or "
+                    f"an explicit {TASK_STATE_V2_KEY} observation"
+                )
+            return
+        policy_obs[TASK_STATE_V2_KEY] = self._task_state_v2_for_goal(goal)
+
+    def _task_state_v2_for_goal(self, goal: Any | None) -> np.ndarray | None:
+        if not self._task_state_v2_enabled or goal is None:
+            return None
+        return task_state_vector(
+            current_side=str(goal.current_side),
+            dig_target=str(goal.current_side),
+            next_target=str(goal.target_side),
+            dig_complete=self._task_dig_complete,
+            return_commit=self._task_return_commit,
+        )
+
+    def _reset_policy_for_task_state_change(self) -> None:
+        if not self._reset_policy_on_phase_change:
+            return
+        policy_reset = getattr(self._policy, "reset", None)
+        if callable(policy_reset):
+            policy_reset()
 
     def _policy_qvel(self, obs: dict[str, Any]) -> np.ndarray:
         raw_qvel = np.asarray(obs.get("qvel", np.zeros(4)), dtype=np.float32).reshape(
@@ -705,9 +972,7 @@ class PolicyActionSource(ActionSource):
         axes = _assist_axes_text(assist_mask=assist_mask, sign=sign)
         extras = {
             "policy_deadzone_assist_enabled": 1,
-            "policy_deadzone_assist_axis_enabled": cfg.axis_enabled.astype(
-                np.int32
-            ),
+            "policy_deadzone_assist_axis_enabled": cfg.axis_enabled.astype(np.int32),
             "policy_deadzone_assist_active": int(bool(np.any(assist_mask))),
             "policy_deadzone_assist_mask": assist_mask.astype(np.int32),
             "policy_deadzone_assist_axes": axes,
@@ -780,6 +1045,7 @@ def load_act_policy_from_bundle(
         "window_deadzone_loss",
         "temporal_release_loss",
         "condition_adherence_loss",
+        "task_state_v2_adherence_loss",
     ):
         section = policy_config.get(section_name)
         if isinstance(section, dict):
@@ -801,16 +1067,12 @@ def load_act_policy_from_bundle(
         inference_compile_mode=str(inference_compile_mode),
         inference_compile_dynamic=bool(inference_compile_dynamic),
         device_uint8_preprocess=bool(device_uint8_preprocess),
-        temporal_aggregation_diagnostics=bool(
-            temporal_aggregation_diagnostics
-        ),
+        temporal_aggregation_diagnostics=bool(temporal_aggregation_diagnostics),
         device=str(device or resolved.get("policy", {}).get("device", "cuda")),
     )
 
 
-def _relocate_bundle_file(
-    config: dict[str, Any], *, key: str, bundle: Path
-) -> None:
+def _relocate_bundle_file(config: dict[str, Any], *, key: str, bundle: Path) -> None:
     raw = config.get(key)
     if raw is None or not str(raw).strip():
         return
@@ -827,6 +1089,24 @@ def _relocate_bundle_file(
             return
 
 
+def _resolved_low_dim_state_dim(low_dim_keys: list[str]) -> int:
+    dimensions = {
+        "qpos": 4,
+        "qvel": 4,
+        "real_transition_condition_v1": 2,
+        "real_transition_excursion_observed_v1": 1,
+        "real_transition_cycle_phase_v1": 1,
+        "real_transition_return_commit_v1": 1,
+        "real_transition_action_primitive_v1": 4,
+        "real_transition_work_context_v1": 6,
+        TASK_STATE_V2_KEY: 5,
+    }
+    unknown = [key for key in low_dim_keys if key not in dimensions]
+    if unknown:
+        raise ValueError(f"unsupported ACT low_dim_keys: {unknown}")
+    return int(sum(dimensions[key] for key in low_dim_keys))
+
+
 def _act_policy_config_from_resolved(resolved: dict[str, Any]) -> dict[str, Any]:
     task_cfg = dict(resolved.get("task", {}) or {})
     policy_cfg = dict(resolved.get("policy", {}) or {})
@@ -834,7 +1114,9 @@ def _act_policy_config_from_resolved(resolved: dict[str, Any]) -> dict[str, Any]
     act_params = dict(policy_cfg.get("act_params", {}) or {})
     camera_names = list(task_cfg.get("camera_names", ["fpv"]))
     low_dim_keys = list(policy_cfg.get("low_dim_keys", ["qpos", "qvel"]))
-    state_dim = int(act_params.get("state_dim", 4 * len(low_dim_keys)))
+    state_dim = int(
+        act_params.get("state_dim", _resolved_low_dim_state_dim(low_dim_keys))
+    )
     episode_len = task_cfg.get("episode_len")
     max_episode_len = 400 if episode_len is None else int(episode_len)
     return {
@@ -850,6 +1132,10 @@ def _act_policy_config_from_resolved(resolved: dict[str, Any]) -> dict[str, Any]
         ),
         "lr_backbone": 1e-5,
         "backbone": "resnet18",
+        # A full ACT checkpoint contains the ResNet parameters. Runtime bundle
+        # loading must work on an offline field computer without consulting the
+        # torchvision download cache.
+        "backbone_pretrained": False,
         "enc_layers": 4,
         "dec_layers": 7,
         "nheads": 8,
@@ -891,8 +1177,7 @@ def _act_policy_config_from_resolved(resolved: dict[str, Any]) -> dict[str, Any]
             or {}
         ),
         "deadzone_loss": copy.deepcopy(
-            train_cfg.get("deadzone_loss", policy_cfg.get("deadzone_loss", {}))
-            or {}
+            train_cfg.get("deadzone_loss", policy_cfg.get("deadzone_loss", {})) or {}
         ),
         "window_deadzone_loss": copy.deepcopy(
             train_cfg.get(
@@ -933,6 +1218,34 @@ def _act_policy_config_from_resolved(resolved: dict[str, Any]) -> dict[str, Any]
             )
             or {}
         ),
+        "primitive_action_heads": copy.deepcopy(
+            train_cfg.get(
+                "primitive_action_heads",
+                policy_cfg.get("primitive_action_heads", {}),
+            )
+            or {}
+        ),
+        "work_return_context": copy.deepcopy(
+            train_cfg.get(
+                "work_return_context",
+                policy_cfg.get("work_return_context", {}),
+            )
+            or {}
+        ),
+        "state_visual_residual": copy.deepcopy(
+            train_cfg.get(
+                "state_visual_residual",
+                policy_cfg.get("state_visual_residual", {}),
+            )
+            or {}
+        ),
+        "task_state_v2_adherence_loss": copy.deepcopy(
+            train_cfg.get(
+                "task_state_v2_adherence_loss",
+                policy_cfg.get("task_state_v2_adherence_loss", {}),
+            )
+            or {}
+        ),
     }
 
 
@@ -968,10 +1281,98 @@ def _policy_obs_from_real_obs(
                 f"got {condition.shape}"
             )
         if not np.isfinite(condition).all():
-            raise ValueError(
-                "observation real_transition_condition_v1 must be finite"
-            )
+            raise ValueError("observation real_transition_condition_v1 must be finite")
         policy_obs["real_transition_condition_v1"] = condition.copy()
+    if ACTION_PRIMITIVE_KEY in obs:
+        primitive = np.asarray(obs[ACTION_PRIMITIVE_KEY], dtype=np.float32).reshape(-1)
+        if (
+            primitive.shape != (len(PRIMITIVE_NAMES),)
+            or not np.isfinite(primitive).all()
+            or not np.all(np.isin(primitive, [0.0, 1.0]))
+            or not np.isclose(float(primitive.sum()), 1.0)
+        ):
+            raise ValueError(
+                f"observation {ACTION_PRIMITIVE_KEY} must be a finite one-hot "
+                f"vector of length {len(PRIMITIVE_NAMES)}"
+            )
+        policy_obs[ACTION_PRIMITIVE_KEY] = primitive.copy()
+    if WORK_CONTEXT_KEY in obs:
+        context = np.asarray(obs[WORK_CONTEXT_KEY], dtype=np.float32).reshape(-1)
+        valid = (
+            context.shape == (6,)
+            and np.isfinite(context).all()
+            and context[0] in {-1.0, 1.0}
+            and context[1] in {-1.0, 1.0}
+            and np.all(np.isin(context[2:], [0.0, 1.0]))
+            and np.isclose(float(context[2:].sum()), 1.0)
+        )
+        if not valid:
+            raise ValueError(
+                f"observation {WORK_CONTEXT_KEY} must contain current A/B, "
+                "dig-target A/B, and one WORK_A/WORK_B/RETURN_A/RETURN_B one-hot"
+            )
+        policy_obs[WORK_CONTEXT_KEY] = context.copy()
+    if TASK_STATE_V2_KEY in obs:
+        task_state = np.asarray(obs[TASK_STATE_V2_KEY], dtype=np.float32).reshape(-1)
+        valid = (
+            task_state.shape == (5,)
+            and np.isfinite(task_state).all()
+            and task_state[0] in {-1.0, 1.0}
+            and task_state[1] == task_state[0]
+            and task_state[2] in {0.0, 1.0}
+            and task_state[3] in {0.0, 1.0}
+            and (
+                (task_state[3] == 0.0 and task_state[4] == 0.0)
+                or (task_state[3] == 1.0 and task_state[4] in {-1.0, 1.0})
+            )
+        )
+        if not valid:
+            raise ValueError(
+                f"observation {TASK_STATE_V2_KEY} must contain current side, "
+                "matching dig target, independent complete/commit bits, and a "
+                "next target gated by return_commit"
+            )
+        policy_obs[TASK_STATE_V2_KEY] = task_state.copy()
+    if EXCURSION_OBSERVED_KEY in obs:
+        excursion = np.asarray(obs[EXCURSION_OBSERVED_KEY], dtype=np.float32).reshape(
+            -1
+        )
+        if (
+            excursion.shape != (1,)
+            or not np.isfinite(excursion).all()
+            or excursion[0] not in {0.0, 1.0}
+        ):
+            raise ValueError(
+                f"observation {EXCURSION_OBSERVED_KEY} must contain one finite "
+                "0/1 value"
+            )
+        policy_obs[EXCURSION_OBSERVED_KEY] = excursion.copy()
+    if CYCLE_PHASE_KEY in obs:
+        phase = np.asarray(obs[CYCLE_PHASE_KEY], dtype=np.float32).reshape(-1)
+        if (
+            phase.shape != (1,)
+            or not np.isfinite(phase).all()
+            or phase[0]
+            not in {
+                0.0,
+                1.0,
+            }
+        ):
+            raise ValueError(
+                f"observation {CYCLE_PHASE_KEY} must contain one finite 0/1 value"
+            )
+        policy_obs[CYCLE_PHASE_KEY] = phase.copy()
+    if RETURN_COMMIT_KEY in obs:
+        return_commit = np.asarray(obs[RETURN_COMMIT_KEY], dtype=np.float32).reshape(-1)
+        if (
+            return_commit.shape != (1,)
+            or not np.isfinite(return_commit).all()
+            or return_commit[0] not in {0.0, 1.0}
+        ):
+            raise ValueError(
+                f"observation {RETURN_COMMIT_KEY} must contain one finite 0/1 value"
+            )
+        policy_obs[RETURN_COMMIT_KEY] = return_commit.copy()
     for name in names:
         policy_obs[f"image_{name}"] = _resolve_camera_image(obs, camera_name=name)
     # Keep causal image timing metadata for the opt-in temporal ACT adapter.
@@ -1151,9 +1552,7 @@ def _deadzone_assist_disabled_extras(
         "policy_deadzone_assist_mask": np.zeros(4, dtype=np.int32),
         "policy_deadzone_assist_axes": "",
         "policy_deadzone_assist_trigger_fraction": cfg.trigger_fraction.copy(),
-        "policy_deadzone_assist_min_consecutive_steps": int(
-            cfg.min_consecutive_steps
-        ),
+        "policy_deadzone_assist_min_consecutive_steps": int(cfg.min_consecutive_steps),
         "policy_deadzone_assist_positive": cfg.deadzone_positive.copy(),
         "policy_deadzone_assist_negative": cfg.deadzone_negative.copy(),
     }
@@ -1227,16 +1626,13 @@ def _build_cycle_planner(raw_config: Any) -> Any | None:
 
     loop = None if "loop" not in raw_config else bool(raw_config["loop"])
     max_cycles = (
-        None
-        if raw_config.get("max_cycles") is None
-        else int(raw_config["max_cycles"])
+        None if raw_config.get("max_cycles") is None else int(raw_config["max_cycles"])
     )
     script_path = raw_config.get("script_path")
     script_paths_by_side = raw_config.get("script_paths_by_initial_side")
     if script_path and script_paths_by_side:
         raise ValueError(
-            "cycle_planner cannot set both script_path and "
-            "script_paths_by_initial_side"
+            "cycle_planner cannot set both script_path and script_paths_by_initial_side"
         )
     if script_paths_by_side is not None:
         return SideMatchedScriptCyclePlanner.from_script_paths(
@@ -1250,9 +1646,7 @@ def _build_cycle_planner(raw_config: Any) -> Any | None:
         )
     script = raw_config.get("script")
     if script is not None:
-        return ScriptCyclePlanner.from_mapping(
-            script, loop=loop, max_cycles=max_cycles
-        )
+        return ScriptCyclePlanner.from_mapping(script, loop=loop, max_cycles=max_cycles)
     return ABCyclePlanner(
         pattern=str(raw_config.get("pattern", "ABBABABA")),
         loop=True if loop is None else loop,

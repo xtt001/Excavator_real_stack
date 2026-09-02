@@ -31,6 +31,12 @@ from testbed.data.dataset import _read_camera_image
 from testbed.data.open_loop_experiment import OpenLoopCalibration
 from testbed.runtime.guard import ActionGuard
 from testbed.tasks.act_cycle_planner import ScriptCyclePlanner
+from testbed.tasks.real_transition_excursion import (
+    EXCURSION_OBSERVED_KEY,
+    derive_excursion_observed,
+)
+from testbed.tasks.real_transition_phase import CYCLE_PHASE_KEY
+from testbed.tasks.real_transition_return_commit import RETURN_COMMIT_KEY
 
 CAMERAS = ("video4", "video5", "video6", "video7")
 MODES = ("continuous", "per_goal_reset")
@@ -338,8 +344,44 @@ def _replay_cycle(
         condition = np.asarray(
             handle["conditions/real_transition_condition_v1"][()], dtype=np.float32
         )
+        cycle_phase = (
+            np.asarray(
+                handle[f"conditions/{CYCLE_PHASE_KEY}"][()], dtype=np.float32
+            )
+            if f"conditions/{CYCLE_PHASE_KEY}" in handle
+            else np.zeros((len(qpos), 1), dtype=np.float32)
+        )
         if condition.shape != (len(qpos), 2):
             raise ValueError(f"episode {row['episode_id']} condition shape is invalid")
+        if cycle_phase.shape != (len(qpos), 1):
+            raise ValueError(f"episode {row['episode_id']} cycle phase shape is invalid")
+        excursion_observed = (
+            np.asarray(
+                handle[f"conditions/{EXCURSION_OBSERVED_KEY}"][()],
+                dtype=np.float32,
+            )
+            if f"conditions/{EXCURSION_OBSERVED_KEY}" in handle
+            else derive_excursion_observed(
+                qpos=qpos,
+                minimum_delta_rad=0.08,
+                minimum_consecutive_samples=3,
+            )
+        )
+        if excursion_observed.shape != (len(qpos), 1):
+            raise ValueError(
+                f"episode {row['episode_id']} excursion state shape is invalid"
+            )
+        return_commit = (
+            np.asarray(
+                handle[f"conditions/{RETURN_COMMIT_KEY}"][()], dtype=np.float32
+            )
+            if f"conditions/{RETURN_COMMIT_KEY}" in handle
+            else np.zeros((len(qpos), 1), dtype=np.float32)
+        )
+        if return_commit.shape != (len(qpos), 1):
+            raise ValueError(
+                f"episode {row['episode_id']} return commit shape is invalid"
+            )
         apex_index = int(np.argmax(qpos[:, 0]))
         target_side = str(goal.target_side)
         ready_index = _reference_ready_index(
@@ -358,6 +400,12 @@ def _replay_cycle(
         )
         images_and_actions = []
         for step in range(len(qpos)):
+            if float(excursion_observed[step, 0]) > 0.0:
+                source.set_cycle_excursion_observed(observed=True)
+            if float(cycle_phase[step, 0]) > 0.0:
+                source.set_cycle_phase(return_phase=True)
+            if float(return_commit[step, 0]) > 0.0:
+                source.set_return_commit(committed=True)
             images = {
                 camera: _read_camera_image(handle, camera, step)
                 for camera in CAMERAS
@@ -366,6 +414,9 @@ def _replay_cycle(
                 "qpos": qpos[step],
                 "qvel": qvel[step],
                 "images": images,
+                EXCURSION_OBSERVED_KEY: excursion_observed[step],
+                CYCLE_PHASE_KEY: cycle_phase[step],
+                RETURN_COMMIT_KEY: return_commit[step],
             }
             action, info = source.next_action(observation)
             extras = dict(getattr(info, "extras", {}) or {})

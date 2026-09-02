@@ -29,6 +29,7 @@ def test_disabled_config_is_the_backward_compatible_default() -> None:
         "thresholds": {},
         "probability": 0.0,
         "hold_horizon_steps": 1,
+        "append_samples_per_episode": 0,
     }
 
     assert resolve_state_hold_transition_config(None) == expected
@@ -56,12 +57,14 @@ def test_enabled_config_resolves_threshold_json_to_canonical_keys(tmp_path) -> N
         "thresholds",
         "probability",
         "hold_horizon_steps",
+        "append_samples_per_episode",
     }
     assert resolved == {
         "enabled": True,
         "thresholds": _thresholds(),
         "probability": 0.75,
         "hold_horizon_steps": 20,
+        "append_samples_per_episode": 0,
     }
 
 

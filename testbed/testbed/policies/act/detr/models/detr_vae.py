@@ -11,6 +11,15 @@ from testbed.policies.act.camera_role_encoding import (
     CameraRoleEncoding,
     resolve_camera_role_encoding_config,
 )
+from testbed.policies.act.primitive_action_heads import (
+    mask_hard_routed_proprio,
+    resolve_primitive_action_heads_config,
+    select_hard_routed_action,
+)
+from testbed.policies.act.state_visual_residual import (
+    resolve_state_visual_residual_config,
+    stage_for_epoch,
+)
 
 from ...goal_effect import GoalEffectHead
 from .backbone import build_backbone
@@ -123,6 +132,8 @@ class DETRVAE(nn.Module):
         temporal_input_config=None,
         camera_role_encoding_config=None,
         condition_action_loss_config=None,
+        primitive_action_heads_config=None,
+        state_visual_residual_config=None,
     ):
         """ Initializes the model.
         Parameters:
@@ -161,6 +172,57 @@ class DETRVAE(nn.Module):
             else None
         )
         self.action_head = nn.Linear(hidden_dim, action_dim)
+        self.primitive_action_heads_config = resolve_primitive_action_heads_config(
+            primitive_action_heads_config,
+            robot_state_dim=robot_state_dim,
+        )
+        self.primitive_action_heads = nn.ModuleList(
+            [
+                nn.Linear(hidden_dim, action_dim)
+                for _ in range(
+                    self.primitive_action_heads_config["primitive_count"] - 1
+                )
+            ]
+            if self.primitive_action_heads_config["enabled"]
+            else []
+        )
+        self.state_visual_residual_config = resolve_state_visual_residual_config(
+            state_visual_residual_config,
+            robot_state_dim=robot_state_dim,
+            num_queries=num_queries,
+            action_dim=action_dim,
+        )
+        if self.state_visual_residual_config["enabled"] and self.primitive_action_heads_config["enabled"]:
+            raise ValueError(
+                "state_visual_residual cannot combine with primitive action heads"
+            )
+        if self.state_visual_residual_config["enabled"]:
+            low_hidden = int(self.state_visual_residual_config["low_hidden_dim"])
+            self.low_dim_action_head = nn.Sequential(
+                nn.Linear(robot_state_dim, low_hidden),
+                nn.LayerNorm(low_hidden),
+                nn.GELU(),
+                nn.Linear(low_hidden, num_queries * action_dim),
+            )
+            residual_mask = torch.zeros(robot_state_dim, dtype=torch.float32)
+            residual_mask[
+                list(self.state_visual_residual_config["residual_keep_indices"])
+            ] = 1.0
+            self.register_buffer("state_visual_residual_proprio_mask", residual_mask)
+            self.register_buffer(
+                "state_visual_residual_scale", torch.tensor(1.0, dtype=torch.float32)
+            )
+            self._state_visual_residual_stage = "inference_joint"
+        else:
+            self.low_dim_action_head = None
+            self.register_buffer(
+                "state_visual_residual_proprio_mask",
+                torch.ones(robot_state_dim, dtype=torch.float32),
+            )
+            self.register_buffer(
+                "state_visual_residual_scale", torch.tensor(1.0, dtype=torch.float32)
+            )
+            self._state_visual_residual_stage = "disabled"
         self.intent_head = nn.Linear(hidden_dim, int(intent_dim)) if int(intent_dim) > 0 else None
         state_cfg = dict(action_state_effort_config or {})
         self.action_state_effort_enabled = bool(state_cfg.get("enabled", False))
@@ -316,6 +378,20 @@ class DETRVAE(nn.Module):
             ]
         return all_cam_features, all_cam_pos
 
+    def configure_state_visual_residual_epoch(self, epoch: int) -> dict | None:
+        stage = stage_for_epoch(self.state_visual_residual_config, int(epoch))
+        if stage is None:
+            return None
+        self.state_visual_residual_scale.fill_(float(stage["residual_scale"]))
+        for parameter in self.low_dim_action_head.parameters():
+            parameter.requires_grad_(bool(stage["train_low"]))
+        for name, parameter in self.named_parameters():
+            if name.startswith("low_dim_action_head."):
+                continue
+            parameter.requires_grad_(bool(stage["train_residual"]))
+        self._state_visual_residual_stage = str(stage["name"])
+        return dict(stage)
+
     def forward(self, qpos, image, env_state, actions=None, is_pad=None):
         """
         qpos: batch, qpos_dim
@@ -327,6 +403,24 @@ class DETRVAE(nn.Module):
         actions: batch, seq, action_dim
         """
         is_training = actions is not None # train or val
+        routing_proprio = qpos
+        low_dim_action = (
+            None
+            if self.low_dim_action_head is None
+            else self.low_dim_action_head(routing_proprio).reshape(
+                routing_proprio.shape[0], self.num_queries, -1
+            )
+        )
+        residual_proprio = (
+            qpos
+            * self.state_visual_residual_proprio_mask.to(
+                device=qpos.device, dtype=qpos.dtype
+            ).reshape(1, -1)
+        )
+        qpos = mask_hard_routed_proprio(
+            residual_proprio,
+            config=self.primitive_action_heads_config,
+        )
         bs, _ = qpos.shape
         ### Obtain latent z from action sequence
         if is_training:
@@ -466,7 +560,22 @@ class DETRVAE(nn.Module):
             env_state = self.input_proj_env_state(env_state)
             transformer_input = torch.cat([qpos, env_state], axis=1) # seq length = 2
             hs = self.transformer(transformer_input, None, self.query_embed.weight, self.pos.weight)[0]
-        a_hat = self.action_head(hs)
+        residual_action = select_hard_routed_action(
+            shared_head=self.action_head,
+            additional_heads=self.primitive_action_heads,
+            decoder_state=hs,
+            proprio=routing_proprio,
+            config=self.primitive_action_heads_config,
+        )
+        a_hat = (
+            residual_action
+            if low_dim_action is None
+            else low_dim_action
+            + residual_action
+            * self.state_visual_residual_scale.to(
+                device=residual_action.device, dtype=residual_action.dtype
+            )
+        )
         intent_logits = self.intent_head(hs) if self.intent_head is not None else None
         action_state_logits = (
             self.action_state_head(hs)
@@ -630,6 +739,8 @@ def build(args):
         temporal_input_config=getattr(args, "temporal_input", None),
         camera_role_encoding_config=getattr(args, "camera_role_encoding", None),
         condition_action_loss_config=getattr(args, "condition_action_loss", None),
+        primitive_action_heads_config=getattr(args, "primitive_action_heads", None),
+        state_visual_residual_config=getattr(args, "state_visual_residual", None),
     )
 
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)

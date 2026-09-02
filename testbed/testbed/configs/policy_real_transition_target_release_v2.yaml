@@ -79,6 +79,7 @@ teleop:
     fail_safe_zero: true
     record_start_on_reset: false
     reset_policy_on_goal: true
+    reset_policy_on_phase_change: true
     cycle_planner:
       enabled: true
       script_paths_by_initial_side:

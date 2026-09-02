@@ -42,7 +42,9 @@ class RemoteArmedPolicyActionSource(ActionSource):
             scripted_cycle_auto_start_after_arm
         )
         if self._scripted_cycle_auto_start_after_arm and scripted_cycle_runtime is None:
-            raise ValueError("scripted-cycle auto start requires scripted_cycle_runtime")
+            raise ValueError(
+                "scripted-cycle auto start requires scripted_cycle_runtime"
+            )
         if self._scripted_cycle_runtime is not None and self._start_in_policy:
             raise ValueError("scripted-cycle policy_remote must start in manual mode")
         self._policy_active = bool(start_in_policy)
@@ -123,6 +125,7 @@ class RemoteArmedPolicyActionSource(ActionSource):
         remote_action, remote_info = self._remote.next_action(obs)
         remote_extras = dict(getattr(remote_info, "extras", {}) or {})
         start_requested = bool(remote_extras.get("policy_start_requested", False))
+        mark_requested = bool(remote_extras.get("mark_requested", False))
         record_start_requested = bool(
             remote_extras.get("record_start_requested", False)
         )
@@ -225,9 +228,7 @@ class RemoteArmedPolicyActionSource(ActionSource):
                     self._script_auto_armed = False
                     self._script_auto_wait_reason = ""
                     self._scripted_cycle_activation_rejected_reason = ""
-                    if bool(
-                        self._scripted_cycle_last_status.get("stop_policy", False)
-                    ):
+                    if bool(self._scripted_cycle_last_status.get("stop_policy", False)):
                         self._latch_script_stop(
                             str(
                                 self._scripted_cycle_last_status.get("fault")
@@ -236,8 +237,7 @@ class RemoteArmedPolicyActionSource(ActionSource):
                         )
                 except Exception as exc:
                     activation_rejected_reason = (
-                        "scripted_cycle_activation_error:"
-                        f"{type(exc).__name__}:{exc}"
+                        f"scripted_cycle_activation_error:{type(exc).__name__}:{exc}"
                     )
                     self._script_auto_armed = False
                     self._script_auto_wait_reason = ""
@@ -251,9 +251,62 @@ class RemoteArmedPolicyActionSource(ActionSource):
                     )
                     self._set_policy_active_state(False)
 
+        task_state_changed = False
+        task_state_advance_ignored = False
+        task_state_rejected_reason = ""
+        if mark_requested and self._scripted_cycle_runtime is not None:
+            if not self._policy_active:
+                task_state_rejected_reason = "task_state_advance_requires_active_policy"
+            else:
+                try:
+                    self._scripted_cycle_last_status = (
+                        self._scripted_cycle_runtime.advance_task_state()
+                    )
+                    task_state_changed = bool(
+                        self._scripted_cycle_last_status.get(
+                            "task_state_changed", False
+                        )
+                    )
+                    task_state_advance_ignored = bool(
+                        self._scripted_cycle_last_status.get(
+                            "task_state_advance_ignored", False
+                        )
+                    )
+                    if task_state_changed:
+                        self._clear_policy_frame_cache()
+                except Exception as exc:
+                    task_state_rejected_reason = (
+                        f"task_state_advance_error:{type(exc).__name__}:{exc}"
+                    )
+            if not self._policy_active:
+                self._scripted_cycle_last_status.update(
+                    {
+                        "task_state_advance_requested": True,
+                        "task_state_changed": False,
+                        "task_state_advance_ignored": False,
+                        "task_state_advance_rejected_reason": str(
+                            task_state_rejected_reason
+                        ),
+                    }
+                )
+
         if self._policy_active and self._scripted_cycle_runtime is not None:
             self._scripted_cycle_last_status = self._scripted_cycle_runtime.evaluate()
-            if bool(self._scripted_cycle_last_status.get("goal_changed", False)):
+            self._scripted_cycle_last_status.update(
+                {
+                    "task_state_advance_requested": bool(mark_requested),
+                    "task_state_changed": bool(task_state_changed),
+                    "task_state_advance_ignored": bool(task_state_advance_ignored),
+                    "task_state_advance_rejected_reason": str(
+                        task_state_rejected_reason
+                    ),
+                }
+            )
+            if bool(
+                self._scripted_cycle_last_status.get("goal_changed", False)
+                or self._scripted_cycle_last_status.get("phase_changed", False)
+                or self._scripted_cycle_last_status.get("task_state_changed", False)
+            ):
                 self._clear_policy_frame_cache()
             if bool(self._scripted_cycle_last_status.get("stop_policy", False)):
                 stop_reason = str(
@@ -403,9 +456,7 @@ class RemoteArmedPolicyActionSource(ActionSource):
             self._scripted_cycle_auto_start_after_arm
         )
         extras["scripted_cycle_auto_armed"] = int(self._script_auto_armed)
-        extras["scripted_cycle_auto_wait_reason"] = str(
-            self._script_auto_wait_reason
-        )
+        extras["scripted_cycle_auto_wait_reason"] = str(self._script_auto_wait_reason)
         extras["scripted_cycle_activation_rejected_reason"] = (
             activation_rejected_reason
             or self._scripted_cycle_activation_rejected_reason
@@ -478,9 +529,7 @@ class RemoteArmedPolicyActionSource(ActionSource):
                 self._scripted_cycle_auto_start_after_arm
             ),
             "scripted_cycle_auto_armed": int(self._script_auto_armed),
-            "scripted_cycle_auto_wait_reason": str(
-                self._script_auto_wait_reason
-            ),
+            "scripted_cycle_auto_wait_reason": str(self._script_auto_wait_reason),
             "scripted_cycle_activation_rejected_reason": str(
                 self._scripted_cycle_activation_rejected_reason
             ),
@@ -535,6 +584,12 @@ def _disabled_scripted_cycle_status() -> dict[str, Any]:
         "stop_reason": "",
         "event": "",
         "goal_changed": False,
+        "task_state_advance_requested": False,
+        "task_state_changed": False,
+        "task_state_advance_ignored": False,
+        "task_state_advance_rejected_reason": "",
+        "task_state_v2_enabled": False,
+        "task_state_stage": "disabled",
         "stop_policy": False,
         "ready_actual_side": "unknown",
         "ready_blockers": [],
@@ -546,6 +601,9 @@ def _scripted_cycle_extras(status: Mapping[str, Any] | None) -> dict[str, Any]:
     value = dict(status or _disabled_scripted_cycle_status())
     planner = dict(value.get("planner", {}) or {})
     blockers = [str(item) for item in value.get("ready_blockers", ())]
+    planner_task_state = planner.get("task_state_v2")
+    if planner_task_state is None:
+        planner_task_state = [0.0] * 5
     return {
         "scripted_cycle_enabled": int(bool(value.get("enabled", False))),
         "scripted_cycle_active": int(bool(value.get("active", False))),
@@ -554,11 +612,42 @@ def _scripted_cycle_extras(status: Mapping[str, Any] | None) -> dict[str, Any]:
         "scripted_cycle_stop_reason": str(value.get("stop_reason", "")),
         "scripted_cycle_event": str(value.get("event", "")),
         "scripted_cycle_goal_changed": int(bool(value.get("goal_changed", False))),
+        "scripted_cycle_task_state_advance_requested": int(
+            bool(value.get("task_state_advance_requested", False))
+        ),
+        "scripted_cycle_task_state_changed": int(
+            bool(value.get("task_state_changed", False))
+        ),
+        "scripted_cycle_task_state_advance_ignored": int(
+            bool(value.get("task_state_advance_ignored", False))
+        ),
+        "scripted_cycle_task_state_v2_enabled": int(
+            bool(value.get("task_state_v2_enabled", False))
+        ),
+        "scripted_cycle_task_state_require_excursion": int(
+            bool(value.get("task_state_require_excursion_before_work_complete", False))
+        ),
+        "scripted_cycle_task_state_stage": str(
+            value.get("task_state_stage", "disabled")
+        ),
+        "scripted_cycle_task_state_advance_source": str(
+            value.get("task_state_advance_source", "")
+        ),
+        "scripted_cycle_task_state_advance_rejected_reason": str(
+            value.get("task_state_advance_rejected_reason", "")
+        ),
+        "scripted_cycle_phase_changed": int(bool(value.get("phase_changed", False))),
+        "scripted_cycle_excursion_changed": int(
+            bool(value.get("excursion_changed", False))
+        ),
         "scripted_cycle_excursion_observed": int(
             bool(value.get("excursion_observed", False))
         ),
         "scripted_cycle_return_phase_latched": int(
             bool(value.get("return_phase_latched", False))
+        ),
+        "scripted_cycle_policy_return_phase_latched": int(
+            bool(value.get("policy_return_phase_latched", False))
         ),
         "scripted_cycle_landing_pd_blend": float(
             value.get("landing_pd_blend", 0.0) or 0.0
@@ -599,11 +688,15 @@ def _scripted_cycle_extras(status: Mapping[str, Any] | None) -> dict[str, Any]:
         ),
         "planner_script_id": str(planner.get("script_id", "") or ""),
         "planner_script_path": str(planner.get("script_path", "") or ""),
-        "planner_planned_cycle_count": int(
-            planner.get("planned_cycle_count", 0) or 0
-        ),
+        "planner_planned_cycle_count": int(planner.get("planned_cycle_count", 0) or 0),
         "planner_target_side": str(planner.get("target_side") or ""),
         "planner_condition": np.asarray(
             planner.get("condition") or [0.0, 0.0], dtype=np.float32
         ),
+        "planner_task_dig_complete": int(bool(planner.get("task_dig_complete", False))),
+        "planner_task_return_commit": int(
+            bool(planner.get("task_return_commit", False))
+        ),
+        "planner_task_state_epoch": int(planner.get("task_state_epoch", 0) or 0),
+        "planner_task_state_v2": np.asarray(planner_task_state, dtype=np.float32),
     }

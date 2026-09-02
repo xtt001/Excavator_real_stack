@@ -50,12 +50,13 @@ def _norm_stats() -> dict[str, np.ndarray]:
     }
 
 
-def _config(*, probability: float) -> dict:
+def _config(*, probability: float, append_samples_per_episode: int = 0) -> dict:
     return {
         "enabled": True,
         "thresholds": _thresholds(),
         "probability": probability,
         "hold_horizon_steps": 2,
+        "append_samples_per_episode": append_samples_per_episode,
     }
 
 
@@ -117,3 +118,30 @@ def test_transition_sampling_rejects_unaligned_real_actions(tmp_path: Path) -> N
             action_chunk_size=2,
             state_hold_transition=_config(probability=1.0),
         )
+
+
+def test_appended_state_hold_tier_forces_anchor_without_changing_probability(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _write_episode(tmp_path / "episode_1.hdf5")
+    monkeypatch.setattr(np.random, "choice", lambda values: int(values[0]))
+
+    dataset = EpisodicDataset(
+        [1],
+        tmp_path,
+        ["video4"],
+        _norm_stats(),
+        episode_len=6,
+        low_dim_keys=["qpos"],
+        action_chunk_size=2,
+        state_hold_transition=_config(
+            probability=0.0,
+            append_samples_per_episode=1,
+        ),
+    )
+
+    assert len(dataset) == 2
+    ordinary = dataset[0]
+    forced = dataset[1]
+    assert not ordinary["state_hold_transition_mask"].any()
+    assert forced["state_hold_transition_mask"][0, 0]

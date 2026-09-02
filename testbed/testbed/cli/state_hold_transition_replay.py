@@ -34,6 +34,8 @@ from testbed.policies.deadzone_eval import (
     effective_direction_mask,
     load_deadzone_thresholds,
 )
+from testbed.tasks.real_transition_phase import CYCLE_PHASE_KEY
+from testbed.tasks.real_transition_return_commit import RETURN_COMMIT_KEY
 
 CAMERAS = ("video4", "video5", "video6", "video7")
 SPLITS = ("validation", "locked_test")
@@ -193,6 +195,28 @@ def _evaluate_episode(
             handle[f"conditions/{REAL_TRANSITION_CONDITION_KEY}"][()],
             dtype=np.float32,
         )
+        cycle_phase = (
+            np.asarray(
+                handle[f"conditions/{CYCLE_PHASE_KEY}"][()], dtype=np.float32
+            )
+            if f"conditions/{CYCLE_PHASE_KEY}" in handle
+            else np.zeros((len(action), 1), dtype=np.float32)
+        )
+        if cycle_phase.shape != (len(action), 1):
+            raise ValueError(
+                f"episode {episode_id} cycle phase must have shape (T, 1)"
+            )
+        return_commit = (
+            np.asarray(
+                handle[f"conditions/{RETURN_COMMIT_KEY}"][()], dtype=np.float32
+            )
+            if f"conditions/{RETURN_COMMIT_KEY}" in handle
+            else np.zeros((len(action), 1), dtype=np.float32)
+        )
+        if return_commit.shape != (len(action), 1):
+            raise ValueError(
+                f"episode {episode_id} return commit must have shape (T, 1)"
+            )
         transition_mask = _state_hold_transition_mask(
             handle,
             actions=action,
@@ -215,8 +239,27 @@ def _evaluate_episode(
                 anchors_by_step[int(start)].append((int(axis), int(direction)))
         first_anchor = int(starts[0]) if starts.size else None
         policy.reset()
+        phase_enabled = CYCLE_PHASE_KEY in list(
+            getattr(policy, "low_dim_keys", ()) or ()
+        )
+        active_phase = 0.0
+        return_commit_enabled = RETURN_COMMIT_KEY in list(
+            getattr(policy, "low_dim_keys", ()) or ()
+        )
+        active_return_commit = 0.0
         output: list[dict[str, Any]] = []
         for step in range(len(action)):
+            next_phase = float(cycle_phase[step, 0])
+            if phase_enabled and next_phase != active_phase:
+                policy.reset()
+                active_phase = next_phase
+            next_return_commit = float(return_commit[step, 0])
+            if (
+                return_commit_enabled
+                and next_return_commit != active_return_commit
+            ):
+                policy.reset()
+                active_return_commit = next_return_commit
             observation = {
                 "qpos": qpos[step],
                 "qvel": qvel[step],
@@ -225,6 +268,8 @@ def _evaluate_episode(
                     for camera in CAMERAS
                 },
                 REAL_TRANSITION_CONDITION_KEY: condition[step],
+                CYCLE_PHASE_KEY: cycle_phase[step],
+                RETURN_COMMIT_KEY: return_commit[step],
             }
             policy_observation = _policy_obs_from_real_obs(
                 observation, camera_names=CAMERAS
@@ -265,6 +310,8 @@ def _evaluate_episode(
                             "direction": "pos" if direction == 0 else "neg",
                             "expert_action": float(action[step, axis]),
                             "condition": condition[step].astype(float).tolist(),
+                            "cycle_phase": float(cycle_phase[step, 0]),
+                            "return_commit": float(return_commit[step, 0]),
                             "held_qpos": qpos[step].astype(float).tolist(),
                             "held_qvel_zero": True,
                             "action_trace": trace.astype(float).tolist(),

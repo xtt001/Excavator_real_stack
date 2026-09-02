@@ -30,8 +30,12 @@ from testbed.cli.record_real import (
 )
 from testbed.cli.teleop_remote import _format_receiver_policy_status
 from testbed.data.recorder import EpisodeRecorder
+from testbed.data.task_state_v2 import TASK_STATE_V2_KEY
 from testbed.policies.runtime_gate_stack import RuntimeGateResult
-from testbed.tasks.act_cycle_planner import ABCyclePlanner, SideMatchedScriptCyclePlanner
+from testbed.tasks.act_cycle_planner import (
+    ABCyclePlanner,
+    SideMatchedScriptCyclePlanner,
+)
 
 
 class DummyPolicy:
@@ -451,9 +455,7 @@ class PolicyActionSourceTests(unittest.TestCase):
         payload = _policy_remote_status_payload(object(), action_info)
         payload["commanded_action"] = [0.11, 0.19, 0.31, 0.39]
 
-        np.testing.assert_allclose(
-            payload["policy_action"], [0.1, 0.2, 0.3, 0.4]
-        )
+        np.testing.assert_allclose(payload["policy_action"], [0.1, 0.2, 0.3, 0.4])
         self.assertEqual(len(payload["policy_intent_probabilities"]), 8)
         text = _format_receiver_policy_status(
             SimpleNamespace(payload=payload, receive_time_ns=1)
@@ -467,7 +469,9 @@ class PolicyActionSourceTests(unittest.TestCase):
         self.assertIn("cycle=0", text)
         self.assertIn("goal=A(left)", text)
 
-    def test_runtime_gates_keep_shadow_zero_and_expose_raw_gohome_decision(self) -> None:
+    def test_runtime_gates_keep_shadow_zero_and_expose_raw_gohome_decision(
+        self,
+    ) -> None:
         policy = DummyIntentPolicy([0.5, -0.25, 0.1, -0.9])
         gate_stack = DummyRuntimeGateStack()
         source = PolicyActionSource(
@@ -482,8 +486,12 @@ class PolicyActionSourceTests(unittest.TestCase):
         action, info = source.next_action(_obs())
 
         np.testing.assert_allclose(action, np.zeros(4))
-        np.testing.assert_allclose(info.extras["policy_action"], [0.5, -0.25, 0.1, -0.9])
-        np.testing.assert_allclose(info.extras["policy_scaled_action"], [0.2, -0.15, 0.1, -0.05])
+        np.testing.assert_allclose(
+            info.extras["policy_action"], [0.5, -0.25, 0.1, -0.9]
+        )
+        np.testing.assert_allclose(
+            info.extras["policy_scaled_action"], [0.2, -0.15, 0.1, -0.05]
+        )
         np.testing.assert_allclose(info.extras["policy_returned_action"], np.zeros(4))
         self.assertEqual(info.extras["policy_gate_stack_id"], "E52-test")
         self.assertEqual(info.extras["gohome_raw_active"], 1)
@@ -512,7 +520,9 @@ class PolicyActionSourceTests(unittest.TestCase):
         self.assertEqual(info.extras["gohome_request_suppressed"], 0)
         self.assertEqual(info.extras["gohome_request_suppression_reason"], "")
 
-    def test_deadzone_assist_lifts_stable_intent_above_directional_deadzone(self) -> None:
+    def test_deadzone_assist_lifts_stable_intent_above_directional_deadzone(
+        self,
+    ) -> None:
         policy = DummyPolicy([0.33, -0.26, 0.1, -0.2])
         source = PolicyActionSource(
             policy=policy,
@@ -539,7 +549,9 @@ class PolicyActionSourceTests(unittest.TestCase):
             [1, 1, 0, 0],
         )
         self.assertEqual(second_info.extras["policy_deadzone_assist_active"], 1)
-        self.assertEqual(second_info.extras["policy_deadzone_assist_axes"], "swing+,boom-")
+        self.assertEqual(
+            second_info.extras["policy_deadzone_assist_axes"], "swing+,boom-"
+        )
         np.testing.assert_allclose(
             second_info.extras["policy_scaled_action"],
             [0.33, -0.26, 0.1, -0.2],
@@ -775,6 +787,158 @@ class PolicyActionSourceTests(unittest.TestCase):
         assert source.mark_cycle_target_ready("B").transition == "B->B"
         source.commit_cycle_goal()
         self.assertEqual(policy.reset_count, 2)
+
+    def test_phase_condition_is_latched_and_resets_policy_cache(self) -> None:
+        planner = ABCyclePlanner("BA", loop=False)
+        policy = DummyPolicy([0.1, 0.2, 0.3, 0.4])
+        policy._low_dim_keys = [
+            "qpos",
+            "real_transition_condition_v1",
+            "real_transition_cycle_phase_v1",
+        ]
+        source = PolicyActionSource(
+            policy=policy,
+            source_id="phase-test",
+            camera_name="fpv",
+            cycle_planner=planner,
+            output_mode="control",
+        )
+
+        source.commit_cycle_goal()
+        source.next_action(_obs())
+        np.testing.assert_allclose(
+            policy.seen_obs[-1]["real_transition_cycle_phase_v1"], [0.0]
+        )
+        assert source.set_cycle_phase(return_phase=True) is True
+        assert policy.reset_count == 2
+        source.next_action(_obs())
+        np.testing.assert_allclose(
+            policy.seen_obs[-1]["real_transition_cycle_phase_v1"], [1.0]
+        )
+        assert source.set_cycle_phase(return_phase=True) is False
+
+    def test_excursion_condition_is_latched_and_resets_policy_cache(self) -> None:
+        planner = ABCyclePlanner("BA", loop=False)
+        policy = DummyPolicy([0.1, 0.2, 0.3, 0.4])
+        policy._low_dim_keys = [
+            "qpos",
+            "real_transition_condition_v1",
+            "real_transition_excursion_observed_v1",
+            "real_transition_cycle_phase_v1",
+        ]
+        source = PolicyActionSource(
+            policy=policy,
+            source_id="excursion-test",
+            camera_name="fpv",
+            cycle_planner=planner,
+            output_mode="control",
+        )
+
+        source.commit_cycle_goal()
+        source.next_action(_obs())
+        np.testing.assert_allclose(
+            policy.seen_obs[-1]["real_transition_excursion_observed_v1"],
+            [0.0],
+        )
+        assert source.set_cycle_excursion_observed(observed=True) is True
+        assert policy.reset_count == 2
+        source.next_action(_obs())
+        np.testing.assert_allclose(
+            policy.seen_obs[-1]["real_transition_excursion_observed_v1"],
+            [1.0],
+        )
+        assert source.set_cycle_excursion_observed(observed=True) is False
+
+    def test_return_commit_is_planner_owned_monotonic_and_resets_cache(self) -> None:
+        planner = ABCyclePlanner("BAB", loop=False)
+        policy = DummyPolicy([0.1, 0.2, 0.3, 0.4])
+        policy._low_dim_keys = [
+            "qpos",
+            "real_transition_condition_v1",
+            "real_transition_return_commit_v1",
+        ]
+        source = PolicyActionSource(
+            policy=policy,
+            source_id="return-commit-test",
+            camera_name="fpv",
+            cycle_planner=planner,
+            output_mode="control",
+        )
+
+        source.commit_cycle_goal()
+        source.next_action(_obs())
+        np.testing.assert_allclose(
+            policy.seen_obs[-1]["real_transition_return_commit_v1"], [0.0]
+        )
+        assert source.set_return_commit(committed=True) is True
+        assert policy.reset_count == 2
+        source.next_action(_obs())
+        np.testing.assert_allclose(
+            policy.seen_obs[-1]["real_transition_return_commit_v1"], [1.0]
+        )
+        assert source.set_return_commit(committed=True) is False
+        with self.assertRaisesRegex(RuntimeError, "monotonic"):
+            source.set_return_commit(committed=False)
+        status = source.cycle_planner_status()
+        assert status["return_commit_enabled"] is True
+        assert status["return_commit"] == 1.0
+
+        source.mark_cycle_target_ready("A")
+        source.commit_cycle_goal()
+        source.next_action(_obs())
+        np.testing.assert_allclose(
+            policy.seen_obs[-1]["real_transition_return_commit_v1"], [0.0]
+        )
+
+    def test_task_state_v2_is_owned_by_planner_and_operator_events(self) -> None:
+        planner = ABCyclePlanner("BAB", loop=False)
+        policy = DummyPolicy([0.1, 0.2, 0.3, 0.4])
+        policy._low_dim_keys = ["qpos", "qvel", TASK_STATE_V2_KEY]
+        source = PolicyActionSource(
+            policy=policy,
+            source_id="task-state-v2-test",
+            camera_name="fpv",
+            cycle_planner=planner,
+            output_mode="control",
+        )
+
+        source.commit_cycle_goal()
+        stale_obs = _obs()
+        stale_obs[TASK_STATE_V2_KEY] = np.asarray(
+            [-1.0, -1.0, 1.0, 1.0, 1.0], dtype=np.float32
+        )
+        source.next_action(stale_obs)
+        np.testing.assert_allclose(
+            policy.seen_obs[-1][TASK_STATE_V2_KEY],
+            [1.0, 1.0, 0.0, 0.0, 0.0],
+        )
+
+        assert source.set_task_dig_complete(completed=True) is True
+        source.next_action(_obs())
+        np.testing.assert_allclose(
+            policy.seen_obs[-1][TASK_STATE_V2_KEY],
+            [1.0, 1.0, 1.0, 0.0, 0.0],
+        )
+
+        assert source.set_task_return_commit(committed=True) is True
+        _action, info = source.next_action(_obs())
+        np.testing.assert_allclose(
+            policy.seen_obs[-1][TASK_STATE_V2_KEY],
+            [1.0, 1.0, 1.0, 1.0, -1.0],
+        )
+        np.testing.assert_allclose(
+            info.extras["policy_task_state_v2"],
+            [1.0, 1.0, 1.0, 1.0, -1.0],
+        )
+        assert policy.reset_count == 3
+
+        source.mark_cycle_target_ready("A")
+        source.commit_cycle_goal()
+        source.next_action(_obs())
+        np.testing.assert_allclose(
+            policy.seen_obs[-1][TASK_STATE_V2_KEY],
+            [-1.0, -1.0, 0.0, 0.0, 0.0],
+        )
 
     def test_policy_source_can_preserve_policy_state_across_goal_commit(self) -> None:
         planner = ABCyclePlanner("ABA", loop=False)
@@ -1014,9 +1178,7 @@ class PolicyActionSourceTests(unittest.TestCase):
                     10,
                 )
                 self.assertEqual(
-                    handle[
-                        "diagnostics/gohome_request_suppression_reason"
-                    ].asstr()[0],
+                    handle["diagnostics/gohome_request_suppression_reason"].asstr()[0],
                     "policy_output_mode_shadow_zero",
                 )
 
@@ -1030,7 +1192,8 @@ class PolicyActionSourceTests(unittest.TestCase):
             logger.record_step(
                 local_step=3,
                 receiver_mode="armed",
-                obs=_obs() | {"step_id": 3, "timestamp_ns": 10, "joint_timestamp_ns": 9},
+                obs=_obs()
+                | {"step_id": 3, "timestamp_ns": 10, "joint_timestamp_ns": 9},
                 raw_action=np.array([0.1, 0.2, 0.3, 0.4], dtype=np.float32),
                 safe_action=np.array([0.01, 0.02, 0.03, 0.04], dtype=np.float32),
                 action_info=ActionInfo(
@@ -1110,8 +1273,12 @@ class PolicyActionSourceTests(unittest.TestCase):
             logger.close()
 
             run_dir = Path(tmp) / "unit"
-            step_lines = (run_dir / "steps.jsonl").read_text(encoding="utf-8").splitlines()
-            summary = yaml.safe_load((run_dir / "summary.json").read_text(encoding="utf-8"))
+            step_lines = (
+                (run_dir / "steps.jsonl").read_text(encoding="utf-8").splitlines()
+            )
+            summary = yaml.safe_load(
+                (run_dir / "summary.json").read_text(encoding="utf-8")
+            )
             termination = yaml.safe_load(
                 (run_dir / "termination.json").read_text(encoding="utf-8")
             )
@@ -1143,7 +1310,8 @@ class PolicyActionSourceTests(unittest.TestCase):
             logger.record_step(
                 local_step=4,
                 receiver_mode="armed",
-                obs=_obs() | {"step_id": 4, "timestamp_ns": 10, "joint_timestamp_ns": 9},
+                obs=_obs()
+                | {"step_id": 4, "timestamp_ns": 10, "joint_timestamp_ns": 9},
                 raw_action=np.array([0.1, 0.2, 0.3, 0.4], dtype=np.float32),
                 safe_action=np.zeros(4, dtype=np.float32),
                 action_info=ActionInfo(
@@ -1178,7 +1346,11 @@ class PolicyActionSourceTests(unittest.TestCase):
             logger.close()
 
             step = yaml.safe_load(
-                ((Path(tmp) / "unit" / "steps.jsonl").read_text(encoding="utf-8").splitlines())[0]
+                (
+                    (Path(tmp) / "unit" / "steps.jsonl")
+                    .read_text(encoding="utf-8")
+                    .splitlines()
+                )[0]
             )
 
         self.assertEqual(step["policy_gate_stack_id"], "E52")
@@ -1408,6 +1580,47 @@ class PolicyActionSourceTests(unittest.TestCase):
         ]
         self.assertEqual(deadzone_loss["threshold_json"], str(bundled_thresholds))
 
+    def test_load_act_policy_from_bundle_relocates_task_state_thresholds(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle = Path(tmp)
+            (bundle / "policy_best.ckpt").write_bytes(b"ckpt")
+            (bundle / "dataset_stats.pkl").write_bytes(b"stats")
+            contracts = bundle / "contracts"
+            contracts.mkdir()
+            bundled_thresholds = contracts / "direct_deadzone.json"
+            bundled_thresholds.write_text("{}", encoding="utf-8")
+            (bundle / "resolved_config.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "task": {"camera_names": ["video4"]},
+                        "policy": {
+                            "device": "cpu",
+                            "low_dim_keys": ["qpos", "qvel", TASK_STATE_V2_KEY],
+                            "act_params": {"state_dim": 13},
+                        },
+                        "train": {
+                            "task_state_v2_adherence_loss": {
+                                "enabled": True,
+                                "threshold_json": "/missing/direct_deadzone.json",
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch(
+                "testbed.policies.act.adapter.ACTAdapter.from_checkpoint",
+                return_value="loaded",
+            ) as from_checkpoint:
+                loaded = load_act_policy_from_bundle(bundle_dir=bundle)
+
+        self.assertEqual(loaded, "loaded")
+        task_loss = from_checkpoint.call_args.kwargs["policy_config"][
+            "task_state_v2_adherence_loss"
+        ]
+        self.assertEqual(task_loss["threshold_json"], str(bundled_thresholds))
+
     def test_act_temporal_aggregation_grows_past_initial_horizon(self) -> None:
         import torch
 
@@ -1422,7 +1635,9 @@ class PolicyActionSourceTests(unittest.TestCase):
         adapter._max_episode_len = 4
 
         for step in range(7):
-            a_hat = torch.ones((1, adapter._num_queries, 4), dtype=torch.float32) * (step + 1)
+            a_hat = torch.ones((1, adapter._num_queries, 4), dtype=torch.float32) * (
+                step + 1
+            )
             action = adapter._aggregate(a_hat)
             self.assertEqual(action.shape, (4,))
             adapter._t += 1

@@ -143,6 +143,77 @@ def test_loader_exposes_qvel_in_the_goal_conditioned_proprio_contract(
     assert proprio.shape[-1] == 10
 
 
+def test_loader_exposes_excursion_return_and_planner_commit_as_separate_inputs(
+    tmp_path: Path,
+) -> None:
+    episodes = tmp_path / "episodes"
+    episodes.mkdir()
+    for episode_id, target in ((0, 1), (1, -1)):
+        path = episodes / f"episode_{episode_id}.hdf5"
+        _write_cycle(path, qpos_value=float(episode_id + 1), target_code=target)
+        with h5py.File(path, "r+") as handle:
+            conditions = handle["conditions"]
+            conditions.create_dataset(
+                "real_transition_excursion_observed_v1",
+                data=np.asarray([[0], [0], [1], [1]], dtype=np.float32),
+            )
+            conditions.create_dataset(
+                "real_transition_cycle_phase_v1",
+                data=np.asarray([[0], [0], [0], [1]], dtype=np.float32),
+            )
+            conditions.create_dataset(
+                "real_transition_return_commit_v1",
+                data=np.asarray([[0], [0], [1], [1]], dtype=np.float32),
+            )
+    split_manifest = tmp_path / "split_manifest.json"
+    _write_split_manifest(
+        split_manifest,
+        [
+            {"episode_id": 0, "split": "train", "source_block_id": "b01"},
+            {
+                "episode_id": 1,
+                "split": "validation",
+                "source_block_id": "b02",
+            },
+        ],
+    )
+
+    train_loader, _val_loader, stats, _is_real, split_info = load_data(
+        dataset_dir=episodes,
+        num_episodes=2,
+        camera_names=["video4"],
+        episode_len=None,
+        batch_size_train=1,
+        batch_size_val=1,
+        num_workers=0,
+        pin_memory=False,
+        split_manifest_path=split_manifest,
+        low_dim_keys=[
+            "qpos",
+            "real_transition_condition_v1",
+            "qvel",
+            "real_transition_excursion_observed_v1",
+            "real_transition_cycle_phase_v1",
+            "real_transition_return_commit_v1",
+        ],
+        episode_ids=[0, 1],
+        action_chunk_size=3,
+    )
+
+    assert split_info["low_dim_dim"] == 13
+    assert stats["proprio_dim"] == 13
+    assert stats["proprio_slices"]["real_transition_excursion_observed_v1"] == (
+        10,
+        11,
+    )
+    assert stats["proprio_slices"]["real_transition_return_commit_v1"] == (
+        12,
+        13,
+    )
+    _image, proprio, _action, _is_pad = next(iter(train_loader))
+    assert proprio.shape[-1] == 13
+
+
 def test_manifest_split_rejects_cross_split_source_block(tmp_path: Path) -> None:
     episodes = tmp_path / "episodes"
     episodes.mkdir()
@@ -217,3 +288,52 @@ def test_warm_start_copies_qpos_and_zeros_condition_columns() -> None:
         adapter.loaded["model.input_proj_robot_state.bias"],
         source["model.input_proj_robot_state.bias"],
     )
+
+
+def test_warm_start_can_drop_optional_source_heads() -> None:
+    adapter = _FakeAdapter()
+    source = {
+        "model.input_proj_robot_state.weight": torch.zeros((3, 4)),
+        "model.input_proj_robot_state.bias": torch.zeros(3),
+        "model.encoder_joint_proj.weight": torch.zeros((3, 4)),
+        "goal_effect_head.effect_delta_head.weight": torch.ones((2, 3)),
+        "action_context_residual.weight": torch.ones((2, 3)),
+    }
+
+    expanded = _load_conditioned_warm_start(adapter, source)  # type: ignore[arg-type]
+
+    assert len(expanded) == 2
+    assert adapter.loaded is not None
+    assert "goal_effect_head.effect_delta_head.weight" not in adapter.loaded
+    assert "action_context_residual.weight" not in adapter.loaded
+
+
+def test_warm_start_copies_action_head_into_hard_routed_heads() -> None:
+    adapter = _FakeAdapter()
+    for index in range(3):
+        adapter._state[f"primitive_action_heads.{index}.weight"] = torch.zeros(
+            (4, 3)
+        )
+        adapter._state[f"primitive_action_heads.{index}.bias"] = torch.zeros(4)
+    adapter._state["action_head.weight"] = torch.zeros((4, 3))
+    adapter._state["action_head.bias"] = torch.zeros(4)
+    source = {
+        "model.input_proj_robot_state.weight": torch.zeros((3, 4)),
+        "model.input_proj_robot_state.bias": torch.zeros(3),
+        "model.encoder_joint_proj.weight": torch.zeros((3, 4)),
+        "action_head.weight": torch.arange(12, dtype=torch.float32).reshape(4, 3),
+        "action_head.bias": torch.arange(4, dtype=torch.float32),
+    }
+
+    _load_conditioned_warm_start(adapter, source)  # type: ignore[arg-type]
+
+    assert adapter.loaded is not None
+    for index in range(3):
+        torch.testing.assert_close(
+            adapter.loaded[f"primitive_action_heads.{index}.weight"],
+            source["action_head.weight"],
+        )
+        torch.testing.assert_close(
+            adapter.loaded[f"primitive_action_heads.{index}.bias"],
+            source["action_head.bias"],
+        )

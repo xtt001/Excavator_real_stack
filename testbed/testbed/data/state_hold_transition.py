@@ -41,6 +41,7 @@ def resolve_state_hold_transition_config(
             "thresholds": {},
             "probability": 0.0,
             "hold_horizon_steps": 1,
+            "append_samples_per_episode": 0,
         }
 
     probability = _probability(cfg.get("probability", 0.0))
@@ -49,6 +50,14 @@ def resolve_state_hold_transition_config(
         name="hold_horizon_steps",
     )
     thresholds = _resolve_thresholds(cfg)
+    append_samples = _nonnegative_integer(
+        cfg.get("append_samples_per_episode", 0),
+        name="append_samples_per_episode",
+    )
+    if append_samples not in {0, 1}:
+        raise ValueError(
+            "state_hold_transition.append_samples_per_episode must be 0 or 1"
+        )
     # Reuse the intent-label owner as the schema validator.  An empty action
     # sequence validates every axis/direction without creating synthetic
     # transition evidence.
@@ -61,6 +70,7 @@ def resolve_state_hold_transition_config(
         "thresholds": thresholds,
         "probability": probability,
         "hold_horizon_steps": hold_horizon_steps,
+        "append_samples_per_episode": append_samples,
     }
 
 

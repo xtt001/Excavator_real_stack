@@ -1,0 +1,204 @@
+# Task-state-v2 Real Transition ACT field configuration.
+# Safe default: mock I/O plus shadow_zero. The supervised runner replaces the
+# bundle/log paths and the field stack supplies bridge_tcp only after preflight.
+
+extends: teleop_real_v1.yaml
+
+real:
+  backend: mock
+  state_reader: mock
+  data_side: host
+  control_hz: 50
+  image_width: 384
+  image_height: 216
+  mock_velocity_scale_rad_s: 0.5
+  control_pump:
+    enabled: true
+    hz: 50
+    send_immediately_on_update: false
+    zero_on_stop: true
+    bridge:
+      host: "127.0.0.1"
+      port: 8766
+      timeout_s: 0.2
+  bridge:
+    host: "127.0.0.1"
+    port: 0
+    timeout_s: 1.0
+  data_side_defaults:
+    host:
+      dataset_dir: data/policy_shadow_real_transition_task_state_v2_allow2
+      bridge:
+        host: "192.168.100.1"
+        port: 8765
+    slave:
+      dataset_dir: /data/policy_shadow_real_transition_task_state_v2_allow2
+      bridge:
+        host: "127.0.0.1"
+        port: 8765
+
+teleop:
+  input: policy_remote
+  learning_target: scripted_task_state_v2_left_right_cycle_execution
+  num_episodes: 1
+  metadata:
+    operator_id: ""
+    session_id: ""
+    notes: "task-state-v2 ACT; explicit work-complete and return-commit marks"
+
+  # The host teleop sender can use this same runtime config. Values are pygame
+  # zero-based indices: physical button 2 advances task state, button 7 arms.
+  joystick:
+    record_start_button: null
+    mark_button: 1
+    policy_start_button: 6
+    go_home_button: 2
+    discard_button: 3
+    status_reserved_buttons: [1, 3, 6]
+
+  policy:
+    bundle_dir: policy_bundles/real_transition_task_state_v2_allow2
+    ckpt_path: policy_accepted.ckpt
+    source_id: policy:act:real_transition_task_state_v2_allow2
+    camera: video4
+    camera_names: [video4, video5, video6, video7]
+    temporal_agg: true
+    inference_precision: fp32
+    inference_compile: false
+    inference_compile_mode: reduce-overhead
+    inference_compile_dynamic: false
+    device_uint8_preprocess: true
+    inference_warmup_steps: 0
+    frame_alignment:
+      enabled: true
+      wait_timeout_ms: 200
+    temporal_aggregation_diagnostics: true
+    output_mode: shadow_zero
+    qvel_mode: raw
+    qvel_diff_tau_s: 0.15
+    qvel_diff_clip_rad_s: [1.5, 1.5, 1.5, 1.5]
+    action_scale: [1.0, 1.0, 1.0, 1.0]
+    deadzone_assist:
+      enabled: false
+      trigger_fraction: 0.5
+      min_consecutive_steps: 2
+      margin: [0.02, 0.02, 0.02, 0.02]
+      deadzone_positive: [0.661, 0.259, 0.500, 0.408]
+      deadzone_negative: [0.721, 0.357, 0.500, 0.508]
+    runtime_gates:
+      enabled: false
+    clip: 1.0
+    fail_safe_zero: true
+    record_start_on_reset: false
+    reset_policy_on_goal: true
+    reset_policy_on_phase_change: true
+    cycle_planner:
+      enabled: true
+      script_paths_by_initial_side:
+        A: testbed/testbed/configs/real_transition_four_cycle_left_start_v1.json
+        B: testbed/testbed/configs/real_transition_four_cycle_right_start_v1.json
+      loop: false
+
+  remote:
+    bind_host: "0.0.0.0"
+    port: 8770
+    timeout_ms: 200
+    rate_hz: 50
+    source_id: host_joystick
+
+  policy_remote:
+    source_id: scripted_task_state_v2_policy_remote
+    start_in_policy: false
+    scripted_cycle:
+      enabled: true
+      auto_start_after_arm: true
+      ready_contract: contracts/ready_contract.json
+      target_region_contract: contracts/target_release_contract_v2.json
+      task_state_v2:
+        enabled: true
+        advance_source: operator_mark
+        require_excursion_before_work_complete: true
+      swing_landing:
+        enabled: true
+        coast_stop_time_s: 0.50
+        edge_margin_rad: 0.03
+        p_gain: 0.60
+        d_gain: 0.12
+        return_confirm_drop_rad: 0.05
+        return_min_qvel_rad_s: 0.05
+        pd_blend_width_rad: 0.03
+        pd_blend_time_s: 0.25
+        policy_gain_time_s: 0.25
+        min_action_positive: 0.661
+        min_action_negative: 0.721
+        max_action_positive: 0.72
+        max_action_negative: 0.78
+        qvel_stable_rad_s: 0.015
+      cycle_review_s: 45.0
+      cycle_stop_s: 60.0
+      run_stop_s: 240.0
+      stop_on_wrong_ready: true
+
+  recording:
+    enabled: false
+    wait_for_start: true
+    go_home:
+      enabled: false
+
+  test_log:
+    enabled: true
+    output_dir: artifacts/policy_control_tests/real_transition_task_state_v2_allow2
+    flush_every_steps: 1
+    capture_images: true
+    image_camera: video4
+    image_interval_steps: 20
+    image_policy_only: true
+    image_dir: camera_frames
+    image_jpeg_quality: 95
+
+task:
+  task_name: real_transition_task_state_v2_allow2_field
+  dataset_dir: data/policy_shadow_real_transition_task_state_v2_allow2
+  camera_names: [video4, video5, video6, video7]
+  max_steps: 50000
+  control_hz: 50
+  record_hz: 20
+  dt: 0.05
+  seed: -1
+  param_version: real_transition_task_state_v2_allow2_field_v1
+
+sync:
+  time_source: sensor_or_ros_header_stamp
+  max_observation_skew_ms: 40.0
+  required_cameras: [video4, video5, video6, video7]
+  record_action_sample_time: true
+  record_action_send_time: true
+
+video:
+  target_latency_ms: 120.0
+  transport_hint: low_latency
+  prefer_compressed_transport: true
+  record_format: jpeg
+  jpeg_quality: 95
+
+receiver:
+  health:
+    mode: strict
+    bridge_snapshot_timeout_ms: 200
+    fpv_max_stale_ms: 1000
+    primary_camera: video4
+    camera_max_stale_ms: 1000
+    imu_require_online: true
+    imu_require_valid_attitude: true
+    quarantine_failed_records: true
+  online_qc:
+    enabled: false
+    primary_camera: video4
+
+safety:
+  deadman_enabled: true
+  estop_enabled: true
+  manual_override_enabled: true
+  sensor_timeout_s: 1.0
+  action_clip: 1.0
+  max_delta_per_step: 1.0

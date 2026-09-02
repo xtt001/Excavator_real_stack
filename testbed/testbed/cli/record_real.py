@@ -119,13 +119,15 @@ def _publish_remote_receiver_status(
     steps = (
         int(record_steps)
         if record_steps is not None
-        else int(len(record_session)) if record_session is not None else 0
+        else int(len(record_session))
+        if record_session is not None
+        else 0
     )
     go_home_result = ""
     if go_home_update is not None:
         if bool(getattr(go_home_update, "failed", False)):
-            go_home_result = (
-                "failed:" + str(getattr(go_home_update, "reason", "") or "unknown")
+            go_home_result = "failed:" + str(
+                getattr(go_home_update, "reason", "") or "unknown"
             )
         elif bool(getattr(go_home_update, "done", False)):
             go_home_result = "done"
@@ -160,9 +162,7 @@ def _publish_remote_receiver_status(
     payload["storage"] = _storage_status_payload(storage_path)
     payload["save"] = _save_status_payload(save_status, saved_path=saved_path)
     payload["home"] = _status_jsonable(dict(home_status or {}))
-    payload["real_transition"] = _status_jsonable(
-        dict(real_transition_status or {})
-    )
+    payload["real_transition"] = _status_jsonable(dict(real_transition_status or {}))
     payload.update(_policy_remote_status_payload(action_source, action_info))
     payload["latency"] = _receiver_latency_status_payload(
         action_info=action_info,
@@ -172,9 +172,9 @@ def _publish_remote_receiver_status(
     if control_result is not None:
         commanded = control_result.get("commanded_action")
         if commanded is not None:
-            payload["commanded_action"] = np.asarray(
-                commanded, dtype=np.float32
-            ).reshape(4).tolist()
+            payload["commanded_action"] = (
+                np.asarray(commanded, dtype=np.float32).reshape(4).tolist()
+            )
     if saved_path is not None:
         payload["saved_path"] = str(saved_path)
     publish(payload)
@@ -243,9 +243,7 @@ def _receiver_health_status_payload(receiver_health: Any | None) -> dict[str, An
             diagnostics.get("bridge_snapshot_age_ms"), -1.0
         ),
         "camera_primary": str(diagnostics.get("camera_primary", "") or ""),
-        "camera_age_ms": _float_or_default(
-            diagnostics.get("camera_age_ms"), -1.0
-        ),
+        "camera_age_ms": _float_or_default(diagnostics.get("camera_age_ms"), -1.0),
         "remote_action_connected": int(
             diagnostics.get("remote_action_connected", 0) or 0
         ),
@@ -404,13 +402,19 @@ def _go_home_config_status_payload(
             "home_pose_rad": home_pose.tolist(),
             "near_tolerance_rad": np.asarray(
                 go_home_config.near_tolerance_rad, dtype=np.float64
-            ).reshape(4).tolist(),
+            )
+            .reshape(4)
+            .tolist(),
             "success_tolerance_rad": np.asarray(
                 go_home_config.success_tolerance_rad, dtype=np.float64
-            ).reshape(4).tolist(),
+            )
+            .reshape(4)
+            .tolist(),
             "center_tolerance_rad": np.asarray(
                 go_home_config.center_tolerance_rad, dtype=np.float64
-            ).reshape(4).tolist(),
+            )
+            .reshape(4)
+            .tolist(),
             "timeout_s": float(go_home_config.timeout_s),
             "dwell_s": float(go_home_config.dwell_s),
             "runtime_phase_consistent": int(
@@ -441,7 +445,11 @@ def _policy_remote_status_payload(
     action_info: Any | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {}
-    extras = dict(getattr(action_info, "extras", {}) or {}) if action_info is not None else {}
+    extras = (
+        dict(getattr(action_info, "extras", {}) or {})
+        if action_info is not None
+        else {}
+    )
     for key in (
         "policy_remote_mode",
         "policy_remote_activated",
@@ -453,29 +461,39 @@ def _policy_remote_status_payload(
         if key in extras:
             payload[key] = extras[key]
     for key, value in extras.items():
-        if key.startswith("scripted_cycle_") or key.startswith("swing_landing_") or key in {
-            "planner_cycle_index",
-            "planner_goal_epoch",
-            "planner_type",
-            "planner_selected_initial_side",
-            "planner_available_initial_sides",
-            "planner_script_id",
-            "planner_script_path",
-            "planner_planned_cycle_count",
-            "planner_target_side",
-            "planner_condition",
-        }:
+        if (
+            key.startswith("scripted_cycle_")
+            or key.startswith("swing_landing_")
+            or key
+            in {
+                "planner_cycle_index",
+                "planner_goal_epoch",
+                "planner_type",
+                "planner_selected_initial_side",
+                "planner_available_initial_sides",
+                "planner_script_id",
+                "planner_script_path",
+                "planner_planned_cycle_count",
+                "planner_target_side",
+                "planner_condition",
+                "planner_task_dig_complete",
+                "planner_task_return_commit",
+                "planner_task_state_epoch",
+                "planner_task_state_v2",
+            }
+        ):
             payload[key] = _status_jsonable(value)
     for key, width in (
         ("policy_action", 4),
         ("policy_assisted_action", 4),
         ("policy_returned_action", 4),
         ("policy_intent_probabilities", 8),
+        ("policy_task_state_v2", 5),
     ):
         if key in extras:
-            payload[key] = np.asarray(
-                extras[key], dtype=np.float32
-            ).reshape(width).tolist()
+            payload[key] = (
+                np.asarray(extras[key], dtype=np.float32).reshape(width).tolist()
+            )
     status = getattr(action_source, "policy_status", None)
     if callable(status):
         try:
@@ -545,8 +563,12 @@ def _save_record_session_with_online_qc_final(
 
     if _online_qc_blocks_record_start(final_snapshot):
         path = session.save_failed(
-            error_code=str(getattr(final_snapshot, "error_code", "") or "online_qc_failed"),
-            error_time_ns=int(error_time_ns if error_time_ns is not None else time.time_ns()),
+            error_code=str(
+                getattr(final_snapshot, "error_code", "") or "online_qc_failed"
+            ),
+            error_time_ns=int(
+                error_time_ns if error_time_ns is not None else time.time_ns()
+            ),
             stop_reason="online_qc_failed",
             metadata_updates=updates,
         )
@@ -559,7 +581,9 @@ def _online_qc_final_metadata(final_snapshot: Any) -> dict[str, Any]:
     diagnostics = dict(getattr(final_snapshot, "diagnostics", {}) or {})
     metadata: dict[str, Any] = {
         "online_qc_final_status": str(getattr(final_snapshot, "status", "")),
-        "online_qc_final_error_code": str(getattr(final_snapshot, "error_code", "") or ""),
+        "online_qc_final_error_code": str(
+            getattr(final_snapshot, "error_code", "") or ""
+        ),
         "online_qc_final_warning_codes": ",".join(
             str(code) for code in getattr(final_snapshot, "warning_codes", ()) or ()
         ),
@@ -579,8 +603,13 @@ def _online_qc_final_metadata(final_snapshot: Any) -> dict[str, Any]:
     ):
         if key in diagnostics:
             metadata[key] = diagnostics[key]
-    if not metadata["online_qc_final_warning_codes"] and "online_qc_warning_codes" in diagnostics:
-        metadata["online_qc_final_warning_codes"] = diagnostics["online_qc_warning_codes"]
+    if (
+        not metadata["online_qc_final_warning_codes"]
+        and "online_qc_warning_codes" in diagnostics
+    ):
+        metadata["online_qc_final_warning_codes"] = diagnostics[
+            "online_qc_warning_codes"
+        ]
     return metadata
 
 
@@ -828,9 +857,7 @@ def main(prog: str = "tb-record-real") -> None:
         if int(args.test_log_image_interval_steps) <= 0:
             raise ValueError("--test-log-image-interval-steps must be positive")
         test_log_cfg = teleop_cfg.setdefault("test_log", {})
-        test_log_cfg["image_interval_steps"] = int(
-            args.test_log_image_interval_steps
-        )
+        test_log_cfg["image_interval_steps"] = int(args.test_log_image_interval_steps)
     if args.transition_session_dir is not None:
         transition_cfg["enabled"] = True
         transition_cfg["session_dir"] = str(args.transition_session_dir)
@@ -893,7 +920,9 @@ def main(prog: str = "tb-record-real") -> None:
         state_reader_mode=state_reader_mode,
         bridge_host=str(bridge_cfg.get("host", "127.0.0.1")),
     )
-    sync_max_slop_ns = int(float(sync_cfg.get("max_observation_skew_ms", 40.0)) * 1_000_000)
+    sync_max_slop_ns = int(
+        float(sync_cfg.get("max_observation_skew_ms", 40.0)) * 1_000_000
+    )
     camera_names: list[str] = list(task_cfg.get("camera_names", ["fpv"]))
     _default_online_qc_primary_camera(
         receiver_online_qc_cfg,
@@ -911,9 +940,13 @@ def main(prog: str = "tb-record-real") -> None:
     online_qc_config = OnlineQcConfig.from_mapping(receiver_online_qc_cfg)
 
     pump_cfg = dict(real_cfg.get("control_pump", {}) or {})
-    control_pump_enabled = bool(pump_cfg.get("enabled", False)) and backend_mode == "bridge_tcp"
+    control_pump_enabled = (
+        bool(pump_cfg.get("enabled", False)) and backend_mode == "bridge_tcp"
+    )
     backend_controller_mode = "noop" if control_pump_enabled else backend_mode
-    bridge_client = _build_bridge_client(real_cfg, backend_controller_mode, state_reader_mode)
+    bridge_client = _build_bridge_client(
+        real_cfg, backend_controller_mode, state_reader_mode
+    )
     control_pump = None
     if control_pump_enabled:
         from testbed.backends.real.action_pump import RealActionPump
@@ -976,9 +1009,7 @@ def main(prog: str = "tb-record-real") -> None:
     home_status = _go_home_config_status_payload(
         go_home_config,
         source_path=args.config.resolve(),
-        phase_home_pose=dict(cfg.get("phase_labeling", {}) or {}).get(
-            "home_pose_rad"
-        ),
+        phase_home_pose=dict(cfg.get("phase_labeling", {}) or {}).get("home_pose_rad"),
     )
     base_meta = _build_episode_metadata(
         task_cfg=task_cfg,
@@ -1040,9 +1071,7 @@ def main(prog: str = "tb-record-real") -> None:
         max_planned_run_stop_s = float(
             transition_status["time_limits_s"]["max_planned_run_stop"]
         )
-        required_transition_steps = int(
-            math.ceil(max_planned_run_stop_s * record_hz)
-        )
+        required_transition_steps = int(math.ceil(max_planned_run_stop_s * record_hz))
         if max_steps < required_transition_steps:
             raise ValueError(
                 "task.max_steps is too small for the longest frozen transition run: "
@@ -1285,7 +1314,9 @@ def main(prog: str = "tb-record-real") -> None:
                     episode_idx,
                 )
             else:
-                log.info("Receiver starts recording episode %d immediately.", episode_idx)
+                log.info(
+                    "Receiver starts recording episode %d immediately.", episode_idx
+                )
             remote_control_loop = None
             if remote_control_loop_enabled:
                 remote_control_loop = _RemoteControlLoop(
@@ -1336,9 +1367,7 @@ def main(prog: str = "tb-record-real") -> None:
                                         or 0
                                     ),
                                     "real_transition_matched_start_pair_id": str(
-                                        transition_status.get(
-                                            "matched_start_pair_id"
-                                        )
+                                        transition_status.get("matched_start_pair_id")
                                         or ""
                                     ),
                                 }
@@ -1360,7 +1389,10 @@ def main(prog: str = "tb-record-real") -> None:
                             transition_runtime.attach_recording(episode_idx=episode_idx)
                         receiver_mode = "recording"
                         record_start_pending = False
-                        log.info("Record session episode %d starts on this frame.", episode_idx)
+                        log.info(
+                            "Record session episode %d starts on this frame.",
+                            episode_idx,
+                        )
                         live_line.message(f"mode=recording episode={episode_idx}")
 
                     discard, quit_now = _check_pygame_events(
@@ -1386,9 +1418,13 @@ def main(prog: str = "tb-record-real") -> None:
                     if receiver_mode == "go_home" and go_home_controller is not None:
                         go_home_update = go_home_controller.update(obs)
                         if remote_control_loop is not None:
-                            remote_control_loop.set_scripted_action(go_home_update.action)
+                            remote_control_loop.set_scripted_action(
+                                go_home_update.action
+                            )
                     if remote_control_loop is not None:
-                        observation_sequence = remote_control_loop.update_observation(obs)
+                        observation_sequence = remote_control_loop.update_observation(
+                            obs
+                        )
                         _pace_before_observation(
                             enabled=frame_alignment_this_step,
                             rate_hz=record_hz,
@@ -1434,9 +1470,7 @@ def main(prog: str = "tb-record-real") -> None:
                         action_sample_ns = sample.action_sample_timestamp_ns
                         action_update_ns = sample.action_update_timestamp_ns
                         action_send_ns = sample.action_send_timestamp_ns
-                        action_pump_update_sequence = (
-                            sample.action_pump_update_sequence
-                        )
+                        action_pump_update_sequence = sample.action_pump_update_sequence
                         action_pump_sent_sequence = sample.action_pump_sent_sequence
                         guard_info = sample.guard_info
                         sensor_age_s = sample.sensor_age_s
@@ -1454,7 +1488,9 @@ def main(prog: str = "tb-record-real") -> None:
                         )
                     else:
                         raw_action, action_info = action_source.next_action(obs)
-                        reset_now, discard_now, quit_now = _action_control_flags(action_info)
+                        reset_now, discard_now, quit_now = _action_control_flags(
+                            action_info
+                        )
                         if quit_now:
                             abort = True
                             break
@@ -1469,16 +1505,16 @@ def main(prog: str = "tb-record-real") -> None:
                             extras.get("record_start_requested", False)
                         )
                         mark_requested = bool(extras.get("mark_requested", False))
-                        go_home_requested = bool(
-                            extras.get("go_home_requested", False)
-                        )
+                        go_home_requested = bool(extras.get("go_home_requested", False))
                         safety_state = dict(obs.get("safety_state", {}))
                         host_now_ns = time.time_ns()
                         sensor_age_s = _sensor_age_s(obs, now_ns=host_now_ns)
                         safe_action, _triggered = guard.check(
                             raw_action,
                             obs.get("qpos"),
-                            deadman_pressed=bool(safety_state.get("deadman_pressed", True)),
+                            deadman_pressed=bool(
+                                safety_state.get("deadman_pressed", True)
+                            ),
                             estop_active=bool(safety_state.get("estop_active", False)),
                             manual_override_active=bool(
                                 safety_state.get("manual_override_active", False)
@@ -1488,7 +1524,9 @@ def main(prog: str = "tb-record-real") -> None:
                         )
                         guard_info = _GuardInfoSnapshot(
                             triggered=bool(guard.last_info.triggered),
-                            reasons=tuple(str(reason) for reason in guard.last_info.reasons),
+                            reasons=tuple(
+                                str(reason) for reason in guard.last_info.reasons
+                            ),
                         )
                         if go_home_update is not None:
                             safe_action, _triggered = guard.check(
@@ -1655,8 +1693,11 @@ def main(prog: str = "tb-record-real") -> None:
                         and record_start_requested
                     ):
                         if receiver_mode == "armed" and record_session is None:
-                            if receiver_health.ok and not _online_qc_blocks_record_start(
-                                online_qc_snapshot
+                            if (
+                                receiver_health.ok
+                                and not _online_qc_blocks_record_start(
+                                    online_qc_snapshot
+                                )
                             ):
                                 record_start_pending = True
                                 log.info(
@@ -1676,8 +1717,7 @@ def main(prog: str = "tb-record-real") -> None:
                                     error_code,
                                 )
                                 live_line.message(
-                                    "record_start_blocked "
-                                    f"err={error_code}"
+                                    f"record_start_blocked err={error_code}"
                                 )
                             else:
                                 log.warning(
@@ -1693,7 +1733,10 @@ def main(prog: str = "tb-record-real") -> None:
                         error_time_ns = time.time_ns()
                         if remote_control_loop is not None:
                             remote_control_loop.set_fault_hold(True)
-                        if receiver_mode in {"recording", "go_home"} and record_session is not None:
+                        if (
+                            receiver_mode in {"recording", "go_home"}
+                            and record_session is not None
+                        ):
                             _force_zero_control(obs)
                             failed_steps = len(record_session)
                             stop_reason = (
@@ -1742,7 +1785,10 @@ def main(prog: str = "tb-record-real") -> None:
                                 error_time_ns=error_time_ns,
                                 stop_reason=stop_reason,
                             )
-                            if transition_runtime is not None and failed_path is not None:
+                            if (
+                                transition_runtime is not None
+                                and failed_path is not None
+                            ):
                                 transition_runtime.seal_saved_run(
                                     raw_path=failed_path,
                                     stop_reason=stop_reason,
@@ -1778,7 +1824,7 @@ def main(prog: str = "tb-record-real") -> None:
                                 )
                                 live_line.message(
                                     f"mode=fault err={receiver_health.error_code}"
-                            )
+                                )
                             record_session = None
                             go_home_controller = None
                             if remote_control_loop is not None:
@@ -1840,8 +1886,7 @@ def main(prog: str = "tb-record-real") -> None:
                         if transition_runtime is not None:
                             transition_runtime.abort_on_latest_step(
                                 reason=str(
-                                    online_qc_snapshot.error_code
-                                    or "online_qc_failed"
+                                    online_qc_snapshot.error_code or "online_qc_failed"
                                 ),
                                 safety_stop=False,
                             )
@@ -1897,7 +1942,9 @@ def main(prog: str = "tb-record-real") -> None:
                         record_start_pending = False
                         guard.reset()
 
-                    if (receiver_health.ok or not health_blocks_control) and go_home_requested:
+                    if (
+                        receiver_health.ok or not health_blocks_control
+                    ) and go_home_requested:
                         go_home_context = _go_home_start_context(
                             receiver_mode,
                             record_session is not None,
@@ -1943,7 +1990,9 @@ def main(prog: str = "tb-record-real") -> None:
                                     )
                         elif receiver_mode != "go_home":
                             go_home_start_rejected = True
-                            go_home_start_reject_reason = f"ignored_mode:{receiver_mode}"
+                            go_home_start_reject_reason = (
+                                f"ignored_mode:{receiver_mode}"
+                            )
                             log.info(
                                 "go-home request ignored in receiver mode %s.",
                                 receiver_mode,
@@ -2049,7 +2098,9 @@ def main(prog: str = "tb-record-real") -> None:
                         elif go_home_update.done:
                             _force_zero_control(obs)
                             _release_remote_control(remote_control_loop)
-                            log.info("go-home completed while armed; no record is saved.")
+                            log.info(
+                                "go-home completed while armed; no record is saved."
+                            )
                             live_line.message(
                                 "mode=armed go_home_done "
                                 f"final_err={_format_go_home_final_error(go_home_controller)}"
@@ -2074,7 +2125,10 @@ def main(prog: str = "tb-record-real") -> None:
                                 ),
                                 message="go_home_done_armed",
                             )
-                    if receiver_mode in {"recording", "go_home"} and record_session is not None:
+                    if (
+                        receiver_mode in {"recording", "go_home"}
+                        and record_session is not None
+                    ):
                         step_diagnostics = _build_step_diagnostics(
                             obs=obs,
                             raw_action=raw_action,
@@ -2134,7 +2188,10 @@ def main(prog: str = "tb-record-real") -> None:
                                     automatic_result.get("run_id"),
                                 )
                             transition_stop = transition_runtime.consume_stop_request()
-                            if transition_stop is None and len(record_session) >= max_steps:
+                            if (
+                                transition_stop is None
+                                and len(record_session) >= max_steps
+                            ):
                                 transition_runtime.abort_on_latest_step(
                                     reason="recording_step_limit",
                                     safety_stop=False,
@@ -2256,9 +2313,8 @@ def main(prog: str = "tb-record-real") -> None:
                                 )
                                 record_start_pending = False
                                 break
-                        if (
-                            online_qc_snapshot is not None
-                            and bool(getattr(online_qc_snapshot, "train_exclude", False))
+                        if online_qc_snapshot is not None and bool(
+                            getattr(online_qc_snapshot, "train_exclude", False)
                         ):
                             record_session.mark_recent_train_exclude(
                                 window_steps=online_qc_config.mask_backfill_window_steps
@@ -2631,8 +2687,14 @@ def main(prog: str = "tb-record-real") -> None:
                                 ),
                             )
                             break
-                    if not recording_enabled and max_steps > 0 and local_step + 1 >= max_steps:
-                        log.info("No-record receiver test reached max_steps=%d.", max_steps)
+                    if (
+                        not recording_enabled
+                        and max_steps > 0
+                        and local_step + 1 >= max_steps
+                    ):
+                        log.info(
+                            "No-record receiver test reached max_steps=%d.", max_steps
+                        )
                         saved = num_episodes
                         break
                     ts = ts_next
@@ -2677,10 +2739,14 @@ def main(prog: str = "tb-record-real") -> None:
                     ),
                 )
             if interrupt_path is not None:
-                live_line.message(f"failed steps={len(record_session)} path={interrupt_path}")
+                live_line.message(
+                    f"failed steps={len(record_session)} path={interrupt_path}"
+                )
                 episode_idx += 1
             elif discard:
-                log.info("Discarded current partial episode; episode index is unchanged.")
+                log.info(
+                    "Discarded current partial episode; episode index is unchanged."
+                )
     except KeyboardInterrupt:
         abort = True
     finally:
@@ -2693,7 +2759,9 @@ def main(prog: str = "tb-record-real") -> None:
             qc_event_logger.close()
 
     if recording_enabled:
-        log.info("Real v1 recording complete: %d / %d episode(s) saved.", saved, num_episodes)
+        log.info(
+            "Real v1 recording complete: %d / %d episode(s) saved.", saved, num_episodes
+        )
     else:
         log.info("Real v1 no-record receiver test complete.")
     if abort and sigint_count >= 2:
@@ -2796,9 +2864,10 @@ def _recording_contract_snapshot(cfg: dict[str, Any]) -> dict[str, Any]:
     snapshot = copy.deepcopy(cfg)
     transition_cfg = dict(snapshot.get("real_transition", {}) or {})
     teleop_cfg = snapshot.setdefault("teleop", {})
-    if bool(transition_cfg.get("enabled", False)) and str(
-        teleop_cfg.get("input", "")
-    ) == "remote":
+    if (
+        bool(transition_cfg.get("enabled", False))
+        and str(teleop_cfg.get("input", "")) == "remote"
+    ):
         joystick_cfg = teleop_cfg.get("joystick")
         if isinstance(joystick_cfg, dict):
             # This button is interpreted only by the host sender. A cancelled
@@ -2854,7 +2923,9 @@ class ReceiverHealthEvaluator:
         self.fpv_max_stale_ms = float(fpv_max_stale_ms)
         self.primary_camera = str(primary_camera or "fpv")
         self.camera_max_stale_ms = float(
-            self.fpv_max_stale_ms if camera_max_stale_ms is None else camera_max_stale_ms
+            self.fpv_max_stale_ms
+            if camera_max_stale_ms is None
+            else camera_max_stale_ms
         )
         self.imu_require_online = bool(imu_require_online)
         self.imu_require_valid_attitude = bool(imu_require_valid_attitude)
@@ -2965,10 +3036,11 @@ class ReceiverHealthEvaluator:
                     # Older/non-hardware state readers may not expose this
                     # field. Enforce it whenever the bridge provides it.
                     if imu_health.get("host_rx_age_ms") is not None and stale:
-                        errors.append(
-                            "imu_stale:" + ",".join(str(i) for i in stale)
-                        )
-                if bridge_age_ms < 0.0 or bridge_age_ms > self.bridge_snapshot_timeout_ms:
+                        errors.append("imu_stale:" + ",".join(str(i) for i in stale))
+                if (
+                    bridge_age_ms < 0.0
+                    or bridge_age_ms > self.bridge_snapshot_timeout_ms
+                ):
                     errors.append("bridge_stale")
                 if camera_age_ms < 0.0 or camera_age_ms > self.camera_max_stale_ms:
                     errors.append(
@@ -3230,9 +3302,7 @@ class ReceiverTestLogger:
             "remote_action_age_ms": float(
                 extras.get("remote_action_age_ms", 0.0) or 0.0
             ),
-            "remote_action_stale": int(
-                bool(extras.get("remote_action_stale", False))
-            ),
+            "remote_action_stale": int(bool(extras.get("remote_action_stale", False))),
             "remote_action_drop_count": int(
                 extras.get("remote_action_drop_count", 0) or 0
             ),
@@ -3275,9 +3345,7 @@ class ReceiverTestLogger:
             "policy_scaled_action": extras.get("policy_scaled_action"),
             "policy_assisted_action": extras.get("policy_assisted_action"),
             "policy_returned_action": extras.get("policy_returned_action"),
-            "policy_intent_probabilities": extras.get(
-                "policy_intent_probabilities"
-            ),
+            "policy_intent_probabilities": extras.get("policy_intent_probabilities"),
             "phase_gate_prob": float(extras.get("phase_gate_prob", 0.0) or 0.0),
             "phase_gate_threshold": float(
                 extras.get("phase_gate_threshold", 0.0) or 0.0
@@ -3289,9 +3357,7 @@ class ReceiverTestLogger:
             "policy_phase_gated_action": extras.get("policy_phase_gated_action"),
             "policy_snap_active_mask": extras.get("policy_snap_active_mask"),
             "policy_snap_action": extras.get("policy_snap_action"),
-            "policy_snap_margin": float(
-                extras.get("policy_snap_margin", 0.0) or 0.0
-            ),
+            "policy_snap_margin": float(extras.get("policy_snap_margin", 0.0) or 0.0),
             "policy_snap_intent_threshold": float(
                 extras.get("policy_snap_intent_threshold", 0.0) or 0.0
             ),
@@ -3318,9 +3384,7 @@ class ReceiverTestLogger:
             "policy_deadzone_assist_active": int(
                 extras.get("policy_deadzone_assist_active", 0) or 0
             ),
-            "policy_deadzone_assist_mask": extras.get(
-                "policy_deadzone_assist_mask"
-            ),
+            "policy_deadzone_assist_mask": extras.get("policy_deadzone_assist_mask"),
             "policy_deadzone_assist_axes": str(
                 extras.get("policy_deadzone_assist_axes", "")
             ),
@@ -3358,9 +3422,7 @@ class ReceiverTestLogger:
                 extras.get("gohome_request_probability", 0.0) or 0.0
             ),
             "gohome_raw_active": int(extras.get("gohome_raw_active", 0) or 0),
-            "gohome_request_active": int(
-                extras.get("gohome_request_active", 0) or 0
-            ),
+            "gohome_request_active": int(extras.get("gohome_request_active", 0) or 0),
             "gohome_request_suppressed": int(
                 extras.get("gohome_request_suppressed", 0) or 0
             ),
@@ -3421,7 +3483,9 @@ class ReceiverTestLogger:
         ):
             return {}
 
-        rel_path = Path(self.image_dir.name) / f"{self.image_camera}_{local_step:06d}.jpg"
+        rel_path = (
+            Path(self.image_dir.name) / f"{self.image_camera}_{local_step:06d}.jpg"
+        )
         path = self.run_dir / rel_path
         encoded = dict(obs.get("encoded_images", {}) or {}).get(self.image_camera)
         if isinstance(encoded, dict) and str(encoded.get("encoding", "")) == "jpeg":
@@ -3580,9 +3644,7 @@ def _control_result_trace_payload(result: Any | None) -> dict[str, Any]:
         source = {
             "ack": getattr(result, "ack", False),
             "fault_code": getattr(result, "fault_code", ""),
-            "controller_timestamp_ns": getattr(
-                result, "controller_timestamp_ns", 0
-            ),
+            "controller_timestamp_ns": getattr(result, "controller_timestamp_ns", 0),
             "commanded_action": getattr(result, "commanded_action", []),
             "raw_low_level_command": getattr(result, "raw_low_level_command", None),
         }
@@ -3593,9 +3655,7 @@ def _control_result_trace_payload(result: Any | None) -> dict[str, Any]:
             source.get("controller_timestamp_ns")
         ),
         "commanded_action": _jsonable(source.get("commanded_action", [])),
-        "raw_low_level_command": _jsonable(
-            source.get("raw_low_level_command")
-        ),
+        "raw_low_level_command": _jsonable(source.get("raw_low_level_command")),
     }
 
 
@@ -3779,9 +3839,7 @@ class _RemoteControlLoop:
             observation_sequence = int(self._observation_sequence)
             fault_hold = self._fault_hold
             scripted_action = (
-                None
-                if self._scripted_action is None
-                else self._scripted_action.copy()
+                None if self._scripted_action is None else self._scripted_action.copy()
             )
         raw_action, action_info = self._action_source.next_action(obs)
         action_sample_ns = _action_sample_timestamp_ns(action_info)
@@ -3835,9 +3893,8 @@ class _RemoteControlLoop:
         )
         with self._processed:
             self._latest_sample = sample
-            self._record_start_requested = (
-                self._record_start_requested
-                or bool(extras.get("record_start_requested", False))
+            self._record_start_requested = self._record_start_requested or bool(
+                extras.get("record_start_requested", False)
             )
             self._mark_requested = self._mark_requested or bool(
                 extras.get("mark_requested", False)
@@ -4102,7 +4159,9 @@ class _QcDashboard:
         diagnostics: dict[str, Any],
     ) -> tuple[str, str, str, str, str, str]:
         error_code = str(_qc_attr(online_qc, "error_code", "") or "")
-        status = str(diagnostics.get("online_qc_bucket_reference_status", "") or "UNKNOWN")
+        status = str(
+            diagnostics.get("online_qc_bucket_reference_status", "") or "UNKNOWN"
+        )
         state = "MISS" if status == "UNKNOWN" else status
         if error_code == "bucket_reference_outlier":
             state = "FAIL"
@@ -4115,7 +4174,11 @@ class _QcDashboard:
             code,
             f"low={low} high={high}",
             f"candidate={diagnostics.get('online_qc_train_ready_candidate', '-')}",
-            "fail" if state == "FAIL" else "review" if state in {"WARN", "MISS"} else "keep",
+            "fail"
+            if state == "FAIL"
+            else "review"
+            if state in {"WARN", "MISS"}
+            else "keep",
         )
 
     def _bucket_semantic_row(
@@ -4124,9 +4187,7 @@ class _QcDashboard:
         diagnostics: dict[str, Any],
     ) -> tuple[str, str, str, str, str, str]:
         error_code = str(_qc_attr(online_qc, "error_code", "") or "")
-        decision = str(
-            diagnostics.get("online_qc_bucket_semantic_decision", "") or "-"
-        )
+        decision = str(diagnostics.get("online_qc_bucket_semantic_decision", "") or "-")
         notes = str(diagnostics.get("online_qc_bucket_semantic_notes", "") or "-")
         ref_count = int(
             diagnostics.get("online_qc_bucket_semantic_reference_count", 0) or 0
@@ -4145,7 +4206,11 @@ class _QcDashboard:
             decision,
             notes,
             f"ref={ref_count}",
-            "fail" if state == "FAIL" else "review" if state in {"WARN", "MISS"} else "keep",
+            "fail"
+            if state == "FAIL"
+            else "review"
+            if state in {"WARN", "MISS"}
+            else "keep",
         )
 
     def _imu_row(
@@ -4221,7 +4286,11 @@ class _QcDashboard:
             code,
             f"score={_qc_format_float(diagnostics.get('online_qc_fpv_drift_score'))}",
             f"samples={drift_count}",
-            "mask" if train_exclude and state == "WARN" else "fail" if state == "FAIL" else "keep",
+            "mask"
+            if train_exclude and state == "WARN"
+            else "fail"
+            if state == "FAIL"
+            else "keep",
         )
 
     def _episode_final_row(
@@ -4369,7 +4438,9 @@ class _LiveActionLine:
         age_ms = -1.0 if sensor_age_s is None else float(sensor_age_s) * 1000.0
         extras = getattr(action_info, "extras", {}) or {}
         remote_age_ms = extras.get("remote_action_age_ms")
-        remote_age_text = "-" if remote_age_ms is None else f"{float(remote_age_ms):.1f}"
+        remote_age_text = (
+            "-" if remote_age_ms is None else f"{float(remote_age_ms):.1f}"
+        )
         stale = int(bool(extras.get("remote_action_stale", False)))
         drops = int(extras.get("remote_action_drop_count", 0) or 0)
         hz_text = "-" if self._hz_ema is None else f"{self._hz_ema:.1f}"
@@ -4379,7 +4450,9 @@ class _LiveActionLine:
         control_text = (
             "model"
             if control_mode == "policy"
-            else "manual" if control_mode == "manual" else "-"
+            else "manual"
+            if control_mode == "manual"
+            else "-"
         )
         assist_enabled = int(extras.get("policy_deadzone_assist_enabled", 0) or 0)
         assist_active = int(extras.get("policy_deadzone_assist_active", 0) or 0)
@@ -4402,7 +4475,9 @@ class _LiveActionLine:
             if receiver_health is not None and receiver_health.error_code
             else "-"
         )
-        imu_text = receiver_health.imu_summary if receiver_health is not None else "----"
+        imu_text = (
+            receiver_health.imu_summary if receiver_health is not None else "----"
+        )
         controller_ts_ns = int(control_result.get("controller_timestamp_ns", 0) or 0)
         control_age_text = (
             "-"
@@ -4609,7 +4684,11 @@ def _health_float_values(value: Any, *, size: int, default: float) -> np.ndarray
 
 
 def _bad_health_indices(bits: np.ndarray) -> list[int]:
-    return [int(i) for i, value in enumerate(np.asarray(bits).reshape(-1)) if int(value) == 0]
+    return [
+        int(i)
+        for i, value in enumerate(np.asarray(bits).reshape(-1))
+        if int(value) == 0
+    ]
 
 
 def _imu_summary(bits: np.ndarray) -> str:
@@ -4693,15 +4772,21 @@ def _build_step_diagnostics(
         "raw_action": np.asarray(raw_action, dtype=np.float32),
         "toggle_mask": int(extras.get("toggle_mask", 0) or 0),
         "status11": np.asarray(extras.get("status11", []), dtype=np.int32),
-        "record_start_requested": int(bool(extras.get("record_start_requested", False))),
+        "record_start_requested": int(
+            bool(extras.get("record_start_requested", False))
+        ),
         "mark_requested": int(bool(extras.get("mark_requested", False))),
-        "policy_start_requested": int(bool(extras.get("policy_start_requested", False))),
+        "policy_start_requested": int(
+            bool(extras.get("policy_start_requested", False))
+        ),
         "go_home_requested": int(bool(extras.get("go_home_requested", False))),
         "guard_triggered": int(bool(guard_info.triggered)),
         "guard_reason": ",".join(str(reason) for reason in guard_info.reasons),
         "controller_ack": int(bool(control_result.get("ack", False))),
         "controller_fault_code": str(control_result.get("fault_code", "")),
-        "controller_timestamp_ns": int(control_result.get("controller_timestamp_ns", 0)),
+        "controller_timestamp_ns": int(
+            control_result.get("controller_timestamp_ns", 0)
+        ),
         "commanded_action": np.asarray(commanded_action, dtype=np.float32),
         "action_sample_timestamp_ns": int(action_sample_timestamp_ns),
         "action_update_timestamp_ns": int(action_update_timestamp_ns),
@@ -4716,7 +4801,9 @@ def _build_step_diagnostics(
             safe_action=safe_action,
             control_result=control_result,
         ),
-        "action_source_latency_ms": float(getattr(action_info, "latency_ms", 0.0) or 0.0),
+        "action_source_latency_ms": float(
+            getattr(action_info, "latency_ms", 0.0) or 0.0
+        ),
         "observation_timestamp_ns": _int_timestamp(obs.get("timestamp_ns")),
         "sensor_timestamp_ns": _int_timestamp(obs.get("sensor_timestamp_ns")),
         "joint_timestamp_ns": _int_timestamp(obs.get("joint_timestamp_ns")),
@@ -4727,7 +4814,9 @@ def _build_step_diagnostics(
     }
     raw_low_level = control_result.get("raw_low_level_command")
     if raw_low_level is not None:
-        diagnostics["raw_low_level_command"] = np.asarray(raw_low_level, dtype=np.float32)
+        diagnostics["raw_low_level_command"] = np.asarray(
+            raw_low_level, dtype=np.float32
+        )
     if obs.get("status") is not None:
         diagnostics["machine_status"] = np.asarray(obs["status"], dtype=np.int32)
     if obs.get("motor_rpm") is not None:
@@ -4740,8 +4829,8 @@ def _build_step_diagnostics(
         diagnostics.update(dict(getattr(online_qc, "diagnostics", {}) or {}))
     _add_imu_step_diagnostics(diagnostics, obs)
     for camera_name, timestamp_ns in image_timestamps.items():
-        diagnostics[f"image_timestamp_ns_{_sanitize_key(camera_name)}"] = _int_timestamp(
-            timestamp_ns
+        diagnostics[f"image_timestamp_ns_{_sanitize_key(camera_name)}"] = (
+            _int_timestamp(timestamp_ns)
         )
     image_metadata = obs.get("image_metadata") or {}
     if isinstance(image_metadata, dict):
@@ -4761,14 +4850,18 @@ def _build_step_diagnostics(
                 "group_camera_count",
             ):
                 if key in metadata:
-                    diagnostics[f"image_{key}_{safe_camera}"] = _int_timestamp(metadata.get(key))
+                    diagnostics[f"image_{key}_{safe_camera}"] = _int_timestamp(
+                        metadata.get(key)
+                    )
             if "group_skew_ms" in metadata:
                 diagnostics[f"image_group_skew_ms_{safe_camera}"] = float(
                     metadata.get("group_skew_ms") or 0.0
                 )
             for key in ("timestamp_clock", "timestamp_source", "group_source"):
                 if key in metadata:
-                    diagnostics[f"image_{key}_{safe_camera}"] = str(metadata.get(key) or "")
+                    diagnostics[f"image_{key}_{safe_camera}"] = str(
+                        metadata.get(key) or ""
+                    )
     _add_remote_action_diagnostics(diagnostics, extras)
     _add_policy_action_diagnostics(diagnostics, extras)
     _add_policy_remote_diagnostics(diagnostics, extras)
@@ -4817,8 +4910,12 @@ def _add_imu_step_diagnostics(diagnostics: dict[str, Any], obs: dict[str, Any]) 
 
     diagnostics["imu_debug_available"] = int(imu_debug_available)
     scalar_values: dict[str, list[float]] = {field: [] for field in _IMU_SCALAR_FIELDS}
-    vector3_values: dict[str, list[np.ndarray]] = {field: [] for field in _IMU_VECTOR3_FIELDS}
-    vector4_values: dict[str, list[np.ndarray]] = {field: [] for field in _IMU_VECTOR4_FIELDS}
+    vector3_values: dict[str, list[np.ndarray]] = {
+        field: [] for field in _IMU_VECTOR3_FIELDS
+    }
+    vector4_values: dict[str, list[np.ndarray]] = {
+        field: [] for field in _IMU_VECTOR4_FIELDS
+    }
 
     for index in range(4):
         raw_device = devices[index] if index < len(devices) else {}
@@ -4847,7 +4944,9 @@ def _add_imu_step_diagnostics(diagnostics: dict[str, Any], obs: dict[str, Any]) 
     if "qpos_raw_imu" in obs:
         diagnostics["qpos_raw_imu"] = np.asarray(obs["qpos_raw_imu"], dtype=np.float32)
     if "qpos_raw_imu_deg" in obs:
-        diagnostics["qpos_raw_imu_deg"] = np.asarray(obs["qpos_raw_imu_deg"], dtype=np.float32)
+        diagnostics["qpos_raw_imu_deg"] = np.asarray(
+            obs["qpos_raw_imu_deg"], dtype=np.float32
+        )
 
 
 def _vector_or_nan(value: Any, *, size: int) -> np.ndarray:
@@ -4883,7 +4982,9 @@ def _ensure_go_home_step_diagnostics(diagnostics: dict[str, Any]) -> None:
     diagnostics.setdefault("go_home_axis_stalled", np.zeros(4, dtype=np.int32))
     diagnostics.setdefault("go_home_axis_wrong_direction", np.zeros(4, dtype=np.int32))
     diagnostics.setdefault("go_home_stall_action_boost", np.zeros(4, dtype=np.float32))
-    diagnostics.setdefault("go_home_effective_min_action", np.zeros(4, dtype=np.float32))
+    diagnostics.setdefault(
+        "go_home_effective_min_action", np.zeros(4, dtype=np.float32)
+    )
     diagnostics.setdefault("go_home_action_limit", np.zeros(4, dtype=np.float32))
     diagnostics.setdefault("go_home_action_ramp_limit", np.zeros(4, dtype=np.float32))
     diagnostics.setdefault("go_home_control_signs", np.zeros(4, dtype=np.float32))
@@ -4979,18 +5080,14 @@ def _add_policy_action_diagnostics(
         extras.get("policy_intent_probabilities", np.zeros(8)),
         dtype=np.float32,
     )
-    diagnostics["phase_gate_prob"] = float(
-        extras.get("phase_gate_prob", 0.0) or 0.0
-    )
+    diagnostics["phase_gate_prob"] = float(extras.get("phase_gate_prob", 0.0) or 0.0)
     diagnostics["phase_gate_threshold"] = float(
         extras.get("phase_gate_threshold", 0.0) or 0.0
     )
     diagnostics["phase_gate_inactive_scale"] = float(
         extras.get("phase_gate_inactive_scale", 0.0) or 0.0
     )
-    diagnostics["phase_gate_active"] = int(
-        extras.get("phase_gate_active", 0) or 0
-    )
+    diagnostics["phase_gate_active"] = int(extras.get("phase_gate_active", 0) or 0)
     diagnostics["policy_phase_gated_action"] = np.asarray(
         extras.get("policy_phase_gated_action", np.zeros(4)),
         dtype=np.float32,
@@ -5090,12 +5187,25 @@ def _add_policy_action_diagnostics(
     diagnostics["policy_frame_alignment_enabled"] = int(
         extras.get("policy_frame_alignment_enabled", 0) or 0
     )
-    diagnostics["policy_frame_reused"] = int(
-        extras.get("policy_frame_reused", 0) or 0
-    )
+    diagnostics["policy_frame_reused"] = int(extras.get("policy_frame_reused", 0) or 0)
     diagnostics["policy_frame_reuse_count"] = int(
         extras.get("policy_frame_reuse_count", 0) or 0
     )
+    diagnostics["policy_task_state_v2_enabled"] = int(
+        extras.get("policy_task_state_v2_enabled", 0) or 0
+    )
+    diagnostics["policy_task_dig_complete"] = int(
+        bool(extras.get("policy_task_dig_complete", 0))
+    )
+    diagnostics["policy_task_return_commit"] = int(
+        bool(extras.get("policy_task_return_commit", 0))
+    )
+    diagnostics["policy_task_state_epoch"] = int(
+        extras.get("policy_task_state_epoch", 0) or 0
+    )
+    diagnostics["policy_task_state_v2"] = np.asarray(
+        extras.get("policy_task_state_v2", np.zeros(5)), dtype=np.float32
+    ).reshape(5)
     diagnostics["gohome_candidate_probability"] = float(
         extras.get("gohome_candidate_probability", 0.0) or 0.0
     )
@@ -5123,9 +5233,7 @@ def _add_policy_action_diagnostics(
     diagnostics["gohome_request_probability"] = float(
         extras.get("gohome_request_probability", 0.0) or 0.0
     )
-    diagnostics["gohome_raw_active"] = int(
-        extras.get("gohome_raw_active", 0) or 0
-    )
+    diagnostics["gohome_raw_active"] = int(extras.get("gohome_raw_active", 0) or 0)
     diagnostics["gohome_request_active"] = int(
         extras.get("gohome_request_active", 0) or 0
     )
@@ -5169,6 +5277,11 @@ def _add_scripted_cycle_diagnostics(
         "scripted_cycle_active",
         "scripted_cycle_completed",
         "scripted_cycle_goal_changed",
+        "scripted_cycle_task_state_advance_requested",
+        "scripted_cycle_task_state_changed",
+        "scripted_cycle_task_state_advance_ignored",
+        "scripted_cycle_task_state_v2_enabled",
+        "scripted_cycle_task_state_require_excursion",
         "scripted_cycle_excursion_observed",
         "scripted_cycle_return_phase_latched",
         "scripted_cycle_review_due",
@@ -5181,6 +5294,9 @@ def _add_scripted_cycle_diagnostics(
         "planner_cycle_index",
         "planner_goal_epoch",
         "planner_planned_cycle_count",
+        "planner_task_dig_complete",
+        "planner_task_return_commit",
+        "planner_task_state_epoch",
     )
     float_keys = (
         "scripted_cycle_cycle_elapsed_s",
@@ -5198,6 +5314,9 @@ def _add_scripted_cycle_diagnostics(
         "scripted_cycle_ready_blockers",
         "scripted_cycle_activation_rejected_reason",
         "scripted_cycle_auto_wait_reason",
+        "scripted_cycle_task_state_stage",
+        "scripted_cycle_task_state_advance_source",
+        "scripted_cycle_task_state_advance_rejected_reason",
         "planner_type",
         "planner_selected_initial_side",
         "planner_available_initial_sides",
@@ -5214,6 +5333,9 @@ def _add_scripted_cycle_diagnostics(
     diagnostics["planner_condition"] = np.asarray(
         extras.get("planner_condition", np.zeros(2)), dtype=np.float32
     ).reshape(2)
+    diagnostics["planner_task_state_v2"] = np.asarray(
+        extras.get("planner_task_state_v2", np.zeros(5)), dtype=np.float32
+    ).reshape(5)
 
 
 def _action_sample_timestamp_ns(action_info) -> int:
@@ -5410,7 +5532,9 @@ def _build_episode_metadata(
     image_format = str(
         video_cfg.get(
             "record_format",
-            "jpeg" if bool(video_cfg.get("prefer_compressed_transport", False)) else "raw_rgb",
+            "jpeg"
+            if bool(video_cfg.get("prefer_compressed_transport", False))
+            else "raw_rgb",
         )
     )
     metadata: dict[str, Any] = {
@@ -5446,7 +5570,9 @@ def _build_episode_metadata(
         "learning_target": str(
             teleop_cfg.get("learning_target", "operator_command_from_observation")
         ),
-        "sync_time_source": str(sync_cfg.get("time_source", "sensor_or_ros_header_stamp")),
+        "sync_time_source": str(
+            sync_cfg.get("time_source", "sensor_or_ros_header_stamp")
+        ),
         "sync_max_observation_skew_ms": float(
             sync_cfg.get("max_observation_skew_ms", 40.0)
         ),

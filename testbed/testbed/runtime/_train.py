@@ -72,6 +72,90 @@ def train_policy(config: dict[str, Any]) -> None:
         )
         or {}
     )
+    cycle_phase_loss = copy.deepcopy(
+        train_cfg.get(
+            "cycle_phase_loss",
+            policy_cfg.get("cycle_phase_loss", {}),
+        )
+        or {}
+    )
+    excursion_observed_loss = copy.deepcopy(
+        train_cfg.get(
+            "excursion_observed_loss",
+            policy_cfg.get("excursion_observed_loss", {}),
+        )
+        or {}
+    )
+    return_commit_loss = copy.deepcopy(
+        train_cfg.get(
+            "return_commit_loss",
+            policy_cfg.get("return_commit_loss", {}),
+        )
+        or {}
+    )
+    action_primitive_islands = copy.deepcopy(
+        train_cfg.get(
+            "action_primitive_islands",
+            policy_cfg.get("action_primitive_islands", {}),
+        )
+        or {}
+    )
+    primitive_action_heads = copy.deepcopy(
+        train_cfg.get(
+            "primitive_action_heads",
+            policy_cfg.get("primitive_action_heads", {}),
+        )
+        or {}
+    )
+    work_return_context = copy.deepcopy(
+        train_cfg.get(
+            "work_return_context",
+            policy_cfg.get("work_return_context", {}),
+        )
+        or {}
+    )
+    task_state_v2 = copy.deepcopy(
+        train_cfg.get(
+            "task_state_v2",
+            policy_cfg.get("task_state_v2", {}),
+        )
+        or {}
+    )
+    task_state_v2_adherence_loss = copy.deepcopy(
+        train_cfg.get(
+            "task_state_v2_adherence_loss",
+            policy_cfg.get("task_state_v2_adherence_loss", {}),
+        )
+        or {}
+    )
+    qvel_zero_state_hold_loss = copy.deepcopy(
+        train_cfg.get(
+            "qvel_zero_state_hold_loss",
+            policy_cfg.get("qvel_zero_state_hold_loss", {}),
+        )
+        or {}
+    )
+    qvel_authority_loss = copy.deepcopy(
+        train_cfg.get(
+            "qvel_authority_loss",
+            policy_cfg.get("qvel_authority_loss", {}),
+        )
+        or {}
+    )
+    factual_semantic_sampling = copy.deepcopy(
+        train_cfg.get(
+            "factual_semantic_sampling",
+            policy_cfg.get("factual_semantic_sampling", {}),
+        )
+        or {}
+    )
+    state_visual_residual = copy.deepcopy(
+        train_cfg.get(
+            "state_visual_residual",
+            policy_cfg.get("state_visual_residual", {}),
+        )
+        or {}
+    )
 
     if policy_class != "ACT":
         raise NotImplementedError(f"Trainer for policy class {policy_class!r} not yet implemented.")
@@ -111,6 +195,19 @@ def train_policy(config: dict[str, Any]) -> None:
         "goal_effect": copy.deepcopy(goal_effect),
         "condition_action_loss": copy.deepcopy(condition_action_loss),
         "target_release_loss": copy.deepcopy(target_release_loss),
+        "cycle_phase_loss": copy.deepcopy(cycle_phase_loss),
+        "excursion_observed_loss": copy.deepcopy(excursion_observed_loss),
+        "return_commit_loss": copy.deepcopy(return_commit_loss),
+        "action_primitive_islands": copy.deepcopy(action_primitive_islands),
+        "primitive_action_heads": copy.deepcopy(primitive_action_heads),
+        "work_return_context": copy.deepcopy(work_return_context),
+        "task_state_v2": copy.deepcopy(task_state_v2),
+        "task_state_v2_adherence_loss": copy.deepcopy(
+            task_state_v2_adherence_loss
+        ),
+        "qvel_zero_state_hold_loss": copy.deepcopy(qvel_zero_state_hold_loss),
+        "qvel_authority_loss": copy.deepcopy(qvel_authority_loss),
+        "state_visual_residual": copy.deepcopy(state_visual_residual),
         "deadzone_loss": copy.deepcopy(
             train_cfg.get("deadzone_loss", policy_cfg.get("deadzone_loss", {})) or {}
         ),
@@ -140,7 +237,13 @@ def train_policy(config: dict[str, Any]) -> None:
         "task_name":      task_name,
         "device":         device,
         "resume_ckpt":    train_cfg.get("resume_ckpt"),
+        "reset_best_on_resume": bool(
+            train_cfg.get("reset_best_on_resume", False)
+        ),
         "warm_start_ckpt": train_cfg.get("warm_start_ckpt"),
+        "warm_start_mode": str(
+            train_cfg.get("warm_start_mode", "conditioned")
+        ),
         "start_epoch":    train_cfg.get("start_epoch"),
         "val_every":      int(train_cfg.get("val_every", 1)),
         "save_latest_every": int(train_cfg.get("save_latest_every", 1)),
@@ -186,6 +289,15 @@ def train_policy(config: dict[str, Any]) -> None:
         state_hold_transition = state_hold_transition,
         condition_adherence_loss_train = condition_adherence_loss,
         target_release_loss_train = target_release_loss,
+        cycle_phase_loss_train = cycle_phase_loss,
+        excursion_observed_loss_train = excursion_observed_loss,
+        return_commit_loss_train = return_commit_loss,
+        action_primitive_islands = action_primitive_islands,
+        work_return_context = work_return_context,
+        task_state_v2 = task_state_v2,
+        qvel_zero_state_hold_loss_train = qvel_zero_state_hold_loss,
+        qvel_authority_loss_train = qvel_authority_loss,
+        factual_semantic_sampling_train = factual_semantic_sampling,
         goal_effect = goal_effect,
     )
 
@@ -270,6 +382,9 @@ def _build_resolved_train_config(
     train_cfg["plot_every"] = int(full_config["plot_every"])
     train_cfg["amp"] = bool(full_config["amp"])
     train_cfg["amp_dtype"] = str(full_config["amp_dtype"])
+    train_cfg["reset_best_on_resume"] = bool(
+        full_config["reset_best_on_resume"]
+    )
     return resolved
 
 
@@ -278,6 +393,12 @@ def _resolve_low_dim_state_dim(low_dim_keys: list[str], equipment_model: str) ->
         "qpos": _resolve_single_low_dim_dim("qpos", equipment_model),
         "qvel": _resolve_single_low_dim_dim("qvel", equipment_model),
         "real_transition_condition_v1": 2,
+        "real_transition_excursion_observed_v1": 1,
+        "real_transition_cycle_phase_v1": 1,
+        "real_transition_return_commit_v1": 1,
+        "real_transition_action_primitive_v1": 4,
+        "real_transition_work_context_v1": 6,
+        "real_transition_task_state_v2": 5,
     }
     return int(sum(dims[key] for key in low_dim_keys))
 
@@ -287,6 +408,18 @@ def _resolve_single_low_dim_dim(key: str, equipment_model: str) -> int:
         return 4
     if key == "real_transition_condition_v1":
         return 2
+    if key == "real_transition_excursion_observed_v1":
+        return 1
+    if key == "real_transition_cycle_phase_v1":
+        return 1
+    if key == "real_transition_return_commit_v1":
+        return 1
+    if key == "real_transition_action_primitive_v1":
+        return 4
+    if key == "real_transition_work_context_v1":
+        return 6
+    if key == "real_transition_task_state_v2":
+        return 5
     raise ValueError(f"Unsupported low-dim key {key!r}.")
 
 
@@ -318,6 +451,20 @@ def _resolve_training_episode_ids(
             raise ValueError(
                 "train-ready manifest condition_schema must be "
                 "'real_transition_condition_v1'"
+            )
+    if low_dim_keys and "real_transition_cycle_phase_v1" in low_dim_keys:
+        if payload.get("cycle_phase_schema") != "real_transition_cycle_phase_v1":
+            raise ValueError(
+                "train-ready manifest cycle_phase_schema must be "
+                "'real_transition_cycle_phase_v1'"
+            )
+    if low_dim_keys and "real_transition_return_commit_v1" in low_dim_keys:
+        if payload.get("return_commit_schema") != (
+            "real_transition_return_commit_v1"
+        ):
+            raise ValueError(
+                "train-ready manifest return_commit_schema must be "
+                "'real_transition_return_commit_v1'"
             )
     ids: list[int] = []
     for value in payload.get("train_ready_episode_ids", []):

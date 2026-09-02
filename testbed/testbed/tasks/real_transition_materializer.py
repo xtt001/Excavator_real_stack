@@ -28,10 +28,28 @@ from testbed.tasks.real_transition import (
     sha256_file,
     verify_run_package,
 )
-
+from testbed.tasks.real_transition_excursion import (
+    EXCURSION_OBSERVED_KEY,
+    build_excursion_contract,
+    derive_excursion_observed,
+    excursion_chunk_valid_mask,
+)
+from testbed.tasks.real_transition_phase import (
+    CYCLE_PHASE_KEY,
+    build_cycle_phase_contract,
+    derive_cycle_phase,
+    phase_chunk_valid_mask,
+)
+from testbed.tasks.real_transition_return_commit import (
+    RETURN_COMMIT_ACTION_INTENT_THRESHOLD,
+    RETURN_COMMIT_KEY,
+    ReturnCommitDerivation,
+    build_return_commit_contract,
+    derive_return_commit,
+)
 
 ANNOTATION_SCHEMA = "real_transition_cycle_annotation_v2"
-ANNOTATION_VERSION = "session_arm_auto_materializer_v3"
+ANNOTATION_VERSION = "session_arm_auto_materializer_v5_return_commit"
 CYCLE_MANIFEST_SCHEMA = "real_transition_cycle_manifest_v1"
 MATERIALIZER_SCHEMA = "real_transition_cycle_materializer_v1"
 EXPECTED_CAMERAS = ("video4", "video5", "video6", "video7")
@@ -178,6 +196,32 @@ def _materialize_into(
     annotation_path = annotations_dir / "cycle_annotations_v2.jsonl"
     _write_jsonl(annotation_path, annotations)
     annotation_sha256 = sha256_file(annotation_path)
+    phase_contract_path = output_dir / "cycle_phase_contract.json"
+    _write_json(
+        phase_contract_path,
+        build_cycle_phase_contract(
+            excursion_min_delta_rad=EXCURSION_MIN_DELTA_RAD,
+            excursion_min_consecutive_samples=EXCURSION_MIN_CONSECUTIVE_SAMPLES,
+        ),
+    )
+    phase_contract_sha256 = sha256_file(phase_contract_path)
+    excursion_contract_path = output_dir / "excursion_observed_contract.json"
+    _write_json(
+        excursion_contract_path,
+        build_excursion_contract(
+            minimum_delta_rad=EXCURSION_MIN_DELTA_RAD,
+            minimum_consecutive_samples=EXCURSION_MIN_CONSECUTIVE_SAMPLES,
+        ),
+    )
+    excursion_contract_sha256 = sha256_file(excursion_contract_path)
+    return_commit_contract_path = output_dir / "return_commit_contract.json"
+    _write_json(
+        return_commit_contract_path,
+        build_return_commit_contract(
+            action_intent_threshold=RETURN_COMMIT_ACTION_INTENT_THRESHOLD
+        ),
+    )
+    return_commit_contract_sha256 = sha256_file(return_commit_contract_path)
 
     manifest_rows: list[dict[str, Any]] = []
     train_ready_ids: list[int] = []
@@ -185,17 +229,26 @@ def _materialize_into(
         record["episode_id"] = int(episode_id)
         episode_name = f"episode_{episode_id}.hdf5"
         episode_path = episodes_dir / episode_name
-        _write_cycle_episode(
+        return_commit = _write_cycle_episode(
             record=record,
             output_path=episode_path,
             annotation_sha256=annotation_sha256,
+            phase_contract_sha256=phase_contract_sha256,
+            excursion_contract_sha256=excursion_contract_sha256,
+            return_commit_contract_sha256=return_commit_contract_sha256,
         )
+        record["return_commit_evaluable"] = bool(return_commit.evaluable)
+        record["return_commit_event_row"] = return_commit.event_row
+        record["return_commit_reason"] = return_commit.reason
         episode_sha256 = sha256_file(episode_path)
         row = _cycle_manifest_row(
             record,
             episode_name=episode_name,
             episode_sha256=episode_sha256,
             annotation_sha256=annotation_sha256,
+            phase_contract_sha256=phase_contract_sha256,
+            excursion_contract_sha256=excursion_contract_sha256,
+            return_commit_contract_sha256=return_commit_contract_sha256,
         )
         manifest_rows.append(row)
         if row["training_tier"] == "clean":
@@ -236,6 +289,12 @@ def _materialize_into(
         # Use the final path, not the temporary build path.
         "dataset_dir": str(final_output_dir / "episodes"),
         "condition_schema": CONDITION_SCHEMA,
+        "cycle_phase_schema": CYCLE_PHASE_KEY,
+        "cycle_phase_contract_sha256": phase_contract_sha256,
+        "excursion_observed_schema": EXCURSION_OBSERVED_KEY,
+        "excursion_observed_contract_sha256": excursion_contract_sha256,
+        "return_commit_schema": RETURN_COMMIT_KEY,
+        "return_commit_contract_sha256": return_commit_contract_sha256,
         "train_ready_episode_ids": train_ready_ids,
         "strict_pass_episode_ids": train_ready_ids,
         "warn_episode_ids": [
@@ -272,10 +331,21 @@ def _materialize_into(
         "goal_lead_exclude_ms": GOAL_LEAD_EXCLUDE_MS,
         "camera_group_skew_max_ms": CAMERA_GROUP_SKEW_MAX_MS,
         "automatic_cycle_excursion": {
-            "detector": "swing_displacement_from_goal_anchor",
+            "detector": "positive_swing_displacement_from_goal_anchor",
             "min_abs_delta_rad": EXCURSION_MIN_DELTA_RAD,
             "min_consecutive_samples": EXCURSION_MIN_CONSECUTIVE_SAMPLES,
         },
+        "cycle_phase_contract": build_cycle_phase_contract(
+            excursion_min_delta_rad=EXCURSION_MIN_DELTA_RAD,
+            excursion_min_consecutive_samples=EXCURSION_MIN_CONSECUTIVE_SAMPLES,
+        ),
+        "excursion_observed_contract": build_excursion_contract(
+            minimum_delta_rad=EXCURSION_MIN_DELTA_RAD,
+            minimum_consecutive_samples=EXCURSION_MIN_CONSECUTIVE_SAMPLES,
+        ),
+        "return_commit_contract": build_return_commit_contract(
+            action_intent_threshold=RETURN_COMMIT_ACTION_INTENT_THRESHOLD
+        ),
         "dump_boundary_policy": "optional_manual_event_else_return_proxy_only",
         "local_source_gap_max_ms": LOCAL_SOURCE_GAP_MAX_MS,
         "derived_gap_max_ms": DERIVED_GAP_MAX_MS,
@@ -297,6 +367,13 @@ def _materialize_into(
         ),
         "train_ready_episode_ids": train_ready_ids,
         "annotation_sha256": annotation_sha256,
+        "cycle_phase_contract_sha256": phase_contract_sha256,
+        "excursion_observed_contract_sha256": excursion_contract_sha256,
+        "return_commit_contract_sha256": return_commit_contract_sha256,
+        "return_commit_evaluable_count": sum(
+            bool(row.get("return_commit_evaluable", False))
+            for row in cycle_records
+        ),
     }
 
 
@@ -421,7 +498,7 @@ def _inspect_run_cycles(
             )
             goal_anchor_qpos = float(swing_qpos[0])
             excursion_mask = (
-                np.abs(_shortest_angle_array(swing_qpos - goal_anchor_qpos))
+                _shortest_angle_array(swing_qpos - goal_anchor_qpos)
                 >= EXCURSION_MIN_DELTA_RAD
             )
             excursion_end = _first_consecutive_true_end(
@@ -778,8 +855,14 @@ def _annotation_record(record: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _write_cycle_episode(
-    *, record: Mapping[str, Any], output_path: Path, annotation_sha256: str
-) -> None:
+    *,
+    record: Mapping[str, Any],
+    output_path: Path,
+    annotation_sha256: str,
+    phase_contract_sha256: str,
+    excursion_contract_sha256: str,
+    return_commit_contract_sha256: str,
+) -> ReturnCommitDerivation:
     obs_idx = np.asarray(record["source_indices"], dtype=np.int64)
     action_idx = np.asarray(record["source_action_indices"], dtype=np.int64)
     n_rows = int(obs_idx.size)
@@ -806,6 +889,16 @@ def _write_cycle_episode(
         metadata.attrs["sampling_hz"] = TARGET_HZ
         metadata.attrs["annotation_version"] = ANNOTATION_VERSION
         metadata.attrs["annotation_sha256"] = annotation_sha256
+        metadata.attrs["cycle_phase_schema"] = CYCLE_PHASE_KEY
+        metadata.attrs["cycle_phase_contract_sha256"] = phase_contract_sha256
+        metadata.attrs["excursion_observed_schema"] = EXCURSION_OBSERVED_KEY
+        metadata.attrs["excursion_observed_contract_sha256"] = (
+            excursion_contract_sha256
+        )
+        metadata.attrs["return_commit_schema"] = RETURN_COMMIT_KEY
+        metadata.attrs["return_commit_contract_sha256"] = (
+            return_commit_contract_sha256
+        )
 
         _copy_indexed(source, output, "observations/qpos", obs_idx)
         _copy_indexed(source, output, "observations/qvel", obs_idx)
@@ -853,10 +946,64 @@ def _write_cycle_episode(
             "cycle_id",
             [str(record["cycle_id"])] * n_rows,
         )
-        valid_mask = np.zeros((n_rows, ACT_CHUNK_STEPS), dtype=np.uint8)
+        goal_valid_mask = np.zeros((n_rows, ACT_CHUNK_STEPS), dtype=np.uint8)
         for row in range(n_rows):
-            valid_mask[row, : min(ACT_CHUNK_STEPS, n_rows - row)] = 1
-        conditions.create_dataset("valid_mask", data=valid_mask)
+            goal_valid_mask[row, : min(ACT_CHUNK_STEPS, n_rows - row)] = 1
+        qpos_values = _read_indexed(source["observations/qpos"], obs_idx)
+        qvel_values = _read_indexed(source["observations/qvel"], obs_idx)
+        phase = derive_cycle_phase(
+            qpos=qpos_values,
+            qvel=qvel_values,
+            excursion_min_delta_rad=EXCURSION_MIN_DELTA_RAD,
+            excursion_min_consecutive_samples=EXCURSION_MIN_CONSECUTIVE_SAMPLES,
+        )
+        phase_valid_mask = phase_chunk_valid_mask(
+            phase, chunk_steps=ACT_CHUNK_STEPS
+        )
+        excursion_observed = derive_excursion_observed(
+            qpos=qpos_values,
+            minimum_delta_rad=EXCURSION_MIN_DELTA_RAD,
+            minimum_consecutive_samples=EXCURSION_MIN_CONSECUTIVE_SAMPLES,
+        )
+        excursion_valid_mask = excursion_chunk_valid_mask(
+            excursion_observed,
+            chunk_steps=ACT_CHUNK_STEPS,
+        )
+        action_values = _read_indexed(source["action"], action_idx)
+        return_commit = derive_return_commit(
+            action=action_values,
+            excursion_observed=excursion_observed,
+            return_phase=phase,
+            chunk_steps=ACT_CHUNK_STEPS,
+            action_intent_threshold=RETURN_COMMIT_ACTION_INTENT_THRESHOLD,
+        )
+        if record["training_tier"] == "clean" and not return_commit.evaluable:
+            raise TransitionContractError(
+                f"clean cycle {record['cycle_id']} has no evaluable return commit: "
+                f"{return_commit.reason}"
+            )
+        conditions.create_dataset(CYCLE_PHASE_KEY, data=phase)
+        conditions.create_dataset(EXCURSION_OBSERVED_KEY, data=excursion_observed)
+        conditions.create_dataset(RETURN_COMMIT_KEY, data=return_commit.state)
+        conditions.create_dataset("goal_valid_mask", data=goal_valid_mask)
+        conditions.create_dataset(
+            "cycle_phase_valid_mask", data=phase_valid_mask
+        )
+        conditions.create_dataset(
+            "excursion_observed_valid_mask", data=excursion_valid_mask
+        )
+        conditions.create_dataset(
+            "return_commit_valid_mask", data=return_commit.valid_mask
+        )
+        conditions.create_dataset(
+            "valid_mask",
+            data=(
+                goal_valid_mask
+                & phase_valid_mask
+                & excursion_valid_mask
+                & return_commit.valid_mask
+            ),
+        )
 
         labels = output.create_group("labels")
         for key, value in {
@@ -881,6 +1028,11 @@ def _write_cycle_episode(
                 else int(record["expected_return_swing_sign"])
             ),
             "training_tier": record["training_tier"],
+            "return_commit_evaluable": int(return_commit.evaluable),
+            "return_commit_event_row": (
+                -1 if return_commit.event_row is None else return_commit.event_row
+            ),
+            "return_commit_reason": str(return_commit.reason or ""),
         }.items():
             labels.attrs[key] = value
 
@@ -895,10 +1047,18 @@ def _write_cycle_episode(
         provenance.create_dataset(
             "source_step_id", data=np.asarray(record["source_step_ids"], dtype=np.int64)
         )
+    return return_commit
 
 
 def _cycle_manifest_row(
-    record: Mapping[str, Any], *, episode_name: str, episode_sha256: str, annotation_sha256: str
+    record: Mapping[str, Any],
+    *,
+    episode_name: str,
+    episode_sha256: str,
+    annotation_sha256: str,
+    phase_contract_sha256: str,
+    excursion_contract_sha256: str,
+    return_commit_contract_sha256: str,
 ) -> dict[str, Any]:
     return {
         "schema": CYCLE_MANIFEST_SCHEMA,
@@ -907,6 +1067,24 @@ def _cycle_manifest_row(
         "episode_sha256": episode_sha256,
         "annotation_version": ANNOTATION_VERSION,
         "annotation_sha256": annotation_sha256,
+        "cycle_phase_schema": CYCLE_PHASE_KEY,
+        "cycle_phase_contract_sha256": phase_contract_sha256,
+        "excursion_observed_schema": EXCURSION_OBSERVED_KEY,
+        "excursion_observed_contract_sha256": excursion_contract_sha256,
+        "return_commit_schema": RETURN_COMMIT_KEY,
+        "return_commit_contract_sha256": return_commit_contract_sha256,
+        "return_commit_evaluable": bool(record["return_commit_evaluable"]),
+        "return_commit_event_row": record["return_commit_event_row"],
+        "return_commit_source_action_row": (
+            None
+            if record["return_commit_event_row"] is None
+            else int(
+                np.asarray(record["source_action_indices"], dtype=np.int64)[
+                    int(record["return_commit_event_row"])
+                ]
+            )
+        ),
+        "return_commit_reason": record["return_commit_reason"],
         "source_session_id": record["manifest"]["session_id"],
         "source_block_id": record["manifest"]["block_id"],
         "source_run_id": record["manifest"]["run_id"],
@@ -996,7 +1174,7 @@ def _row_boundary(record: Mapping[str, Any], key: str) -> dict[str, Any] | None:
     if row is None:
         return None
     detector = {
-        "excursion_data_row": "swing_displacement_from_goal_anchor",
+        "excursion_data_row": "positive_swing_displacement_from_goal_anchor",
         "return_ready_proxy_row": "final_entry_into_target_clean_side",
     }.get(key, "action_amplitude_threshold")
     result = {
@@ -1007,7 +1185,7 @@ def _row_boundary(record: Mapping[str, Any], key: str) -> dict[str, Any] | None:
     }
     if detector == "action_amplitude_threshold":
         result["threshold"] = ACTION_INTENT_THRESHOLD
-    elif detector == "swing_displacement_from_goal_anchor":
+    elif detector == "positive_swing_displacement_from_goal_anchor":
         result["min_abs_delta_rad"] = EXCURSION_MIN_DELTA_RAD
         result["min_consecutive_samples"] = EXCURSION_MIN_CONSECUTIVE_SAMPLES
     return result

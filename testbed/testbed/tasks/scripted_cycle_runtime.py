@@ -194,6 +194,12 @@ class ReadySideWindow:
             return None
         return float(self._samples[-1][1][0])
 
+    @property
+    def latest_swing_qvel(self) -> float | None:
+        if not self._samples:
+            return None
+        return float(self._samples[-1][2][0])
+
     def snapshot(self) -> dict[str, Any]:
         swing = self.contract["swing_axis"]
         base = {
@@ -305,6 +311,7 @@ class ScriptedCycleRuntime:
         cycle_stop_s: float = 60.0,
         run_stop_s: float = 240.0,
         stop_on_wrong_ready: bool = True,
+        task_state_v2: Mapping[str, Any] | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         planner = getattr(policy_source, "cycle_planner", None)
@@ -336,7 +343,40 @@ class ScriptedCycleRuntime:
         self.cycle_stop_s = float(cycle_stop_s)
         self.run_stop_s = float(run_stop_s)
         self.stop_on_wrong_ready = bool(stop_on_wrong_ready)
+        task_state_cfg = dict(task_state_v2 or {})
+        self.task_state_v2_enabled = bool(task_state_cfg.get("enabled", False))
+        self.task_state_advance_source = str(
+            task_state_cfg.get("advance_source", "operator_mark")
+        )
+        self.require_excursion_before_work_complete = bool(
+            task_state_cfg.get("require_excursion_before_work_complete", True)
+        )
         self._clock = clock
+        policy_requires_task_state = bool(
+            getattr(policy_source, "task_state_v2_enabled", False)
+        )
+        if policy_requires_task_state and not self.task_state_v2_enabled:
+            raise ScriptedCycleRuntimeError(
+                "task-state-v2 ACT requires scripted_cycle.task_state_v2.enabled"
+            )
+        if self.task_state_v2_enabled and not policy_requires_task_state:
+            raise ScriptedCycleRuntimeError(
+                "scripted_cycle.task_state_v2 is enabled but the policy does not "
+                "declare real_transition_task_state_v2"
+            )
+        if self.task_state_v2_enabled:
+            if self.task_state_advance_source != "operator_mark":
+                raise ScriptedCycleRuntimeError(
+                    "task_state_v2.advance_source must be operator_mark"
+                )
+            for method_name in (
+                "set_task_dig_complete",
+                "set_task_return_commit",
+            ):
+                if not callable(getattr(policy_source, method_name, None)):
+                    raise ScriptedCycleRuntimeError(
+                        f"task-state-v2 policy source must implement {method_name}()"
+                    )
         if not (0.0 < self.cycle_review_s < self.cycle_stop_s):
             raise ScriptedCycleRuntimeError(
                 "scripted-cycle limits require 0 < cycle_review_s < cycle_stop_s"
@@ -380,6 +420,7 @@ class ScriptedCycleRuntime:
             cycle_stop_s=float(cfg.get("cycle_stop_s", 60.0)),
             run_stop_s=float(cfg.get("run_stop_s", 240.0)),
             stop_on_wrong_ready=bool(cfg.get("stop_on_wrong_ready", True)),
+            task_state_v2=cfg.get("task_state_v2"),
             clock=clock,
         )
 
@@ -480,21 +521,52 @@ class ScriptedCycleRuntime:
             delta = _shortest_angle(current_swing - self._goal_anchor_swing_qpos)
             threshold = float(swing_cfg["cycle_excursion_min_abs_delta_rad"])
             required = int(swing_cfg["cycle_excursion_min_consecutive_samples"])
-            if abs(delta) < threshold:
+            if delta < threshold:
                 self._excursion_candidate_count = 0
                 return self.status()
             self._excursion_candidate_count += 1
             if self._excursion_candidate_count < required:
                 return self.status()
             self._excursion_observed = True
+            excursion_setter = getattr(
+                self.policy_source, "set_cycle_excursion_observed", None
+            )
+            excursion_changed = bool(
+                callable(excursion_setter) and excursion_setter(observed=True)
+            )
             self._last_event = "cycle_excursion_confirmed"
-            return self.status()
+            return self.status(excursion_changed=excursion_changed)
+
+        if not self._policy_return_phase_latched:
+            peak = self._goal_max_swing_qpos
+            swing_qvel = self.ready.latest_swing_qvel
+            if peak is not None and swing_qvel is not None:
+                return_drop = float(peak) - float(current_swing)
+                if (
+                    return_drop >= self.swing_landing.return_confirm_drop_rad
+                    and swing_qvel <= -self.swing_landing.return_min_qvel_rad_s
+                ):
+                    self._policy_return_phase_latched = True
+                    phase_setter = getattr(self.policy_source, "set_cycle_phase", None)
+                    phase_changed = bool(
+                        callable(phase_setter) and phase_setter(return_phase=True)
+                    )
+                    self._last_event = "cycle_return_phase_confirmed"
+                    if phase_changed:
+                        return self.status(phase_changed=True)
 
         if self.swing_landing.enabled and not self._return_phase_latched:
             # A/B endpoint ranges are crossed during outbound excavation as
             # well as during the final leftward return.  Never close a cycle
             # on the outbound crossing.
             return self.status()
+
+        if self.task_state_v2_enabled:
+            planner_status = dict(self.policy_source.cycle_planner_status())
+            if not bool(planner_status.get("task_return_commit", False)):
+                # A premature model return must never be accepted as a cycle
+                # boundary before the explicit task permission is latched.
+                return self.status()
 
         ready = self._last_ready
         if list(ready.get("blockers", ())):
@@ -519,6 +591,47 @@ class ScriptedCycleRuntime:
         self._commit_goal_state(goal=next_goal, now_s=now)
         self._last_event = "cycle_advanced"
         return self.status(goal_changed=True)
+
+    def advance_task_state(self) -> dict[str, Any]:
+        """Apply one explicit operator mark to the causal task-state token.
+
+        The first accepted mark latches work complete.  The second latches
+        return permission and exposes the already committed next target.  No
+        transition is inferred from qpos, qvel, elapsed time, or policy output.
+        """
+
+        if not self.task_state_v2_enabled:
+            raise ScriptedCycleRuntimeError(
+                "task-state-v2 operator advance is disabled"
+            )
+        if not self._active:
+            raise ScriptedCycleRuntimeError(
+                "task-state-v2 operator advance requires an active scripted cycle"
+            )
+        planner_status = dict(self.policy_source.cycle_planner_status())
+        if not bool(planner_status.get("committed", False)):
+            raise ScriptedCycleRuntimeError(
+                "task-state-v2 operator advance requires a committed goal"
+            )
+        work_complete = bool(planner_status.get("task_dig_complete", False))
+        return_commit = bool(planner_status.get("task_return_commit", False))
+        if not work_complete:
+            if (
+                self.require_excursion_before_work_complete
+                and not self._excursion_observed
+            ):
+                raise ScriptedCycleRuntimeError(
+                    "work_complete_requires_confirmed_positive_excursion"
+                )
+            changed = bool(self.policy_source.set_task_dig_complete(completed=True))
+            self._last_event = "task_work_complete_committed"
+            return self.status(task_state_changed=changed)
+        if not return_commit:
+            changed = bool(self.policy_source.set_task_return_commit(committed=True))
+            self._last_event = "task_return_committed"
+            return self.status(task_state_changed=changed)
+        self._last_event = "task_state_advance_ignored_already_committed"
+        return self.status(task_state_advance_ignored=True)
 
     def shape_policy_action(
         self,
@@ -557,9 +670,7 @@ class ScriptedCycleRuntime:
                 "swing landing requires qpos/qvel shape (4,)"
             )
         if not np.isfinite(qpos).all() or not np.isfinite(qvel).all():
-            raise ScriptedCycleRuntimeError(
-                "swing landing requires finite qpos/qvel"
-            )
+            raise ScriptedCycleRuntimeError("swing landing requires finite qpos/qvel")
 
         low, high = [float(value) for value in bounds]
         width = high - low
@@ -632,9 +743,7 @@ class ScriptedCycleRuntime:
         )
         approach_span = entry_edge - center
         progress = (
-            (entry_edge - swing_qpos) / approach_span
-            if approach_span > 0.0
-            else 0.0
+            (entry_edge - swing_qpos) / approach_span if approach_span > 0.0 else 0.0
         )
         # Do not attenuate ACT before the measured joint has entered the
         # target's supported range.  A coast projection is useful telemetry,
@@ -652,9 +761,7 @@ class ScriptedCycleRuntime:
                 - (blend_dt_s / self.swing_landing.policy_gain_time_s),
             )
         if float(shaped[0]) < 0.0 and self._landing_policy_gain < 1.0:
-            shaped[0] = np.float32(
-                float(shaped[0]) * self._landing_policy_gain
-            )
+            shaped[0] = np.float32(float(shaped[0]) * self._landing_policy_gain)
             mode = "policy_gain"
 
         # PD is not permitted inside the supported endpoint range.  It starts
@@ -739,6 +846,10 @@ class ScriptedCycleRuntime:
         self,
         *,
         goal_changed: bool = False,
+        excursion_changed: bool = False,
+        phase_changed: bool = False,
+        task_state_changed: bool = False,
+        task_state_advance_ignored: bool = False,
         stop_policy: bool = False,
         completed_now: bool = False,
     ) -> dict[str, Any]:
@@ -754,6 +865,16 @@ class ScriptedCycleRuntime:
             "stop_reason": str(self._stop_reason),
             "event": str(self._last_event),
             "goal_changed": bool(goal_changed),
+            "excursion_changed": bool(excursion_changed),
+            "phase_changed": bool(phase_changed),
+            "task_state_changed": bool(task_state_changed),
+            "task_state_advance_ignored": bool(task_state_advance_ignored),
+            "task_state_v2_enabled": bool(self.task_state_v2_enabled),
+            "task_state_advance_source": str(self.task_state_advance_source),
+            "task_state_require_excursion_before_work_complete": bool(
+                self.require_excursion_before_work_complete
+            ),
+            "task_state_stage": _task_state_stage(planner_status),
             "stop_policy": bool(stop_policy),
             "review_due": bool(self._review_due),
             "excursion_observed": bool(self._excursion_observed),
@@ -761,6 +882,7 @@ class ScriptedCycleRuntime:
             "goal_anchor_swing_qpos_rad": self._goal_anchor_swing_qpos,
             "goal_max_swing_qpos_rad": self._goal_max_swing_qpos,
             "return_phase_latched": bool(self._return_phase_latched),
+            "policy_return_phase_latched": bool(self._policy_return_phase_latched),
             "landing_policy_gain": float(self._landing_policy_gain),
             "landing_pd_blend": float(self._landing_pd_blend),
             "cycle_elapsed_s": (
@@ -800,6 +922,7 @@ class ScriptedCycleRuntime:
         self._goal_anchor_swing_qpos = float(current_swing)
         self._goal_max_swing_qpos = float(current_swing)
         self._return_phase_latched = False
+        self._policy_return_phase_latched = False
         self._landing_policy_gain = 1.0
         self._landing_pd_blend = 0.0
         self._landing_last_timestamp_ns = None
@@ -824,12 +947,25 @@ class ScriptedCycleRuntime:
         self._goal_anchor_swing_qpos: float | None = None
         self._goal_max_swing_qpos: float | None = None
         self._return_phase_latched = False
+        self._policy_return_phase_latched = False
         self._landing_policy_gain = 1.0
         self._landing_pd_blend = 0.0
         self._landing_last_timestamp_ns: int | None = None
         self._excursion_candidate_count = 0
         self._excursion_observed = False
         self._last_ready = self.ready.snapshot()
+
+
+def _task_state_stage(planner_status: Mapping[str, Any]) -> str:
+    if not bool(planner_status.get("task_state_v2_enabled", False)):
+        return "disabled"
+    if not bool(planner_status.get("committed", False)):
+        return "waiting_goal"
+    if bool(planner_status.get("task_return_commit", False)):
+        return "return_committed"
+    if bool(planner_status.get("task_dig_complete", False)):
+        return "work_complete"
+    return "work"
 
 
 def _resolve_contract_path(raw: Any, *, bundle_dir: str | Path | None) -> Path:

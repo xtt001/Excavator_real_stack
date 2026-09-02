@@ -680,6 +680,50 @@ shadow 通过后，受控运动必须改用已审核的短脚本并显式设置
 
 两个脚本都不会循环，也不会自动开始第二铲。
 
+### task-state-v2 左右 cycle 候选
+
+`real_transition_task_state_v2_allow2` 模型不能只靠最终目标 condition 运行。每个 cycle
+提交时，runtime 会写入当前作业区和挖掘区，并把下一目标隐藏。作业和右侧 excursion
+完成后，操作者按两次左手柄物理按钮 `2`：第一次写入 `WORK_COMPLETE`，第二次写入
+`RETURN_COMMITTED` 并向模型公开下一目标。两次变化都会清空 ACT 的旧 action chunk 和
+时序聚合。按钮事件不会从 qpos、qvel 或固定延时自动推断。
+
+从端先做静态预检：
+
+```bash
+cd /media/mundane/D/Excavator_real_stack
+git switch fs/v2.0.1
+git pull --ff-only origin fs/v2.0.1
+MODE=shadow DRY_RUN=YES ./scripts/run_real_transition_task_state_v2_policy.sh
+```
+
+预检通过后去掉 `DRY_RUN=YES` 才会启动现有 `slave_real_stack.sh` 链路。主端 sender 使用
+同一份 runtime config，物理按钮 `7` 负责 ARM/停止，物理按钮 `2` 负责两阶段任务状态：
+
+```bash
+python -m testbed.cli.teleop_remote \
+  --config testbed/testbed/configs/policy_real_transition_task_state_v2_allow2.yaml \
+  --host 192.168.100.1 \
+  --input joystick \
+  --policy-start-button 7 \
+  --mark-button 2 \
+  --go-home-button 3 \
+  --confirm-remote-control
+```
+
+`shadow_zero` 完整跑过 WORK、WORK_COMPLETE 和 RETURN_COMMITTED 后，用以下入口检查
+token、planner 一致性、模型错误和命令锁零：
+
+```bash
+MODE=shadow ./scripts/check_real_transition_task_state_v2_log.sh
+```
+
+`MODE=control` 仍使用相同的 ACT、landing、ActionGuard、50 Hz control pump 和 bridge
+链路。它要求现场逐次设置 `CONFIRM_HARDWARE_MOTION=YES`、
+`CONFIRM_SCRIPT_REVIEWED=YES`、`CONFIRM_TASK_STATE_OPERATOR=YES` 和
+`CONFIRM_SHADOW_LOG_REVIEWED=YES`。模型包本身保持 `OFFLINE_CANDIDATE_ONLY`，这些入口
+只说明软件链路可运行，不代表液压响应、土方效果或真机闭环已经通过。
+
 ## 运行分工
 
 | 端 | 负责内容 | 不应启动 |

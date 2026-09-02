@@ -14,6 +14,7 @@ from testbed.tasks.real_transition import (
     _AsyncEventJournal,
     sha256_file,
 )
+from testbed.tasks.real_transition_excursion import EXCURSION_OBSERVED_KEY
 from testbed.tasks.real_transition_materializer import (
     ACTION_LABEL_OFFSET_S,
     ANNOTATION_SCHEMA,
@@ -21,6 +22,8 @@ from testbed.tasks.real_transition_materializer import (
     _read_indexed,
     materialize_transition_run,
 )
+from testbed.tasks.real_transition_phase import CYCLE_PHASE_KEY
+from testbed.tasks.real_transition_return_commit import RETURN_COMMIT_KEY
 
 
 def _ready_evidence(side: str) -> dict[str, object]:
@@ -90,7 +93,8 @@ def _build_sealed_run(
             1.60, target_qpos, (target - 5) - dump + 1
         )
         qpos[target - 5 : target + 1, 0] = target_qpos
-        actions[goal + 6 : target - 1, 0] = 0.2
+        actions[goal + 6 : dump - 3, 0] = 0.2
+        actions[dump - 3 : target - 1, 0] = -0.2
         if automatic_continuous_prepose:
             actions[goal, 1] = 0.2
     qvel = np.zeros((n_rows, 4), dtype=np.float32)
@@ -223,7 +227,36 @@ def test_materializer_builds_conditioned_ready_to_ready_cycles(tmp_path: Path) -
         assert np.all(condition[:, 1] == 1.0)
         valid = np.asarray(episode["conditions/valid_mask"][()])
         assert valid.shape == (condition.shape[0], 20)
-        assert np.count_nonzero(valid[0]) == min(20, condition.shape[0])
+        goal_valid = np.asarray(episode["conditions/goal_valid_mask"][()])
+        phase_valid = np.asarray(
+            episode["conditions/cycle_phase_valid_mask"][()]
+        )
+        excursion_valid = np.asarray(
+            episode["conditions/excursion_observed_valid_mask"][()]
+        )
+        return_commit_valid = np.asarray(
+            episode["conditions/return_commit_valid_mask"][()]
+        )
+        excursion = np.asarray(
+            episode[f"conditions/{EXCURSION_OBSERVED_KEY}"][()]
+        )
+        phase = np.asarray(episode[f"conditions/{CYCLE_PHASE_KEY}"][()])
+        return_commit = np.asarray(
+            episode[f"conditions/{RETURN_COMMIT_KEY}"][()]
+        )
+        assert excursion.shape == (condition.shape[0], 1)
+        assert set(np.unique(excursion)).issubset({0.0, 1.0})
+        assert np.all(np.diff(excursion[:, 0]) >= 0.0)
+        assert phase.shape == (condition.shape[0], 1)
+        assert set(np.unique(phase)).issubset({0.0, 1.0})
+        assert return_commit.shape == (condition.shape[0], 1)
+        assert set(np.unique(return_commit)).issubset({0.0, 1.0})
+        assert np.all(np.diff(return_commit[:, 0]) >= 0.0)
+        np.testing.assert_array_equal(
+            valid,
+            goal_valid & phase_valid & excursion_valid & return_commit_valid,
+        )
+        assert np.count_nonzero(goal_valid[0]) == min(20, condition.shape[0])
         assert np.count_nonzero(valid[-1]) == 1
         source_rows = np.asarray(episode["provenance/source_row_index"][()])
         action_rows = np.asarray(
@@ -255,6 +288,8 @@ def test_materializer_builds_conditioned_ready_to_ready_cycles(tmp_path: Path) -
         "event_source"
     ] == "operator"
     assert (output / "SHA256SUMS.txt").is_file()
+    assert (output / "cycle_phase_contract.json").is_file()
+    assert (output / "return_commit_contract.json").is_file()
 
 
 def test_materializer_accepts_session_arm_automatic_cycles_without_dump_mark(

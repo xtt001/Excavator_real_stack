@@ -44,10 +44,18 @@ from testbed.policies.act.condition_adherence import (
     resolve_condition_action_loss_config,
     resolve_condition_adherence_config,
 )
+from testbed.policies.act.cycle_phase import (
+    cycle_phase_loss_terms,
+    resolve_cycle_phase_loss_config,
+)
 from testbed.policies.act.effective_action import (
     effective_action_loss_terms,
     resolve_effective_action_config,
     weighted_action_l1,
+)
+from testbed.policies.act.excursion_observed import (
+    excursion_observed_loss_terms,
+    resolve_excursion_observed_loss_config,
 )
 from testbed.policies.act.factorized_action import (
     FactorizedTemporalAggregator,
@@ -62,9 +70,25 @@ from testbed.policies.act.goal_effect import (
     goal_effect_loss_terms,
     resolve_goal_effect_config,
 )
+from testbed.policies.act.qvel_authority import (
+    qvel_authority_loss_terms,
+    resolve_qvel_authority_config,
+)
+from testbed.policies.act.qvel_state_hold import (
+    qvel_zero_state_hold_loss_terms,
+    resolve_qvel_zero_state_hold_config,
+)
+from testbed.policies.act.return_commit import (
+    resolve_return_commit_loss_config,
+    return_commit_loss_terms,
+)
 from testbed.policies.act.target_release import (
     resolve_target_release_config,
     target_release_loss_terms,
+)
+from testbed.policies.act.task_state_v2_adherence import (
+    resolve_task_state_v2_adherence_config,
+    task_state_v2_adherence_loss_terms,
 )
 from testbed.policies.base import Policy, register_policy
 
@@ -672,6 +696,26 @@ class ACTAdapter(Policy):
         self._target_release_loss = resolve_target_release_config(
             policy_config.get("target_release_loss")
         )
+        self._cycle_phase_loss = resolve_cycle_phase_loss_config(
+            policy_config.get("cycle_phase_loss")
+        )
+        self._excursion_observed_loss = resolve_excursion_observed_loss_config(
+            policy_config.get("excursion_observed_loss")
+        )
+        self._return_commit_loss = resolve_return_commit_loss_config(
+            policy_config.get("return_commit_loss")
+        )
+        self._qvel_zero_state_hold_loss = resolve_qvel_zero_state_hold_config(
+            policy_config.get("qvel_zero_state_hold_loss")
+        )
+        self._qvel_authority_loss = resolve_qvel_authority_config(
+            policy_config.get("qvel_authority_loss")
+        )
+        self._task_state_v2_adherence_loss = (
+            resolve_task_state_v2_adherence_config(
+                policy_config.get("task_state_v2_adherence_loss")
+            )
+        )
         self._deadzone_loss = _resolve_deadzone_loss_config(
             policy_config.get("deadzone_loss")
         )
@@ -827,6 +871,12 @@ class ACTAdapter(Policy):
         if factorized_aggregator is not None:
             factorized_aggregator.reset()
 
+    def configure_training_epoch(self, epoch: int) -> dict[str, Any] | None:
+        configure = getattr(
+            self._model, "configure_state_visual_residual_epoch", None
+        )
+        return None if not callable(configure) else configure(int(epoch))
+
     def snapshot_state(self) -> ACTAdapterState:
         """Capture temporal inference state without sharing mutable storage."""
 
@@ -922,6 +972,10 @@ class ACTAdapter(Policy):
     @property
     def camera_names(self) -> list[str]:
         return list(self._camera_names)
+
+    @property
+    def low_dim_keys(self) -> list[str]:
+        return list(self._low_dim_keys)
 
     @property
     def inference_precision(self) -> str:
@@ -1411,6 +1465,22 @@ class ACTAdapter(Policy):
         condition_action_valid: torch.Tensor | None = None,
         target_release_continue_primary: torch.Tensor | None = None,
         target_release_valid: torch.Tensor | None = None,
+        phase_counterfactual_proprio: torch.Tensor | None = None,
+        cycle_phase_return_primary: torch.Tensor | None = None,
+        cycle_phase_valid: torch.Tensor | None = None,
+        excursion_counterfactual_proprio: torch.Tensor | None = None,
+        excursion_post_primary: torch.Tensor | None = None,
+        excursion_observed_valid: torch.Tensor | None = None,
+        return_commit_counterfactual_proprio: torch.Tensor | None = None,
+        return_commit_return_primary: torch.Tensor | None = None,
+        return_commit_return_effective_primary: torch.Tensor | None = None,
+        return_commit_valid: torch.Tensor | None = None,
+        qvel_zero_proprio: torch.Tensor | None = None,
+        qvel_authority_counterfactual_proprio: torch.Tensor | None = None,
+        qvel_authority_moving_primary: torch.Tensor | None = None,
+        qvel_authority_stable_tool_mask: torch.Tensor | None = None,
+        qvel_authority_valid: torch.Tensor | None = None,
+        task_state_v2_uncommitted: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         """
         Training-time forward pass.
@@ -1618,8 +1688,9 @@ class ACTAdapter(Policy):
             dtype=a_hat.dtype,
             device=a_hat.device,
         )
+        policy_direct = a_hat * action_std + action_mean
         action_state_loss_d = action_state_loss_terms(
-            policy_direct=a_hat * action_std + action_mean,
+            policy_direct=policy_direct,
             state_logits=action_state_logits,
             state_labels=action_state_labels,
             state_valid=action_state_valid,
@@ -1655,6 +1726,62 @@ class ACTAdapter(Policy):
             valid=target_release_valid,
             device_like=a_hat,
         )
+        cycle_phase_loss_d = self._cycle_phase_loss_terms(
+            proprio=proprio,
+            image=image,
+            counterfactual_proprio=phase_counterfactual_proprio,
+            return_primary=cycle_phase_return_primary,
+            valid=cycle_phase_valid,
+            device_like=a_hat,
+        )
+        excursion_observed_loss_d = self._excursion_observed_loss_terms(
+            proprio=proprio,
+            image=image,
+            counterfactual_proprio=excursion_counterfactual_proprio,
+            post_primary=excursion_post_primary,
+            valid=excursion_observed_valid,
+            device_like=a_hat,
+        )
+        return_commit_loss_d = self._return_commit_loss_terms(
+            proprio=proprio,
+            image=image,
+            counterfactual_proprio=return_commit_counterfactual_proprio,
+            return_primary=return_commit_return_primary,
+            return_effective_primary=return_commit_return_effective_primary,
+            valid=return_commit_valid,
+            device_like=a_hat,
+        )
+        qvel_zero_state_hold_loss_d = self._qvel_zero_state_hold_loss_terms(
+            image=image,
+            qvel_zero_proprio=qvel_zero_proprio,
+            transition_mask=state_hold_transition_mask,
+            device_like=a_hat,
+        )
+        qvel_authority_loss_d = self._qvel_authority_loss_terms(
+            proprio=proprio,
+            image=image,
+            counterfactual_proprio=qvel_authority_counterfactual_proprio,
+            moving_primary=qvel_authority_moving_primary,
+            stable_tool_mask=qvel_authority_stable_tool_mask,
+            valid=qvel_authority_valid,
+            device_like=a_hat,
+        )
+        task_state_v2_adherence_loss_d = task_state_v2_adherence_loss_terms(
+            policy_direct=policy_direct,
+            valid_mask=valid_mask,
+            uncommitted=task_state_v2_uncommitted,
+            config=getattr(
+                self,
+                "_task_state_v2_adherence_loss",
+                resolve_task_state_v2_adherence_config({"enabled": False}),
+            ),
+        )
+        kl_weight_applied = (
+            0.0
+            if getattr(self._model, "_state_visual_residual_stage", None)
+            == "low_only"
+            else float(self.kl_weight)
+        )
 
         return {
             "l1": l1,
@@ -1662,6 +1789,7 @@ class ACTAdapter(Policy):
                 raw_l1 if effective_action_config["enabled"] else a_hat.new_zeros(())
             ),
             "kl": total_kld[0],
+            "kl_weight_applied": a_hat.new_tensor(kl_weight_applied),
             **deadzone_loss_d,
             **window_deadzone_loss_d,
             **intent_loss_d,
@@ -1674,9 +1802,15 @@ class ACTAdapter(Policy):
             **condition_adherence_loss_d,
             **condition_action_loss_d,
             **target_release_loss_d,
+            **cycle_phase_loss_d,
+            **excursion_observed_loss_d,
+            **return_commit_loss_d,
+            **qvel_zero_state_hold_loss_d,
+            **qvel_authority_loss_d,
+            **task_state_v2_adherence_loss_d,
             "loss": (
                 imitation_loss
-                + total_kld[0] * self.kl_weight
+                + total_kld[0] * kl_weight_applied
                 + deadzone_loss_d["deadzone_loss"]
                 + window_deadzone_loss_d["window_deadzone_loss"]
                 + intent_loss_d["intent_loss"]
@@ -1688,8 +1822,418 @@ class ACTAdapter(Policy):
                 + condition_adherence_loss_d["condition_adherence_loss"]
                 + condition_action_loss_d["condition_action_loss"]
                 + target_release_loss_d["target_release_loss"]
+                + cycle_phase_loss_d["cycle_phase_loss"]
+                + excursion_observed_loss_d["excursion_observed_loss"]
+                + return_commit_loss_d["return_commit_loss"]
+                + qvel_zero_state_hold_loss_d["qvel_zero_state_hold_loss"]
+                + qvel_authority_loss_d["qvel_authority_loss"]
+                + task_state_v2_adherence_loss_d[
+                    "task_state_v2_adherence_loss"
+                ]
             ),
         }
+
+    def _qvel_authority_loss_terms(
+        self,
+        *,
+        proprio: torch.Tensor,
+        image: torch.Tensor,
+        counterfactual_proprio: torch.Tensor | None,
+        moving_primary: torch.Tensor | None,
+        stable_tool_mask: torch.Tensor | None,
+        valid: torch.Tensor | None,
+        device_like: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        cfg = getattr(
+            self,
+            "_qvel_authority_loss",
+            resolve_qvel_authority_config({"enabled": False}),
+        )
+        if not cfg["enabled"]:
+            return qvel_authority_loss_terms(
+                primary_direct=device_like,
+                counterfactual_direct=device_like,
+                moving_primary=moving_primary,
+                stable_tool_mask=stable_tool_mask,
+                valid=valid,
+                config=cfg,
+            )
+        if (
+            counterfactual_proprio is None
+            or moving_primary is None
+            or stable_tool_mask is None
+            or valid is None
+        ):
+            raise ValueError("qvel_authority_loss requires paired proprio and labels")
+        if counterfactual_proprio.shape != proprio.shape:
+            raise ValueError("qvel authority counterfactual proprio must match proprio")
+        eligible = valid.to(device=proprio.device, dtype=torch.bool).reshape(-1)
+        if eligible.numel() != proprio.shape[0]:
+            raise ValueError("qvel authority valid must match batch rows")
+        if not bool(eligible.any()):
+            return qvel_authority_loss_terms(
+                primary_direct=device_like,
+                counterfactual_direct=device_like,
+                moving_primary=moving_primary,
+                stable_tool_mask=stable_tool_mask,
+                valid=valid,
+                config=cfg,
+            )
+        primary_proprio = proprio[eligible]
+        paired_proprio = torch.cat(
+            (primary_proprio, counterfactual_proprio[eligible]), dim=0
+        )
+        paired_image = torch.cat((image[eligible], image[eligible]), dim=0)
+        model_was_training = self._model.training
+        self._model.eval()
+        try:
+            paired_action = self._unpack_model_output(
+                self._model(paired_proprio, paired_image, None, None, None)
+            )[0]
+        finally:
+            self._model.train(model_was_training)
+        count = int(primary_proprio.shape[0])
+        action_mean = torch.as_tensor(
+            self.norm_stats["action_mean"],
+            dtype=paired_action.dtype,
+            device=paired_action.device,
+        )
+        action_std = torch.as_tensor(
+            self.norm_stats["action_std"],
+            dtype=paired_action.dtype,
+            device=paired_action.device,
+        )
+        paired_direct = paired_action * action_std + action_mean
+        selected_valid = torch.ones(
+            count, device=paired_action.device, dtype=torch.bool
+        )
+        return qvel_authority_loss_terms(
+            primary_direct=paired_direct[:count],
+            counterfactual_direct=paired_direct[count:],
+            moving_primary=moving_primary.to(paired_action.device).reshape(-1)[eligible],
+            stable_tool_mask=stable_tool_mask.to(paired_action.device)[eligible],
+            valid=selected_valid,
+            config=cfg,
+        )
+
+    def _qvel_zero_state_hold_loss_terms(
+        self,
+        *,
+        image: torch.Tensor,
+        qvel_zero_proprio: torch.Tensor | None,
+        transition_mask: torch.Tensor | None,
+        device_like: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        cfg = getattr(
+            self,
+            "_qvel_zero_state_hold_loss",
+            resolve_qvel_zero_state_hold_config({"enabled": False}),
+        )
+        if not cfg["enabled"]:
+            return qvel_zero_state_hold_loss_terms(
+                policy_direct=device_like,
+                transition_mask=transition_mask,
+                config=cfg,
+            )
+        if qvel_zero_proprio is None or transition_mask is None:
+            raise ValueError(
+                "qvel_zero_state_hold_loss requires counterfactual proprio and mask"
+            )
+        eligible = transition_mask.to(
+            device=image.device, dtype=torch.bool
+        ).any(dim=(1, 2))
+        if not bool(eligible.any()):
+            return qvel_zero_state_hold_loss_terms(
+                policy_direct=device_like,
+                transition_mask=transition_mask,
+                config=cfg,
+            )
+        model_was_training = self._model.training
+        self._model.eval()
+        try:
+            zero_qvel_action = self._unpack_model_output(
+                self._model(
+                    qvel_zero_proprio[eligible],
+                    image[eligible],
+                    None,
+                    None,
+                    None,
+                )
+            )[0]
+        finally:
+            self._model.train(model_was_training)
+        action_mean = torch.as_tensor(
+            self.norm_stats["action_mean"],
+            dtype=zero_qvel_action.dtype,
+            device=zero_qvel_action.device,
+        )
+        action_std = torch.as_tensor(
+            self.norm_stats["action_std"],
+            dtype=zero_qvel_action.dtype,
+            device=zero_qvel_action.device,
+        )
+        direct = zero_qvel_action * action_std + action_mean
+        return qvel_zero_state_hold_loss_terms(
+            policy_direct=direct,
+            transition_mask=transition_mask[eligible],
+            config=cfg,
+        )
+
+    def _return_commit_loss_terms(
+        self,
+        *,
+        proprio: torch.Tensor,
+        image: torch.Tensor,
+        counterfactual_proprio: torch.Tensor | None,
+        return_primary: torch.Tensor | None,
+        return_effective_primary: torch.Tensor | None,
+        valid: torch.Tensor | None,
+        device_like: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        cfg = getattr(
+            self,
+            "_return_commit_loss",
+            resolve_return_commit_loss_config({"enabled": False}),
+        )
+        if not cfg["enabled"]:
+            return return_commit_loss_terms(
+                primary_direct=device_like,
+                counterfactual_direct=device_like,
+                return_primary=return_primary,
+                return_effective_primary=return_effective_primary,
+                valid=valid,
+                config=cfg,
+            )
+        if counterfactual_proprio is None or return_primary is None or valid is None:
+            raise ValueError(
+                "return_commit_loss requires counterfactual proprio and labels"
+            )
+        if tuple(counterfactual_proprio.shape) != tuple(proprio.shape):
+            raise ValueError(
+                "return commit counterfactual proprio must match proprio"
+            )
+        eligible = valid.to(device=proprio.device, dtype=torch.bool).reshape(-1)
+        if eligible.numel() != proprio.shape[0]:
+            raise ValueError(
+                "return commit valid must have one value per batch row"
+            )
+        if not bool(eligible.any()):
+            return return_commit_loss_terms(
+                primary_direct=device_like,
+                counterfactual_direct=device_like,
+                return_primary=return_primary,
+                return_effective_primary=return_effective_primary,
+                valid=valid,
+                config=cfg,
+            )
+        primary_proprio = proprio[eligible]
+        paired_proprio = torch.cat(
+            (primary_proprio, counterfactual_proprio[eligible]), dim=0
+        )
+        paired_image = torch.cat((image[eligible], image[eligible]), dim=0)
+        model_was_training = self._model.training
+        self._model.eval()
+        try:
+            paired_action = self._unpack_model_output(
+                self._model(paired_proprio, paired_image, None, None, None)
+            )[0]
+        finally:
+            self._model.train(model_was_training)
+        count = int(primary_proprio.shape[0])
+        action_mean = torch.as_tensor(
+            self.norm_stats["action_mean"],
+            dtype=paired_action.dtype,
+            device=paired_action.device,
+        )
+        action_std = torch.as_tensor(
+            self.norm_stats["action_std"],
+            dtype=paired_action.dtype,
+            device=paired_action.device,
+        )
+        paired_direct = paired_action * action_std + action_mean
+        selected_return = return_primary.to(
+            device=paired_action.device, dtype=torch.bool
+        ).reshape(-1)[eligible]
+        selected_effective = (
+            torch.zeros_like(selected_return)
+            if return_effective_primary is None
+            else return_effective_primary.to(
+                device=paired_action.device, dtype=torch.bool
+            ).reshape(-1)[eligible]
+        )
+        selected_valid = torch.ones(
+            count, device=paired_action.device, dtype=torch.bool
+        )
+        return return_commit_loss_terms(
+            primary_direct=paired_direct[:count],
+            counterfactual_direct=paired_direct[count:],
+            return_primary=selected_return,
+            return_effective_primary=selected_effective,
+            valid=selected_valid,
+            config=cfg,
+        )
+
+    def _excursion_observed_loss_terms(
+        self,
+        *,
+        proprio: torch.Tensor,
+        image: torch.Tensor,
+        counterfactual_proprio: torch.Tensor | None,
+        post_primary: torch.Tensor | None,
+        valid: torch.Tensor | None,
+        device_like: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        cfg = getattr(
+            self,
+            "_excursion_observed_loss",
+            resolve_excursion_observed_loss_config({"enabled": False}),
+        )
+        if not cfg["enabled"]:
+            return excursion_observed_loss_terms(
+                primary_direct=device_like,
+                counterfactual_direct=device_like,
+                post_excursion_primary=post_primary,
+                valid=valid,
+                config=cfg,
+            )
+        if counterfactual_proprio is None or post_primary is None or valid is None:
+            raise ValueError(
+                "excursion_observed_loss requires counterfactual proprio and labels"
+            )
+        if tuple(counterfactual_proprio.shape) != tuple(proprio.shape):
+            raise ValueError(
+                "excursion observed counterfactual proprio must match proprio"
+            )
+        eligible = valid.to(device=proprio.device, dtype=torch.bool).reshape(-1)
+        if eligible.numel() != proprio.shape[0]:
+            raise ValueError(
+                "excursion observed valid must have one value per batch row"
+            )
+        if not bool(eligible.any()):
+            return excursion_observed_loss_terms(
+                primary_direct=device_like,
+                counterfactual_direct=device_like,
+                post_excursion_primary=post_primary,
+                valid=valid,
+                config=cfg,
+            )
+        primary_proprio = proprio[eligible]
+        paired_proprio = torch.cat(
+            (primary_proprio, counterfactual_proprio[eligible]), dim=0
+        )
+        paired_image = torch.cat((image[eligible], image[eligible]), dim=0)
+        model_was_training = self._model.training
+        self._model.eval()
+        try:
+            paired_action = self._unpack_model_output(
+                self._model(paired_proprio, paired_image, None, None, None)
+            )[0]
+        finally:
+            self._model.train(model_was_training)
+        count = int(primary_proprio.shape[0])
+        action_mean = torch.as_tensor(
+            self.norm_stats["action_mean"],
+            dtype=paired_action.dtype,
+            device=paired_action.device,
+        )
+        action_std = torch.as_tensor(
+            self.norm_stats["action_std"],
+            dtype=paired_action.dtype,
+            device=paired_action.device,
+        )
+        paired_direct = paired_action * action_std + action_mean
+        selected_post = post_primary.to(
+            device=paired_action.device, dtype=torch.bool
+        ).reshape(-1)[eligible]
+        selected_valid = torch.ones(
+            count, device=paired_action.device, dtype=torch.bool
+        )
+        return excursion_observed_loss_terms(
+            primary_direct=paired_direct[:count],
+            counterfactual_direct=paired_direct[count:],
+            post_excursion_primary=selected_post,
+            valid=selected_valid,
+            config=cfg,
+        )
+
+    def _cycle_phase_loss_terms(
+        self,
+        *,
+        proprio: torch.Tensor,
+        image: torch.Tensor,
+        counterfactual_proprio: torch.Tensor | None,
+        return_primary: torch.Tensor | None,
+        valid: torch.Tensor | None,
+        device_like: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        cfg = getattr(
+            self,
+            "_cycle_phase_loss",
+            resolve_cycle_phase_loss_config({"enabled": False}),
+        )
+        if not cfg["enabled"]:
+            return cycle_phase_loss_terms(
+                primary_direct=device_like,
+                counterfactual_direct=device_like,
+                return_primary=return_primary,
+                valid=valid,
+                config=cfg,
+            )
+        if counterfactual_proprio is None or return_primary is None or valid is None:
+            raise ValueError(
+                "cycle_phase_loss requires counterfactual proprio and paired labels"
+            )
+        if tuple(counterfactual_proprio.shape) != tuple(proprio.shape):
+            raise ValueError("cycle phase counterfactual proprio must match proprio")
+        eligible = valid.to(device=proprio.device, dtype=torch.bool).reshape(-1)
+        if eligible.numel() != proprio.shape[0]:
+            raise ValueError("cycle phase valid must have one value per batch row")
+        if not bool(eligible.any()):
+            return cycle_phase_loss_terms(
+                primary_direct=device_like,
+                counterfactual_direct=device_like,
+                return_primary=return_primary,
+                valid=valid,
+                config=cfg,
+            )
+        primary_proprio = proprio[eligible]
+        paired_proprio = torch.cat(
+            (primary_proprio, counterfactual_proprio[eligible]), dim=0
+        )
+        paired_image = torch.cat((image[eligible], image[eligible]), dim=0)
+        model_was_training = self._model.training
+        self._model.eval()
+        try:
+            paired_action = self._unpack_model_output(
+                self._model(paired_proprio, paired_image, None, None, None)
+            )[0]
+        finally:
+            self._model.train(model_was_training)
+        count = int(primary_proprio.shape[0])
+        action_mean = torch.as_tensor(
+            self.norm_stats["action_mean"],
+            dtype=paired_action.dtype,
+            device=paired_action.device,
+        )
+        action_std = torch.as_tensor(
+            self.norm_stats["action_std"],
+            dtype=paired_action.dtype,
+            device=paired_action.device,
+        )
+        paired_direct = paired_action * action_std + action_mean
+        selected_return = return_primary.to(
+            device=paired_action.device, dtype=torch.bool
+        ).reshape(-1)[eligible]
+        selected_valid = torch.ones(
+            count, device=paired_action.device, dtype=torch.bool
+        )
+        return cycle_phase_loss_terms(
+            primary_direct=paired_direct[:count],
+            counterfactual_direct=paired_direct[count:],
+            return_primary=selected_return,
+            valid=selected_valid,
+            config=cfg,
+        )
 
     def _target_release_loss_terms(
         self,
@@ -2391,7 +2935,23 @@ class ACTAdapter(Policy):
         return self._model.state_dict()
 
     def load_state_dict(self, sd, strict: bool = True):
-        return self._model.load_state_dict(sd, strict=strict)
+        adapted = dict(sd)
+        residual_config = getattr(
+            self._model, "state_visual_residual_config", {"enabled": False}
+        )
+        if strict and not bool(residual_config.get("enabled", False)):
+            # These non-persistent semantics were introduced with the optional
+            # state/visual residual architecture.  Legacy ACT checkpoints do
+            # not contain the two buffers, and the disabled-path defaults are
+            # exactly the backward-compatible behaviour.
+            target_state = self._model.state_dict()
+            for key in (
+                "state_visual_residual_proprio_mask",
+                "state_visual_residual_scale",
+            ):
+                if key not in adapted and key in target_state:
+                    adapted[key] = target_state[key]
+        return self._model.load_state_dict(adapted, strict=strict)
 
     # ── checkpoint helpers ────────────────────────────────────────────────────
 

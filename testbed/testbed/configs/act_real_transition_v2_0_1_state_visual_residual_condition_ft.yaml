@@ -1,0 +1,88 @@
+task:
+  task_name: real_transition_v2_0_1_state_visual_residual_condition_ft
+  equipment_model: real_excavator
+  dataset_dir: /data/pingfan/Excavator_real_stack_data/external_usb_datasets/real_transition_cycle_v1/session_rt_20260822_ctx04_v5_return_commit/episodes
+  train_ready_manifest_path: /data/pingfan/Excavator_real_stack_data/external_usb_datasets/real_transition_cycle_v1/session_rt_20260822_ctx04_v5_return_commit/train_ready_manifest.json
+  split_manifest_path: /data/pingfan/Excavator_real_stack_data/external_usb_datasets/real_transition_cycle_v1/session_rt_20260822_ctx04_v5_return_commit/split_manifest.json
+  num_episodes: 1000000
+  episode_len:
+  camera_names: [video4, video5, video6, video7]
+  backend: {name: real, dt: 0.05}
+
+policy:
+  class: ACT
+  device: cuda
+  low_dim_keys: [qpos, real_transition_condition_v1, qvel]
+  act_params:
+    chunk_size: 20
+    kl_weight: 10.0
+    hidden_dim: 512
+    dim_feedforward: 3200
+    state_dim: 10
+    camera_role_encoding:
+      enabled: true
+      roles: {video4: eye, video5: eye, video6: stick, video7: stick}
+
+train:
+  lr: 1.0e-5
+  num_epochs: 300
+  batch_size: 4
+  seed: 0
+  device: cuda
+  num_workers: 4
+  prefetch_factor: 2
+  persistent_workers: true
+  pin_memory: true
+  reuse_split: true
+  val_every: 5
+  save_latest_every: 10
+  checkpoint_every: 10
+  plot_every: 40
+  amp: true
+  amp_dtype: auto
+  ckpt_dir: /home/pingfan/Excavator_real_stack_local_runs/real_transition_v2_0_1_state_visual_residual_condition_ft_epoch259_to299
+  resume_ckpt: /home/pingfan/Excavator_real_stack_local_runs/real_transition_v2_0_1_state_visual_residual_seed0_300/policy_epoch_259_seed_0.ckpt
+  reset_best_on_resume: true
+  state_visual_residual:
+    enabled: true
+    low_hidden_dim: 256
+    residual_keep_indices: [0, 1, 2, 3]
+    stages:
+      - {name: low_only, start_epoch: 0, end_epoch: 60, train_low: true, train_residual: false, residual_scale: 0.0}
+      - {name: residual_only, start_epoch: 60, end_epoch: 220, train_low: false, train_residual: true, residual_scale: 1.0}
+      - {name: joint, start_epoch: 220, end_epoch: 260, train_low: true, train_residual: true, residual_scale: 1.0}
+      - {name: condition_low_only, start_epoch: 260, end_epoch: 300, train_low: true, train_residual: false, residual_scale: 1.0}
+  factual_semantic_sampling:
+    enabled: false
+  deadzone_loss:
+    enabled: true
+    threshold_json: /home/pingfan/Excavator_real_stack/policy_bundles/real_transition_target_release_v2/contracts/direct_policy_output_mechanical_deadzone.json
+    same_dir_promote_weight: 1.0
+    idle_suppression_weight: 0.0
+    wrong_effective_weight: 0.0
+    margin: 0.0
+    same_dir_window: expert_transition_window
+    same_dir_window_steps: 5
+  target_release_loss:
+    enabled: true
+    scope: train_and_validation
+    condition_key: real_transition_condition_v1
+    contract_json: /data/pingfan/Excavator_real_stack_data/runs/real_transition_v2_0_1_shortcut_fix_v1/target_release_contract_v3.json
+    append_samples_per_episode: 1
+    weight: 0.503244
+    continue_weight: 1.0
+    stop_weight: 1.0
+    contrast_weight: 1.0
+    contrast_margin_scale: 1.0
+  intent_loss: {enabled: false}
+  state_hold_transition: {enabled: false}
+  condition_adherence_loss: {enabled: false}
+  condition_action_loss: {enabled: false}
+  cycle_phase_loss: {enabled: false}
+  excursion_observed_loss: {enabled: false}
+  return_commit_loss: {enabled: false}
+  qvel_zero_state_hold_loss: {enabled: false}
+  qvel_authority_loss: {enabled: false}
+  action_primitive_islands: {enabled: false}
+  work_return_context: {enabled: false}
+  goal_effect: {enabled: false}

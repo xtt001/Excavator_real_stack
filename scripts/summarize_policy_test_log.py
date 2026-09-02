@@ -67,6 +67,7 @@ def main() -> int:
     parser.add_argument("--require-shadow-zero", action="store_true")
     parser.add_argument("--expect-policy-remote", action="store_true")
     parser.add_argument("--expect-scripted-cycle", action="store_true")
+    parser.add_argument("--expect-task-state-v2", action="store_true")
     parser.add_argument("--min-steps", type=int, default=1)
     parser.add_argument("--warmup-steps", type=int, default=1)
     parser.add_argument(
@@ -79,11 +80,16 @@ def main() -> int:
 
     ok = True
     if args.bundle_dir is not None:
-        ok = _print_bundle_check(
-            args.bundle_dir,
-            checkpoint_name=str(args.checkpoint_name),
-            expected_camera_names=_parse_expected_camera_names(args.expect_camera_names),
-        ) and ok
+        ok = (
+            _print_bundle_check(
+                args.bundle_dir,
+                checkpoint_name=str(args.checkpoint_name),
+                expected_camera_names=_parse_expected_camera_names(
+                    args.expect_camera_names
+                ),
+            )
+            and ok
+        )
 
     run_dir = _resolve_run_dir(args.run_dir, args.latest)
     if run_dir is None:
@@ -100,11 +106,14 @@ def main() -> int:
         require_shadow_zero=bool(args.require_shadow_zero),
         expect_policy_remote=bool(args.expect_policy_remote),
         expect_scripted_cycle=bool(args.expect_scripted_cycle),
+        expect_task_state_v2=bool(args.expect_task_state_v2),
         min_steps=int(args.min_steps),
         max_shadow_command_abs=float(args.max_shadow_command_abs),
     )
     ok = ok and verdict_ok
-    _print_log_summary(run_dir, summary=summary, metrics=metrics, ok=verdict_ok, reasons=reasons)
+    _print_log_summary(
+        run_dir, summary=summary, metrics=metrics, ok=verdict_ok, reasons=reasons
+    )
     return 0 if ok else 2
 
 
@@ -136,10 +145,13 @@ def _print_bundle_check(
     else:
         print("  WARN run_metadata.json missing")
     if expected_camera_names is not None:
-        ok = _print_camera_contract_check(
-            bundle / "resolved_config.yaml",
-            expected_camera_names=expected_camera_names,
-        ) and ok
+        ok = (
+            _print_camera_contract_check(
+                bundle / "resolved_config.yaml",
+                expected_camera_names=expected_camera_names,
+            )
+            and ok
+        )
     print(f"Bundle verdict: {'OK' if ok else 'NOT OK'}")
     return ok
 
@@ -152,7 +164,9 @@ def _print_camera_contract_check(
     if not resolved_config_path.exists():
         return False
     try:
-        resolved = yaml.safe_load(resolved_config_path.read_text(encoding="utf-8")) or {}
+        resolved = (
+            yaml.safe_load(resolved_config_path.read_text(encoding="utf-8")) or {}
+        )
     except Exception as exc:
         print(f"  ERROR resolved_config.yaml unreadable: {type(exc).__name__}: {exc}")
         return False
@@ -204,7 +218,9 @@ def _load_steps(path: Path) -> list[dict[str, Any]]:
     return out
 
 
-def _compute_metrics(steps: list[dict[str, Any]], *, warmup_steps: int) -> dict[str, Any]:
+def _compute_metrics(
+    steps: list[dict[str, Any]], *, warmup_steps: int
+) -> dict[str, Any]:
     checked = steps[min(len(steps), warmup_steps) :]
     policy_steps = [
         step
@@ -217,7 +233,11 @@ def _compute_metrics(steps: list[dict[str, Any]], *, warmup_steps: int) -> dict[
         for step in policy_steps
         if _float(step.get("policy_inference_latency_ms")) > 0.0
     ]
-    wall_times = [_int(step.get("wall_time_ns")) for step in steps if _int(step.get("wall_time_ns")) > 0]
+    wall_times = [
+        _int(step.get("wall_time_ns"))
+        for step in steps
+        if _int(step.get("wall_time_ns")) > 0
+    ]
     duration_s = (
         (wall_times[-1] - wall_times[0]) / 1_000_000_000.0
         if len(wall_times) >= 2
@@ -321,9 +341,7 @@ def _compute_metrics(steps: list[dict[str, Any]], *, warmup_steps: int) -> dict[
             if int(step.get("policy_frame_alignment_enabled", 0) or 0)
         ),
         "frame_reused_count": sum(
-            1
-            for step in policy_steps
-            if int(step.get("policy_frame_reused", 0) or 0)
+            1 for step in policy_steps if int(step.get("policy_frame_reused", 0) or 0)
         ),
         "pump_alignment_known_count": len(pump_alignment),
         "pump_current_count": sum(value == 1 for value in pump_alignment),
@@ -357,8 +375,7 @@ def _compute_metrics(steps: list[dict[str, Any]], *, warmup_steps: int) -> dict[
             int(step.get("scripted_cycle_active", 0) or 0) for step in checked
         ),
         "scripted_cycle_goal_changed_count": sum(
-            int(step.get("scripted_cycle_goal_changed", 0) or 0)
-            for step in checked
+            int(step.get("scripted_cycle_goal_changed", 0) or 0) for step in checked
         ),
         "scripted_cycle_faults": _counts(
             str(step.get("scripted_cycle_fault", ""))
@@ -375,6 +392,41 @@ def _compute_metrics(steps: list[dict[str, Any]], *, warmup_steps: int) -> dict[
             for step in checked
             if str(step.get("planner_target_side", "")).strip()
         ),
+        "task_state_enabled_count": sum(
+            int(step.get("scripted_cycle_task_state_v2_enabled", 0) or 0)
+            for step in checked
+        ),
+        "task_state_stages": _counts(
+            str(step.get("scripted_cycle_task_state_stage", ""))
+            for step in checked
+            if str(step.get("scripted_cycle_task_state_stage", "")).strip()
+        ),
+        "task_state_changed_count": sum(
+            int(step.get("scripted_cycle_task_state_changed", 0) or 0)
+            for step in checked
+        ),
+        "task_state_advance_requested_count": sum(
+            int(step.get("scripted_cycle_task_state_advance_requested", 0) or 0)
+            for step in checked
+        ),
+        "task_state_advance_rejections": _counts(
+            str(step.get("scripted_cycle_task_state_advance_rejected_reason", ""))
+            for step in checked
+            if str(
+                step.get("scripted_cycle_task_state_advance_rejected_reason", "")
+            ).strip()
+        ),
+        "task_state_invalid_count": sum(
+            1
+            for step in policy_steps
+            if not _valid_task_state_v2(step.get("policy_task_state_v2"))
+        ),
+        "task_state_planner_mismatch_count": sum(
+            1
+            for step in policy_steps
+            if _vec(step.get("policy_task_state_v2"))
+            != _vec(step.get("planner_task_state_v2"))
+        ),
         "policy_action_mean": _vector_mean(policy_actions),
         "policy_action_max_abs": _vectors_max_abs(policy_actions),
         "deadzone_assist_enabled_count": sum(
@@ -387,7 +439,9 @@ def _compute_metrics(steps: list[dict[str, Any]], *, warmup_steps: int) -> dict[
         "deadzone_assist_active_pct": (
             len(assist_steps) / len(checked) * 100.0 if checked else 0.0
         ),
-        "returned_action_max_abs": _steps_vec_max_abs(checked, "policy_returned_action"),
+        "returned_action_max_abs": _steps_vec_max_abs(
+            checked, "policy_returned_action"
+        ),
         "raw_action_max_abs": _steps_vec_max_abs(checked, "raw_action"),
         "safe_action_max_abs": _steps_vec_max_abs(checked, "safe_action"),
         "commanded_action_max_abs": _steps_vec_max_abs(checked, "commanded_action"),
@@ -405,6 +459,7 @@ def _verdict(
     expect_scripted_cycle: bool,
     min_steps: int,
     max_shadow_command_abs: float,
+    expect_task_state_v2: bool = False,
 ) -> tuple[bool, list[str]]:
     reasons: list[str] = []
     steps = int(metrics["steps"])
@@ -436,7 +491,12 @@ def _verdict(
                 f"policy_output_modes={sorted(modes)} expected={expect_output_mode}"
             )
     if require_shadow_zero:
-        for key in ("returned_action_max_abs", "raw_action_max_abs", "safe_action_max_abs", "commanded_action_max_abs"):
+        for key in (
+            "returned_action_max_abs",
+            "raw_action_max_abs",
+            "safe_action_max_abs",
+            "commanded_action_max_abs",
+        ):
             if float(metrics[key]) > max_shadow_command_abs:
                 reasons.append(f"{key}={metrics[key]:.6g} > {max_shadow_command_abs:g}")
     if expect_policy_remote:
@@ -450,9 +510,7 @@ def _verdict(
         if not int(metrics["scripted_cycle_active_count"]):
             reasons.append("scripted-cycle runtime never became active")
         if metrics["scripted_cycle_faults"]:
-            reasons.append(
-                f"scripted_cycle_faults={metrics['scripted_cycle_faults']}"
-            )
+            reasons.append(f"scripted_cycle_faults={metrics['scripted_cycle_faults']}")
         if metrics["scripted_cycle_activation_rejections"]:
             reasons.append(
                 "scripted_cycle_activation_rejections="
@@ -460,6 +518,31 @@ def _verdict(
             )
         if not metrics["scripted_cycle_targets"]:
             reasons.append("scripted-cycle planner target was never logged")
+    if expect_task_state_v2:
+        if not int(metrics["task_state_enabled_count"]):
+            reasons.append("task-state-v2 runtime was never observed")
+        expected_stages = {"work", "work_complete", "return_committed"}
+        missing_stages = expected_stages - set(metrics["task_state_stages"])
+        if missing_stages:
+            reasons.append(f"task-state-v2 missing stages={sorted(missing_stages)}")
+        if int(metrics["task_state_changed_count"]) < 2:
+            reasons.append(
+                "task-state-v2 did not log both work-complete and return-commit changes"
+            )
+        if metrics["task_state_advance_rejections"]:
+            reasons.append(
+                "task-state-v2 mark rejections="
+                f"{metrics['task_state_advance_rejections']}"
+            )
+        if int(metrics["task_state_invalid_count"]):
+            reasons.append(
+                f"task-state-v2 invalid policy vectors={metrics['task_state_invalid_count']}"
+            )
+        if int(metrics["task_state_planner_mismatch_count"]):
+            reasons.append(
+                "task-state-v2 planner/policy mismatch count="
+                f"{metrics['task_state_planner_mismatch_count']}"
+            )
     return (not reasons), reasons
 
 
@@ -550,6 +633,16 @@ def _print_log_summary(
         f"activation_rejections="
         f"{metrics['scripted_cycle_activation_rejections'] or '-'}"
     )
+    print(
+        "Task state v2: "
+        f"enabled_steps={metrics['task_state_enabled_count']} "
+        f"stages={metrics['task_state_stages'] or '-'} "
+        f"changes={metrics['task_state_changed_count']} "
+        f"marks={metrics['task_state_advance_requested_count']} "
+        f"invalid={metrics['task_state_invalid_count']} "
+        f"mismatch={metrics['task_state_planner_mismatch_count']} "
+        f"rejections={metrics['task_state_advance_rejections'] or '-'}"
+    )
     print(f"Verdict: {'OK' if ok else 'NOT OK'}")
     if reasons:
         for reason in reasons:
@@ -576,6 +669,20 @@ def _vec(value: Any) -> list[float]:
             return []
         out.append(val)
     return out
+
+
+def _valid_task_state_v2(value: Any) -> bool:
+    vector = _vec(value)
+    if len(vector) != 5:
+        return False
+    current, dig_target, complete, commit, next_target = vector
+    if current not in {-1.0, 1.0} or dig_target != current:
+        return False
+    if complete not in {0.0, 1.0} or commit not in {0.0, 1.0}:
+        return False
+    if commit == 0.0:
+        return next_target == 0.0
+    return next_target in {-1.0, 1.0}
 
 
 def _steps_vec_max_abs(steps: Iterable[dict[str, Any]], key: str) -> float:

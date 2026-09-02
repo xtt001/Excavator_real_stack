@@ -124,6 +124,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--mark-button",
+        type=int,
+        default=None,
+        help=(
+            "Physical one-based joystick button number that sends mark_requested. "
+            "Task-state-v2 uses this as the explicit work/return advance event."
+        ),
+    )
+    parser.add_argument(
         "--go-home-button-index",
         type=int,
         default=None,
@@ -134,6 +143,12 @@ def main() -> None:
         type=int,
         default=None,
         help="Low-level pygame zero-based joystick button index for policy_start_requested.",
+    )
+    parser.add_argument(
+        "--mark-button-index",
+        type=int,
+        default=None,
+        help="Low-level pygame zero-based joystick button index for mark_requested.",
     )
     parser.add_argument(
         "--status-button-device",
@@ -216,7 +231,10 @@ def main() -> None:
             "--record-start-button, --record-start-button-index, and "
             "--record-start-physical-button are mutually exclusive"
         )
-    if args.record_start_button is not None or args.record_start_physical_button is not None:
+    if (
+        args.record_start_button is not None
+        or args.record_start_physical_button is not None
+    ):
         physical_button = (
             args.record_start_button
             if args.record_start_button is not None
@@ -230,14 +248,19 @@ def main() -> None:
     if args.record_start_joystick_id is not None:
         joystick_cfg["button_joystick_ids"] = [int(args.record_start_joystick_id)]
     if args.go_home_button is not None and args.go_home_button_index is not None:
-        parser.error("--go-home-button and --go-home-button-index are mutually exclusive")
+        parser.error(
+            "--go-home-button and --go-home-button-index are mutually exclusive"
+        )
     if args.go_home_button is not None:
         if args.go_home_button < 1:
             parser.error("--go-home-button must be >= 1")
         joystick_cfg["go_home_button"] = int(args.go_home_button) - 1
     elif args.go_home_button_index is not None:
         joystick_cfg["go_home_button"] = int(args.go_home_button_index)
-    if args.policy_start_button is not None and args.policy_start_button_index is not None:
+    if (
+        args.policy_start_button is not None
+        and args.policy_start_button_index is not None
+    ):
         parser.error(
             "--policy-start-button and --policy-start-button-index are mutually exclusive"
         )
@@ -247,14 +270,20 @@ def main() -> None:
         joystick_cfg["policy_start_button"] = int(args.policy_start_button) - 1
     elif args.policy_start_button_index is not None:
         joystick_cfg["policy_start_button"] = int(args.policy_start_button_index)
+    if args.mark_button is not None and args.mark_button_index is not None:
+        parser.error("--mark-button and --mark-button-index are mutually exclusive")
+    if args.mark_button is not None:
+        if args.mark_button < 1:
+            parser.error("--mark-button must be >= 1")
+        joystick_cfg["mark_button"] = int(args.mark_button) - 1
+    elif args.mark_button_index is not None:
+        joystick_cfg["mark_button"] = int(args.mark_button_index)
     input_device = args.input or str(teleop_cfg.get("input", "joystick"))
     if input_device == "remote":
         input_device = "joystick"
     port = int(args.port or remote_cfg.get("port", DEFAULT_REMOTE_ACTION_PORT))
     rate_hz = float(
-        args.rate_hz
-        or remote_cfg.get("rate_hz")
-        or task_cfg.get("control_hz", 50.0)
+        args.rate_hz or remote_cfg.get("rate_hz") or task_cfg.get("control_hz", 50.0)
     )
     source_id = str(args.source_id or remote_cfg.get("source_id", "host_joystick"))
 
@@ -293,21 +322,28 @@ def main() -> None:
         policy_start_physical = (
             None if policy_start_index is None else int(policy_start_index) + 1
         )
+        mark_index = joystick_cfg.get("mark_button")
+        mark_physical = None if mark_index is None else int(mark_index) + 1
         log.info(
             "Joystick buttons: status_button_device=%s record_start_button_index=%s "
             "record_start_physical_button=%s policy_start_button_index=%s "
-            "policy_start_physical_button=%s button_joystick_ids=%s",
+            "policy_start_physical_button=%s mark_button_index=%s "
+            "mark_physical_button=%s button_joystick_ids=%s",
             joystick_cfg.get("status_button_device", 0),
             record_start_index,
             record_start_physical,
             policy_start_index,
             policy_start_physical,
+            mark_index,
+            mark_physical,
             joystick_cfg.get("button_joystick_ids"),
         )
 
     seq = 0
     last_log_s = 0.0
-    monitor_enabled = sys.stdout.isatty() if args.monitor is None else bool(args.monitor)
+    monitor_enabled = (
+        sys.stdout.isatty() if args.monitor is None else bool(args.monitor)
+    )
     monitor = _RemoteTeleopMonitor(
         enabled=monitor_enabled,
         target=f"{args.host}:{port}",
@@ -342,9 +378,13 @@ def main() -> None:
                 reset_requested=bool(extras.get("reset_requested", False)),
                 discard_requested=bool(extras.get("discard_requested", False)),
                 quit_requested=bool(extras.get("quit_requested", False)),
-                record_start_requested=bool(extras.get("record_start_requested", False)),
+                record_start_requested=bool(
+                    extras.get("record_start_requested", False)
+                ),
                 mark_requested=bool(extras.get("mark_requested", False)),
-                policy_start_requested=bool(extras.get("policy_start_requested", False)),
+                policy_start_requested=bool(
+                    extras.get("policy_start_requested", False)
+                ),
                 go_home_requested=bool(extras.get("go_home_requested", False)),
             )
             event_flags = {
@@ -397,9 +437,8 @@ def main() -> None:
                     event_flags=event_flags,
                     receiver_status=receiver_status,
                 )
-            elif (
-                float(args.log_interval_s) > 0.0
-                and now_s - last_log_s >= float(args.log_interval_s)
+            elif float(args.log_interval_s) > 0.0 and now_s - last_log_s >= float(
+                args.log_interval_s
             ):
                 last_log_s = now_s
                 log.info(
@@ -585,9 +624,7 @@ class _RemoteTeleopMonitor:
                 self._last_event_by_name[key] = (int(seq), now_s)
         if names:
             stamp = time.strftime("%H:%M:%S")
-            self._event_history.appendleft(
-                f"{stamp} seq={int(seq)} " + " ".join(names)
-            )
+            self._event_history.appendleft(f"{stamp} seq={int(seq)} " + " ".join(names))
 
     def _record_receiver_status(
         self,
@@ -793,6 +830,8 @@ def _format_receiver_policy_status(receiver_status: Any | None) -> str:
             f"cycle={int(payload.get('planner_cycle_index', -1))} "
             f"goal={goal_side} "
             f"ready={ready_side} "
+            "task_state="
+            f"{str(payload.get('scripted_cycle_task_state_stage', '-') or '-')} "
             "ready_blockers="
             f"{str(payload.get('scripted_cycle_ready_blockers', '-') or '-')} "
             f"excursion={int(payload.get('scripted_cycle_excursion_observed', 0) or 0)} "
@@ -801,6 +840,8 @@ def _format_receiver_policy_status(receiver_status: Any | None) -> str:
             f"fault={str(payload.get('scripted_cycle_fault', '-') or '-')} "
             "start_error="
             f"{str(payload.get('scripted_cycle_activation_rejected_reason', '-') or '-')} "
+            "task_mark_error="
+            f"{str(payload.get('scripted_cycle_task_state_advance_rejected_reason', '-') or '-')} "
         )
     if action is None:
         return cycle_text + "model_report=inactive"

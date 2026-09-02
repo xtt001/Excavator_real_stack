@@ -16,9 +16,8 @@ from typing import Any
 # Wayland windows.  Run this operations dashboard through XWayland so the
 # standard _NET_WM_STATE_ABOVE hint is enforceable.  Explicit test/headless
 # platform choices (for example offscreen) remain untouched.
-if (
-    os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland"
-    and os.environ.get("DISPLAY")
+if os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland" and os.environ.get(
+    "DISPLAY"
 ):
     os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 
@@ -184,8 +183,7 @@ class VideoPipelineThread(QtCore.QThread):
             except Exception as exc:
                 if not self.stop_event.is_set():
                     self.signals.video_error.emit(
-                        "视频线程异常，将在 2 秒后重试："
-                        f"{type(exc).__name__}: {exc}"
+                        f"视频线程异常，将在 2 秒后重试：{type(exc).__name__}: {exc}"
                     )
             finally:
                 if decoder is not None:
@@ -246,9 +244,7 @@ class ProminentStateCard(QtWidgets.QFrame):
 
     def set_state(self, value: str, detail: str, color: str) -> None:
         self.value.setText(str(value))
-        self.value.setStyleSheet(
-            f"font-size:25px; font-weight:800; color:{color};"
-        )
+        self.value.setStyleSheet(f"font-size:25px; font-weight:800; color:{color};")
         self.detail.setText(str(detail))
         self.setStyleSheet(
             "QFrame {"
@@ -306,8 +302,7 @@ class ImuCard(QtWidgets.QFrame):
         qpos_text = "-" if qpos_rad is None else f"{_float(qpos_rad, 0.0):+.3f} rad"
         self.state.setText(qpos_text)
         self.state.setStyleSheet(
-            "font-family:monospace; font-weight:800; font-size:16px; "
-            f"color:{color};"
+            f"font-family:monospace; font-weight:800; font-size:16px; color:{color};"
         )
         age_text = "-" if age_ms is None else f"{_float(age_ms, -1.0):.1f} ms"
         loss_value = None if loss is None else _int(loss, 0)
@@ -395,9 +390,7 @@ class HostDashboard(QtWidgets.QMainWindow):
         self.always_on_top_checkbox.setStyleSheet(
             "font-size:13px; font-weight:700; padding:5px;"
         )
-        self.always_on_top_checkbox.toggled.connect(
-            self._set_always_on_top
-        )
+        self.always_on_top_checkbox.toggled.connect(self._set_always_on_top)
         header.addWidget(self.always_on_top_checkbox)
         self.clock_label = QtWidgets.QLabel("--:--:--")
         self.clock_label.setStyleSheet("font-size:18px; font-weight:700;")
@@ -412,9 +405,7 @@ class HostDashboard(QtWidgets.QMainWindow):
         top_state_row = QtWidgets.QHBoxLayout()
         top_state_row.setSpacing(8)
         top_state_row.addWidget(self.alert_label, stretch=3)
-        self.machine_status_label = QtWidgets.QLabel(
-            "机器状态：等待 sender / status11"
-        )
+        self.machine_status_label = QtWidgets.QLabel("机器状态：等待 sender / status11")
         self.machine_status_label.setAlignment(QtCore.Qt.AlignCenter)
         self.machine_status_label.setTextInteractionFlags(
             QtCore.Qt.TextSelectableByMouse
@@ -441,9 +432,7 @@ class HostDashboard(QtWidgets.QMainWindow):
         transition_layout.addWidget(self.transition_state)
 
         status_row = QtWidgets.QHBoxLayout()
-        self.transition_instruction = QtWidgets.QLabel(
-            "等待 receiver 自动流程状态"
-        )
+        self.transition_instruction = QtWidgets.QLabel("等待 receiver 自动流程状态")
         self.transition_instruction.setWordWrap(True)
         self.transition_instruction.setStyleSheet(
             "font-size:15px; font-weight:800; padding:6px; "
@@ -453,9 +442,7 @@ class HostDashboard(QtWidgets.QMainWindow):
         status_row.addWidget(self.transition_instruction, stretch=3)
         self.transition_context = QtWidgets.QLabel("自动工作面：-")
         self.transition_context.setWordWrap(True)
-        self.transition_context.setTextInteractionFlags(
-            QtCore.Qt.TextSelectableByMouse
-        )
+        self.transition_context.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
         self.transition_context.setStyleSheet(
             "font-family:monospace; font-size:13px; padding:6px; "
             "background:#11181d; border-radius:5px;"
@@ -657,9 +644,7 @@ class HostDashboard(QtWidgets.QMainWindow):
                 rad = _float(pose[index], 0.0)
                 value_text = f"{rad:+.3f}rad / {math.degrees(rad):+.1f}°"
                 if success is not None:
-                    tolerance_deg = abs(
-                        math.degrees(_float(success[index], 0.0))
-                    )
+                    tolerance_deg = abs(math.degrees(_float(success[index], 0.0)))
                     value_text += f"\ntol ±{tolerance_deg:.1f}°"
             label.setText(f"{AXIS_NAMES[index]}\n{value_text}")
 
@@ -670,9 +655,7 @@ class HostDashboard(QtWidgets.QMainWindow):
         self.home_detail.setText(
             f"timeout={timeout}s  dwell={dwell}s  |  来源：{source_name}"
         )
-        self.home_detail.setToolTip(
-            f"成功容差显示在各轴下方\n配置来源：{source}"
-        )
+        self.home_detail.setToolTip(f"成功容差显示在各轴下方\n配置来源：{source}")
 
     def _update_transition_panel(
         self,
@@ -687,8 +670,17 @@ class HostDashboard(QtWidgets.QMainWindow):
             selected = str(
                 receiver.get("planner_selected_initial_side", "") or "待选择"
             )
-            actual = str(receiver.get("scripted_cycle_ready_side", "unknown") or "unknown")
+            actual = str(
+                receiver.get("scripted_cycle_ready_side", "unknown") or "unknown"
+            )
             target = str(receiver.get("planner_target_side", "") or "-")
+            task_state_enabled = bool(
+                receiver.get("scripted_cycle_task_state_v2_enabled", 0)
+            )
+            task_stage = str(
+                receiver.get("scripted_cycle_task_state_stage", "disabled")
+                or "disabled"
+            )
             script_id = str(receiver.get("planner_script_id", "") or "待自动选择")
             cycle_index = _int(receiver.get("planner_cycle_index"), -1)
             cycle_total = _int(receiver.get("planner_planned_cycle_count"), 0)
@@ -697,10 +689,21 @@ class HostDashboard(QtWidgets.QMainWindow):
             )
             if mode == "policy":
                 headline, color = "● 模型正在执行多铲剧本", REC_ORANGE
-                instruction = (
-                    f"当前目标 {target}；到区停稳后自动推进。"
-                    "左手柄物理按钮 7：立即退出模型控制"
-                )
+                if task_state_enabled and task_stage == "work":
+                    instruction = (
+                        "完成挖掘、卸料和正向 excursion 后按物理按钮 2："
+                        "提交 WORK_COMPLETE；按钮 7 随时退出模型"
+                    )
+                elif task_state_enabled and task_stage == "work_complete":
+                    instruction = (
+                        "确认可以回程后再按物理按钮 2：提交 RETURN_COMMITTED；"
+                        "按钮 7 随时退出模型"
+                    )
+                else:
+                    instruction = (
+                        f"当前目标 {target}；到区停稳后自动推进。"
+                        "左手柄物理按钮 7：立即退出模型控制"
+                    )
             elif mode == "script_stop":
                 headline, color = "剧本结束/停止，控制已锁零", AMBER
                 instruction = "确认机器状态后按左手柄物理按钮 7，解除锁零并保持人工模式"
@@ -712,11 +715,13 @@ class HostDashboard(QtWidgets.QMainWindow):
                 )
             else:
                 headline, color = "人工模式，模型剧本未 ARM", GRAY
-                instruction = "准备完成后按一次左手柄物理按钮 7；随后稳定区位将自动选剧本并开始"
+                instruction = (
+                    "准备完成后按一次左手柄物理按钮 7；随后稳定区位将自动选剧本并开始"
+                )
             self.transition_state.setText(
                 f"{headline}  |  script={script_id}  |  当前起始点={selected}  |  "
                 f"当前位置={actual}  |  下次目标位置={target}  |  "
-                f"cycle={cycle_current}/{cycle_total or '-'}"
+                f"task_state={task_stage}  |  cycle={cycle_current}/{cycle_total or '-'}"
             )
             self.transition_state.setStyleSheet(
                 "font-size:16px; font-weight:800; padding:5px; "
@@ -729,6 +734,10 @@ class HostDashboard(QtWidgets.QMainWindow):
             )
             wait_reason = str(
                 receiver.get("scripted_cycle_auto_wait_reason", "") or "-"
+            )
+            task_mark_error = str(
+                receiver.get("scripted_cycle_task_state_advance_rejected_reason", "")
+                or "-"
             )
             return_phase = _yes_no(
                 receiver.get(
@@ -753,6 +762,7 @@ class HostDashboard(QtWidgets.QMainWindow):
             self.transition_context.setText(
                 f"候选起点: {receiver.get('planner_available_initial_sides') or 'A,B'}\n"
                 f"自动等待: {wait_reason}\n"
+                f"任务标记: {task_stage}  拒绝原因={task_mark_error}\n"
                 f"落点控制: {receiver.get('swing_landing_mode') or '-'}  "
                 f"回程={return_phase}  policy_gain={policy_gain:.2f}  PD={pd_blend:.2f}"
             )
@@ -794,9 +804,7 @@ class HostDashboard(QtWidgets.QMainWindow):
         display_run_id = next_run_id if phase in {"idle", "disabled"} else run_id
         receiver_mode = str(transition.get("receiver_mode", "-") or "-")
         health_ok = bool(transition.get("receiver_health_ok", False))
-        automatic_wait = str(
-            transition.get("automatic_wait_reason", "") or ""
-        )
+        automatic_wait = str(transition.get("automatic_wait_reason", "") or "")
         saving_active = (
             receiver_mode.lower() == "saving"
             or automatic_wait == "saving_run"
@@ -812,9 +820,7 @@ class HostDashboard(QtWidgets.QMainWindow):
         else:
             blocker_text = ",".join(blockers) if blockers else "无"
             armed_text = _yes_no(transition.get("session_armed", False))
-            auto_wait = str(
-                transition.get("automatic_wait_reason", "") or "-"
-            )
+            auto_wait = str(transition.get("automatic_wait_reason", "") or "-")
             recording_text = (
                 "正在保存数据（录制已结束）"
                 if saving_active
@@ -832,10 +838,14 @@ class HostDashboard(QtWidgets.QMainWindow):
                 f"blockers={blocker_text}  |  "
                 f"auto={auto_wait}"
             )
-            color = AMBER if saving_active else (
-                REC_ORANGE
-                if recording_active
-                else (GREEN if health_ok and not blockers else AMBER)
+            color = (
+                AMBER
+                if saving_active
+                else (
+                    REC_ORANGE
+                    if recording_active
+                    else (GREEN if health_ok and not blockers else AMBER)
+                )
             )
         self.transition_state.setStyleSheet(
             "font-size:16px; font-weight:800; padding:5px; "
@@ -903,14 +913,14 @@ class HostDashboard(QtWidgets.QMainWindow):
             ),
         }.get(mark_action, "等待 receiver 自动流程状态更新")
         if recording_active:
-            instruction = (
-                f"{instruction}  |  左手柄物理按钮 4：取消并重录本 run"
-            )
+            instruction = f"{instruction}  |  左手柄物理按钮 4：取消并重录本 run"
         mark_error = str(transition.get("last_mark_error", "") or "")
         if mark_error:
             instruction += f"  |  上次 MARK 未接受：{mark_error}"
         self.transition_instruction.setText(instruction)
-        instruction_warning = bool(mark_error) or automatic_wait == "session_progress_error"
+        instruction_warning = (
+            bool(mark_error) or automatic_wait == "session_progress_error"
+        )
         self.transition_instruction.setStyleSheet(
             "font-size:15px; font-weight:800; padding:6px; "
             "color:#f2f5f7; "
@@ -1014,9 +1024,7 @@ class HostDashboard(QtWidgets.QMainWindow):
         saved = _int(receiver.get("saved"), 0)
         duration = steps / self.record_hz if self.record_hz > 0 else None
         progress = (
-            f"{100.0 * steps / self.max_steps:.1f}%"
-            if self.max_steps > 0
-            else "-"
+            f"{100.0 * steps / self.max_steps:.1f}%" if self.max_steps > 0 else "-"
         )
         duration_text = "-" if duration is None else f"{duration:.1f} s"
         save_state_key = str(save.get("state", "idle") or "idle").lower()
@@ -1043,24 +1051,24 @@ class HostDashboard(QtWidgets.QMainWindow):
                 else f"当前 receiver 尚未提供磁盘总数 / 本次保存 {saved} 条"
             )
         self.prominent_cards["recorded"].set_state(
-            (
-                f"{recorded_count} 条"
-                if recorded_count_available
-                else "待重启统计"
-            ) if has_receiver_status else "等待状态",
+            (f"{recorded_count} 条" if recorded_count_available else "待重启统计")
+            if has_receiver_status
+            else "等待状态",
             recorded_detail if has_receiver_status else "等待 receiver",
-            (
-                BLUE if recorded_count_available else AMBER
-            ) if has_receiver_status else GRAY,
+            (BLUE if recorded_count_available else AMBER)
+            if has_receiver_status
+            else GRAY,
         )
 
         saving_active = mode == "SAVING" or save_state_key == "writing"
         recording_active = bool(receiver.get("recording", 0)) and not saving_active
         self.prominent_cards["recording"].set_state(
-            "● REC 正在录制" if recording_active else (
-                "录制已结束" if saving_active else (
-                    "未在录制" if has_receiver_status else "等待状态"
-                )
+            "● REC 正在录制"
+            if recording_active
+            else (
+                "录制已结束"
+                if saving_active
+                else ("未在录制" if has_receiver_status else "等待状态")
             ),
             (
                 (
@@ -1137,7 +1145,9 @@ class HostDashboard(QtWidgets.QMainWindow):
 
         save_path = str(save.get("path", "") or "-")
         save_size = _fmt_bytes(save.get("file_size_bytes"))
-        save_elapsed = _duration_from_ns(save.get("started_ns"), save.get("finished_ns"))
+        save_elapsed = _duration_from_ns(
+            save.get("started_ns"), save.get("finished_ns")
+        )
         self.save_text.setText(
             f"state      {save_state}\n"
             f"episode    {save.get('episode_idx', '-')}\n"
@@ -1206,10 +1216,14 @@ class HostDashboard(QtWidgets.QMainWindow):
         cycle_index = _int(receiver.get("planner_cycle_index"), -1)
         cycle_total = _int(receiver.get("planner_planned_cycle_count"), 0)
         target_side = str(receiver.get("planner_target_side", "") or "-")
+        task_stage = str(
+            receiver.get("scripted_cycle_task_state_stage", "disabled") or "disabled"
+        )
         script_line = (
             f"script     {script_id} | 起点={selected_side} | "
             f"cycle={min(cycle_total, max(0, cycle_index + 1)) if cycle_total else 0}/{cycle_total or '-'} "
-            f"| target={target_side} | ARM={'YES' if auto_armed else 'NO'}"
+            f"| target={target_side} | task={task_stage} | "
+            f"ARM={'YES' if auto_armed else 'NO'}"
             if scripted_enabled
             else "script     -"
         )
@@ -1229,9 +1243,7 @@ class HostDashboard(QtWidgets.QMainWindow):
         ages = _vector(imu.get("host_rx_age_ms"), 4)
         losses = _vector(imu.get("packet_loss_count"), 4)
         ready_state = dict(transition.get("ready_state", {}) or {})
-        non_swing_qpos = _vector(
-            ready_state.get("non_swing_qpos_current_rad"), 3
-        )
+        non_swing_qpos = _vector(ready_state.get("non_swing_qpos_current_rad"), 3)
         swing_qpos = ready_state.get("swing_qpos_current_rad")
         live_qpos = (
             [swing_qpos, *non_swing_qpos]
@@ -1453,23 +1465,15 @@ def _load_config(path: Path) -> dict[str, Any]:
         "field_context_defaults": dict(
             transition.get("field_context_defaults", {}) or {}
         ),
-        "automatic_annotation": dict(
-            transition.get("automatic_annotation", {}) or {}
-        ),
+        "automatic_annotation": dict(transition.get("automatic_annotation", {}) or {}),
         "home": {
             "available": 1,
             "enabled": int(bool(go_home.get("enabled", False))),
             "home_pose_rad": runtime_pose,
             "phase_home_pose_rad": phase_pose,
-            "success_tolerance_rad": _vector(
-                go_home.get("success_tolerance_rad"), 4
-            ),
-            "near_tolerance_rad": _vector(
-                go_home.get("near_tolerance_rad"), 4
-            ),
-            "center_tolerance_rad": _vector(
-                go_home.get("center_tolerance_rad"), 4
-            ),
+            "success_tolerance_rad": _vector(go_home.get("success_tolerance_rad"), 4),
+            "near_tolerance_rad": _vector(go_home.get("near_tolerance_rad"), 4),
+            "center_tolerance_rad": _vector(go_home.get("center_tolerance_rad"), 4),
             "timeout_s": go_home.get("timeout_s"),
             "dwell_s": go_home.get("dwell_s"),
             "runtime_phase_consistent": consistent,

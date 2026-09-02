@@ -16,7 +16,23 @@ import torch
 import yaml
 from torch.utils.data import DataLoader, Dataset
 
+from testbed.data.action_primitive_islands import (
+    ACTION_PRIMITIVE_KEY,
+    PRIMITIVE_NAMES,
+    derive_action_primitive_islands,
+    primitive_one_hot,
+    resolve_action_primitive_config,
+)
 from testbed.data.deadzone_intent_labels import compute_deadzone_intent_labels
+from testbed.data.factual_semantic_sampling import (
+    MANIFEST_SCHEMA as FACTUAL_SEMANTIC_MANIFEST_SCHEMA,
+)
+from testbed.data.factual_semantic_sampling import (
+    TIER_NAMES as FACTUAL_SEMANTIC_TIER_NAMES,
+)
+from testbed.data.factual_semantic_sampling import (
+    resolve_factual_semantic_sampling_config,
+)
 from testbed.data.hdf5_io import list_episodes
 from testbed.data.image_transforms import build_image_transform
 from testbed.data.schema import ATTR_IS_REAL, GRP_ENCODED_IMAGES
@@ -27,21 +43,74 @@ from testbed.data.state_hold_transition import (
     resolve_state_hold_transition_config,
     sample_state_hold_start,
 )
+from testbed.data.task_state_v2 import (
+    TASK_STATE_V2_KEY,
+    TASK_STATE_V2_SCHEMA,
+    TASK_STATE_V2_TIERS,
+    build_task_state_sequence,
+    load_task_state_v2_manifest,
+    resolve_task_state_v2_config,
+    task_state_candidate_starts,
+    task_state_chunk_valid_mask,
+)
+from testbed.data.task_state_v2 import (
+    task_state_manifest_by_episode as task_state_manifest_by_episode_fn,
+)
+from testbed.data.work_return_context import (
+    ROUTE_NAMES,
+    WORK_CONTEXT_KEY,
+    derive_work_return_context,
+    resolve_work_return_context_config,
+    work_context_vector,
+)
 from testbed.policies.act.condition_adherence import (
     resolve_condition_adherence_config,
+)
+from testbed.policies.act.cycle_phase import (
+    cycle_phase_candidate_indices,
+    resolve_cycle_phase_loss_config,
+)
+from testbed.policies.act.excursion_observed import (
+    excursion_observed_candidate_indices,
+    resolve_excursion_observed_loss_config,
 )
 from testbed.policies.act.goal_effect import (
     build_goal_effect_targets,
     future_delta_scale,
     resolve_goal_effect_config,
 )
+from testbed.policies.act.qvel_authority import (
+    qvel_authority_candidate_starts,
+    resolve_qvel_authority_config,
+    stable_tool_direction_mask,
+)
+from testbed.policies.act.qvel_state_hold import (
+    resolve_qvel_zero_state_hold_config,
+)
+from testbed.policies.act.return_commit import (
+    resolve_return_commit_loss_config,
+    return_commit_candidate_indices,
+)
 from testbed.policies.act.target_release import (
     resolve_target_release_config,
     target_release_candidate_indices,
 )
+from testbed.tasks.real_transition_excursion import EXCURSION_OBSERVED_KEY
+from testbed.tasks.real_transition_phase import CYCLE_PHASE_KEY
+from testbed.tasks.real_transition_return_commit import RETURN_COMMIT_KEY
 
 REAL_TRANSITION_CONDITION_KEY = "real_transition_condition_v1"
-SUPPORTED_LOW_DIM_KEYS = ("qpos", "qvel", REAL_TRANSITION_CONDITION_KEY)
+SUPPORTED_LOW_DIM_KEYS = (
+    "qpos",
+    "qvel",
+    REAL_TRANSITION_CONDITION_KEY,
+    EXCURSION_OBSERVED_KEY,
+    CYCLE_PHASE_KEY,
+    RETURN_COMMIT_KEY,
+    ACTION_PRIMITIVE_KEY,
+    WORK_CONTEXT_KEY,
+    TASK_STATE_V2_KEY,
+)
 
 
 def _normalize_low_dim_keys(low_dim_keys: list[str] | tuple[str, ...] | None) -> list[str]:
@@ -60,6 +129,12 @@ def _assemble_low_dim_observation(
     qpos: np.ndarray,
     qvel: np.ndarray,
     real_transition_condition_v1: np.ndarray | None = None,
+    real_transition_excursion_observed_v1: np.ndarray | None = None,
+    real_transition_cycle_phase_v1: np.ndarray | None = None,
+    real_transition_return_commit_v1: np.ndarray | None = None,
+    real_transition_action_primitive_v1: np.ndarray | None = None,
+    real_transition_work_context_v1: np.ndarray | None = None,
+    real_transition_task_state_v2: np.ndarray | None = None,
     low_dim_keys: list[str],
 ) -> np.ndarray:
     qpos_arr = np.asarray(qpos, dtype=np.float32)
@@ -69,10 +144,46 @@ def _assemble_low_dim_observation(
         if real_transition_condition_v1 is None
         else np.asarray(real_transition_condition_v1, dtype=np.float32)
     )
+    phase_arr = (
+        None
+        if real_transition_cycle_phase_v1 is None
+        else np.asarray(real_transition_cycle_phase_v1, dtype=np.float32)
+    )
+    excursion_arr = (
+        None
+        if real_transition_excursion_observed_v1 is None
+        else np.asarray(real_transition_excursion_observed_v1, dtype=np.float32)
+    )
+    return_commit_arr = (
+        None
+        if real_transition_return_commit_v1 is None
+        else np.asarray(real_transition_return_commit_v1, dtype=np.float32)
+    )
+    action_primitive_arr = (
+        None
+        if real_transition_action_primitive_v1 is None
+        else np.asarray(real_transition_action_primitive_v1, dtype=np.float32)
+    )
+    work_context_arr = (
+        None
+        if real_transition_work_context_v1 is None
+        else np.asarray(real_transition_work_context_v1, dtype=np.float32)
+    )
+    task_state_v2_arr = (
+        None
+        if real_transition_task_state_v2 is None
+        else np.asarray(real_transition_task_state_v2, dtype=np.float32)
+    )
     sequence_mode = (
         qpos_arr.ndim > 1
         or qvel_arr.ndim > 1
         or (condition_arr is not None and condition_arr.ndim > 1)
+        or (excursion_arr is not None and excursion_arr.ndim > 1)
+        or (phase_arr is not None and phase_arr.ndim > 1)
+        or (return_commit_arr is not None and return_commit_arr.ndim > 1)
+        or (action_primitive_arr is not None and action_primitive_arr.ndim > 1)
+        or (work_context_arr is not None and work_context_arr.ndim > 1)
+        or (task_state_v2_arr is not None and task_state_v2_arr.ndim > 1)
     )
     parts: list[np.ndarray] = []
     for key in low_dim_keys:
@@ -87,6 +198,48 @@ def _assemble_low_dim_observation(
                     f"but HDF5 dataset conditions/{REAL_TRANSITION_CONDITION_KEY} is missing."
                 )
             part = condition_arr
+        elif key == EXCURSION_OBSERVED_KEY:
+            if excursion_arr is None:
+                raise KeyError(
+                    f"Requested low-dimensional input {EXCURSION_OBSERVED_KEY!r}, "
+                    f"but HDF5 dataset conditions/{EXCURSION_OBSERVED_KEY} is missing."
+                )
+            part = excursion_arr
+        elif key == CYCLE_PHASE_KEY:
+            if phase_arr is None:
+                raise KeyError(
+                    f"Requested low-dimensional input {CYCLE_PHASE_KEY!r}, "
+                    f"but HDF5 dataset conditions/{CYCLE_PHASE_KEY} is missing."
+                )
+            part = phase_arr
+        elif key == RETURN_COMMIT_KEY:
+            if return_commit_arr is None:
+                raise KeyError(
+                    f"Requested low-dimensional input {RETURN_COMMIT_KEY!r}, "
+                    f"but HDF5 dataset conditions/{RETURN_COMMIT_KEY} is missing."
+                )
+            part = return_commit_arr
+        elif key == ACTION_PRIMITIVE_KEY:
+            if action_primitive_arr is None:
+                raise KeyError(
+                    f"Requested low-dimensional input {ACTION_PRIMITIVE_KEY!r}, "
+                    "but no oracle action primitive was supplied."
+                )
+            part = action_primitive_arr
+        elif key == WORK_CONTEXT_KEY:
+            if work_context_arr is None:
+                raise KeyError(
+                    f"Requested low-dimensional input {WORK_CONTEXT_KEY!r}, "
+                    "but no WORK/RETURN task context was supplied."
+                )
+            part = work_context_arr
+        elif key == TASK_STATE_V2_KEY:
+            if task_state_v2_arr is None:
+                raise KeyError(
+                    f"Requested low-dimensional input {TASK_STATE_V2_KEY!r}, "
+                    "but no task-state sidecar value was supplied."
+                )
+            part = task_state_v2_arr
         else:
             continue
         if sequence_mode:
@@ -108,6 +261,9 @@ def get_norm_stats(
     episode_ids: list[int] | None = None,
     low_dim_keys: list[str] | tuple[str, ...] | None = None,
     deadzone_intent: dict[str, Any] | None = None,
+    action_primitive_islands: dict[str, Any] | None = None,
+    work_return_context: dict[str, Any] | None = None,
+    task_state_v2: dict[str, Any] | None = None,
     goal_effect: dict[str, Any] | None = None,
 ) -> dict[str, np.ndarray]:
     """
@@ -138,6 +294,42 @@ def get_norm_stats(
     dataset_dir = Path(dataset_dir)
     selected_low_dim_keys = _normalize_low_dim_keys(low_dim_keys)
     deadzone_intent_cfg = _resolve_deadzone_intent_config(deadzone_intent)
+    action_primitive_cfg = resolve_action_primitive_config(
+        action_primitive_islands
+    )
+    work_return_cfg = resolve_work_return_context_config(work_return_context)
+    task_state_v2_cfg = resolve_task_state_v2_config(task_state_v2)
+    if (
+        ACTION_PRIMITIVE_KEY in selected_low_dim_keys
+        and not action_primitive_cfg["enabled"]
+    ):
+        raise ValueError(
+            f"low_dim_keys contains {ACTION_PRIMITIVE_KEY!r} but "
+            "action_primitive_islands is disabled"
+        )
+    if WORK_CONTEXT_KEY in selected_low_dim_keys and not work_return_cfg["enabled"]:
+        raise ValueError(
+            f"low_dim_keys contains {WORK_CONTEXT_KEY!r} but "
+            "work_return_context is disabled"
+        )
+    if TASK_STATE_V2_KEY in selected_low_dim_keys and not task_state_v2_cfg["enabled"]:
+        raise ValueError(
+            f"low_dim_keys contains {TASK_STATE_V2_KEY!r} but "
+            "task_state_v2 is disabled"
+        )
+    task_state_manifest_by_episode: dict[int, dict[str, Any]] = {}
+    if task_state_v2_cfg["enabled"]:
+        task_state_manifest = load_task_state_v2_manifest(
+            str(task_state_v2_cfg["manifest_path"])
+        )
+        manifest_episodes = (
+            Path(str(task_state_manifest.get("dataset_root", ""))) / "episodes"
+        )
+        if manifest_episodes.resolve() != dataset_dir.resolve():
+            raise ValueError("task_state_v2 manifest dataset root mismatch")
+        task_state_manifest_by_episode = task_state_manifest_by_episode_fn(
+            task_state_manifest
+        )
     all_proprio_data: list[torch.Tensor] = []
     all_qpos_data:    list[torch.Tensor] = []
     all_action_data:  list[torch.Tensor] = []
@@ -158,7 +350,46 @@ def get_norm_stats(
                 f,
                 enabled=REAL_TRANSITION_CONDITION_KEY in selected_low_dim_keys,
             )
+            excursion_observed = _read_real_transition_excursion_observed(
+                f,
+                enabled=EXCURSION_OBSERVED_KEY in selected_low_dim_keys,
+            )
+            cycle_phase = _read_real_transition_cycle_phase(
+                f,
+                enabled=CYCLE_PHASE_KEY in selected_low_dim_keys,
+            )
+            return_commit = _read_real_transition_return_commit(
+                f,
+                enabled=RETURN_COMMIT_KEY in selected_low_dim_keys,
+            )
             action = f["/action"][()]
+            action_primitive = (
+                np.zeros(
+                    (len(action), len(PRIMITIVE_NAMES)), dtype=np.float32
+                )
+                if ACTION_PRIMITIVE_KEY in selected_low_dim_keys
+                else None
+            )
+            work_context = (
+                np.zeros((len(action), 6), dtype=np.float32)
+                if WORK_CONTEXT_KEY in selected_low_dim_keys
+                else None
+            )
+            task_state_v2_sequence = None
+            if TASK_STATE_V2_KEY in selected_low_dim_keys:
+                if ep_idx not in task_state_manifest_by_episode:
+                    raise ValueError(
+                        f"task_state_v2 manifest is missing episode {ep_idx}"
+                    )
+                task_row = task_state_manifest_by_episode[ep_idx]
+                task_state_v2_sequence = build_task_state_sequence(
+                    total_steps=len(action),
+                    current_side=str(task_row["current_side"]),
+                    dig_target=str(task_row["dig_target"]),
+                    next_target=str(task_row["next_target"]),
+                    work_complete_row=int(task_row["work_complete_row"]),
+                    return_commit_row=int(task_row["return_commit_row"]),
+                )
             if deadzone_intent_cfg["use_action_loss_mask_for_stats"]:
                 mask = _read_optional_handoff_mask(
                     f,
@@ -176,12 +407,24 @@ def get_norm_stats(
             qpos=qpos,
             qvel=qvel,
             real_transition_condition_v1=condition,
+            real_transition_excursion_observed_v1=excursion_observed,
+            real_transition_cycle_phase_v1=cycle_phase,
+            real_transition_return_commit_v1=return_commit,
+            real_transition_action_primitive_v1=action_primitive,
+            real_transition_work_context_v1=work_context,
+            real_transition_task_state_v2=task_state_v2_sequence,
             low_dim_keys=selected_low_dim_keys,
         )
         episode_slices = _low_dim_slices(
             qpos=qpos,
             qvel=qvel,
             real_transition_condition_v1=condition,
+            real_transition_excursion_observed_v1=excursion_observed,
+            real_transition_cycle_phase_v1=cycle_phase,
+            real_transition_return_commit_v1=return_commit,
+            real_transition_action_primitive_v1=action_primitive,
+            real_transition_work_context_v1=work_context,
+            real_transition_task_state_v2=task_state_v2_sequence,
             low_dim_keys=selected_low_dim_keys,
         )
         if low_dim_slices is None:
@@ -214,11 +457,20 @@ def get_norm_stats(
     action_std  = action_tensor.std(dim=0,  keepdim=True).clamp(min=1e-2)
     proprio_mean = proprio_tensor.mean(dim=0, keepdim=True)
     proprio_std  = proprio_tensor.std(dim=0,  keepdim=True).clamp(min=1e-2)
-    if low_dim_slices and REAL_TRANSITION_CONDITION_KEY in low_dim_slices:
-        start, end = low_dim_slices[REAL_TRANSITION_CONDITION_KEY]
-        # Preserve the contract's fixed target_side_code and goal_active scale.
-        proprio_mean[:, start:end] = 0.0
-        proprio_std[:, start:end] = 1.0
+    for fixed_key in (
+        REAL_TRANSITION_CONDITION_KEY,
+        EXCURSION_OBSERVED_KEY,
+        CYCLE_PHASE_KEY,
+        RETURN_COMMIT_KEY,
+        ACTION_PRIMITIVE_KEY,
+        WORK_CONTEXT_KEY,
+        TASK_STATE_V2_KEY,
+    ):
+        if low_dim_slices and fixed_key in low_dim_slices:
+            start, end = low_dim_slices[fixed_key]
+            # Preserve the explicit condition/phase scale used by runtime.
+            proprio_mean[:, start:end] = 0.0
+            proprio_std[:, start:end] = 1.0
     qpos_mean    = qpos_tensor.mean(dim=0,    keepdim=True)
     qpos_std     = qpos_tensor.std(dim=0,     keepdim=True).clamp(min=1e-2)
 
@@ -232,7 +484,20 @@ def get_norm_stats(
         "proprio_dim": int(proprio_tensor.shape[1]),
         "proprio_slices": dict(low_dim_slices or {}),
         "fixed_scale_keys": np.asarray(
-            [key for key in selected_low_dim_keys if key == REAL_TRANSITION_CONDITION_KEY],
+            [
+                key
+                for key in selected_low_dim_keys
+                if key
+                in {
+                    REAL_TRANSITION_CONDITION_KEY,
+                    EXCURSION_OBSERVED_KEY,
+                    CYCLE_PHASE_KEY,
+                    RETURN_COMMIT_KEY,
+                    ACTION_PRIMITIVE_KEY,
+                    WORK_CONTEXT_KEY,
+                    TASK_STATE_V2_KEY,
+                }
+            ],
             dtype=object,
         ),
         "qpos_only_dim": int(qpos_tensor.shape[1]),
@@ -291,6 +556,15 @@ class EpisodicDataset(Dataset):
         state_hold_transition: dict[str, Any] | None = None,
         condition_adherence_loss: dict[str, Any] | None = None,
         target_release_loss: dict[str, Any] | None = None,
+        cycle_phase_loss: dict[str, Any] | None = None,
+        excursion_observed_loss: dict[str, Any] | None = None,
+        return_commit_loss: dict[str, Any] | None = None,
+        action_primitive_islands: dict[str, Any] | None = None,
+        work_return_context: dict[str, Any] | None = None,
+        task_state_v2: dict[str, Any] | None = None,
+        qvel_zero_state_hold_loss: dict[str, Any] | None = None,
+        qvel_authority_loss: dict[str, Any] | None = None,
+        factual_semantic_sampling: dict[str, Any] | None = None,
         goal_effect: dict[str, Any] | None = None,
     ):
         super().__init__()
@@ -311,6 +585,29 @@ class EpisodicDataset(Dataset):
             condition_adherence_loss
         )
         self.target_release = resolve_target_release_config(target_release_loss)
+        self.cycle_phase_loss = resolve_cycle_phase_loss_config(cycle_phase_loss)
+        self.excursion_observed_loss = resolve_excursion_observed_loss_config(
+            excursion_observed_loss
+        )
+        self.return_commit_loss = resolve_return_commit_loss_config(
+            return_commit_loss
+        )
+        self.action_primitive_islands = resolve_action_primitive_config(
+            action_primitive_islands
+        )
+        self.work_return_context = resolve_work_return_context_config(
+            work_return_context
+        )
+        self.task_state_v2 = resolve_task_state_v2_config(task_state_v2)
+        self.qvel_zero_state_hold_loss = resolve_qvel_zero_state_hold_config(
+            qvel_zero_state_hold_loss
+        )
+        self.qvel_authority_loss = resolve_qvel_authority_config(
+            qvel_authority_loss
+        )
+        self.factual_semantic_sampling = resolve_factual_semantic_sampling_config(
+            factual_semantic_sampling
+        )
         self.goal_effect = resolve_goal_effect_config(
             goal_effect,
             target_scale=norm_stats.get("goal_effect_delta_scale"),
@@ -335,12 +632,348 @@ class EpisodicDataset(Dataset):
                 raise ValueError(
                     "target_release_loss action_window_steps exceeds action_chunk_size"
                 )
+        if self.cycle_phase_loss["enabled"]:
+            if CYCLE_PHASE_KEY not in self.low_dim_keys:
+                raise ValueError(
+                    f"cycle_phase_loss requires {CYCLE_PHASE_KEY}"
+                )
+        if self.excursion_observed_loss["enabled"]:
+            if EXCURSION_OBSERVED_KEY not in self.low_dim_keys:
+                raise ValueError(
+                    f"excursion_observed_loss requires {EXCURSION_OBSERVED_KEY}"
+                )
+            if CYCLE_PHASE_KEY not in self.low_dim_keys:
+                raise ValueError(
+                    f"excursion_observed_loss requires {CYCLE_PHASE_KEY}"
+                )
+            if "qvel" not in self.low_dim_keys:
+                raise ValueError("excursion_observed_loss requires qvel input")
+            if self.action_chunk_size is None:
+                raise ValueError(
+                    "excursion_observed_loss requires action_chunk_size"
+                )
+            if int(self.excursion_observed_loss["action_window_steps"]) > int(
+                self.action_chunk_size
+            ):
+                raise ValueError(
+                    "excursion_observed_loss action_window_steps exceeds "
+                    "action_chunk_size"
+                )
+        if self.qvel_zero_state_hold_loss["enabled"]:
+            if "qvel" not in self.low_dim_keys:
+                raise ValueError("qvel_zero_state_hold_loss requires qvel input")
+            if not self.state_hold_transition["enabled"]:
+                raise ValueError(
+                    "qvel_zero_state_hold_loss requires state_hold_transition"
+                )
+            if self.action_chunk_size is None:
+                raise ValueError("cycle_phase_loss requires action_chunk_size")
+            if int(self.cycle_phase_loss["action_window_steps"]) > int(
+                self.action_chunk_size
+            ):
+                raise ValueError(
+                    "cycle_phase_loss action_window_steps exceeds action_chunk_size"
+                )
+        self._qvel_authority_manifest_by_episode: dict[int, dict[str, Any]] = {}
+        if self.qvel_authority_loss["enabled"]:
+            if "qvel" not in self.low_dim_keys:
+                raise ValueError("qvel_authority_loss requires qvel input")
+            if self.action_chunk_size is None:
+                raise ValueError("qvel_authority_loss requires action_chunk_size")
+            if int(self.qvel_authority_loss["action_window_steps"]) > int(
+                self.action_chunk_size
+            ):
+                raise ValueError(
+                    "qvel_authority_loss action_window_steps exceeds action_chunk_size"
+                )
+            manifest_path = Path(str(self.qvel_authority_loss["manifest_path"]))
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if manifest.get("schema") != "real_transition_action_primitive_islands_v1":
+                raise ValueError("qvel authority primitive manifest schema mismatch")
+            if int(manifest.get("chunk_steps", -1)) != int(self.action_chunk_size):
+                raise ValueError("qvel authority manifest chunk size mismatch")
+            manifest_episodes = Path(str(manifest.get("dataset_root", ""))) / "episodes"
+            if manifest_episodes.resolve() != self.dataset_dir.resolve():
+                raise ValueError("qvel authority manifest dataset root mismatch")
+            self._qvel_authority_manifest_by_episode = {
+                int(row["episode_id"]): dict(row)
+                for row in manifest.get("episodes", [])
+            }
+            missing_ids = sorted(
+                set(int(value) for value in self.episode_ids)
+                - set(self._qvel_authority_manifest_by_episode)
+            )
+            if missing_ids:
+                raise ValueError(
+                    f"qvel authority manifest is missing episodes {missing_ids[:20]}"
+                )
+        self._factual_semantic_manifest_by_episode: dict[int, dict[str, Any]] = {}
+        if self.factual_semantic_sampling["enabled"]:
+            if "qvel" not in self.low_dim_keys:
+                raise ValueError("factual_semantic_sampling requires qvel input")
+            conflicts = {
+                "target_release_loss": self.target_release["enabled"],
+                "cycle_phase_loss": self.cycle_phase_loss["enabled"],
+                "excursion_observed_loss": self.excursion_observed_loss["enabled"],
+                "return_commit_loss": self.return_commit_loss["enabled"],
+                "qvel_zero_state_hold_loss": self.qvel_zero_state_hold_loss["enabled"],
+                "qvel_authority_loss": self.qvel_authority_loss["enabled"],
+                "action_primitive_islands": self.action_primitive_islands["enabled"],
+                "work_return_context": self.work_return_context["enabled"],
+            }
+            active = [name for name, enabled in conflicts.items() if enabled]
+            if active:
+                raise ValueError(
+                    "factual_semantic_sampling is sampling-only and cannot combine "
+                    "with " + ", ".join(active)
+                )
+            manifest_path = Path(
+                str(self.factual_semantic_sampling["manifest_path"])
+            )
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if manifest.get("schema") != FACTUAL_SEMANTIC_MANIFEST_SCHEMA:
+                raise ValueError("factual semantic sampling manifest schema mismatch")
+            manifest_root = Path(str(manifest.get("dataset_root", ""))) / "episodes"
+            if manifest_root.resolve() != self.dataset_dir.resolve():
+                raise ValueError("factual semantic sampling dataset root mismatch")
+            self._factual_semantic_manifest_by_episode = {
+                int(row["episode_id"]): dict(row)
+                for row in manifest.get("episodes", [])
+            }
+            missing_ids = sorted(
+                set(int(value) for value in self.episode_ids)
+                - set(self._factual_semantic_manifest_by_episode)
+            )
+            if missing_ids:
+                raise ValueError(
+                    "factual semantic manifest is missing episodes "
+                    f"{missing_ids[:20]}"
+                )
+        if self.return_commit_loss["enabled"]:
+            if RETURN_COMMIT_KEY not in self.low_dim_keys:
+                raise ValueError(
+                    f"return_commit_loss requires {RETURN_COMMIT_KEY}"
+                )
+            if self.action_chunk_size is None:
+                raise ValueError("return_commit_loss requires action_chunk_size")
+            if int(self.return_commit_loss["action_window_steps"]) > int(
+                self.action_chunk_size
+            ):
+                raise ValueError(
+                    "return_commit_loss action_window_steps exceeds action_chunk_size"
+                )
+        self._action_primitive_manifest_by_episode: dict[int, dict[str, Any]] = {}
+        if self.action_primitive_islands["enabled"]:
+            if ACTION_PRIMITIVE_KEY not in self.low_dim_keys:
+                raise ValueError(
+                    f"action_primitive_islands requires {ACTION_PRIMITIVE_KEY}"
+                )
+            if self.action_chunk_size is None:
+                raise ValueError(
+                    "action_primitive_islands requires action_chunk_size"
+                )
+            if int(self.action_primitive_islands["action_window_steps"]) != int(
+                self.action_chunk_size
+            ):
+                raise ValueError(
+                    "action_primitive_islands.action_window_steps must equal "
+                    "ACT action_chunk_size"
+                )
+            conflicting = {
+                "state_hold_transition": self.state_hold_transition["enabled"],
+                "condition_adherence_loss": self.condition_adherence["enabled"],
+                "target_release_loss": self.target_release["enabled"],
+                "cycle_phase_loss": self.cycle_phase_loss["enabled"],
+                "excursion_observed_loss": self.excursion_observed_loss["enabled"],
+                "return_commit_loss": self.return_commit_loss["enabled"],
+                "qvel_zero_state_hold_loss": self.qvel_zero_state_hold_loss["enabled"],
+            }
+            active_conflicts = [name for name, enabled in conflicting.items() if enabled]
+            if active_conflicts:
+                raise ValueError(
+                    "oracle action primitive training is factual-only and cannot "
+                    "combine with " + ", ".join(active_conflicts)
+                )
+            manifest_path = Path(
+                str(self.action_primitive_islands["manifest_path"])
+            )
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if manifest.get("schema") != (
+                "real_transition_action_primitive_islands_v1"
+            ):
+                raise ValueError("action primitive manifest schema mismatch")
+            if tuple(manifest.get("primitive_names", ())) != PRIMITIVE_NAMES:
+                raise ValueError("action primitive manifest names mismatch")
+            if int(manifest.get("chunk_steps", -1)) != int(self.action_chunk_size):
+                raise ValueError("action primitive manifest chunk size mismatch")
+            manifest_episodes = Path(str(manifest.get("dataset_root", ""))) / "episodes"
+            if manifest_episodes.resolve() != self.dataset_dir.resolve():
+                raise ValueError("action primitive manifest dataset root mismatch")
+            self._action_primitive_manifest_by_episode = {
+                int(row["episode_id"]): dict(row)
+                for row in manifest.get("episodes", [])
+            }
+            missing_manifest_ids = sorted(
+                set(int(value) for value in self.episode_ids)
+                - set(self._action_primitive_manifest_by_episode)
+            )
+            if missing_manifest_ids:
+                raise ValueError(
+                    "action primitive manifest is missing episodes "
+                    f"{missing_manifest_ids[:20]}"
+                )
+        elif ACTION_PRIMITIVE_KEY in self.low_dim_keys:
+            raise ValueError(
+                f"low_dim_keys contains {ACTION_PRIMITIVE_KEY!r} but "
+                "action_primitive_islands is disabled"
+            )
+        self._work_return_manifest_by_episode: dict[int, dict[str, Any]] = {}
+        if self.work_return_context["enabled"]:
+            if WORK_CONTEXT_KEY not in self.low_dim_keys:
+                raise ValueError(
+                    f"work_return_context requires {WORK_CONTEXT_KEY}"
+                )
+            if self.action_chunk_size is None:
+                raise ValueError("work_return_context requires action_chunk_size")
+            if int(self.work_return_context["action_window_steps"]) != int(
+                self.action_chunk_size
+            ):
+                raise ValueError(
+                    "work_return_context.action_window_steps must equal ACT "
+                    "action_chunk_size"
+                )
+            conflicting = {
+                "action_primitive_islands": self.action_primitive_islands["enabled"],
+                "state_hold_transition": self.state_hold_transition["enabled"],
+                "condition_adherence_loss": self.condition_adherence["enabled"],
+                "target_release_loss": self.target_release["enabled"],
+                "cycle_phase_loss": self.cycle_phase_loss["enabled"],
+                "excursion_observed_loss": self.excursion_observed_loss["enabled"],
+                "return_commit_loss": self.return_commit_loss["enabled"],
+                "qvel_zero_state_hold_loss": self.qvel_zero_state_hold_loss["enabled"],
+            }
+            active_conflicts = [name for name, enabled in conflicting.items() if enabled]
+            if active_conflicts:
+                raise ValueError(
+                    "WORK/RETURN context training is factual-only and cannot combine "
+                    "with " + ", ".join(active_conflicts)
+                )
+            manifest_path = Path(str(self.work_return_context["manifest_path"]))
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if manifest.get("schema") != (
+                "real_transition_work_return_context_manifest_v1"
+            ):
+                raise ValueError("work return context manifest schema mismatch")
+            if int(manifest.get("chunk_steps", -1)) != int(self.action_chunk_size):
+                raise ValueError("work return context manifest chunk size mismatch")
+            manifest_episodes = Path(str(manifest.get("dataset_root", ""))) / "episodes"
+            if manifest_episodes.resolve() != self.dataset_dir.resolve():
+                raise ValueError("work return context manifest dataset root mismatch")
+            self._work_return_manifest_by_episode = {
+                int(row["episode_id"]): dict(row)
+                for row in manifest.get("episodes", [])
+            }
+            missing_ids = sorted(
+                set(int(value) for value in self.episode_ids)
+                - set(self._work_return_manifest_by_episode)
+            )
+            if missing_ids:
+                raise ValueError(
+                    f"work return context manifest is missing episodes {missing_ids[:20]}"
+                )
+        elif WORK_CONTEXT_KEY in self.low_dim_keys:
+            raise ValueError(
+                f"low_dim_keys contains {WORK_CONTEXT_KEY!r} but "
+                "work_return_context is disabled"
+            )
+        self._task_state_v2_manifest_by_episode: dict[int, dict[str, Any]] = {}
+        if self.task_state_v2["enabled"]:
+            expected_keys = ["qpos", "qvel", TASK_STATE_V2_KEY]
+            if self.low_dim_keys != expected_keys:
+                raise ValueError(
+                    "task_state_v2 requires the exact low_dim_keys order "
+                    f"{expected_keys!r}"
+                )
+            if self.action_chunk_size is None:
+                raise ValueError("task_state_v2 requires action_chunk_size")
+            if int(self.task_state_v2["action_window_steps"]) != int(
+                self.action_chunk_size
+            ):
+                raise ValueError(
+                    "task_state_v2.action_window_steps must equal ACT "
+                    "action_chunk_size"
+                )
+            conflicts = {
+                "state_hold_transition": self.state_hold_transition["enabled"],
+                "condition_adherence_loss": self.condition_adherence["enabled"],
+                "target_release_loss": self.target_release["enabled"],
+                "cycle_phase_loss": self.cycle_phase_loss["enabled"],
+                "excursion_observed_loss": self.excursion_observed_loss["enabled"],
+                "return_commit_loss": self.return_commit_loss["enabled"],
+                "qvel_zero_state_hold_loss": self.qvel_zero_state_hold_loss[
+                    "enabled"
+                ],
+                "qvel_authority_loss": self.qvel_authority_loss["enabled"],
+                "action_primitive_islands": self.action_primitive_islands["enabled"],
+                "work_return_context": self.work_return_context["enabled"],
+                "factual_semantic_sampling": self.factual_semantic_sampling[
+                    "enabled"
+                ],
+            }
+            active = [name for name, enabled in conflicts.items() if enabled]
+            if active:
+                raise ValueError(
+                    "task_state_v2 is a standalone factual sampling contract and "
+                    "cannot combine with " + ", ".join(active)
+                )
+            manifest = load_task_state_v2_manifest(
+                str(self.task_state_v2["manifest_path"])
+            )
+            if manifest.get("schema") != TASK_STATE_V2_SCHEMA:
+                raise ValueError("task_state_v2 manifest schema mismatch")
+            if int(manifest.get("chunk_steps", -1)) != int(self.action_chunk_size):
+                raise ValueError("task_state_v2 manifest chunk size mismatch")
+            manifest_episodes = (
+                Path(str(manifest.get("dataset_root", ""))) / "episodes"
+            )
+            if manifest_episodes.resolve() != self.dataset_dir.resolve():
+                raise ValueError("task_state_v2 manifest dataset root mismatch")
+            self._task_state_v2_manifest_by_episode = (
+                task_state_manifest_by_episode_fn(manifest)
+            )
+            missing_ids = sorted(
+                set(int(value) for value in self.episode_ids)
+                - set(self._task_state_v2_manifest_by_episode)
+            )
+            if missing_ids:
+                raise ValueError(
+                    f"task_state_v2 manifest is missing episodes {missing_ids[:20]}"
+                )
+        elif TASK_STATE_V2_KEY in self.low_dim_keys:
+            raise ValueError(
+                f"low_dim_keys contains {TASK_STATE_V2_KEY!r} but "
+                "task_state_v2 is disabled"
+            )
         self.is_real: bool | None = None
         # Warm-up to populate self.is_real
         self.__getitem__(0)
 
     def __len__(self) -> int:
-        multiplier = 1 + int(self.target_release["append_samples_per_episode"])
+        multiplier = (
+            1
+            + int(self.state_hold_transition["append_samples_per_episode"])
+            + int(self.target_release["append_samples_per_episode"])
+            + int(self.cycle_phase_loss["append_samples_per_episode"])
+            + int(self.excursion_observed_loss["append_samples_per_episode"])
+            + int(self.return_commit_loss["append_samples_per_episode"])
+            + int(
+                self.action_primitive_islands["append_samples_per_episode"]
+            )
+            + int(self.work_return_context["append_samples_per_episode"])
+            + int(self.task_state_v2["append_samples_per_episode"])
+            + int(self.qvel_authority_loss["append_samples_per_episode"])
+            + int(self.factual_semantic_sampling["append_samples_per_episode"])
+        )
         return len(self.episode_ids) * multiplier
 
     def __getitem__(self, index: int):
@@ -350,7 +983,117 @@ class EpisodicDataset(Dataset):
         if index < 0 or index >= len(self):
             raise IndexError(index)
         episode_index = int(index) % base_length
-        force_target_release = int(index) // base_length > 0
+        sample_tier = int(index) // base_length
+        target_release_tiers = int(
+            self.target_release["append_samples_per_episode"]
+        )
+        cycle_phase_tiers = int(
+            self.cycle_phase_loss["append_samples_per_episode"]
+        )
+        excursion_tiers = int(
+            self.excursion_observed_loss["append_samples_per_episode"]
+        )
+        return_commit_tiers = int(
+            self.return_commit_loss["append_samples_per_episode"]
+        )
+        state_hold_tiers = int(
+            self.state_hold_transition["append_samples_per_episode"]
+        )
+        primitive_tiers = int(
+            self.action_primitive_islands["append_samples_per_episode"]
+        )
+        work_return_tiers = int(
+            self.work_return_context["append_samples_per_episode"]
+        )
+        task_state_v2_tiers = int(
+            self.task_state_v2["append_samples_per_episode"]
+        )
+        qvel_authority_tiers = int(
+            self.qvel_authority_loss["append_samples_per_episode"]
+        )
+        factual_semantic_tiers = int(
+            self.factual_semantic_sampling["append_samples_per_episode"]
+        )
+        force_target_release = 0 < sample_tier <= target_release_tiers
+        force_cycle_phase = (
+            target_release_tiers
+            < sample_tier
+            <= target_release_tiers + cycle_phase_tiers
+        )
+        force_excursion_observed = (
+            target_release_tiers + cycle_phase_tiers
+            < sample_tier
+            <= target_release_tiers + cycle_phase_tiers + excursion_tiers
+        )
+        state_hold_tier_start = (
+            target_release_tiers + cycle_phase_tiers + excursion_tiers
+        )
+        force_state_hold = (
+            state_hold_tier_start
+            < sample_tier
+            <= state_hold_tier_start + state_hold_tiers
+        )
+        return_commit_tier_start = state_hold_tier_start + state_hold_tiers
+        force_return_commit = (
+            return_commit_tier_start
+            < sample_tier
+            <= return_commit_tier_start + return_commit_tiers
+        )
+        forced_return_commit_kind = (
+            None
+            if not force_return_commit
+            else {
+                1: self.return_commit_loss.get(
+                    "dig_candidate_key", "dig_positive"
+                ),
+                2: "return_onset",
+                3: "return_effective",
+            }[sample_tier - return_commit_tier_start]
+        )
+        force_action_primitive = self.action_primitive_islands["enabled"]
+        forced_action_primitive_kind = (
+            PRIMITIVE_NAMES[sample_tier]
+            if force_action_primitive and sample_tier <= primitive_tiers
+            else None
+        )
+        forced_work_return_route = (
+            ROUTE_NAMES[sample_tier]
+            if self.work_return_context["enabled"]
+            and sample_tier <= work_return_tiers
+            else None
+        )
+        forced_task_state_v2_tier = (
+            TASK_STATE_V2_TIERS[sample_tier]
+            if self.task_state_v2["enabled"]
+            and sample_tier <= task_state_v2_tiers
+            else None
+        )
+        qvel_authority_tier_start = return_commit_tier_start + return_commit_tiers
+        force_qvel_authority = (
+            qvel_authority_tier_start
+            < sample_tier
+            <= qvel_authority_tier_start + qvel_authority_tiers
+        )
+        forced_qvel_authority_kind = (
+            None
+            if not force_qvel_authority
+            else ("stable_tool" if sample_tier - qvel_authority_tier_start == 1 else "moving_return")
+        )
+        factual_semantic_tier_start = (
+            qvel_authority_tier_start + qvel_authority_tiers
+        )
+        force_factual_semantic = (
+            factual_semantic_tier_start
+            < sample_tier
+            <= factual_semantic_tier_start + factual_semantic_tiers
+        )
+        forced_factual_semantic_kind = (
+            None
+            if not force_factual_semantic
+            else FACTUAL_SEMANTIC_TIER_NAMES[
+                sample_tier - factual_semantic_tier_start - 1
+            ]
+        )
         ep_id  = self.episode_ids[episode_index]
         path   = self.dataset_dir / f"episode_{ep_id}.hdf5"
 
@@ -382,7 +1125,13 @@ class EpisodicDataset(Dataset):
                 raise ValueError(
                     f"Episode {ep_id} has no valid training start after train_exclude_mask."
                 )
-            full_action = None
+            full_action = (
+                np.asarray(f["/action"][()], dtype=np.float32)
+                if self.action_primitive_islands["enabled"]
+                or self.work_return_context["enabled"]
+                or self.qvel_authority_loss["enabled"]
+                else None
+            )
             state_transition_mask = None
             state_transition_starts = np.zeros(0, dtype=np.int64)
             if self.state_hold_transition["enabled"]:
@@ -409,8 +1158,222 @@ class EpisodicDataset(Dataset):
                     transition_starts=state_transition_starts,
                     probability=float(self.state_hold_transition["probability"]),
                 )
+                if force_state_hold:
+                    if state_transition_starts.size == 0:
+                        raise ValueError(
+                            f"Episode {ep_id} has no forced state-hold transition"
+                        )
+                    t0 = int(np.random.choice(state_transition_starts))
             else:
                 t0 = int(np.random.choice(valid_starts))
+
+            task_state_v2_value = None
+            task_state_v2_chunk_mask = None
+            if self.task_state_v2["enabled"]:
+                if not action_prealigned:
+                    raise ValueError("task_state_v2 requires action_prealigned=true")
+                if forced_task_state_v2_tier is None:
+                    raise AssertionError("missing forced task_state_v2 tier")
+                task_row = self._task_state_v2_manifest_by_episode[ep_id]
+                if int(task_row.get("n_rows", -1)) != T:
+                    raise ValueError(f"episode {ep_id} task_state_v2 row count changed")
+                candidates = task_state_candidate_starts(
+                    total_steps=T,
+                    work_complete_row=int(task_row["work_complete_row"]),
+                    return_commit_row=int(task_row["return_commit_row"]),
+                    action_window_steps=int(
+                        self.task_state_v2["action_window_steps"]
+                    ),
+                    valid_starts=valid_starts,
+                ).by_name()
+                expected_starts = {
+                    str(name): np.asarray(values, dtype=np.int64)
+                    for name, values in dict(
+                        task_row.get("candidate_starts", {})
+                    ).items()
+                }
+                if set(expected_starts) != set(TASK_STATE_V2_TIERS) or any(
+                    not np.array_equal(expected_starts[name], candidates[name])
+                    for name in TASK_STATE_V2_TIERS
+                ):
+                    raise ValueError(
+                        f"episode {ep_id} task_state_v2 population changed"
+                    )
+                selected = candidates[forced_task_state_v2_tier]
+                if selected.size == 0:
+                    raise ValueError(
+                        f"episode {ep_id} has no task_state_v2 candidates for "
+                        f"{forced_task_state_v2_tier}"
+                    )
+                t0 = int(np.random.choice(selected))
+                task_sequence = build_task_state_sequence(
+                    total_steps=T,
+                    current_side=str(task_row["current_side"]),
+                    dig_target=str(task_row["dig_target"]),
+                    next_target=str(task_row["next_target"]),
+                    work_complete_row=int(task_row["work_complete_row"]),
+                    return_commit_row=int(task_row["return_commit_row"]),
+                )
+                task_state_v2_value = task_sequence[t0]
+                task_state_v2_chunk_mask = task_state_chunk_valid_mask(
+                    timestep=t0,
+                    total_steps=T,
+                    action_chunk_size=int(self.action_chunk_size),
+                    work_complete_row=int(task_row["work_complete_row"]),
+                    return_commit_row=int(task_row["return_commit_row"]),
+                )
+
+            action_primitive = None
+            if self.action_primitive_islands["enabled"]:
+                if full_action is None:
+                    raise AssertionError("action primitive sampling requires actions")
+                islands = derive_action_primitive_islands(
+                    full_action,
+                    positive_thresholds=self.action_primitive_islands[
+                        "positive_thresholds"
+                    ],
+                    negative_thresholds=self.action_primitive_islands[
+                        "negative_thresholds"
+                    ],
+                    action_window_steps=int(
+                        self.action_primitive_islands["action_window_steps"]
+                    ),
+                    valid_starts=valid_starts,
+                )
+                manifest_row = self._action_primitive_manifest_by_episode[ep_id]
+                expected_counts = {
+                    str(name): int(value)
+                    for name, value in dict(
+                        manifest_row.get("candidate_counts", {})
+                    ).items()
+                }
+                actual_counts = {
+                    name: int(islands.candidate_starts[name].size)
+                    for name in PRIMITIVE_NAMES
+                }
+                if expected_counts != actual_counts:
+                    raise ValueError(
+                        f"episode {ep_id} action primitive population changed: "
+                        f"expected={expected_counts}, actual={actual_counts}"
+                    )
+                if forced_action_primitive_kind is None:
+                    raise AssertionError("missing forced action primitive tier")
+                candidate_starts = islands.candidate_starts[
+                    forced_action_primitive_kind
+                ]
+                if candidate_starts.size == 0:
+                    raise ValueError(
+                        f"episode {ep_id} has no full-window candidates for "
+                        f"{forced_action_primitive_kind}"
+                    )
+                t0 = int(np.random.choice(candidate_starts))
+                action_primitive = primitive_one_hot(
+                    forced_action_primitive_kind
+                )
+
+            work_context = None
+            if self.work_return_context["enabled"]:
+                if full_action is None:
+                    raise AssertionError("WORK/RETURN sampling requires actions")
+                route_context = derive_work_return_context(
+                    full_action,
+                    positive_thresholds=self.work_return_context[
+                        "positive_thresholds"
+                    ],
+                    negative_thresholds=self.work_return_context[
+                        "negative_thresholds"
+                    ],
+                    action_window_steps=int(
+                        self.work_return_context["action_window_steps"]
+                    ),
+                    valid_starts=valid_starts,
+                )
+                manifest_row = self._work_return_manifest_by_episode[ep_id]
+                expected_counts = {
+                    str(name): int(value)
+                    for name, value in dict(
+                        manifest_row.get("candidate_counts", {})
+                    ).items()
+                }
+                actual_counts = {
+                    "work": int(route_context.work_starts.size),
+                    "return": int(route_context.return_starts.size),
+                }
+                if expected_counts != actual_counts or int(
+                    manifest_row.get("work_complete_boundary_row", -1)
+                ) != int(route_context.boundary_row):
+                    raise ValueError(
+                        f"episode {ep_id} WORK/RETURN population changed"
+                    )
+                if forced_work_return_route is None:
+                    raise AssertionError("missing forced WORK/RETURN tier")
+                starts = (
+                    route_context.work_starts
+                    if forced_work_return_route == "work"
+                    else route_context.return_starts
+                )
+                t0 = int(np.random.choice(starts))
+                work_context = work_context_vector(
+                    current_anchor=str(manifest_row["current_anchor"]),
+                    dig_target=str(manifest_row["dig_target"]),
+                    next_target=str(manifest_row["next_target"]),
+                    route=forced_work_return_route,
+                )
+
+            qvel_authority_candidates = {
+                "stable_tool": np.zeros(0, dtype=np.int64),
+                "moving_return": np.zeros(0, dtype=np.int64),
+            }
+            qvel_authority_moving_primary = False
+            qvel_authority_tool_mask = np.zeros((4, 2), dtype=bool)
+            if self.qvel_authority_loss["enabled"]:
+                if full_action is None:
+                    raise AssertionError("qvel authority sampling requires actions")
+                manifest_row = self._qvel_authority_manifest_by_episode[ep_id]
+                qvel_authority_candidates = qvel_authority_candidate_starts(
+                    qvel=np.asarray(f["/observations/qvel"][()], dtype=np.float32),
+                    valid_starts=valid_starts,
+                    segments=dict(manifest_row.get("segments", {})),
+                    chunk_steps=int(self.action_chunk_size),
+                    config=self.qvel_authority_loss,
+                )
+                missing = [
+                    name
+                    for name, values in qvel_authority_candidates.items()
+                    if values.size == 0
+                ]
+                if missing:
+                    raise ValueError(
+                        f"episode {ep_id} lacks qvel authority candidates {missing}"
+                    )
+                if forced_qvel_authority_kind is not None:
+                    t0 = int(
+                        np.random.choice(
+                            qvel_authority_candidates[forced_qvel_authority_kind]
+                        )
+                    )
+                    qvel_authority_moving_primary = (
+                        forced_qvel_authority_kind == "moving_return"
+                    )
+                    if not qvel_authority_moving_primary:
+                        qvel_authority_tool_mask = stable_tool_direction_mask(
+                            full_action[t0], config=self.qvel_authority_loss
+                        )
+
+            if self.factual_semantic_sampling["enabled"]:
+                if forced_factual_semantic_kind is not None:
+                    manifest_row = self._factual_semantic_manifest_by_episode[ep_id]
+                    field = f"{forced_factual_semantic_kind}_starts"
+                    candidates = np.asarray(manifest_row.get(field, ()), dtype=np.int64)
+                    candidates = candidates[
+                        np.isin(candidates, valid_starts)
+                    ]
+                    if candidates.size == 0:
+                        raise ValueError(
+                            f"episode {ep_id} has no factual semantic candidates "
+                            f"for {forced_factual_semantic_kind}"
+                        )
+                    t0 = int(np.random.choice(candidates))
 
             target_release_candidates = np.zeros(0, dtype=np.int64)
             if self.target_release["enabled"]:
@@ -441,6 +1404,131 @@ class EpisodicDataset(Dataset):
                 if force_target_release:
                     t0 = int(np.random.choice(target_release_candidates))
 
+            cycle_phase_candidates = {
+                "pre_positive": np.zeros(0, dtype=np.int64),
+                "return_negative": np.zeros(0, dtype=np.int64),
+            }
+            if self.cycle_phase_loss["enabled"]:
+                if full_action is None:
+                    full_action = np.asarray(f["/action"][()], dtype=np.float32)
+                cycle_phase_candidates = cycle_phase_candidate_indices(
+                    actions=full_action,
+                    phase=np.asarray(
+                        f[f"conditions/{CYCLE_PHASE_KEY}"][()], dtype=np.float32
+                    ),
+                    valid_starts=valid_starts,
+                    phase_valid_mask=np.asarray(
+                        f["conditions/cycle_phase_valid_mask"][()], dtype=bool
+                    ),
+                    config=self.cycle_phase_loss,
+                )
+                missing_kinds = [
+                    key
+                    for key, values in cycle_phase_candidates.items()
+                    if values.size == 0
+                ]
+                if missing_kinds:
+                    raise ValueError(
+                        f"Episode {ep_id} has no cycle-phase candidates for "
+                        + ", ".join(missing_kinds)
+                    )
+                if force_cycle_phase:
+                    kind = (
+                        "pre_positive"
+                        if int(np.random.randint(0, 2)) == 0
+                        else "return_negative"
+                    )
+                    t0 = int(np.random.choice(cycle_phase_candidates[kind]))
+
+            excursion_candidates = {
+                "pre_positive": np.zeros(0, dtype=np.int64),
+                "apex_negative": np.zeros(0, dtype=np.int64),
+                "moving_negative": np.zeros(0, dtype=np.int64),
+            }
+            if self.excursion_observed_loss["enabled"]:
+                if full_action is None:
+                    full_action = np.asarray(f["/action"][()], dtype=np.float32)
+                excursion_candidates = excursion_observed_candidate_indices(
+                    actions=full_action,
+                    qvel=np.asarray(
+                        f["/observations/qvel"][()], dtype=np.float32
+                    ),
+                    excursion_observed=np.asarray(
+                        f[f"conditions/{EXCURSION_OBSERVED_KEY}"][()],
+                        dtype=np.float32,
+                    ),
+                    return_phase=np.asarray(
+                        f[f"conditions/{CYCLE_PHASE_KEY}"][()], dtype=np.float32
+                    ),
+                    valid_starts=valid_starts,
+                    excursion_valid_mask=np.asarray(
+                        f["conditions/excursion_observed_valid_mask"][()],
+                        dtype=bool,
+                    ),
+                    config=self.excursion_observed_loss,
+                )
+                post_candidates = (
+                    excursion_candidates["apex_negative"]
+                    if excursion_candidates["apex_negative"].size
+                    else excursion_candidates["moving_negative"]
+                )
+                if (
+                    excursion_candidates["pre_positive"].size == 0
+                    or post_candidates.size == 0
+                ):
+                    raise ValueError(
+                        f"Episode {ep_id} has no excursion-observed pre/post "
+                        "candidate"
+                    )
+                if force_excursion_observed:
+                    selected = (
+                        excursion_candidates["pre_positive"]
+                        if int(np.random.randint(0, 2)) == 0
+                        else post_candidates
+                    )
+                    t0 = int(np.random.choice(selected))
+
+            return_commit_candidates = {
+                "dig_positive": np.zeros(0, dtype=np.int64),
+                "dig_non_swing_transition": np.zeros(0, dtype=np.int64),
+                "return_onset": np.zeros(0, dtype=np.int64),
+                "return_effective": np.zeros(0, dtype=np.int64),
+            }
+            if self.return_commit_loss["enabled"]:
+                if full_action is None:
+                    full_action = np.asarray(f["/action"][()], dtype=np.float32)
+                return_commit_candidates = return_commit_candidate_indices(
+                    actions=full_action,
+                    return_commit=np.asarray(
+                        f[f"conditions/{RETURN_COMMIT_KEY}"][()], dtype=np.float32
+                    ),
+                    valid_starts=valid_starts,
+                    return_commit_valid_mask=np.asarray(
+                        f["conditions/return_commit_valid_mask"][()], dtype=bool
+                    ),
+                    config=self.return_commit_loss,
+                )
+                required = (
+                    self.return_commit_loss["dig_candidate_key"],
+                    "return_onset",
+                )
+                missing = [
+                    key
+                    for key in required
+                    if return_commit_candidates[key].size == 0
+                ]
+                if missing:
+                    raise ValueError(
+                        f"Episode {ep_id} has no return-commit candidates for "
+                        + ", ".join(missing)
+                    )
+                if forced_return_commit_kind is not None:
+                    t0 = int(
+                        np.random.choice(
+                            return_commit_candidates[forced_return_commit_kind]
+                        )
+                    )
+
             condition_anchor_start = None
             condition_transition_mask = None
             if self.condition_adherence["enabled"]:
@@ -470,10 +1558,31 @@ class EpisodicDataset(Dataset):
                 timestep=t0,
                 enabled=REAL_TRANSITION_CONDITION_KEY in self.low_dim_keys,
             )
+            excursion_observed = _read_real_transition_excursion_observed(
+                f,
+                timestep=t0,
+                enabled=EXCURSION_OBSERVED_KEY in self.low_dim_keys,
+            )
+            cycle_phase = _read_real_transition_cycle_phase(
+                f,
+                timestep=t0,
+                enabled=CYCLE_PHASE_KEY in self.low_dim_keys,
+            )
+            return_commit = _read_real_transition_return_commit(
+                f,
+                timestep=t0,
+                enabled=RETURN_COMMIT_KEY in self.low_dim_keys,
+            )
             proprio = _assemble_low_dim_observation(
                 qpos=qpos,
                 qvel=qvel,
                 real_transition_condition_v1=condition,
+                real_transition_excursion_observed_v1=excursion_observed,
+                real_transition_cycle_phase_v1=cycle_phase,
+                real_transition_return_commit_v1=return_commit,
+                real_transition_action_primitive_v1=action_primitive,
+                real_transition_work_context_v1=work_context,
+                real_transition_task_state_v2=task_state_v2_value,
                 low_dim_keys=self.low_dim_keys,
             )
             counterfactual_proprio = None
@@ -486,6 +1595,106 @@ class EpisodicDataset(Dataset):
                     qpos=qpos,
                     qvel=qvel,
                     real_transition_condition_v1=counterfactual_condition,
+                    real_transition_excursion_observed_v1=excursion_observed,
+                    real_transition_cycle_phase_v1=cycle_phase,
+                    real_transition_return_commit_v1=return_commit,
+                    low_dim_keys=self.low_dim_keys,
+                )
+            phase_counterfactual_proprio = None
+            if self.cycle_phase_loss["enabled"]:
+                if cycle_phase is None:
+                    raise ValueError("cycle phase intervention requires an active phase")
+                counterfactual_phase = np.asarray(
+                    cycle_phase, dtype=np.float32
+                ).copy()
+                counterfactual_phase[0] = 1.0 - counterfactual_phase[0]
+                phase_counterfactual_proprio = _assemble_low_dim_observation(
+                    qpos=qpos,
+                    qvel=qvel,
+                    real_transition_condition_v1=condition,
+                    real_transition_excursion_observed_v1=excursion_observed,
+                    real_transition_cycle_phase_v1=counterfactual_phase,
+                    real_transition_return_commit_v1=return_commit,
+                    low_dim_keys=self.low_dim_keys,
+                )
+            excursion_counterfactual_proprio = None
+            if self.excursion_observed_loss["enabled"]:
+                if excursion_observed is None:
+                    raise ValueError(
+                        "excursion observed intervention requires active state"
+                    )
+                counterfactual_excursion = np.asarray(
+                    excursion_observed, dtype=np.float32
+                ).copy()
+                counterfactual_excursion[0] = 1.0 - counterfactual_excursion[0]
+                excursion_counterfactual_proprio = _assemble_low_dim_observation(
+                    qpos=qpos,
+                    qvel=qvel,
+                    real_transition_condition_v1=condition,
+                    real_transition_excursion_observed_v1=(
+                        counterfactual_excursion
+                    ),
+                    real_transition_cycle_phase_v1=cycle_phase,
+                    real_transition_return_commit_v1=return_commit,
+                    low_dim_keys=self.low_dim_keys,
+                )
+            return_commit_counterfactual_proprio = None
+            if self.return_commit_loss["enabled"]:
+                if return_commit is None:
+                    raise ValueError(
+                        "return commit intervention requires active planner state"
+                    )
+                counterfactual_return_commit = np.asarray(
+                    return_commit, dtype=np.float32
+                ).copy()
+                counterfactual_return_commit[0] = (
+                    1.0 - counterfactual_return_commit[0]
+                )
+                return_commit_counterfactual_proprio = (
+                    _assemble_low_dim_observation(
+                        qpos=qpos,
+                        qvel=qvel,
+                        real_transition_condition_v1=condition,
+                        real_transition_excursion_observed_v1=(
+                            excursion_observed
+                        ),
+                        real_transition_cycle_phase_v1=cycle_phase,
+                        real_transition_return_commit_v1=(
+                            counterfactual_return_commit
+                        ),
+                        low_dim_keys=self.low_dim_keys,
+                    )
+                )
+            qvel_zero_proprio = None
+            if self.qvel_zero_state_hold_loss["enabled"]:
+                qvel_zero_proprio = _assemble_low_dim_observation(
+                    qpos=qpos,
+                    qvel=np.zeros_like(qvel, dtype=np.float32),
+                    real_transition_condition_v1=condition,
+                    real_transition_excursion_observed_v1=excursion_observed,
+                    real_transition_cycle_phase_v1=cycle_phase,
+                    real_transition_return_commit_v1=return_commit,
+                    low_dim_keys=self.low_dim_keys,
+                )
+            qvel_authority_counterfactual_proprio = None
+            if self.qvel_authority_loss["enabled"]:
+                counterfactual_qvel = np.asarray(qvel, dtype=np.float32).copy()
+                counterfactual_qvel[0] = (
+                    0.0
+                    if qvel_authority_moving_primary
+                    else float(
+                        self.qvel_authority_loss[
+                            "counterfactual_moving_swing_qvel"
+                        ]
+                    )
+                )
+                qvel_authority_counterfactual_proprio = _assemble_low_dim_observation(
+                    qpos=qpos,
+                    qvel=counterfactual_qvel,
+                    real_transition_condition_v1=condition,
+                    real_transition_excursion_observed_v1=excursion_observed,
+                    real_transition_cycle_phase_v1=cycle_phase,
+                    real_transition_return_commit_v1=return_commit,
                     low_dim_keys=self.low_dim_keys,
                 )
             image_dict = {}
@@ -514,6 +1723,12 @@ class EpisodicDataset(Dataset):
                 action_chunk_size=self.action_chunk_size,
                 enabled=REAL_TRANSITION_CONDITION_KEY in self.low_dim_keys,
             )
+            if task_state_v2_chunk_mask is not None:
+                chunk_valid_mask = (
+                    task_state_v2_chunk_mask
+                    if chunk_valid_mask is None
+                    else chunk_valid_mask & task_state_v2_chunk_mask
+                )
             deadzone_labels = None
             if self.deadzone_intent["enabled"]:
                 if full_action is None:
@@ -591,6 +1806,56 @@ class EpisodicDataset(Dataset):
             target_release_continue_primary = bool(
                 target_release_valid and condition is not None and float(condition[0]) < 0.0
             )
+            cycle_phase_valid = bool(
+                self.cycle_phase_loss["enabled"]
+                and any(
+                    np.any(values == int(t0))
+                    for values in cycle_phase_candidates.values()
+                )
+            )
+            cycle_phase_return_primary = bool(
+                cycle_phase_valid
+                and cycle_phase is not None
+                and float(cycle_phase[0]) > 0.0
+            )
+            excursion_observed_valid = bool(
+                self.excursion_observed_loss["enabled"]
+                and any(
+                    np.any(values == int(t0))
+                    for values in excursion_candidates.values()
+                )
+            )
+            excursion_post_primary = bool(
+                excursion_observed_valid
+                and excursion_observed is not None
+                and float(excursion_observed[0]) > 0.0
+            )
+            return_commit_valid = bool(
+                self.return_commit_loss["enabled"]
+                and any(
+                    np.any(values == int(t0))
+                    for key, values in return_commit_candidates.items()
+                    if key
+                    in {
+                        self.return_commit_loss.get(
+                            "dig_candidate_key", "dig_positive"
+                        ),
+                        "return_onset",
+                        "return_effective",
+                    }
+                )
+            )
+            return_commit_return_primary = bool(
+                return_commit_valid
+                and return_commit is not None
+                and float(return_commit[0]) > 0.0
+            )
+            return_commit_return_effective_primary = bool(
+                return_commit_valid
+                and np.any(
+                    return_commit_candidates["return_effective"] == int(t0)
+                )
+            )
 
         self.is_real = is_real
 
@@ -652,12 +1917,48 @@ class EpisodicDataset(Dataset):
                 torch.from_numpy(counterfactual_proprio).float()
                 - torch.from_numpy(self.norm_stats["proprio_mean"])
             ) / torch.from_numpy(self.norm_stats["proprio_std"])
+        phase_counterfactual_proprio_data = None
+        if phase_counterfactual_proprio is not None:
+            phase_counterfactual_proprio_data = (
+                torch.from_numpy(phase_counterfactual_proprio).float()
+                - torch.from_numpy(self.norm_stats["proprio_mean"])
+            ) / torch.from_numpy(self.norm_stats["proprio_std"])
+        excursion_counterfactual_proprio_data = None
+        if excursion_counterfactual_proprio is not None:
+            excursion_counterfactual_proprio_data = (
+                torch.from_numpy(excursion_counterfactual_proprio).float()
+                - torch.from_numpy(self.norm_stats["proprio_mean"])
+            ) / torch.from_numpy(self.norm_stats["proprio_std"])
+        return_commit_counterfactual_proprio_data = None
+        if return_commit_counterfactual_proprio is not None:
+            return_commit_counterfactual_proprio_data = (
+                torch.from_numpy(return_commit_counterfactual_proprio).float()
+                - torch.from_numpy(self.norm_stats["proprio_mean"])
+            ) / torch.from_numpy(self.norm_stats["proprio_std"])
+        qvel_zero_proprio_data = None
+        if qvel_zero_proprio is not None:
+            qvel_zero_proprio_data = (
+                torch.from_numpy(qvel_zero_proprio).float()
+                - torch.from_numpy(self.norm_stats["proprio_mean"])
+            ) / torch.from_numpy(self.norm_stats["proprio_std"])
+        qvel_authority_counterfactual_proprio_data = None
+        if qvel_authority_counterfactual_proprio is not None:
+            qvel_authority_counterfactual_proprio_data = (
+                torch.from_numpy(qvel_authority_counterfactual_proprio).float()
+                - torch.from_numpy(self.norm_stats["proprio_mean"])
+            ) / torch.from_numpy(self.norm_stats["proprio_std"])
 
         if (
             deadzone_labels is None
             and state_hold_transition_mask is None
             and condition_adherence_mask is None
             and not self.target_release["enabled"]
+            and not self.cycle_phase_loss["enabled"]
+            and not self.excursion_observed_loss["enabled"]
+            and not self.return_commit_loss["enabled"]
+            and not self.qvel_zero_state_hold_loss["enabled"]
+            and not self.qvel_authority_loss["enabled"]
+            and not self.task_state_v2["enabled"]
             and goal_effect_targets is None
         ):
             return image_data, proprio_data, action_data, is_pad_t
@@ -668,6 +1969,16 @@ class EpisodicDataset(Dataset):
             "action": action_data,
             "is_pad": is_pad_t,
         }
+        if self.task_state_v2["enabled"]:
+            if task_state_v2_value is None:
+                raise AssertionError("task_state_v2 sample is missing its state")
+            payload["task_state_v2_uncommitted"] = torch.tensor(
+                bool(
+                    float(task_state_v2_value[2]) == 1.0
+                    and float(task_state_v2_value[3]) == 0.0
+                ),
+                dtype=torch.bool,
+            )
         if deadzone_labels is not None:
             payload.update(
                 {
@@ -693,12 +2004,63 @@ class EpisodicDataset(Dataset):
             )
         if counterfactual_proprio_data is not None:
             payload["counterfactual_proprio"] = counterfactual_proprio_data
+        if phase_counterfactual_proprio_data is not None:
+            payload["phase_counterfactual_proprio"] = (
+                phase_counterfactual_proprio_data
+            )
+        if excursion_counterfactual_proprio_data is not None:
+            payload["excursion_counterfactual_proprio"] = (
+                excursion_counterfactual_proprio_data
+            )
+        if return_commit_counterfactual_proprio_data is not None:
+            payload["return_commit_counterfactual_proprio"] = (
+                return_commit_counterfactual_proprio_data
+            )
+        if qvel_zero_proprio_data is not None:
+            payload["qvel_zero_proprio"] = qvel_zero_proprio_data
+        if qvel_authority_counterfactual_proprio_data is not None:
+            payload["qvel_authority_counterfactual_proprio"] = (
+                qvel_authority_counterfactual_proprio_data
+            )
+            payload["qvel_authority_moving_primary"] = torch.tensor(
+                qvel_authority_moving_primary, dtype=torch.bool
+            )
+            payload["qvel_authority_stable_tool_mask"] = torch.from_numpy(
+                qvel_authority_tool_mask
+            )
+            payload["qvel_authority_valid"] = torch.tensor(
+                force_qvel_authority, dtype=torch.bool
+            )
         if self.target_release["enabled"]:
             payload["target_release_continue_primary"] = torch.tensor(
                 target_release_continue_primary, dtype=torch.bool
             )
             payload["target_release_valid"] = torch.tensor(
                 target_release_valid, dtype=torch.bool
+            )
+        if self.cycle_phase_loss["enabled"]:
+            payload["cycle_phase_return_primary"] = torch.tensor(
+                cycle_phase_return_primary, dtype=torch.bool
+            )
+            payload["cycle_phase_valid"] = torch.tensor(
+                cycle_phase_valid, dtype=torch.bool
+            )
+        if self.excursion_observed_loss["enabled"]:
+            payload["excursion_post_primary"] = torch.tensor(
+                excursion_post_primary, dtype=torch.bool
+            )
+            payload["excursion_observed_valid"] = torch.tensor(
+                excursion_observed_valid, dtype=torch.bool
+            )
+        if self.return_commit_loss["enabled"]:
+            payload["return_commit_return_primary"] = torch.tensor(
+                return_commit_return_primary, dtype=torch.bool
+            )
+            payload["return_commit_return_effective_primary"] = torch.tensor(
+                return_commit_return_effective_primary, dtype=torch.bool
+            )
+            payload["return_commit_valid"] = torch.tensor(
+                return_commit_valid, dtype=torch.bool
             )
         if goal_effect_targets is not None:
             payload.update(
@@ -871,6 +2233,71 @@ def _read_real_transition_condition(
     return result
 
 
+def _read_real_transition_cycle_phase(
+    h5_file: Any,
+    *,
+    timestep: int | None = None,
+    enabled: bool,
+) -> np.ndarray | None:
+    if not enabled:
+        return None
+    path = f"conditions/{CYCLE_PHASE_KEY}"
+    if path not in h5_file:
+        raise KeyError(f"HDF5 episode is missing required phase dataset {path!r}.")
+    dataset = h5_file[path]
+    if dataset.ndim != 2 or int(dataset.shape[1]) != 1:
+        raise ValueError(f"{path} must have shape (T, 1), got {tuple(dataset.shape)}")
+    values = dataset[()] if timestep is None else dataset[int(timestep)]
+    result = np.asarray(values, dtype=np.float32)
+    if not np.all(np.isfinite(result)) or not np.all(np.isin(result, [0.0, 1.0])):
+        raise ValueError(f"{path} must contain only finite 0/1 values")
+    return result
+
+
+def _read_real_transition_excursion_observed(
+    h5_file: Any,
+    *,
+    timestep: int | None = None,
+    enabled: bool,
+) -> np.ndarray | None:
+    if not enabled:
+        return None
+    path = f"conditions/{EXCURSION_OBSERVED_KEY}"
+    if path not in h5_file:
+        raise KeyError(f"HDF5 episode is missing required state dataset {path!r}.")
+    dataset = h5_file[path]
+    if dataset.ndim != 2 or int(dataset.shape[1]) != 1:
+        raise ValueError(f"{path} must have shape (T, 1), got {tuple(dataset.shape)}")
+    values = dataset[()] if timestep is None else dataset[int(timestep)]
+    result = np.asarray(values, dtype=np.float32)
+    if not np.all(np.isfinite(result)) or not np.all(np.isin(result, [0.0, 1.0])):
+        raise ValueError(f"{path} must contain only finite 0/1 values")
+    return result
+
+
+def _read_real_transition_return_commit(
+    h5_file: Any,
+    *,
+    timestep: int | None = None,
+    enabled: bool,
+) -> np.ndarray | None:
+    if not enabled:
+        return None
+    path = f"conditions/{RETURN_COMMIT_KEY}"
+    if path not in h5_file:
+        raise KeyError(
+            f"HDF5 episode is missing required return-commit dataset {path!r}."
+        )
+    dataset = h5_file[path]
+    if dataset.ndim != 2 or int(dataset.shape[1]) != 1:
+        raise ValueError(f"{path} must have shape (T, 1), got {tuple(dataset.shape)}")
+    values = dataset[()] if timestep is None else dataset[int(timestep)]
+    result = np.asarray(values, dtype=np.float32)
+    if not np.all(np.isfinite(result)) or not np.all(np.isin(result, [0.0, 1.0])):
+        raise ValueError(f"{path} must contain only finite 0/1 values")
+    return result
+
+
 def _read_condition_chunk_valid_mask(
     h5_file: Any,
     *,
@@ -904,6 +2331,12 @@ def _low_dim_slices(
     qpos: np.ndarray,
     qvel: np.ndarray,
     real_transition_condition_v1: np.ndarray | None,
+    real_transition_excursion_observed_v1: np.ndarray | None,
+    real_transition_cycle_phase_v1: np.ndarray | None,
+    real_transition_return_commit_v1: np.ndarray | None,
+    real_transition_action_primitive_v1: np.ndarray | None,
+    real_transition_work_context_v1: np.ndarray | None,
+    real_transition_task_state_v2: np.ndarray | None,
     low_dim_keys: list[str],
 ) -> dict[str, tuple[int, int]]:
     arrays = {
@@ -913,6 +2346,36 @@ def _low_dim_slices(
             None
             if real_transition_condition_v1 is None
             else np.asarray(real_transition_condition_v1)
+        ),
+        EXCURSION_OBSERVED_KEY: (
+            None
+            if real_transition_excursion_observed_v1 is None
+            else np.asarray(real_transition_excursion_observed_v1)
+        ),
+        CYCLE_PHASE_KEY: (
+            None
+            if real_transition_cycle_phase_v1 is None
+            else np.asarray(real_transition_cycle_phase_v1)
+        ),
+        RETURN_COMMIT_KEY: (
+            None
+            if real_transition_return_commit_v1 is None
+            else np.asarray(real_transition_return_commit_v1)
+        ),
+        ACTION_PRIMITIVE_KEY: (
+            None
+            if real_transition_action_primitive_v1 is None
+            else np.asarray(real_transition_action_primitive_v1)
+        ),
+        WORK_CONTEXT_KEY: (
+            None
+            if real_transition_work_context_v1 is None
+            else np.asarray(real_transition_work_context_v1)
+        ),
+        TASK_STATE_V2_KEY: (
+            None
+            if real_transition_task_state_v2 is None
+            else np.asarray(real_transition_task_state_v2)
         ),
     }
     result: dict[str, tuple[int, int]] = {}
@@ -1008,6 +2471,15 @@ def load_data(
     state_hold_transition: dict[str, Any] | None = None,
     condition_adherence_loss_train: dict[str, Any] | None = None,
     target_release_loss_train: dict[str, Any] | None = None,
+    cycle_phase_loss_train: dict[str, Any] | None = None,
+    excursion_observed_loss_train: dict[str, Any] | None = None,
+    return_commit_loss_train: dict[str, Any] | None = None,
+    action_primitive_islands: dict[str, Any] | None = None,
+    work_return_context: dict[str, Any] | None = None,
+    task_state_v2: dict[str, Any] | None = None,
+    qvel_zero_state_hold_loss_train: dict[str, Any] | None = None,
+    qvel_authority_loss_train: dict[str, Any] | None = None,
+    factual_semantic_sampling_train: dict[str, Any] | None = None,
     goal_effect: dict[str, Any] | None = None,
 ) -> tuple[DataLoader, DataLoader, dict, bool, dict[str, Any]]:
     """
@@ -1027,7 +2499,54 @@ def load_data(
         condition_adherence_loss_train
     )
     target_release_cfg = resolve_target_release_config(target_release_loss_train)
+    cycle_phase_cfg = resolve_cycle_phase_loss_config(cycle_phase_loss_train)
+    excursion_observed_cfg = resolve_excursion_observed_loss_config(
+        excursion_observed_loss_train
+    )
+    return_commit_cfg = resolve_return_commit_loss_config(
+        return_commit_loss_train
+    )
+    action_primitive_cfg = resolve_action_primitive_config(
+        action_primitive_islands
+    )
+    work_return_cfg = resolve_work_return_context_config(work_return_context)
+    task_state_v2_cfg = resolve_task_state_v2_config(task_state_v2)
+    qvel_zero_state_hold_cfg = resolve_qvel_zero_state_hold_config(
+        qvel_zero_state_hold_loss_train
+    )
+    qvel_authority_cfg = resolve_qvel_authority_config(
+        qvel_authority_loss_train
+    )
+    factual_semantic_cfg = resolve_factual_semantic_sampling_config(
+        factual_semantic_sampling_train
+    )
     goal_effect_cfg = resolve_goal_effect_config(goal_effect)
+
+    task_state_v2_manifest_rows: dict[int, dict[str, Any]] = {}
+    if task_state_v2_cfg["enabled"]:
+        if action_chunk_size is None:
+            raise ValueError("task_state_v2 requires action_chunk_size")
+        if int(task_state_v2_cfg["action_window_steps"]) != int(
+            action_chunk_size
+        ):
+            raise ValueError(
+                "task_state_v2.action_window_steps must equal action_chunk_size"
+            )
+        task_manifest = load_task_state_v2_manifest(
+            str(task_state_v2_cfg["manifest_path"])
+        )
+        if int(task_manifest.get("chunk_steps", -1)) != int(
+            task_state_v2_cfg["action_window_steps"]
+        ):
+            raise ValueError("task_state_v2 manifest chunk size mismatch")
+        manifest_episodes = (
+            Path(str(task_manifest.get("dataset_root", ""))) / "episodes"
+        )
+        if manifest_episodes.resolve() != dataset_dir.resolve():
+            raise ValueError("task_state_v2 manifest dataset root mismatch")
+        task_state_v2_manifest_rows = task_state_manifest_by_episode_fn(
+            task_manifest
+        )
 
     # discover available episode files
     discovered = [
@@ -1068,6 +2587,18 @@ def load_data(
     condition_adherence_anchor_count = {}
     condition_adherence_anchor_index = {}
     target_release_start_count = {}
+    cycle_phase_pre_start_count = {}
+    cycle_phase_return_start_count = {}
+    excursion_pre_start_count = {}
+    excursion_apex_start_count = {}
+    excursion_moving_start_count = {}
+    return_commit_dig_start_count = {}
+    return_commit_dig_non_swing_start_count = {}
+    return_commit_onset_start_count = {}
+    return_commit_effective_start_count = {}
+    action_primitive_start_count: dict[int, dict[str, int]] = {}
+    work_return_start_count: dict[int, dict[str, int]] = {}
+    task_state_v2_start_count: dict[int, dict[str, int]] = {}
     for ep_id in available:
         p = dataset_dir / f"episode_{ep_id}.hdf5"
         with h5py.File(p, "r") as f:
@@ -1097,10 +2628,32 @@ def load_data(
             condition_adherence_anchor_count[ep_id] = 0
             condition_adherence_anchor_index[ep_id] = None
             target_release_start_count[ep_id] = 0
+            cycle_phase_pre_start_count[ep_id] = 0
+            cycle_phase_return_start_count[ep_id] = 0
+            excursion_pre_start_count[ep_id] = 0
+            excursion_apex_start_count[ep_id] = 0
+            excursion_moving_start_count[ep_id] = 0
+            return_commit_dig_start_count[ep_id] = 0
+            return_commit_dig_non_swing_start_count[ep_id] = 0
+            return_commit_onset_start_count[ep_id] = 0
+            return_commit_effective_start_count[ep_id] = 0
+            action_primitive_start_count[ep_id] = {
+                name: 0 for name in PRIMITIVE_NAMES
+            }
+            work_return_start_count[ep_id] = {name: 0 for name in ROUTE_NAMES}
+            task_state_v2_start_count[ep_id] = {
+                name: 0 for name in TASK_STATE_V2_TIERS
+            }
             if (
                 state_hold_transition_cfg["enabled"]
                 or condition_adherence_cfg["enabled"]
                 or target_release_cfg["enabled"]
+                or cycle_phase_cfg["enabled"]
+                or excursion_observed_cfg["enabled"]
+                or return_commit_cfg["enabled"]
+                or action_primitive_cfg["enabled"]
+                or work_return_cfg["enabled"]
+                or task_state_v2_cfg["enabled"]
             ):
                 metadata = dict(f["metadata"].attrs) if "metadata" in f else {}
                 if not _bool_attr(metadata.get("action_prealigned", False)):
@@ -1172,6 +2725,179 @@ def load_data(
                         config=target_release_cfg,
                     )
                     target_release_start_count[ep_id] = int(starts.size)
+                if cycle_phase_cfg["enabled"]:
+                    if f"conditions/{CYCLE_PHASE_KEY}" not in f:
+                        raise ValueError(
+                            f"episode {ep_id} is missing conditions/{CYCLE_PHASE_KEY}"
+                        )
+                    if "conditions/cycle_phase_valid_mask" not in f:
+                        raise ValueError(
+                            "cycle phase loss requires "
+                            "conditions/cycle_phase_valid_mask"
+                        )
+                    phase_starts = cycle_phase_candidate_indices(
+                        actions=actions,
+                        phase=np.asarray(
+                            f[f"conditions/{CYCLE_PHASE_KEY}"][()],
+                            dtype=np.float32,
+                        ),
+                        valid_starts=valid_starts,
+                        phase_valid_mask=np.asarray(
+                            f["conditions/cycle_phase_valid_mask"][()], dtype=bool
+                        ),
+                        config=cycle_phase_cfg,
+                    )
+                    cycle_phase_pre_start_count[ep_id] = int(
+                        phase_starts["pre_positive"].size
+                    )
+                    cycle_phase_return_start_count[ep_id] = int(
+                        phase_starts["return_negative"].size
+                    )
+                if excursion_observed_cfg["enabled"]:
+                    for required_path in (
+                        f"conditions/{EXCURSION_OBSERVED_KEY}",
+                        f"conditions/{CYCLE_PHASE_KEY}",
+                        "conditions/excursion_observed_valid_mask",
+                    ):
+                        if required_path not in f:
+                            raise ValueError(
+                                f"episode {ep_id} is missing {required_path}"
+                            )
+                    excursion_starts = excursion_observed_candidate_indices(
+                        actions=actions,
+                        qvel=np.asarray(
+                            f["observations/qvel"][()], dtype=np.float32
+                        ),
+                        excursion_observed=np.asarray(
+                            f[f"conditions/{EXCURSION_OBSERVED_KEY}"][()],
+                            dtype=np.float32,
+                        ),
+                        return_phase=np.asarray(
+                            f[f"conditions/{CYCLE_PHASE_KEY}"][()],
+                            dtype=np.float32,
+                        ),
+                        valid_starts=valid_starts,
+                        excursion_valid_mask=np.asarray(
+                            f["conditions/excursion_observed_valid_mask"][()],
+                            dtype=bool,
+                        ),
+                        config=excursion_observed_cfg,
+                    )
+                    excursion_pre_start_count[ep_id] = int(
+                        excursion_starts["pre_positive"].size
+                    )
+                    excursion_apex_start_count[ep_id] = int(
+                        excursion_starts["apex_negative"].size
+                    )
+                    excursion_moving_start_count[ep_id] = int(
+                        excursion_starts["moving_negative"].size
+                    )
+                if return_commit_cfg["enabled"]:
+                    for required_path in (
+                        f"conditions/{RETURN_COMMIT_KEY}",
+                        "conditions/return_commit_valid_mask",
+                    ):
+                        if required_path not in f:
+                            raise ValueError(
+                                f"episode {ep_id} is missing {required_path}"
+                            )
+                    commit_starts = return_commit_candidate_indices(
+                        actions=actions,
+                        return_commit=np.asarray(
+                            f[f"conditions/{RETURN_COMMIT_KEY}"][()],
+                            dtype=np.float32,
+                        ),
+                        valid_starts=valid_starts,
+                        return_commit_valid_mask=np.asarray(
+                            f["conditions/return_commit_valid_mask"][()],
+                            dtype=bool,
+                        ),
+                        config=return_commit_cfg,
+                    )
+                    return_commit_dig_start_count[ep_id] = int(
+                        commit_starts["dig_positive"].size
+                    )
+                    return_commit_dig_non_swing_start_count[ep_id] = int(
+                        commit_starts["dig_non_swing_transition"].size
+                    )
+                    return_commit_onset_start_count[ep_id] = int(
+                        commit_starts["return_onset"].size
+                    )
+                    return_commit_effective_start_count[ep_id] = int(
+                        commit_starts["return_effective"].size
+                    )
+                if action_primitive_cfg["enabled"]:
+                    primitive_starts = derive_action_primitive_islands(
+                        actions,
+                        positive_thresholds=action_primitive_cfg[
+                            "positive_thresholds"
+                        ],
+                        negative_thresholds=action_primitive_cfg[
+                            "negative_thresholds"
+                        ],
+                        action_window_steps=int(
+                            action_primitive_cfg["action_window_steps"]
+                        ),
+                        valid_starts=valid_starts,
+                    )
+                    action_primitive_start_count[ep_id] = {
+                        name: int(primitive_starts.candidate_starts[name].size)
+                        for name in PRIMITIVE_NAMES
+                    }
+                if work_return_cfg["enabled"]:
+                    route_starts = derive_work_return_context(
+                        actions,
+                        positive_thresholds=work_return_cfg[
+                            "positive_thresholds"
+                        ],
+                        negative_thresholds=work_return_cfg[
+                            "negative_thresholds"
+                        ],
+                        action_window_steps=int(
+                            work_return_cfg["action_window_steps"]
+                        ),
+                        valid_starts=valid_starts,
+                    )
+                    work_return_start_count[ep_id] = {
+                        "work": int(route_starts.work_starts.size),
+                        "return": int(route_starts.return_starts.size),
+                    }
+                if task_state_v2_cfg["enabled"]:
+                    if ep_id not in task_state_v2_manifest_rows:
+                        raise ValueError(
+                            f"task_state_v2 manifest is missing episode {ep_id}"
+                        )
+                    task_row = task_state_v2_manifest_rows[ep_id]
+                    if int(task_row.get("n_rows", -1)) != length_info[ep_id]:
+                        raise ValueError(
+                            f"episode {ep_id} task_state_v2 row count changed"
+                        )
+                    task_starts = task_state_candidate_starts(
+                        total_steps=length_info[ep_id],
+                        work_complete_row=int(task_row["work_complete_row"]),
+                        return_commit_row=int(task_row["return_commit_row"]),
+                        action_window_steps=int(
+                            task_state_v2_cfg["action_window_steps"]
+                        ),
+                        valid_starts=valid_starts,
+                    ).by_name()
+                    expected_starts = {
+                        str(name): np.asarray(values, dtype=np.int64)
+                        for name, values in dict(
+                            task_row.get("candidate_starts", {})
+                        ).items()
+                    }
+                    if set(expected_starts) != set(TASK_STATE_V2_TIERS) or any(
+                        not np.array_equal(expected_starts[name], task_starts[name])
+                        for name in TASK_STATE_V2_TIERS
+                    ):
+                        raise ValueError(
+                            f"episode {ep_id} task_state_v2 population changed"
+                        )
+                    task_state_v2_start_count[ep_id] = {
+                        name: int(values.size)
+                        for name, values in task_starts.items()
+                    }
     filtered = [i for i in available if dim_info[i][0] == dim_info[i][1]]
     dropped = len(available) - len(filtered)
     if dropped:
@@ -1264,12 +2990,135 @@ def load_data(
                 "start in every configured episode; missing episode ids: "
                 + ", ".join(str(ep_id) for ep_id in missing_target_release[:20])
             )
+    if cycle_phase_cfg["enabled"]:
+        required_ids = list(train_ids)
+        if cycle_phase_cfg.get("scope") == "train_and_validation":
+            required_ids.extend(val_ids)
+        missing_pre = [
+            ep_id
+            for ep_id in required_ids
+            if cycle_phase_pre_start_count.get(ep_id, 0) <= 0
+        ]
+        missing_return = [
+            ep_id
+            for ep_id in required_ids
+            if cycle_phase_return_start_count.get(ep_id, 0) <= 0
+        ]
+        if missing_pre or missing_return:
+            raise ValueError(
+                "cycle phase loss requires both positive pre-return and negative "
+                "return starts in every configured episode; "
+                f"missing_pre={missing_pre[:20]}, missing_return={missing_return[:20]}"
+            )
+    if excursion_observed_cfg["enabled"]:
+        required_ids = list(train_ids)
+        if excursion_observed_cfg.get("scope") == "train_and_validation":
+            required_ids.extend(val_ids)
+        missing_pre = [
+            ep_id
+            for ep_id in required_ids
+            if excursion_pre_start_count.get(ep_id, 0) <= 0
+        ]
+        missing_post = [
+            ep_id
+            for ep_id in required_ids
+            if (
+                excursion_apex_start_count.get(ep_id, 0)
+                + excursion_moving_start_count.get(ep_id, 0)
+            )
+            <= 0
+        ]
+        if missing_pre or missing_post:
+            raise ValueError(
+                "excursion observed loss requires positive pre-excursion and "
+                "negative post-excursion starts in every configured episode; "
+                f"missing_pre={missing_pre[:20]}, missing_post={missing_post[:20]}"
+            )
+    if return_commit_cfg["enabled"]:
+        required_ids = list(train_ids)
+        if return_commit_cfg.get("scope") == "train_and_validation":
+            required_ids.extend(val_ids)
+        missing_dig = [
+            ep_id
+            for ep_id in required_ids
+            if (
+                return_commit_dig_start_count.get(ep_id, 0)
+                if return_commit_cfg["dig_candidate_key"] == "dig_positive"
+                else return_commit_dig_non_swing_start_count.get(ep_id, 0)
+            )
+            <= 0
+        ]
+        missing_onset = [
+            ep_id
+            for ep_id in required_ids
+            if return_commit_onset_start_count.get(ep_id, 0) != 1
+        ]
+        if missing_dig or missing_onset:
+            raise ValueError(
+                "return commit loss requires executable dig and exactly one "
+                "return-onset start in every configured episode; "
+                f"missing_dig={missing_dig[:20]}, missing_onset={missing_onset[:20]}"
+            )
+    if action_primitive_cfg["enabled"]:
+        missing_primitives = {
+            name: [
+                ep_id
+                for ep_id in [*train_ids, *val_ids]
+                if action_primitive_start_count.get(ep_id, {}).get(name, 0) <= 0
+            ]
+            for name in PRIMITIVE_NAMES
+        }
+        missing_primitives = {
+            name: values for name, values in missing_primitives.items() if values
+        }
+        if missing_primitives:
+            raise ValueError(
+                "oracle action primitive training requires a full chunk for every "
+                f"primitive in every train/validation episode: {missing_primitives}"
+            )
+    if work_return_cfg["enabled"]:
+        missing_routes = {
+            route: [
+                ep_id
+                for ep_id in [*train_ids, *val_ids]
+                if work_return_start_count.get(ep_id, {}).get(route, 0) <= 0
+            ]
+            for route in ROUTE_NAMES
+        }
+        missing_routes = {
+            route: values for route, values in missing_routes.items() if values
+        }
+        if missing_routes:
+            raise ValueError(
+                "WORK/RETURN training requires both branches in every "
+                f"train/validation episode: {missing_routes}"
+            )
+    if task_state_v2_cfg["enabled"]:
+        missing_tiers = {
+            tier: [
+                ep_id
+                for ep_id in [*train_ids, *val_ids]
+                if task_state_v2_start_count.get(ep_id, {}).get(tier, 0) <= 0
+            ]
+            for tier in TASK_STATE_V2_TIERS
+        }
+        missing_tiers = {
+            tier: values for tier, values in missing_tiers.items() if values
+        }
+        if missing_tiers:
+            raise ValueError(
+                "task_state_v2 requires all four factual tiers in every "
+                f"train/validation episode: {missing_tiers}"
+            )
     norm_stats = get_norm_stats(
         dataset_dir,
         num_episodes,
         episode_ids=normalization_episode_ids,
         low_dim_keys=selected_low_dim_keys,
         deadzone_intent=deadzone_intent,
+        action_primitive_islands=action_primitive_islands,
+        work_return_context=work_return_context,
+        task_state_v2=task_state_v2,
         goal_effect=goal_effect,
     )
 
@@ -1286,6 +3135,15 @@ def load_data(
         state_hold_transition=state_hold_transition,
         condition_adherence_loss=condition_adherence_loss_train,
         target_release_loss=target_release_loss_train,
+        cycle_phase_loss=cycle_phase_loss_train,
+        excursion_observed_loss=excursion_observed_loss_train,
+        return_commit_loss=return_commit_loss_train,
+        action_primitive_islands=action_primitive_islands,
+        work_return_context=work_return_context,
+        task_state_v2=task_state_v2,
+        qvel_zero_state_hold_loss=qvel_zero_state_hold_loss_train,
+        qvel_authority_loss=qvel_authority_loss_train,
+        factual_semantic_sampling=factual_semantic_sampling_train,
         goal_effect=goal_effect,
     )
     condition_adherence_loss_validation = (
@@ -1296,6 +3154,26 @@ def load_data(
     target_release_loss_validation = (
         target_release_loss_train
         if target_release_cfg.get("scope") == "train_and_validation"
+        else None
+    )
+    cycle_phase_loss_validation = (
+        cycle_phase_loss_train
+        if cycle_phase_cfg.get("scope") == "train_and_validation"
+        else None
+    )
+    excursion_observed_loss_validation = (
+        excursion_observed_loss_train
+        if excursion_observed_cfg.get("scope") == "train_and_validation"
+        else None
+    )
+    return_commit_loss_validation = (
+        return_commit_loss_train
+        if return_commit_cfg.get("scope") == "train_and_validation"
+        else None
+    )
+    qvel_authority_loss_validation = (
+        qvel_authority_loss_train
+        if qvel_authority_cfg.get("scope") == "train_and_validation"
         else None
     )
     val_ds = EpisodicDataset(
@@ -1311,6 +3189,15 @@ def load_data(
         state_hold_transition=state_hold_transition,
         condition_adherence_loss=condition_adherence_loss_validation,
         target_release_loss=target_release_loss_validation,
+        cycle_phase_loss=cycle_phase_loss_validation,
+        excursion_observed_loss=excursion_observed_loss_validation,
+        return_commit_loss=return_commit_loss_validation,
+        action_primitive_islands=action_primitive_islands,
+        work_return_context=work_return_context,
+        task_state_v2=task_state_v2,
+        qvel_zero_state_hold_loss=qvel_zero_state_hold_loss_train,
+        qvel_authority_loss=qvel_authority_loss_validation,
+        factual_semantic_sampling=None,
         goal_effect=goal_effect,
     )
 
@@ -1327,6 +3214,9 @@ def load_data(
         "enabled": bool(state_hold_transition_cfg["enabled"]),
         "probability": float(state_hold_transition_cfg["probability"]),
         "hold_horizon_steps": int(state_hold_transition_cfg["hold_horizon_steps"]),
+        "append_samples_per_episode": int(
+            state_hold_transition_cfg["append_samples_per_episode"]
+        ),
         "start_count_by_episode": {
             int(ep_id): int(state_hold_transition_start_count.get(ep_id, 0))
             for ep_id in available
@@ -1373,6 +3263,289 @@ def load_data(
         "validation_start_count": int(
             sum(target_release_start_count.get(ep_id, 0) for ep_id in val_ids)
         ),
+    }
+    split_info["cycle_phase_loss_train"] = {
+        "enabled": bool(cycle_phase_cfg["enabled"]),
+        "scope": cycle_phase_cfg.get("scope", "train_only"),
+        "threshold_path": cycle_phase_cfg.get("threshold_path"),
+        "append_samples_per_episode": int(
+            cycle_phase_cfg["append_samples_per_episode"]
+        ),
+        "action_window_steps": int(cycle_phase_cfg["action_window_steps"]),
+        "pre_positive_start_count_by_episode": {
+            int(ep_id): int(cycle_phase_pre_start_count.get(ep_id, 0))
+            for ep_id in available
+        },
+        "return_negative_start_count_by_episode": {
+            int(ep_id): int(cycle_phase_return_start_count.get(ep_id, 0))
+            for ep_id in available
+        },
+        "train_pre_positive_start_count": int(
+            sum(cycle_phase_pre_start_count.get(ep_id, 0) for ep_id in train_ids)
+        ),
+        "train_return_negative_start_count": int(
+            sum(cycle_phase_return_start_count.get(ep_id, 0) for ep_id in train_ids)
+        ),
+        "validation_pre_positive_start_count": int(
+            sum(cycle_phase_pre_start_count.get(ep_id, 0) for ep_id in val_ids)
+        ),
+        "validation_return_negative_start_count": int(
+            sum(cycle_phase_return_start_count.get(ep_id, 0) for ep_id in val_ids)
+        ),
+    }
+    split_info["excursion_observed_loss_train"] = {
+        "enabled": bool(excursion_observed_cfg["enabled"]),
+        "scope": excursion_observed_cfg.get("scope", "train_only"),
+        "threshold_path": excursion_observed_cfg.get("threshold_path"),
+        "append_samples_per_episode": int(
+            excursion_observed_cfg["append_samples_per_episode"]
+        ),
+        "action_window_steps": int(
+            excursion_observed_cfg["action_window_steps"]
+        ),
+        "pre_positive_start_count_by_episode": {
+            int(ep_id): int(excursion_pre_start_count.get(ep_id, 0))
+            for ep_id in available
+        },
+        "apex_negative_start_count_by_episode": {
+            int(ep_id): int(excursion_apex_start_count.get(ep_id, 0))
+            for ep_id in available
+        },
+        "moving_negative_start_count_by_episode": {
+            int(ep_id): int(excursion_moving_start_count.get(ep_id, 0))
+            for ep_id in available
+        },
+        "train_pre_positive_start_count": int(
+            sum(excursion_pre_start_count.get(ep_id, 0) for ep_id in train_ids)
+        ),
+        "train_apex_negative_start_count": int(
+            sum(excursion_apex_start_count.get(ep_id, 0) for ep_id in train_ids)
+        ),
+        "train_moving_negative_start_count": int(
+            sum(excursion_moving_start_count.get(ep_id, 0) for ep_id in train_ids)
+        ),
+        "validation_pre_positive_start_count": int(
+            sum(excursion_pre_start_count.get(ep_id, 0) for ep_id in val_ids)
+        ),
+        "validation_apex_negative_start_count": int(
+            sum(excursion_apex_start_count.get(ep_id, 0) for ep_id in val_ids)
+        ),
+        "validation_moving_negative_start_count": int(
+            sum(excursion_moving_start_count.get(ep_id, 0) for ep_id in val_ids)
+        ),
+    }
+    split_info["return_commit_loss_train"] = {
+        "enabled": bool(return_commit_cfg["enabled"]),
+        "scope": return_commit_cfg.get("scope", "train_only"),
+        "threshold_path": return_commit_cfg.get("threshold_path"),
+        "append_samples_per_episode": int(
+            return_commit_cfg["append_samples_per_episode"]
+        ),
+        "action_window_steps": int(return_commit_cfg["action_window_steps"]),
+        "dig_positive_start_count_by_episode": {
+            int(ep_id): int(return_commit_dig_start_count.get(ep_id, 0))
+            for ep_id in available
+        },
+        "dig_non_swing_transition_start_count_by_episode": {
+            int(ep_id): int(
+                return_commit_dig_non_swing_start_count.get(ep_id, 0)
+            )
+            for ep_id in available
+        },
+        "dig_candidate_mode": return_commit_cfg.get(
+            "dig_candidate_mode", "swing_positive"
+        ),
+        "dig_candidate_key": return_commit_cfg.get(
+            "dig_candidate_key", "dig_positive"
+        ),
+        "return_onset_start_count_by_episode": {
+            int(ep_id): int(return_commit_onset_start_count.get(ep_id, 0))
+            for ep_id in available
+        },
+        "return_effective_start_count_by_episode": {
+            int(ep_id): int(return_commit_effective_start_count.get(ep_id, 0))
+            for ep_id in available
+        },
+        "train_dig_positive_start_count": int(
+            sum(return_commit_dig_start_count.get(ep_id, 0) for ep_id in train_ids)
+        ),
+        "train_dig_non_swing_transition_start_count": int(
+            sum(
+                return_commit_dig_non_swing_start_count.get(ep_id, 0)
+                for ep_id in train_ids
+            )
+        ),
+        "train_return_onset_start_count": int(
+            sum(
+                return_commit_onset_start_count.get(ep_id, 0)
+                for ep_id in train_ids
+            )
+        ),
+        "train_return_effective_start_count": int(
+            sum(
+                return_commit_effective_start_count.get(ep_id, 0)
+                for ep_id in train_ids
+            )
+        ),
+        "validation_dig_positive_start_count": int(
+            sum(return_commit_dig_start_count.get(ep_id, 0) for ep_id in val_ids)
+        ),
+        "validation_dig_non_swing_transition_start_count": int(
+            sum(
+                return_commit_dig_non_swing_start_count.get(ep_id, 0)
+                for ep_id in val_ids
+            )
+        ),
+        "validation_return_onset_start_count": int(
+            sum(
+                return_commit_onset_start_count.get(ep_id, 0)
+                for ep_id in val_ids
+            )
+        ),
+        "validation_return_effective_start_count": int(
+            sum(
+                return_commit_effective_start_count.get(ep_id, 0)
+                for ep_id in val_ids
+            )
+        ),
+    }
+    split_info["action_primitive_islands"] = {
+        "enabled": bool(action_primitive_cfg["enabled"]),
+        "condition_key": action_primitive_cfg["condition_key"],
+        "primitive_names": list(action_primitive_cfg["primitive_names"]),
+        "manifest_path": action_primitive_cfg.get("manifest_path"),
+        "threshold_path": action_primitive_cfg.get("threshold_path"),
+        "action_window_steps": int(
+            action_primitive_cfg["action_window_steps"]
+        ),
+        "append_samples_per_episode": int(
+            action_primitive_cfg["append_samples_per_episode"]
+        ),
+        "start_count_by_episode": {
+            int(ep_id): {
+                name: int(
+                    action_primitive_start_count.get(ep_id, {}).get(name, 0)
+                )
+                for name in PRIMITIVE_NAMES
+            }
+            for ep_id in available
+        },
+        "train_start_count": {
+            name: int(
+                sum(
+                    action_primitive_start_count.get(ep_id, {}).get(name, 0)
+                    for ep_id in train_ids
+                )
+            )
+            for name in PRIMITIVE_NAMES
+        },
+        "validation_start_count": {
+            name: int(
+                sum(
+                    action_primitive_start_count.get(ep_id, {}).get(name, 0)
+                    for ep_id in val_ids
+                )
+            )
+            for name in PRIMITIVE_NAMES
+        },
+    }
+    split_info["work_return_context"] = {
+        "enabled": bool(work_return_cfg["enabled"]),
+        "condition_key": work_return_cfg["condition_key"],
+        "manifest_path": work_return_cfg.get("manifest_path"),
+        "threshold_path": work_return_cfg.get("threshold_path"),
+        "action_window_steps": int(work_return_cfg["action_window_steps"]),
+        "append_samples_per_episode": int(
+            work_return_cfg["append_samples_per_episode"]
+        ),
+        "start_count_by_episode": {
+            int(ep_id): {
+                route: int(
+                    work_return_start_count.get(ep_id, {}).get(route, 0)
+                )
+                for route in ROUTE_NAMES
+            }
+            for ep_id in available
+        },
+        "train_start_count": {
+            route: int(
+                sum(
+                    work_return_start_count.get(ep_id, {}).get(route, 0)
+                    for ep_id in train_ids
+                )
+            )
+            for route in ROUTE_NAMES
+        },
+        "validation_start_count": {
+            route: int(
+                sum(
+                    work_return_start_count.get(ep_id, {}).get(route, 0)
+                    for ep_id in val_ids
+                )
+            )
+            for route in ROUTE_NAMES
+        },
+    }
+    split_info["task_state_v2"] = {
+        "enabled": bool(task_state_v2_cfg["enabled"]),
+        "condition_key": task_state_v2_cfg["condition_key"],
+        "manifest_path": task_state_v2_cfg.get("manifest_path"),
+        "action_window_steps": int(task_state_v2_cfg["action_window_steps"]),
+        "append_samples_per_episode": int(
+            task_state_v2_cfg["append_samples_per_episode"]
+        ),
+        "tier_names": list(task_state_v2_cfg["tier_names"]),
+        "start_count_by_episode": {
+            int(ep_id): {
+                tier: int(
+                    task_state_v2_start_count.get(ep_id, {}).get(tier, 0)
+                )
+                for tier in TASK_STATE_V2_TIERS
+            }
+            for ep_id in available
+        },
+        "train_start_count": {
+            tier: int(
+                sum(
+                    task_state_v2_start_count.get(ep_id, {}).get(tier, 0)
+                    for ep_id in train_ids
+                )
+            )
+            for tier in TASK_STATE_V2_TIERS
+        },
+        "validation_start_count": {
+            tier: int(
+                sum(
+                    task_state_v2_start_count.get(ep_id, {}).get(tier, 0)
+                    for ep_id in val_ids
+                )
+            )
+            for tier in TASK_STATE_V2_TIERS
+        },
+    }
+    split_info["qvel_zero_state_hold_loss_train"] = {
+        "enabled": bool(qvel_zero_state_hold_cfg["enabled"]),
+        "threshold_path": qvel_zero_state_hold_cfg.get("threshold_path"),
+        "window_steps": int(qvel_zero_state_hold_cfg["window_steps"]),
+        "weight": float(qvel_zero_state_hold_cfg["weight"]),
+    }
+    split_info["qvel_authority_loss_train"] = {
+        "enabled": bool(qvel_authority_cfg["enabled"]),
+        "manifest_path": qvel_authority_cfg.get("manifest_path"),
+        "append_samples_per_episode": int(
+            qvel_authority_cfg["append_samples_per_episode"]
+        ),
+        "action_window_steps": int(qvel_authority_cfg["action_window_steps"]),
+        "weight": float(qvel_authority_cfg["weight"]),
+    }
+    split_info["factual_semantic_sampling_train"] = {
+        "enabled": bool(factual_semantic_cfg["enabled"]),
+        "scope": factual_semantic_cfg["scope"],
+        "manifest_path": factual_semantic_cfg.get("manifest_path"),
+        "append_samples_per_episode": int(
+            factual_semantic_cfg["append_samples_per_episode"]
+        ),
+        "tier_names": list(factual_semantic_cfg["tier_names"]),
     }
     split_info["goal_effect"] = {
         "enabled": bool(goal_effect_cfg.enabled),

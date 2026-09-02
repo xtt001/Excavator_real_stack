@@ -21,7 +21,6 @@ from scripts.verify_real_transition_target_release_runtime import verify_runtime
 
 from testbed.tasks.home_side_contract import build_rule_ready_contract
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PATH_RESOLVER = REPO_ROOT / "scripts/real_transition_target_release_paths.sh"
 
@@ -162,13 +161,18 @@ def _runtime_config(root: Path, bundle: Path) -> Path:
     return config
 
 
-def _drive_bundle(drive: Path, version: str) -> Path:
+def _drive_bundle(
+    drive: Path,
+    version: str,
+    *,
+    bundle_name: str = "real_transition_target_release_v2",
+) -> Path:
     bundle = (
         drive
         / "Excavator_real_stack_runtime"
         / version
         / "policy_bundles"
-        / "real_transition_target_release_v2"
+        / bundle_name
     )
     bundle.mkdir(parents=True)
     (bundle / "policy_accepted.ckpt").write_bytes(b"accepted")
@@ -181,10 +185,12 @@ def _run_path_resolver(
     search_roots: list[Path],
     bundle_dir: Path | None = None,
     log_root: Path | None = None,
+    runtime_bundle_name: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env.pop("BUNDLE_DIR", None)
     env.pop("LOG_ROOT", None)
+    env.pop("REAL_TRANSITION_RUNTIME_BUNDLE_NAME", None)
     env["EXCAVATOR_RUNTIME_SEARCH_ROOTS"] = os.pathsep.join(
         str(path) for path in search_roots
     )
@@ -192,6 +198,8 @@ def _run_path_resolver(
         env["BUNDLE_DIR"] = str(bundle_dir)
     if log_root is not None:
         env["LOG_ROOT"] = str(log_root)
+    if runtime_bundle_name is not None:
+        env["REAL_TRANSITION_RUNTIME_BUNDLE_NAME"] = runtime_bundle_name
     return subprocess.run(
         [
             "bash",
@@ -271,6 +279,29 @@ def test_runtime_path_resolver_prefers_unique_external_bundle(
         str(drive.resolve()),
         "external",
     ]
+
+
+def test_runtime_path_resolver_supports_task_state_v2_bundle_name(
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "checkout"
+    repo_root.mkdir()
+    drive = tmp_path / "EXTERNAL_USB"
+    name = "real_transition_task_state_v2_allow2"
+    external_bundle = _drive_bundle(
+        drive,
+        f"{name}_20260902_test",
+        bundle_name=name,
+    )
+
+    result = _run_path_resolver(
+        repo_root=repo_root,
+        search_roots=[drive],
+        runtime_bundle_name=name,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines()[0] == str(external_bundle.resolve())
 
 
 def test_runtime_path_resolver_rejects_multiple_external_bundles(
@@ -357,6 +388,77 @@ def test_log_verdict_requires_clean_scripted_cycle_status() -> None:
 
     assert ok is True
     assert reasons == []
+
+
+def test_log_verdict_checks_task_state_sequence_and_planner_match() -> None:
+    stages = (
+        ("work", [1.0, 1.0, 0.0, 0.0, 0.0], 0),
+        ("work_complete", [1.0, 1.0, 1.0, 0.0, 0.0], 1),
+        ("return_committed", [1.0, 1.0, 1.0, 1.0, -1.0], 1),
+    )
+    steps = []
+    for index, (stage, token, changed) in enumerate(stages):
+        steps.append(
+            {
+                "wall_time_ns": 1_000_000_000 + index * 50_000_000,
+                "policy_remote_mode": "policy",
+                "policy_remote_activated": int(index == 0),
+                "policy_output_mode": "shadow_zero",
+                "policy_inference_latency_ms": 1.0,
+                "policy_task_state_v2": token,
+                "planner_task_state_v2": token,
+                "scripted_cycle_enabled": 1,
+                "scripted_cycle_active": 1,
+                "scripted_cycle_fault": "",
+                "scripted_cycle_activation_rejected_reason": "",
+                "scripted_cycle_task_state_v2_enabled": 1,
+                "scripted_cycle_task_state_stage": stage,
+                "scripted_cycle_task_state_changed": changed,
+                "scripted_cycle_task_state_advance_requested": changed,
+                "scripted_cycle_task_state_advance_rejected_reason": "",
+                "planner_target_side": "A",
+                "policy_returned_action": [0.0] * 4,
+                "raw_action": [0.0] * 4,
+                "safe_action": [0.0] * 4,
+                "commanded_action": [0.0] * 4,
+                "receiver_health_ok": 1,
+                "controller_ack": 1,
+            }
+        )
+    metrics = _compute_metrics(steps, warmup_steps=0)
+
+    ok, reasons = _verdict(
+        summary={"stop_reason": "complete"},
+        metrics=metrics,
+        expect_output_mode="shadow_zero",
+        allow_stop_reasons={"complete"},
+        require_shadow_zero=True,
+        expect_policy_remote=True,
+        expect_scripted_cycle=True,
+        expect_task_state_v2=True,
+        min_steps=3,
+        max_shadow_command_abs=1e-6,
+    )
+
+    assert ok is True
+    assert reasons == []
+
+    steps[-1]["policy_task_state_v2"] = [1.0, 1.0, 1.0, 0.0, -1.0]
+    invalid_metrics = _compute_metrics(steps, warmup_steps=0)
+    invalid_ok, invalid_reasons = _verdict(
+        summary={"stop_reason": "complete"},
+        metrics=invalid_metrics,
+        expect_output_mode="shadow_zero",
+        allow_stop_reasons={"complete"},
+        require_shadow_zero=True,
+        expect_policy_remote=True,
+        expect_scripted_cycle=True,
+        expect_task_state_v2=True,
+        min_steps=3,
+        max_shadow_command_abs=1e-6,
+    )
+    assert invalid_ok is False
+    assert any("invalid policy vectors" in reason for reason in invalid_reasons)
 
 
 def test_latest_log_resolution_finds_nested_receiver_run(tmp_path: Path) -> None:

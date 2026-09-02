@@ -15,18 +15,25 @@ from testbed.tasks.scripted_cycle_runtime import ScriptedCycleRuntime
 class _Remote(ActionSource):
     def __init__(self) -> None:
         self.start_requested = False
+        self.mark_requested = False
 
     def reset(self) -> None:
         self.start_requested = False
+        self.mark_requested = False
 
     def next_action(self, obs):
         requested = bool(self.start_requested)
+        mark_requested = bool(self.mark_requested)
         self.start_requested = False
+        self.mark_requested = False
         return np.zeros(4, dtype=np.float32), ActionInfo(
             source_type="remote",
             source_id="remote",
             latency_ms=0.0,
-            extras={"policy_start_requested": requested},
+            extras={
+                "policy_start_requested": requested,
+                "mark_requested": mark_requested,
+            },
         )
 
     def close(self) -> None:
@@ -34,7 +41,9 @@ class _Remote(ActionSource):
 
 
 class _Policy(ActionSource):
-    def __init__(self, *, side_matched: bool = False) -> None:
+    def __init__(
+        self, *, side_matched: bool = False, task_state_v2: bool = False
+    ) -> None:
         self.cycle_planner = (
             SideMatchedScriptCyclePlanner(
                 {
@@ -55,6 +64,10 @@ class _Policy(ActionSource):
         )
         self.reset_count = 0
         self.seen_targets: list[str] = []
+        self.task_state_v2_enabled = bool(task_state_v2)
+        self.task_dig_complete = False
+        self.task_return_commit = False
+        self.task_state_epoch = 0
 
     def reset(self) -> None:
         self.reset_count += 1
@@ -86,7 +99,11 @@ class _Policy(ActionSource):
         return None
 
     def commit_cycle_goal(self):
-        return self.cycle_planner.commit_goal()
+        goal = self.cycle_planner.commit_goal()
+        self.task_dig_complete = False
+        self.task_return_commit = False
+        self.task_state_epoch = int(goal.goal_epoch) * 3
+        return goal
 
     def mark_cycle_target_ready(self, realized_side: str):
         return self.cycle_planner.mark_target_ready(realized_side)
@@ -101,17 +118,45 @@ class _Policy(ActionSource):
             "committed": goal is not None,
             "target_side": None if goal is None else goal.target_side,
             "condition": None if goal is None else list(goal.condition),
+            "task_state_v2_enabled": self.task_state_v2_enabled,
+            "task_dig_complete": self.task_dig_complete,
+            "task_return_commit": self.task_return_commit,
+            "task_state_epoch": self.task_state_epoch,
         }
+
+    def set_task_dig_complete(self, *, completed: bool) -> bool:
+        changed = self.task_dig_complete != bool(completed)
+        self.task_dig_complete = bool(completed)
+        self.task_state_epoch += int(changed)
+        return changed
+
+    def set_task_return_commit(self, *, committed: bool) -> bool:
+        changed = self.task_return_commit != bool(committed)
+        self.task_return_commit = bool(committed)
+        self.task_state_epoch += int(changed)
+        return changed
 
 
 def _source(
-    *, auto_start_after_arm: bool = False, side_matched: bool = False
+    *,
+    auto_start_after_arm: bool = False,
+    side_matched: bool = False,
+    task_state_v2: bool = False,
 ) -> tuple[RemoteArmedPolicyActionSource, _Remote, _Policy]:
     remote = _Remote()
-    policy = _Policy(side_matched=side_matched)
+    policy = _Policy(side_matched=side_matched, task_state_v2=task_state_v2)
     runtime = ScriptedCycleRuntime(
         policy_source=policy,
         ready_contract=build_rule_ready_contract(),
+        task_state_v2=(
+            {
+                "enabled": True,
+                "advance_source": "operator_mark",
+                "require_excursion_before_work_complete": True,
+            }
+            if task_state_v2
+            else None
+        ),
     )
     source = RemoteArmedPolicyActionSource(
         remote=remote,
@@ -183,6 +228,42 @@ def test_remote_activation_is_rejected_until_initial_ready() -> None:
     assert policy.seen_targets == []
 
 
+def test_remote_mark_drives_task_state_before_policy_inference() -> None:
+    source, remote, policy = _source(task_state_v2=True)
+    timestamp_ns, _ = _step_window(source, start_ns=1_000_000_000, swing_qpos=0.2)
+    remote.start_requested = True
+    source.next_action(_obs(timestamp_ns=timestamp_ns, swing_qpos=0.2))
+    timestamp_ns += 50_000_000
+
+    timestamp_ns, _ = _step_window(
+        source,
+        start_ns=timestamp_ns,
+        swing_qpos=1.2,
+        swing_qvel=0.2,
+        count=3,
+    )
+    remote.mark_requested = True
+    _action, complete_info = source.next_action(
+        _obs(timestamp_ns=timestamp_ns, swing_qpos=1.2, swing_qvel=0.0)
+    )
+    assert policy.task_dig_complete is True
+    assert policy.task_return_commit is False
+    assert complete_info.extras["scripted_cycle_task_state_changed"] == 1
+    assert complete_info.extras["scripted_cycle_task_state_stage"] == "work_complete"
+
+    remote.mark_requested = True
+    _action, return_info = source.next_action(
+        _obs(
+            timestamp_ns=timestamp_ns + 50_000_000,
+            swing_qpos=1.2,
+            swing_qvel=0.0,
+        )
+    )
+    assert policy.task_return_commit is True
+    assert return_info.extras["scripted_cycle_task_state_changed"] == 1
+    assert return_info.extras["scripted_cycle_task_state_stage"] == "return_committed"
+
+
 def test_one_arm_request_waits_then_auto_selects_ready_side_and_starts() -> None:
     source, remote, policy = _source(
         auto_start_after_arm=True,
@@ -224,9 +305,7 @@ def test_second_arm_press_cancels_pending_auto_start() -> None:
     source.next_action(_obs(timestamp_ns=1_000_000_000, swing_qpos=0.0))
     remote.start_requested = True
 
-    _action, info = source.next_action(
-        _obs(timestamp_ns=1_050_000_000, swing_qpos=0.0)
-    )
+    _action, info = source.next_action(_obs(timestamp_ns=1_050_000_000, swing_qpos=0.0))
 
     assert info.extras["policy_remote_mode"] == "manual"
     assert info.extras["scripted_cycle_auto_armed"] == 0

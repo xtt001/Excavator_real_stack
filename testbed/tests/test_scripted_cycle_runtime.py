@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+import pytest
 
 from testbed.tasks.act_cycle_planner import (
     ScriptCyclePlanner,
@@ -21,7 +22,9 @@ class _Clock:
 
 
 class _PlannerPolicySource:
-    def __init__(self, *, initial_side: str, targets: list[str]) -> None:
+    def __init__(
+        self, *, initial_side: str, targets: list[str], task_state_v2: bool = False
+    ) -> None:
         self.cycle_planner = ScriptCyclePlanner(
             initial_side=initial_side,
             steps=[{"target_side": value} for value in targets],
@@ -29,10 +32,19 @@ class _PlannerPolicySource:
         )
         self.commit_count = 0
         self.ready_count = 0
+        self.excursion_set_count = 0
+        self.task_state_v2_enabled = bool(task_state_v2)
+        self.task_dig_complete = False
+        self.task_return_commit = False
+        self.task_state_epoch = 0
 
     def commit_cycle_goal(self):
         self.commit_count += 1
-        return self.cycle_planner.commit_goal()
+        goal = self.cycle_planner.commit_goal()
+        self.task_dig_complete = False
+        self.task_return_commit = False
+        self.task_state_epoch = int(goal.goal_epoch) * 3
+        return goal
 
     def mark_cycle_target_ready(self, realized_side: str):
         self.ready_count += 1
@@ -48,7 +60,28 @@ class _PlannerPolicySource:
             "committed": goal is not None,
             "target_side": None if goal is None else goal.target_side,
             "condition": None if goal is None else list(goal.condition),
+            "task_state_v2_enabled": self.task_state_v2_enabled,
+            "task_dig_complete": self.task_dig_complete,
+            "task_return_commit": self.task_return_commit,
+            "task_state_epoch": self.task_state_epoch,
         }
+
+    def set_cycle_excursion_observed(self, *, observed: bool) -> bool:
+        assert observed is True
+        self.excursion_set_count += 1
+        return True
+
+    def set_task_dig_complete(self, *, completed: bool) -> bool:
+        changed = self.task_dig_complete != bool(completed)
+        self.task_dig_complete = bool(completed)
+        self.task_state_epoch += int(changed)
+        return changed
+
+    def set_task_return_commit(self, *, committed: bool) -> bool:
+        changed = self.task_return_commit != bool(committed)
+        self.task_return_commit = bool(committed)
+        self.task_state_epoch += int(changed)
+        return changed
 
 
 def _runtime(
@@ -57,10 +90,12 @@ def _runtime(
     targets: list[str] | None = None,
     target_ranges: dict[str, tuple[float, float]] | None = None,
     swing_landing: dict | None = None,
+    task_state_v2: bool = False,
 ) -> tuple[ScriptedCycleRuntime, _PlannerPolicySource, _Clock]:
     source = _PlannerPolicySource(
         initial_side=initial_side,
         targets=list(targets or ["B", "A"]),
+        task_state_v2=task_state_v2,
     )
     clock = _Clock()
     runtime = ScriptedCycleRuntime(
@@ -71,6 +106,15 @@ def _runtime(
         cycle_review_s=45.0,
         cycle_stop_s=60.0,
         run_stop_s=240.0,
+        task_state_v2=(
+            {
+                "enabled": True,
+                "advance_source": "operator_mark",
+                "require_excursion_before_work_complete": True,
+            }
+            if task_state_v2
+            else None
+        ),
         clock=clock,
     )
     return runtime, source, clock
@@ -141,6 +185,7 @@ def _confirm_excursion(
         runtime.evaluate()
         timestamp_ns += 50_000_000
     assert runtime.status()["excursion_observed"] is True
+    assert runtime.status()["event"] == "cycle_excursion_confirmed"
     return timestamp_ns
 
 
@@ -155,6 +200,7 @@ def test_same_side_goal_requires_excursion_before_advancing() -> None:
     assert source.ready_count == 0
 
     timestamp_ns = _confirm_excursion(runtime, start_ns=timestamp_ns)
+    assert source.excursion_set_count == 1
     advanced = None
     for _ in range(12):
         _observe(
@@ -173,6 +219,82 @@ def test_same_side_goal_requires_excursion_before_advancing() -> None:
     assert advanced["planner"]["target_side"] == "A"
     assert source.ready_count == 1
     assert source.commit_count == 2
+
+
+def test_direct_motion_towards_a_does_not_confirm_excursion() -> None:
+    runtime, source, _clock = _runtime(initial_side="B", targets=["A"])
+    timestamp_ns = _stable_side(runtime, start_ns=1_000_000_000, swing_qpos=0.3)
+    runtime.activate()
+
+    for swing_qpos in (0.2, 0.1, 0.0, -0.1):
+        _observe(
+            runtime,
+            timestamp_ns=timestamp_ns,
+            swing_qpos=swing_qpos,
+            swing_qvel=-0.2,
+        )
+        runtime.evaluate()
+        timestamp_ns += 50_000_000
+
+    assert runtime.status()["excursion_observed"] is False
+    assert source.ready_count == 0
+
+
+def test_task_state_v2_requires_excursion_then_advances_in_two_marks() -> None:
+    runtime, source, _clock = _runtime(
+        initial_side="B", targets=["A"], task_state_v2=True
+    )
+    timestamp_ns = _stable_side(runtime, start_ns=1_000_000_000, swing_qpos=0.2)
+    started = runtime.activate()
+    assert started["task_state_stage"] == "work"
+
+    with pytest.raises(
+        RuntimeError, match="work_complete_requires_confirmed_positive_excursion"
+    ):
+        runtime.advance_task_state()
+
+    _confirm_excursion(runtime, start_ns=timestamp_ns)
+    completed = runtime.advance_task_state()
+    assert completed["task_state_changed"] is True
+    assert completed["task_state_stage"] == "work_complete"
+    assert source.task_dig_complete is True
+    assert source.task_return_commit is False
+
+    committed = runtime.advance_task_state()
+    assert committed["task_state_changed"] is True
+    assert committed["task_state_stage"] == "return_committed"
+    assert source.task_return_commit is True
+
+    ignored = runtime.advance_task_state()
+    assert ignored["task_state_changed"] is False
+    assert ignored["task_state_advance_ignored"] is True
+
+
+def test_task_state_v2_never_accepts_target_ready_before_return_commit() -> None:
+    runtime, source, _clock = _runtime(
+        initial_side="B", targets=["A"], task_state_v2=True
+    )
+    timestamp_ns = _stable_side(runtime, start_ns=1_000_000_000, swing_qpos=0.2)
+    runtime.activate()
+    timestamp_ns = _confirm_excursion(runtime, start_ns=timestamp_ns)
+
+    for _ in range(12):
+        _observe(
+            runtime,
+            timestamp_ns=timestamp_ns,
+            swing_qpos=-0.2,
+            swing_qvel=0.0,
+        )
+        runtime.evaluate()
+        timestamp_ns += 50_000_000
+    assert source.ready_count == 0
+    assert runtime.status()["completed"] is False
+
+    runtime.advance_task_state()
+    runtime.advance_task_state()
+    completed = runtime.evaluate()
+    assert completed["completed"] is True
+    assert source.ready_count == 1
 
 
 def test_script_completes_only_after_each_target_ready() -> None:
@@ -244,9 +366,7 @@ def test_target_b_outbound_crossing_cannot_complete_cycle_before_left_return() -
         target_ranges={"A": (-0.3788, -0.0931), "B": (0.1112, 0.3928)},
         swing_landing=_landing_cfg(),
     )
-    timestamp_ns = _stable_side(
-        runtime, start_ns=1_000_000_000, swing_qpos=-0.2
-    )
+    timestamp_ns = _stable_side(runtime, start_ns=1_000_000_000, swing_qpos=-0.2)
     runtime.activate()
     timestamp_ns = _confirm_excursion(
         runtime,
@@ -335,9 +455,7 @@ def test_ready_window_rejects_side_position_outside_training_support() -> None:
     assert "swing_outside_B_training_support" in result["blockers"]
 
 
-def _latch_left_return_phase(
-    runtime: ScriptedCycleRuntime, *, start_ns: int
-) -> int:
+def _latch_left_return_phase(runtime: ScriptedCycleRuntime, *, start_ns: int) -> int:
     timestamp_ns = _confirm_excursion(
         runtime,
         start_ns=start_ns,
@@ -362,9 +480,7 @@ def test_swing_landing_does_not_intervene_during_rightward_excavation_motion() -
         target_ranges={"A": (-0.3788, -0.0931), "B": (0.1112, 0.3928)},
         swing_landing=_landing_cfg(),
     )
-    timestamp_ns = _stable_side(
-        runtime, start_ns=1_000_000_000, swing_qpos=-0.2
-    )
+    timestamp_ns = _stable_side(runtime, start_ns=1_000_000_000, swing_qpos=-0.2)
     runtime.activate()
     action = np.asarray([0.81, 0.2, -0.3, 0.4], dtype=np.float32)
 
@@ -382,7 +498,9 @@ def test_swing_landing_does_not_intervene_during_rightward_excavation_motion() -
     assert diagnostics["swing_landing_return_phase"] == 0
 
 
-def test_swing_landing_releases_after_measured_entry_toward_a_without_changing_other_axes() -> None:
+def test_swing_landing_releases_after_measured_entry_toward_a_without_changing_other_axes() -> (
+    None
+):
     runtime, _source, _clock = _runtime(
         initial_side="B",
         targets=["A"],

@@ -38,7 +38,9 @@ real_transition_collect_external_roots() {
 
 real_transition_resolve_runtime_paths() {
   local repo_root="$(realpath -- "$1")"
-  local bundle_name="real_transition_target_release_v2"
+  # Keep the historical target-release default while allowing newer runtime
+  # contracts to reuse the same no-guessing USB discovery logic.
+  local bundle_name="${REAL_TRANSITION_RUNTIME_BUNDLE_NAME:-real_transition_target_release_v2}"
   local explicit_bundle="${BUNDLE_DIR:-}"
   local explicit_log_root="${LOG_ROOT:-}"
   local resolved_bundle=""
