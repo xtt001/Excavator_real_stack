@@ -7,6 +7,8 @@ import argparse
 import hashlib
 import json
 import subprocess
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from typing import Any
 
@@ -47,10 +49,15 @@ def main() -> None:
     )
     if args.load_model:
         try:
-            report["model_load_smoke"] = run_model_load_smoke(
-                bundle=args.bundle_dir.resolve(),
-                output_mode=str(args.expect_output_mode),
-                device=args.device,
+            model_stdout = StringIO()
+            with redirect_stdout(model_stdout):
+                report["model_load_smoke"] = run_model_load_smoke(
+                    bundle=args.bundle_dir.resolve(),
+                    output_mode=str(args.expect_output_mode),
+                    device=args.device,
+                )
+            report["model_load_smoke"]["captured_model_stdout"] = (
+                model_stdout.getvalue().strip()
             )
         except Exception as exc:
             report["status"] = "FAIL"
