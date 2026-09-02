@@ -2,6 +2,10 @@
 
 日期：2026-09-02
 
+后续状态：本文保留训练和候选选择时的原始结论。文中“在线 owner 尚未实现”的边界已由
+同日的自动推进运行时补齐，当前实现和新增 replay 结果见
+`docs/real_transition_task_state_v2_automatic_runtime_20260902.md`。
+
 ## 结论
 
 严格的原始冻结验收没有产生候选。原始专家能力复核后，用户明确允许 29 个 held-out 未 commit 窗口中偶发 2 条提前负向 swing。按这一结果后授权的新要求重新检查全部 26 个 checkpoint，选出 worst-query run 的 epoch 15 作为 `OFFLINE_CANDIDATE_ONLY`。它仍不得进入现场运动，必须先补齐 task-state runtime owner 并完成 shadow_zero。

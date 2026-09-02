@@ -19,6 +19,10 @@ from testbed.actions.policy import _act_policy_config_from_resolved
 from testbed.tasks.act_cycle_planner import ScriptCyclePlanner
 from testbed.tasks.home_side_contract import validate_rule_ready_contract
 from testbed.tasks.scripted_cycle_runtime import SwingLandingConfig
+from testbed.tasks.task_state_auto_progress import (
+    AUTO_PROGRESS_SCHEMA,
+    TaskStateAutoProgress,
+)
 
 
 CAMERAS = ["video4", "video5", "video6", "video7"]
@@ -156,18 +160,19 @@ def verify_runtime(
     )
     _check(
         errors,
-        task_state.get("advance_source") == "operator_mark",
-        "task-state owner must be operator_mark",
+        task_state.get("advance_source") == "automatic_policy_state",
+        "task-state owner must be automatic_policy_state",
     )
     _check(
         errors,
-        bool(task_state.get("require_excursion_before_work_complete", False)),
-        "work-complete mark must require confirmed excursion",
+        Path(str(task_state.get("auto_progress_contract", ""))).name
+        == "task_state_auto_progress_contract.json",
+        "task-state automatic progress contract path mismatch",
     )
     _check(
         errors,
-        joystick.get("mark_button") == 1,
-        "physical button 2 must own task-state marks",
+        joystick.get("mark_button") is None,
+        "automatic progress must not require a task-state mark button",
     )
     _check(
         errors,
@@ -177,7 +182,7 @@ def verify_runtime(
     _check(
         errors,
         joystick.get("record_start_button") is None,
-        "record-start must be disabled so physical button 2 has one meaning",
+        "record-start must remain disabled in policy runtime",
     )
     _check(
         errors,
@@ -259,8 +264,10 @@ def verify_runtime(
         "contracts/target_release_contract_v2.json",
         "contracts/direct_policy_output_mechanical_deadzone.json",
         "contracts/task_state_runtime_contract.json",
+        "contracts/task_state_auto_progress_contract.json",
         "manifest/task_state_manifest.json",
         "evaluation/probe_result.json",
+        "evaluation/automatic_progress/auto_progress_replay.json",
     )
     for name in required:
         _check(errors, (bundle / name).is_file(), f"missing bundle file: {name}")
@@ -295,6 +302,11 @@ def verify_runtime(
         errors,
         bool(accepted_runtime.get("control_path_implemented", False)),
         "accepted manifest must record control path implementation",
+    )
+    _check(
+        errors,
+        accepted_runtime.get("task_state_owner") == "automatic_causal_policy_state",
+        "accepted manifest task-state owner mismatch",
     )
     _check(
         errors,
@@ -374,13 +386,62 @@ def verify_runtime(
     owner = dict(runtime_contract.get("owner", {}) or {})
     _check(
         errors,
-        owner.get("type") == "planner_plus_explicit_operator_mark",
+        owner.get("type") == "planner_plus_automatic_causal_progress",
         "bundle runtime owner mismatch",
     )
     _check(
         errors,
-        owner.get("automatic_observation_inference") is False,
-        "task events must not be inferred from observations",
+        owner.get("automatic_causal_progress") is True,
+        "task events must use the automatic causal progress owner",
+    )
+    _check(
+        errors,
+        owner.get("future_observation_used") is False,
+        "automatic task progress must not inspect future observations",
+    )
+    _check(
+        errors,
+        owner.get("operator_mark_required") is False,
+        "normal task progress must not require operator marks",
+    )
+    auto_contract = _optional_json(
+        bundle / "contracts/task_state_auto_progress_contract.json", errors
+    )
+    _check(
+        errors,
+        auto_contract.get("schema") == AUTO_PROGRESS_SCHEMA,
+        "automatic progress contract schema mismatch",
+    )
+    try:
+        TaskStateAutoProgress(auto_contract)
+    except Exception as exc:
+        errors.append(
+            f"automatic progress contract invalid: {type(exc).__name__}: {exc}"
+        )
+    auto_replay = _optional_json(
+        bundle / "evaluation/automatic_progress/auto_progress_replay.json",
+        errors,
+    )
+    _check(
+        errors,
+        auto_replay.get("status")
+        == "RECORDED_STATE_AUTOMATIC_PROGRESS_REPLAY_COMPLETE",
+        "automatic progress replay status mismatch",
+    )
+    replay_summary = dict(auto_replay.get("summary", {}) or {})
+    replay_all = dict(replay_summary.get("heldout_all", {}) or {})
+    replay_b_to_a = dict(replay_summary.get("heldout_b_to_a", {}) or {})
+    _check(
+        errors,
+        replay_all.get("automatic_work_complete_rate") == 1.0
+        and replay_all.get("automatic_return_commit_rate") == 1.0,
+        "automatic progress replay did not advance all held-out cycles",
+    )
+    _check(
+        errors,
+        replay_b_to_a.get("precommit_effective_negative_swing_rate") == 0.0
+        and replay_b_to_a.get("postcommit_effective_negative_swing_rate") == 1.0,
+        "automatic progress replay B-to-A direction contract failed",
     )
 
     _verify_ready_and_target_contracts(bundle, scripted, errors)
@@ -408,7 +469,7 @@ def verify_runtime(
         "checkpoint_sha256": _sha256(checkpoint) if checkpoint.is_file() else "",
         "bundle_source_commit": source_commit,
         "runtime_checkout_commit": current_commit,
-        "task_state_owner": "planner_plus_explicit_operator_mark",
+        "task_state_owner": "planner_plus_automatic_causal_progress",
         "script": script_manifest,
         "software_control_path": [
             "PolicyActionSource",
@@ -441,6 +502,7 @@ def run_model_load_smoke(
     """
 
     from testbed.actions.policy import PolicyActionSource
+    from testbed.tasks.task_state_auto_progress import TaskStateAutoProgress
 
     source = PolicyActionSource.from_config(
         {
@@ -467,6 +529,9 @@ def run_model_load_smoke(
     )
     try:
         source.commit_cycle_goal()
+        auto_progress = TaskStateAutoProgress.from_path(
+            bundle / "contracts/task_state_auto_progress_contract.json"
+        )
         observation = {
             "qpos": np.asarray([0.2, -0.5, 0.7, -0.8], dtype=np.float32),
             "qvel": np.asarray([0.0, 0.01, -0.02, 0.01], dtype=np.float32),
@@ -475,16 +540,45 @@ def run_model_load_smoke(
             },
             "timestamp_ns": 1_000_000_000,
         }
+        auto_progress.reset_goal(observation["qpos"])
         returned: list[np.ndarray] = []
         infos = []
         action, info = source.next_action(observation)
         returned.append(np.asarray(action, dtype=np.float32))
         infos.append(info)
-        source.set_task_dig_complete(completed=True)
+        auto_progress.observe_qpos(
+            observation["qpos"] + np.asarray([0.1, 0.06, 0.0, 0.08], dtype=np.float32)
+        )
+        for _ in range(auto_progress.min_bucket_effective_steps):
+            auto_progress.observe_policy_action(
+                [0.0, 0.0, 0.0, 0.6],
+                excursion_observed=True,
+                task_dig_complete=False,
+                task_return_commit=False,
+            )
+        for _ in range(auto_progress.bucket_release_steps):
+            auto_progress.observe_policy_action(
+                [0.0, 0.0, 0.0, 0.2],
+                excursion_observed=True,
+                task_dig_complete=False,
+                task_return_commit=False,
+            )
+        work_event, work_changed = auto_progress.apply_pending(source)
+        if (work_event, work_changed) != ("work_complete", True):
+            raise RuntimeError("automatic work-complete smoke did not advance")
         action, info = source.next_action(observation)
         returned.append(np.asarray(action, dtype=np.float32))
         infos.append(info)
-        source.set_task_return_commit(committed=True)
+        for _ in range(auto_progress.return_idle_steps):
+            auto_progress.observe_policy_action(
+                [0.0, 0.0, 0.0, 0.0],
+                excursion_observed=True,
+                task_dig_complete=True,
+                task_return_commit=False,
+            )
+        return_event, return_changed = auto_progress.apply_pending(source)
+        if (return_event, return_changed) != ("return_commit", True):
+            raise RuntimeError("automatic return-commit smoke did not advance")
         action, info = source.next_action(observation)
         returned.append(np.asarray(action, dtype=np.float32))
         infos.append(info)
@@ -536,6 +630,8 @@ def run_model_load_smoke(
                 float(np.max(np.abs(value))) for value in returned
             ),
             "backend_constructed": False,
+            "automatic_progress_smoke": "PASS",
+            "automatic_progress_test_actions_synthetic": True,
             "evidence_boundary": "Synthetic observations; no backend or physical motion.",
         }
     finally:

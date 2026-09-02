@@ -24,6 +24,10 @@ from testbed.tasks.home_side_contract import (
     classify_ready_swing_qpos,
     validate_rule_ready_contract,
 )
+from testbed.tasks.task_state_auto_progress import (
+    TaskStateAutoProgress,
+    resolve_auto_progress_contract_path,
+)
 
 
 class ScriptedCycleRuntimeError(RuntimeError):
@@ -200,6 +204,12 @@ class ReadySideWindow:
             return None
         return float(self._samples[-1][2][0])
 
+    @property
+    def latest_qpos(self) -> np.ndarray | None:
+        if not self._samples:
+            return None
+        return self._samples[-1][1].copy()
+
     def snapshot(self) -> dict[str, Any]:
         swing = self.contract["swing_axis"]
         base = {
@@ -312,6 +322,7 @@ class ScriptedCycleRuntime:
         run_stop_s: float = 240.0,
         stop_on_wrong_ready: bool = True,
         task_state_v2: Mapping[str, Any] | None = None,
+        task_state_auto_progress: TaskStateAutoProgress | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         planner = getattr(policy_source, "cycle_planner", None)
@@ -351,6 +362,7 @@ class ScriptedCycleRuntime:
         self.require_excursion_before_work_complete = bool(
             task_state_cfg.get("require_excursion_before_work_complete", True)
         )
+        self.task_state_auto_progress = task_state_auto_progress
         self._clock = clock
         policy_requires_task_state = bool(
             getattr(policy_source, "task_state_v2_enabled", False)
@@ -365,9 +377,13 @@ class ScriptedCycleRuntime:
                 "declare real_transition_task_state_v2"
             )
         if self.task_state_v2_enabled:
-            if self.task_state_advance_source != "operator_mark":
+            if self.task_state_advance_source not in {
+                "operator_mark",
+                "automatic_policy_state",
+            }:
                 raise ScriptedCycleRuntimeError(
-                    "task_state_v2.advance_source must be operator_mark"
+                    "task_state_v2.advance_source must be operator_mark or "
+                    "automatic_policy_state"
                 )
             for method_name in (
                 "set_task_dig_complete",
@@ -377,6 +393,20 @@ class ScriptedCycleRuntime:
                     raise ScriptedCycleRuntimeError(
                         f"task-state-v2 policy source must implement {method_name}()"
                     )
+            if (
+                self.task_state_advance_source == "automatic_policy_state"
+                and self.task_state_auto_progress is None
+            ):
+                raise ScriptedCycleRuntimeError(
+                    "automatic task-state-v2 requires its frozen progress contract"
+                )
+            if (
+                self.task_state_advance_source == "operator_mark"
+                and self.task_state_auto_progress is not None
+            ):
+                raise ScriptedCycleRuntimeError(
+                    "operator-owned task-state-v2 cannot attach automatic progress"
+                )
         if not (0.0 < self.cycle_review_s < self.cycle_stop_s):
             raise ScriptedCycleRuntimeError(
                 "scripted-cycle limits require 0 < cycle_review_s < cycle_stop_s"
@@ -411,6 +441,15 @@ class ScriptedCycleRuntime:
         target_ranges = _load_target_ranges(
             cfg.get("target_region_contract"), bundle_dir=bundle_dir
         )
+        task_state_cfg = dict(cfg.get("task_state_v2", {}) or {})
+        auto_progress = None
+        if task_state_cfg.get("advance_source") == "automatic_policy_state":
+            auto_progress = TaskStateAutoProgress.from_path(
+                resolve_auto_progress_contract_path(
+                    task_state_cfg.get("auto_progress_contract"),
+                    bundle_dir=bundle_dir,
+                )
+            )
         return cls(
             policy_source=policy_source,
             ready_contract=payload,
@@ -420,7 +459,8 @@ class ScriptedCycleRuntime:
             cycle_stop_s=float(cfg.get("cycle_stop_s", 60.0)),
             run_stop_s=float(cfg.get("run_stop_s", 240.0)),
             stop_on_wrong_ready=bool(cfg.get("stop_on_wrong_ready", True)),
-            task_state_v2=cfg.get("task_state_v2"),
+            task_state_v2=task_state_cfg,
+            task_state_auto_progress=auto_progress,
             clock=clock,
         )
 
@@ -435,11 +475,17 @@ class ScriptedCycleRuntime:
 
     def observe(self, observation: Mapping[str, Any]) -> dict[str, Any]:
         timestamp_ns = _observation_timestamp_ns(observation)
+        observed_qpos = np.asarray(observation.get("qpos"), dtype=np.float64).reshape(
+            -1
+        )
         status = self.ready.update(
             timestamp_ns=timestamp_ns,
-            qpos=observation.get("qpos"),
+            qpos=observed_qpos,
             qvel=observation.get("qvel"),
         )
+        self._last_observation_qpos = observed_qpos.copy()
+        if self._active and self.task_state_auto_progress is not None:
+            self.task_state_auto_progress.observe_qpos(observed_qpos)
         self._last_ready = status
         current_swing = self.ready.latest_swing_qpos
         if self._active and current_swing is not None:
@@ -495,6 +541,16 @@ class ScriptedCycleRuntime:
     def evaluate(self) -> dict[str, Any]:
         if not self._active:
             return self.status()
+        self._task_state_changed_this_tick = False
+        self._task_state_applied_event = ""
+        if self.task_state_auto_progress is not None:
+            applied_event, changed = self.task_state_auto_progress.apply_pending(
+                self.policy_source
+            )
+            self._task_state_changed_this_tick = bool(changed)
+            self._task_state_applied_event = str(applied_event)
+            if changed:
+                self._last_event = f"automatic_{applied_event}_applied"
         now = float(self._clock())
         if (
             self._run_started_s is not None
@@ -604,6 +660,10 @@ class ScriptedCycleRuntime:
             raise ScriptedCycleRuntimeError(
                 "task-state-v2 operator advance is disabled"
             )
+        if self.task_state_advance_source != "operator_mark":
+            raise ScriptedCycleRuntimeError(
+                "task-state-v2 is owned by automatic_policy_state"
+            )
         if not self._active:
             raise ScriptedCycleRuntimeError(
                 "task-state-v2 operator advance requires an active scripted cycle"
@@ -632,6 +692,20 @@ class ScriptedCycleRuntime:
             return self.status(task_state_changed=changed)
         self._last_event = "task_state_advance_ignored_already_committed"
         return self.status(task_state_advance_ignored=True)
+
+    def observe_policy_action(self, action: Any) -> dict[str, Any]:
+        """Update automatic progress after one policy action without applying it."""
+
+        if not self._active or self.task_state_auto_progress is None:
+            return self.status()
+        planner_status = dict(self.policy_source.cycle_planner_status())
+        self.task_state_auto_progress.observe_policy_action(
+            action,
+            excursion_observed=bool(self._excursion_observed),
+            task_dig_complete=bool(planner_status.get("task_dig_complete", False)),
+            task_return_commit=bool(planner_status.get("task_return_commit", False)),
+        )
+        return self.status()
 
     def shape_policy_action(
         self,
@@ -867,7 +941,9 @@ class ScriptedCycleRuntime:
             "goal_changed": bool(goal_changed),
             "excursion_changed": bool(excursion_changed),
             "phase_changed": bool(phase_changed),
-            "task_state_changed": bool(task_state_changed),
+            "task_state_changed": bool(
+                task_state_changed or self._task_state_changed_this_tick
+            ),
             "task_state_advance_ignored": bool(task_state_advance_ignored),
             "task_state_v2_enabled": bool(self.task_state_v2_enabled),
             "task_state_advance_source": str(self.task_state_advance_source),
@@ -875,6 +951,12 @@ class ScriptedCycleRuntime:
                 self.require_excursion_before_work_complete
             ),
             "task_state_stage": _task_state_stage(planner_status),
+            "task_state_applied_event": str(self._task_state_applied_event),
+            "task_state_auto_progress": (
+                {"enabled": False}
+                if self.task_state_auto_progress is None
+                else self.task_state_auto_progress.status()
+            ),
             "stop_policy": bool(stop_policy),
             "review_due": bool(self._review_due),
             "excursion_observed": bool(self._excursion_observed),
@@ -934,6 +1016,12 @@ class ScriptedCycleRuntime:
         self._fault_reason = ""
         if str(goal.target_side) not in {"A", "B"}:
             raise ScriptedCycleRuntimeError("planner goal target side must be A or B")
+        if self.task_state_auto_progress is not None:
+            if self._last_observation_qpos is None:
+                raise ScriptedCycleRuntimeError(
+                    "automatic task progress requires a current qpos observation"
+                )
+            self.task_state_auto_progress.reset_goal(self._last_observation_qpos)
 
     def _reset_execution(self) -> None:
         self._active = False
@@ -953,6 +1041,11 @@ class ScriptedCycleRuntime:
         self._landing_last_timestamp_ns: int | None = None
         self._excursion_candidate_count = 0
         self._excursion_observed = False
+        self._task_state_changed_this_tick = False
+        self._task_state_applied_event = ""
+        self._last_observation_qpos = self.ready.latest_qpos
+        if self.task_state_auto_progress is not None:
+            self.task_state_auto_progress.reset()
         self._last_ready = self.ready.snapshot()
 
 

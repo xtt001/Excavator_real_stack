@@ -10,6 +10,7 @@ from testbed.tasks.act_cycle_planner import (
 )
 from testbed.tasks.home_side_contract import build_rule_ready_contract
 from testbed.tasks.scripted_cycle_runtime import ScriptedCycleRuntime
+from testbed.tasks.task_state_auto_progress import TaskStateAutoProgress
 
 
 class _Remote(ActionSource):
@@ -68,6 +69,7 @@ class _Policy(ActionSource):
         self.task_dig_complete = False
         self.task_return_commit = False
         self.task_state_epoch = 0
+        self.forced_action: np.ndarray | None = None
 
     def reset(self) -> None:
         self.reset_count += 1
@@ -77,9 +79,13 @@ class _Policy(ActionSource):
         goal = self.cycle_planner.committed_goal
         assert goal is not None
         self.seen_targets.append(str(goal.target_side))
-        action = np.asarray(
-            [-0.8 if goal.target_side == "A" else 0.0, 0.0, 0.0, 0.0],
-            dtype=np.float32,
+        action = (
+            self.forced_action.copy()
+            if self.forced_action is not None
+            else np.asarray(
+                [-0.8 if goal.target_side == "A" else 0.0, 0.0, 0.0, 0.0],
+                dtype=np.float32,
+            )
         )
         return action, ActionInfo(
             source_type="policy",
@@ -142,21 +148,49 @@ def _source(
     auto_start_after_arm: bool = False,
     side_matched: bool = False,
     task_state_v2: bool = False,
+    automatic_task_state: bool = False,
 ) -> tuple[RemoteArmedPolicyActionSource, _Remote, _Policy]:
     remote = _Remote()
     policy = _Policy(side_matched=side_matched, task_state_v2=task_state_v2)
+    auto_progress = (
+        TaskStateAutoProgress(
+            {
+                "schema": "real_transition_task_state_v2_auto_progress_contract_v1",
+                "status": "DATA_CONTRACT_PASS",
+                "runtime_config": {
+                    "advance_source": "automatic_policy_state",
+                    "required_liveness_axes": ["boom", "bucket"],
+                    "min_liveness_qpos_delta_rad": 0.05,
+                    "require_positive_swing_excursion": True,
+                    "bucket_positive_action_threshold": 0.408,
+                    "min_bucket_effective_steps": 5,
+                    "bucket_release_steps": 2,
+                    "return_idle_steps": 2,
+                    "positive_action_thresholds": [0.661, 0.259, 0.5, 0.408],
+                    "negative_action_thresholds": [0.721, 0.357, 0.5, 0.508],
+                },
+            }
+        )
+        if automatic_task_state
+        else None
+    )
     runtime = ScriptedCycleRuntime(
         policy_source=policy,
         ready_contract=build_rule_ready_contract(),
         task_state_v2=(
             {
                 "enabled": True,
-                "advance_source": "operator_mark",
+                "advance_source": (
+                    "automatic_policy_state"
+                    if automatic_task_state
+                    else "operator_mark"
+                ),
                 "require_excursion_before_work_complete": True,
             }
             if task_state_v2
             else None
         ),
+        task_state_auto_progress=auto_progress,
     )
     source = RemoteArmedPolicyActionSource(
         remote=remote,
@@ -168,10 +202,17 @@ def _source(
     return source, remote, policy
 
 
-def _obs(*, timestamp_ns: int, swing_qpos: float, swing_qvel: float = 0.0):
+def _obs(
+    *,
+    timestamp_ns: int,
+    swing_qpos: float,
+    swing_qvel: float = 0.0,
+    boom_qpos: float = 0.0,
+    bucket_qpos: float = 0.0,
+):
     return {
         "timestamp_ns": int(timestamp_ns),
-        "qpos": np.asarray([swing_qpos, 0.0, 0.0, 0.0], dtype=np.float32),
+        "qpos": np.asarray([swing_qpos, boom_qpos, 0.0, bucket_qpos], dtype=np.float32),
         "qvel": np.asarray([swing_qvel, 0.0, 0.0, 0.0], dtype=np.float32),
         "images": {},
     }
@@ -262,6 +303,87 @@ def test_remote_mark_drives_task_state_before_policy_inference() -> None:
     assert policy.task_return_commit is True
     assert return_info.extras["scripted_cycle_task_state_changed"] == 1
     assert return_info.extras["scripted_cycle_task_state_stage"] == "return_committed"
+
+
+def test_remote_runtime_advances_task_state_automatically() -> None:
+    source, remote, policy = _source(task_state_v2=True, automatic_task_state=True)
+    timestamp_ns, _ = _step_window(source, start_ns=1_000_000_000, swing_qpos=0.2)
+    remote.start_requested = True
+    source.next_action(_obs(timestamp_ns=timestamp_ns, swing_qpos=0.2))
+    timestamp_ns += 50_000_000
+    policy.forced_action = np.asarray([0.0, 0.0, 0.0, 0.6], dtype=np.float32)
+
+    for _ in range(3):
+        source.next_action(
+            _obs(
+                timestamp_ns=timestamp_ns,
+                swing_qpos=1.2,
+                swing_qvel=0.2,
+                boom_qpos=0.06,
+                bucket_qpos=0.08,
+            )
+        )
+        timestamp_ns += 50_000_000
+    for _ in range(4):
+        source.next_action(
+            _obs(
+                timestamp_ns=timestamp_ns,
+                swing_qpos=1.2,
+                boom_qpos=0.06,
+                bucket_qpos=0.08,
+            )
+        )
+        timestamp_ns += 50_000_000
+    policy.forced_action = np.asarray([0.0, 0.0, 0.0, 0.2], dtype=np.float32)
+    for _ in range(2):
+        source.next_action(
+            _obs(
+                timestamp_ns=timestamp_ns,
+                swing_qpos=1.2,
+                boom_qpos=0.06,
+                bucket_qpos=0.08,
+            )
+        )
+        timestamp_ns += 50_000_000
+
+    _action, completed = source.next_action(
+        _obs(
+            timestamp_ns=timestamp_ns,
+            swing_qpos=1.2,
+            boom_qpos=0.06,
+            bucket_qpos=0.08,
+        )
+    )
+    timestamp_ns += 50_000_000
+    assert policy.task_dig_complete is True
+    assert completed.extras["scripted_cycle_task_state_stage"] == "work_complete"
+    assert completed.extras["scripted_cycle_task_state_applied_event"] == (
+        "work_complete"
+    )
+
+    policy.forced_action = np.zeros(4, dtype=np.float32)
+    source.next_action(
+        _obs(
+            timestamp_ns=timestamp_ns,
+            swing_qpos=1.2,
+            boom_qpos=0.06,
+            bucket_qpos=0.08,
+        )
+    )
+    timestamp_ns += 50_000_000
+    _action, committed = source.next_action(
+        _obs(
+            timestamp_ns=timestamp_ns,
+            swing_qpos=1.2,
+            boom_qpos=0.06,
+            bucket_qpos=0.08,
+        )
+    )
+    assert policy.task_return_commit is True
+    assert committed.extras["scripted_cycle_task_state_stage"] == "return_committed"
+    assert committed.extras["scripted_cycle_task_state_applied_event"] == (
+        "return_commit"
+    )
 
 
 def test_one_arm_request_waits_then_auto_selects_ready_side_and_starts() -> None:

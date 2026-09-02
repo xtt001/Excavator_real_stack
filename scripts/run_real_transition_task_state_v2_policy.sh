@@ -43,7 +43,7 @@ if [[ "${MODE}" == "control" ]]; then
   for confirmation in \
     CONFIRM_HARDWARE_MOTION \
     CONFIRM_SCRIPT_REVIEWED \
-    CONFIRM_TASK_STATE_OPERATOR \
+    CONFIRM_AUTOMATIC_PROGRESS_REVIEWED \
     CONFIRM_SHADOW_LOG_REVIEWED; do
     if [[ "${!confirmation:-}" != "YES" ]]; then
       echo "Refusing control mode: set ${confirmation}=YES after its named review." >&2
@@ -116,16 +116,16 @@ scripted = policy_remote.setdefault("scripted_cycle", {})
 scripted.update({"enabled": True, "auto_start_after_arm": True})
 scripted["task_state_v2"] = {
     "enabled": True,
-    "advance_source": "operator_mark",
-    "require_excursion_before_work_complete": True,
+    "advance_source": "automatic_policy_state",
+    "auto_progress_contract": "contracts/task_state_auto_progress_contract.json",
 }
 joystick = teleop.setdefault("joystick", {})
-joystick.update({"mark_button": 1, "policy_start_button": 6})
+joystick.update({"mark_button": None, "policy_start_button": 6})
 teleop.setdefault("test_log", {})["output_dir"] = str(session.resolve())
 teleop.setdefault("metadata", {})["notes"] = (
     f"task-state-v2 allow2 ACT; output_mode={output_mode}; "
     f"script={Path(script_arg).resolve() if script_arg else 'auto-by-ready-side'}; "
-    "task owner=explicit operator marks"
+    "task owner=automatic causal progress state machine"
 )
 target.write_text(
     yaml.safe_dump(config, sort_keys=False, allow_unicode=True),
@@ -157,15 +157,14 @@ echo "  session=${SESSION_ROOT}"
 echo "  receiver=0.0.0.0:8770, initial mode=manual"
 echo
 echo "Operator sequence:"
-echo "  1. Start the host teleop sender with this runtime config."
+echo "  1. Start the host teleop sender with the checked-in task config shown below."
 echo "  2. Physical button 7 arms the finite script; stable A/B selects its side."
-echo "  3. Complete digging/dumping and the positive swing excursion."
-echo "  4. Press physical button 2 once: WORK_COMPLETE."
-echo "  5. Press physical button 2 again: RETURN_COMMITTED; next target is exposed."
-echo "  6. Button 7 returns to manual. Fault/completion latches zero until acknowledged."
+echo "  3. Runtime observes boom/bucket work, positive swing excursion and bucket release."
+echo "  4. WORK_COMPLETE and RETURN_COMMITTED advance automatically from causal evidence."
+echo "  5. Button 7 returns to manual. Fault/completion latches zero until acknowledged."
 echo
 echo "Host sender example (replace FIELD_JETSON_IP):"
-echo "  python -m testbed.cli.teleop_remote --config ${BASE_CONFIG} --host FIELD_JETSON_IP --input joystick --policy-start-button 7 --mark-button 2 --go-home-button 3 --confirm-remote-control"
+echo "  python -m testbed.cli.teleop_remote --config ${BASE_CONFIG} --host FIELD_JETSON_IP --input joystick --policy-start-button 7 --go-home-button 3 --confirm-remote-control"
 if [[ "${MODE}" == "shadow" ]]; then
   echo "shadow_zero logs model output while the returned command remains zero."
 fi

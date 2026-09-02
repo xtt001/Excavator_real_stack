@@ -416,6 +416,14 @@ def test_log_verdict_checks_task_state_sequence_and_planner_match() -> None:
                 "scripted_cycle_task_state_changed": changed,
                 "scripted_cycle_task_state_advance_requested": changed,
                 "scripted_cycle_task_state_advance_rejected_reason": "",
+                "scripted_cycle_task_auto_progress_enabled": 1,
+                "scripted_cycle_task_auto_work_liveness": 1,
+                "scripted_cycle_task_auto_bucket_effective_observed": 1,
+                "scripted_cycle_task_state_applied_event": (
+                    ""
+                    if index == 0
+                    else ("work_complete" if index == 1 else "return_commit")
+                ),
                 "planner_target_side": "A",
                 "policy_returned_action": [0.0] * 4,
                 "raw_action": [0.0] * 4,

@@ -44,13 +44,13 @@ teleop:
   metadata:
     operator_id: ""
     session_id: ""
-    notes: "task-state-v2 ACT; explicit work-complete and return-commit marks"
+    notes: "task-state-v2 ACT; automatic causal work-complete and return-commit"
 
   # The host teleop sender can use this same runtime config. Values are pygame
-  # zero-based indices: physical button 2 advances task state, button 7 arms.
+  # zero-based indices: task state advances automatically; button 7 arms/stops.
   joystick:
     record_start_button: null
-    mark_button: 1
+    mark_button: null
     policy_start_button: 6
     go_home_button: 2
     discard_button: 3
@@ -116,8 +116,8 @@ teleop:
       target_region_contract: contracts/target_release_contract_v2.json
       task_state_v2:
         enabled: true
-        advance_source: operator_mark
-        require_excursion_before_work_complete: true
+        advance_source: automatic_policy_state
+        auto_progress_contract: contracts/task_state_auto_progress_contract.json
       swing_landing:
         enabled: true
         coast_stop_time_s: 0.50

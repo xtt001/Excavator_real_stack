@@ -691,13 +691,12 @@ class HostDashboard(QtWidgets.QMainWindow):
                 headline, color = "● 模型正在执行多铲剧本", REC_ORANGE
                 if task_state_enabled and task_stage == "work":
                     instruction = (
-                        "完成挖掘、卸料和正向 excursion 后按物理按钮 2："
-                        "提交 WORK_COMPLETE；按钮 7 随时退出模型"
+                        "程序正在确认大臂/挖斗运动、正向 excursion 和卸料完成；"
+                        "满足后自动推进。按钮 7 随时退出模型"
                     )
                 elif task_state_enabled and task_stage == "work_complete":
                     instruction = (
-                        "确认可以回程后再按物理按钮 2：提交 RETURN_COMMITTED；"
-                        "按钮 7 随时退出模型"
+                        "程序正在确认动作收稳，满足后自动提交回程；按钮 7 随时退出模型"
                     )
                 else:
                     instruction = (
@@ -739,6 +738,12 @@ class HostDashboard(QtWidgets.QMainWindow):
                 receiver.get("scripted_cycle_task_state_advance_rejected_reason", "")
                 or "-"
             )
+            auto_pending = str(
+                receiver.get("scripted_cycle_task_auto_pending_event", "") or "-"
+            )
+            auto_liveness = _yes_no(
+                receiver.get("scripted_cycle_task_auto_work_liveness", 0)
+            )
             return_phase = _yes_no(
                 receiver.get(
                     "swing_landing_return_phase",
@@ -762,7 +767,8 @@ class HostDashboard(QtWidgets.QMainWindow):
             self.transition_context.setText(
                 f"候选起点: {receiver.get('planner_available_initial_sides') or 'A,B'}\n"
                 f"自动等待: {wait_reason}\n"
-                f"任务标记: {task_stage}  拒绝原因={task_mark_error}\n"
+                f"自动阶段: {task_stage}  作业运动={auto_liveness}  "
+                f"待提交={auto_pending}  异常={task_mark_error}\n"
                 f"落点控制: {receiver.get('swing_landing_mode') or '-'}  "
                 f"回程={return_phase}  policy_gain={policy_gain:.2f}  PD={pd_blend:.2f}"
             )

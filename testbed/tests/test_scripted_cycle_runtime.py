@@ -11,6 +11,7 @@ from testbed.tasks.act_cycle_planner import (
 )
 from testbed.tasks.home_side_contract import build_rule_ready_contract
 from testbed.tasks.scripted_cycle_runtime import ReadySideWindow, ScriptedCycleRuntime
+from testbed.tasks.task_state_auto_progress import TaskStateAutoProgress
 
 
 @dataclass
@@ -137,6 +138,25 @@ def _landing_cfg() -> dict:
         "max_action_positive": 0.72,
         "max_action_negative": 0.78,
         "qvel_stable_rad_s": 0.015,
+    }
+
+
+def _auto_progress_contract() -> dict:
+    return {
+        "schema": "real_transition_task_state_v2_auto_progress_contract_v1",
+        "status": "DATA_CONTRACT_PASS",
+        "runtime_config": {
+            "advance_source": "automatic_policy_state",
+            "required_liveness_axes": ["boom", "bucket"],
+            "min_liveness_qpos_delta_rad": 0.05,
+            "require_positive_swing_excursion": True,
+            "bucket_positive_action_threshold": 0.408,
+            "min_bucket_effective_steps": 5,
+            "bucket_release_steps": 2,
+            "return_idle_steps": 2,
+            "positive_action_thresholds": [0.661, 0.259, 0.5, 0.408],
+            "negative_action_thresholds": [0.721, 0.357, 0.5, 0.508],
+        },
     }
 
 
@@ -295,6 +315,47 @@ def test_task_state_v2_never_accepts_target_ready_before_return_commit() -> None
     completed = runtime.evaluate()
     assert completed["completed"] is True
     assert source.ready_count == 1
+
+
+def test_task_state_v2_can_advance_automatically_without_operator_marks() -> None:
+    source = _PlannerPolicySource(initial_side="B", targets=["A"], task_state_v2=True)
+    runtime = ScriptedCycleRuntime(
+        policy_source=source,
+        ready_contract=build_rule_ready_contract(),
+        task_state_v2={
+            "enabled": True,
+            "advance_source": "automatic_policy_state",
+        },
+        task_state_auto_progress=TaskStateAutoProgress(_auto_progress_contract()),
+    )
+    timestamp_ns = _stable_side(runtime, start_ns=1_000_000_000, swing_qpos=0.2)
+    runtime.activate()
+    runtime.observe(
+        {
+            "timestamp_ns": timestamp_ns,
+            "qpos": np.asarray([0.2, 0.06, 0.0, 0.08], dtype=np.float32),
+            "qvel": np.zeros(4, dtype=np.float32),
+        }
+    )
+    timestamp_ns = _confirm_excursion(runtime, start_ns=timestamp_ns + 50_000_000)
+
+    for _ in range(5):
+        runtime.observe_policy_action([0.0, 0.0, 0.0, 0.6])
+    for _ in range(2):
+        runtime.observe_policy_action([0.0, 0.0, 0.0, 0.2])
+    assert runtime.status()["task_state_auto_progress"]["pending_event"] == (
+        "work_complete"
+    )
+    completed = runtime.evaluate()
+    assert completed["task_state_changed"] is True
+    assert source.task_dig_complete is True
+
+    runtime.observe_policy_action([0.0, 0.0, 0.0, 0.0])
+    runtime.observe_policy_action([0.0, 0.0, 0.0, 0.0])
+    committed = runtime.evaluate()
+    assert committed["task_state_changed"] is True
+    assert committed["task_state_stage"] == "return_committed"
+    assert source.task_return_commit is True
 
 
 def test_script_completes_only_after_each_target_ready() -> None:

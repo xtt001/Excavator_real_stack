@@ -5282,6 +5282,12 @@ def _add_scripted_cycle_diagnostics(
         "scripted_cycle_task_state_advance_ignored",
         "scripted_cycle_task_state_v2_enabled",
         "scripted_cycle_task_state_require_excursion",
+        "scripted_cycle_task_auto_progress_enabled",
+        "scripted_cycle_task_auto_work_liveness",
+        "scripted_cycle_task_auto_bucket_effective_observed",
+        "scripted_cycle_task_auto_bucket_effective_count",
+        "scripted_cycle_task_auto_bucket_release_count",
+        "scripted_cycle_task_auto_return_idle_count",
         "scripted_cycle_excursion_observed",
         "scripted_cycle_return_phase_latched",
         "scripted_cycle_review_due",
@@ -5317,6 +5323,9 @@ def _add_scripted_cycle_diagnostics(
         "scripted_cycle_task_state_stage",
         "scripted_cycle_task_state_advance_source",
         "scripted_cycle_task_state_advance_rejected_reason",
+        "scripted_cycle_task_auto_pending_event",
+        "scripted_cycle_task_auto_last_event",
+        "scripted_cycle_task_state_applied_event",
         "planner_type",
         "planner_selected_initial_side",
         "planner_available_initial_sides",
@@ -5336,6 +5345,10 @@ def _add_scripted_cycle_diagnostics(
     diagnostics["planner_task_state_v2"] = np.asarray(
         extras.get("planner_task_state_v2", np.zeros(5)), dtype=np.float32
     ).reshape(5)
+    diagnostics["scripted_cycle_task_auto_max_qpos_delta_rad"] = np.asarray(
+        extras.get("scripted_cycle_task_auto_max_qpos_delta_rad", np.zeros(4)),
+        dtype=np.float32,
+    ).reshape(4)
 
 
 def _action_sample_timestamp_ns(action_info) -> int:

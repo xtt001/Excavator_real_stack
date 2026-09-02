@@ -24,6 +24,15 @@ DEFAULT_CONTRACT_SOURCE = Path(
     "policy_bundles/real_transition_target_release_v2/contracts"
 )
 DEFAULT_OUTPUT = Path("policy_bundles/real_transition_task_state_v2_allow2")
+DEFAULT_AUTO_PROGRESS_CONTRACT = Path(
+    "/data/pingfan/Excavator_real_stack_data/runs/"
+    "real_transition_v2_0_1_task_state_v2_v1/auto_progress_contract_v1/"
+    "task_state_auto_progress_contract.json"
+)
+DEFAULT_AUTO_PROGRESS_REPLAY = Path(
+    "/data/pingfan/Excavator_real_stack_data/runs/"
+    "real_transition_v2_0_1_task_state_v2_v1/auto_progress_replay_v1"
+)
 EXPECTED_LOW_DIM_KEYS = ["qpos", "qvel", "real_transition_task_state_v2"]
 CHECKPOINT_SHA256 = "e57bd59f07650f674f58eb9dfdaae2c06ead22b903922039cb2e6400daacaa4b"
 
@@ -49,18 +58,35 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
     parser.add_argument("--contract-source", type=Path, default=DEFAULT_CONTRACT_SOURCE)
+    parser.add_argument(
+        "--auto-progress-contract",
+        type=Path,
+        default=DEFAULT_AUTO_PROGRESS_CONTRACT,
+    )
+    parser.add_argument(
+        "--auto-progress-replay",
+        type=Path,
+        default=DEFAULT_AUTO_PROGRESS_REPLAY,
+    )
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     args = parser.parse_args()
     result = build_bundle(
         source=args.source.resolve(),
         contract_source=args.contract_source.resolve(),
+        auto_progress_contract=args.auto_progress_contract.resolve(),
+        auto_progress_replay=args.auto_progress_replay.resolve(),
         output=args.output.resolve(),
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 def build_bundle(
-    *, source: Path, contract_source: Path, output: Path
+    *,
+    source: Path,
+    contract_source: Path,
+    auto_progress_contract: Path,
+    auto_progress_replay: Path,
+    output: Path,
 ) -> dict[str, Any]:
     if output.exists():
         raise FileExistsError(f"refusing to overwrite runtime bundle: {output}")
@@ -97,11 +123,16 @@ def build_bundle(
         for name in CONTRACT_FILES
         if not (contract_source / name).is_file()
     )
+    if not auto_progress_contract.is_file():
+        missing.append(auto_progress_contract)
+    if not (auto_progress_replay / "auto_progress_replay.json").is_file():
+        missing.append(auto_progress_replay / "auto_progress_replay.json")
     if missing:
         raise FileNotFoundError(
             "runtime bundle source is incomplete: "
             + ", ".join(str(path) for path in missing)
         )
+    _verify_sha256(auto_progress_replay, sums_name="SHA256SUMS.txt")
 
     output.mkdir(parents=True)
     for source_name, destination_name in SOURCE_FILES.items():
@@ -111,6 +142,16 @@ def build_bundle(
             _copy_verified(path, output / "evaluation" / path.name)
     for name in CONTRACT_FILES:
         _copy_verified(contract_source / name, output / "contracts" / name)
+    _copy_verified(
+        auto_progress_contract,
+        output / "contracts/task_state_auto_progress_contract.json",
+    )
+    for path in sorted(auto_progress_replay.iterdir()):
+        if path.is_file():
+            _copy_verified(
+                path,
+                output / "evaluation/automatic_progress" / path.name,
+            )
 
     git_commit = _git_head()
     generated_at = dt.datetime.now(dt.timezone.utc).isoformat()
@@ -129,25 +170,29 @@ def build_bundle(
             ],
         },
         "owner": {
-            "type": "planner_plus_explicit_operator_mark",
-            "automatic_observation_inference": False,
+            "type": "planner_plus_automatic_causal_progress",
+            "automatic_causal_progress": True,
+            "future_observation_used": False,
+            "operator_mark_required": False,
             "goal_commit": (
                 "current_side=dig_target=planner current side; work_complete=0; "
                 "return_commit=0; next target hidden"
             ),
-            "first_mark": (
-                "after confirmed positive excursion, latch work_complete=1 and "
-                "reset ACT temporal state"
+            "work_complete": (
+                "after measured boom/bucket liveness, confirmed positive swing "
+                "excursion, sustained effective positive bucket action and its "
+                "causal release window; reset ACT temporal state"
             ),
-            "second_mark": (
-                "latch return_commit=1, expose planner next target, and reset ACT "
-                "temporal state"
+            "return_commit": (
+                "after work_complete and a causal all-axis mechanically idle policy "
+                "window; expose planner next target and reset ACT temporal state"
             ),
             "cycle_ready": "planner closes goal and next goal commit resets task state",
         },
         "control_path": [
             "remote operator events",
             "scripted cycle and task-state owner",
+            "automatic causal task-progress detector",
             "ACT raw chunk and temporal aggregation",
             "policy action scaling (identity)",
             "deadzone assist (disabled)",
@@ -159,8 +204,7 @@ def build_bundle(
         "safety": {
             "default_output_mode": "shadow_zero",
             "control_requires_per_run_confirmation": True,
-            "task_mark_before_excursion": "rejected without changing task state",
-            "task_mark_after_return_commit": "ignored without changing task state",
+            "missing_progress_evidence": "remain uncommitted until review/timeout",
             "script_fault_or_completion": "latched zero output",
             "shutdown": "zero command",
         },
@@ -182,7 +226,7 @@ def build_bundle(
             "source_offline_candidate": str(source),
             "runtime": {
                 "task_state_owner_implemented": True,
-                "task_state_owner": "planner_plus_explicit_operator_mark",
+                "task_state_owner": "automatic_causal_policy_state",
                 "control_path_implemented": True,
                 "shadow_zero_required_before_control": True,
                 "controlled_motion_authorized_by_bundle": False,
@@ -239,9 +283,9 @@ def _verify_source(source: Path) -> None:
     _verify_sha256(source)
 
 
-def _verify_sha256(directory: Path) -> None:
+def _verify_sha256(directory: Path, *, sums_name: str = "SHA256SUMS") -> None:
     result = subprocess.run(
-        ["sha256sum", "-c", "SHA256SUMS"],
+        ["sha256sum", "-c", str(sums_name)],
         cwd=directory,
         text=True,
         capture_output=True,
@@ -286,11 +330,12 @@ Required code commit: `{git_commit}`
 
 1. Run `MODE=shadow DRY_RUN=YES scripts/run_real_transition_task_state_v2_policy.sh`.
 2. Run shadow_zero with the field stack and review the generated log.
-3. Only after the operator has reviewed the script, task-state button mapping,
-   shadow log, and motion boundary may the four control confirmations be set.
-4. Physical button 7 arms/stops policy. After work and the positive excavation
-   excursion are complete, physical button 2 is pressed once for work_complete
-   and a second time for return_commit.
+3. Review the automatic progress trace: boom/bucket liveness, positive swing
+   excursion, effective bucket work, bucket release, action idle, work_complete,
+   and return_commit must occur in order.
+4. Physical button 7 arms/stops policy. Normal cycle progress requires no mark
+   button. Only after the script, automatic progress, shadow log, and motion
+   boundary have been reviewed may the control confirmations be set.
 
 The runner starts the existing `slave_real_stack.sh` control stack. Its control
 chain is ACT -> landing -> ActionGuard -> real action pump -> low-level bridge.
@@ -302,9 +347,11 @@ def _shadow_zero_checklist() -> str:
 
 - Verify `sha256sum -c SHA256SUMS` inside the bundle.
 - Verify qpos, raw qvel, four camera inputs, and the five-value task token in logs.
-- Confirm the first task mark is rejected before positive excursion confirmation.
-- Confirm mark one produces WORK_COMPLETE and resets ACT temporal aggregation.
-- Confirm mark two produces RETURN_COMMITTED, exposes next target, and resets ACT.
+- Confirm boom and bucket qpos liveness are observed before task progress.
+- Confirm positive swing excursion and sustained positive bucket action occur in order.
+- Confirm bucket release automatically produces WORK_COMPLETE and resets ACT.
+- Confirm the following all-axis action-idle window automatically produces
+  RETURN_COMMITTED, exposes the next target, and resets ACT.
 - Confirm a nonzero raw policy action still yields zero returned and commanded action.
 - Confirm script fault, completion, manual toggle, and shutdown all yield zero output.
 - Review one A-start and one B-start shadow sequence before any controlled motion.

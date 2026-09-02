@@ -295,7 +295,12 @@ class RemoteArmedPolicyActionSource(ActionSource):
             self._scripted_cycle_last_status.update(
                 {
                     "task_state_advance_requested": bool(mark_requested),
-                    "task_state_changed": bool(task_state_changed),
+                    "task_state_changed": bool(
+                        task_state_changed
+                        or self._scripted_cycle_last_status.get(
+                            "task_state_changed", False
+                        )
+                    ),
                     "task_state_advance_ignored": bool(task_state_advance_ignored),
                     "task_state_advance_rejected_reason": str(
                         task_state_rejected_reason
@@ -382,6 +387,22 @@ class RemoteArmedPolicyActionSource(ActionSource):
                 self._policy_frame_reuse_count = 0
             policy_extras = dict(getattr(policy_info, "extras", {}) or {})
             if self._scripted_cycle_runtime is not None:
+                task_state_changed_before_action = bool(
+                    self._scripted_cycle_last_status.get("task_state_changed", False)
+                )
+                raw_policy_action = np.asarray(
+                    policy_extras.get("policy_action", policy_action),
+                    dtype=np.float32,
+                )
+                self._scripted_cycle_last_status = (
+                    self._scripted_cycle_runtime.observe_policy_action(
+                        raw_policy_action
+                    )
+                )
+                self._scripted_cycle_last_status["task_state_changed"] = bool(
+                    task_state_changed_before_action
+                    or self._scripted_cycle_last_status.get("task_state_changed", False)
+                )
                 policy_action, swing_landing_diagnostics = (
                     self._scripted_cycle_runtime.shape_policy_action(
                         policy_action,
@@ -600,6 +621,7 @@ def _disabled_scripted_cycle_status() -> dict[str, Any]:
 def _scripted_cycle_extras(status: Mapping[str, Any] | None) -> dict[str, Any]:
     value = dict(status or _disabled_scripted_cycle_status())
     planner = dict(value.get("planner", {}) or {})
+    auto_progress = dict(value.get("task_state_auto_progress", {}) or {})
     blockers = [str(item) for item in value.get("ready_blockers", ())]
     planner_task_state = planner.get("task_state_v2")
     if planner_task_state is None:
@@ -635,6 +657,35 @@ def _scripted_cycle_extras(status: Mapping[str, Any] | None) -> dict[str, Any]:
         ),
         "scripted_cycle_task_state_advance_rejected_reason": str(
             value.get("task_state_advance_rejected_reason", "")
+        ),
+        "scripted_cycle_task_auto_progress_enabled": int(
+            bool(auto_progress.get("enabled", False))
+        ),
+        "scripted_cycle_task_auto_work_liveness": int(
+            bool(auto_progress.get("work_liveness_observed", False))
+        ),
+        "scripted_cycle_task_auto_bucket_effective_observed": int(
+            bool(auto_progress.get("bucket_effective_observed", False))
+        ),
+        "scripted_cycle_task_auto_bucket_effective_count": int(
+            auto_progress.get("bucket_effective_count", 0) or 0
+        ),
+        "scripted_cycle_task_auto_bucket_release_count": int(
+            auto_progress.get("bucket_release_count", 0) or 0
+        ),
+        "scripted_cycle_task_auto_return_idle_count": int(
+            auto_progress.get("return_idle_count", 0) or 0
+        ),
+        "scripted_cycle_task_auto_pending_event": str(
+            auto_progress.get("pending_event", "")
+        ),
+        "scripted_cycle_task_auto_last_event": str(auto_progress.get("last_event", "")),
+        "scripted_cycle_task_auto_max_qpos_delta_rad": np.asarray(
+            auto_progress.get("max_qpos_delta_rad", [0.0] * 4),
+            dtype=np.float32,
+        ),
+        "scripted_cycle_task_state_applied_event": str(
+            value.get("task_state_applied_event", "")
         ),
         "scripted_cycle_phase_changed": int(bool(value.get("phase_changed", False))),
         "scripted_cycle_excursion_changed": int(

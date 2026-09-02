@@ -94,10 +94,56 @@ def test_task_state_v2_bundle_and_static_runtime_preflight(
         },
     )
     _write_json(contracts / "direct_policy_output_mechanical_deadzone.json", {})
+    auto_progress_contract = tmp_path / "task_state_auto_progress_contract.json"
+    _write_json(
+        auto_progress_contract,
+        {
+            "schema": "real_transition_task_state_v2_auto_progress_contract_v1",
+            "status": "DATA_CONTRACT_PASS",
+            "runtime_config": {
+                "advance_source": "automatic_policy_state",
+                "required_liveness_axes": ["boom", "bucket"],
+                "min_liveness_qpos_delta_rad": 0.05,
+                "require_positive_swing_excursion": True,
+                "bucket_positive_action_threshold": 0.408,
+                "min_bucket_effective_steps": 5,
+                "bucket_release_steps": 2,
+                "return_idle_steps": 2,
+                "positive_action_thresholds": [0.661, 0.259, 0.5, 0.408],
+                "negative_action_thresholds": [0.721, 0.357, 0.5, 0.508],
+            },
+        },
+    )
+    auto_progress_replay = tmp_path / "auto_progress_replay"
+    _write_json(
+        auto_progress_replay / "auto_progress_replay.json",
+        {
+            "status": "RECORDED_STATE_AUTOMATIC_PROGRESS_REPLAY_COMPLETE",
+            "summary": {
+                "heldout_all": {
+                    "automatic_work_complete_rate": 1.0,
+                    "automatic_return_commit_rate": 1.0,
+                },
+                "heldout_b_to_a": {
+                    "precommit_effective_negative_swing_rate": 0.0,
+                    "postcommit_effective_negative_swing_rate": 1.0,
+                },
+            },
+        },
+    )
+    (auto_progress_replay / "SHA256SUMS.txt").write_text(
+        f"{_sha256(auto_progress_replay / 'auto_progress_replay.json')}  "
+        "auto_progress_replay.json\n",
+        encoding="utf-8",
+    )
 
     bundle = tmp_path / "policy_bundles/real_transition_task_state_v2_allow2"
     result = builder.build_bundle(
-        source=source, contract_source=contracts, output=bundle
+        source=source,
+        contract_source=contracts,
+        auto_progress_contract=auto_progress_contract,
+        auto_progress_replay=auto_progress_replay,
+        output=bundle,
     )
     config = load_yaml_config(
         REPO_ROOT
@@ -115,5 +161,5 @@ def test_task_state_v2_bundle_and_static_runtime_preflight(
 
     assert result["status"] == "PASS"
     assert preflight["status"] == "PASS"
-    assert preflight["task_state_owner"] == "planner_plus_explicit_operator_mark"
+    assert preflight["task_state_owner"] == "planner_plus_automatic_causal_progress"
     assert (bundle / "policy_accepted.ckpt").read_bytes() == checkpoint.read_bytes()

@@ -416,6 +416,23 @@ def _compute_metrics(
                 step.get("scripted_cycle_task_state_advance_rejected_reason", "")
             ).strip()
         ),
+        "task_auto_progress_enabled_count": sum(
+            int(step.get("scripted_cycle_task_auto_progress_enabled", 0) or 0)
+            for step in checked
+        ),
+        "task_auto_work_liveness_count": sum(
+            int(step.get("scripted_cycle_task_auto_work_liveness", 0) or 0)
+            for step in checked
+        ),
+        "task_auto_bucket_effective_count": sum(
+            int(step.get("scripted_cycle_task_auto_bucket_effective_observed", 0) or 0)
+            for step in checked
+        ),
+        "task_auto_applied_events": _counts(
+            str(step.get("scripted_cycle_task_state_applied_event", ""))
+            for step in checked
+            if str(step.get("scripted_cycle_task_state_applied_event", "")).strip()
+        ),
         "task_state_invalid_count": sum(
             1
             for step in policy_steps
@@ -528,6 +545,20 @@ def _verdict(
         if int(metrics["task_state_changed_count"]) < 2:
             reasons.append(
                 "task-state-v2 did not log both work-complete and return-commit changes"
+            )
+        if not int(metrics["task_auto_progress_enabled_count"]):
+            reasons.append("task-state-v2 automatic progress was never observed")
+        if not int(metrics["task_auto_work_liveness_count"]):
+            reasons.append("task-state-v2 never confirmed boom/bucket work liveness")
+        if not int(metrics["task_auto_bucket_effective_count"]):
+            reasons.append("task-state-v2 never confirmed effective bucket work")
+        required_auto_events = {"work_complete", "return_commit"}
+        missing_auto_events = required_auto_events - set(
+            metrics["task_auto_applied_events"]
+        )
+        if missing_auto_events:
+            reasons.append(
+                f"task-state-v2 missing automatic events={sorted(missing_auto_events)}"
             )
         if metrics["task_state_advance_rejections"]:
             reasons.append(
@@ -642,6 +673,13 @@ def _print_log_summary(
         f"invalid={metrics['task_state_invalid_count']} "
         f"mismatch={metrics['task_state_planner_mismatch_count']} "
         f"rejections={metrics['task_state_advance_rejections'] or '-'}"
+    )
+    print(
+        "Automatic progress: "
+        f"enabled_steps={metrics['task_auto_progress_enabled_count']} "
+        f"work_liveness_steps={metrics['task_auto_work_liveness_count']} "
+        f"bucket_effective_steps={metrics['task_auto_bucket_effective_count']} "
+        f"applied={metrics['task_auto_applied_events'] or '-'}"
     )
     print(f"Verdict: {'OK' if ok else 'NOT OK'}")
     if reasons:
