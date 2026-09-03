@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 860" role="img" aria-labelledby="title desc">
+  <title id="title">下一阶段的算法方向</title>
+  <desc id="desc">真机保持当前部署版作为工程基线，仿真改为由 ACT 生成参考轨迹、PID 负责跟踪执行。</desc>
+  <defs>
+    <style>text{font-family:"Noto Sans CJK SC","Microsoft YaHei",sans-serif}</style>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#9FB1C2"/></marker>
+  </defs>
+  <rect width="1600" height="860" fill="#F4F7FB"/>
+  <rect width="1600" height="12" fill="#3178F6"/>
+  <text x="78" y="66" font-size="19" font-weight="700" fill="#3178F6">本周组会 · 2026.09.03</text>
+  <text x="78" y="128" font-size="45" font-weight="700" fill="#102B4E">下一阶段的算法方向</text>
+  <line x1="78" y1="154" x2="1522" y2="154" stroke="#CDD9E5" stroke-width="2"/>
+
+  <rect x="70" y="205" width="1460" height="160" rx="24" fill="#FFFFFF" stroke="#D4DFEA" stroke-width="2"/>
+  <rect x="70" y="205" width="12" height="160" fill="#667A91"/>
+  <text x="112" y="258" font-size="29" font-weight="700" fill="#102B4E">真机算法线先收束</text>
+  <text x="112" y="305" font-size="23" fill="#102B4E">当前部署版作为可运行基线。ACT 直接执行和分割网格规划不再继续移植到真机。</text>
+  <text x="112" y="342" font-size="21" fill="#667A91">这些路线与真机的传感、标定和执行方式差异较大，对当前项目的研究收益也有限。</text>
+
+  <text x="78" y="435" font-size="29" font-weight="700" fill="#102B4E">仿真先验证新的分工</text>
+  <g text-anchor="middle" font-weight="700">
+    <rect x="70" y="485" width="250" height="125" rx="22" fill="#E8F0FF"/>
+    <text x="195" y="540" font-size="25" fill="#3178F6">图像和机器状态</text>
+    <text x="195" y="578" font-size="19" fill="#102B4E">提供当前环境信息</text>
+    <line x1="330" y1="548" x2="405" y2="548" stroke="#9FB1C2" stroke-width="5" marker-end="url(#arrow)"/>
+
+    <rect x="425" y="485" width="250" height="125" rx="22" fill="#E9E1FF"/>
+    <text x="550" y="540" font-size="31" fill="#7754D8">ACT</text>
+    <text x="550" y="578" font-size="19" fill="#102B4E">生成未来参考轨迹</text>
+    <line x1="685" y1="548" x2="760" y2="548" stroke="#9FB1C2" stroke-width="5" marker-end="url(#arrow)"/>
+
+    <rect x="780" y="485" width="250" height="125" rx="22" fill="#FFF1D6"/>
+    <text x="905" y="540" font-size="31" fill="#D98200">PID</text>
+    <text x="905" y="578" font-size="19" fill="#102B4E">高频跟踪参考轨迹</text>
+    <line x1="1040" y1="548" x2="1115" y2="548" stroke="#9FB1C2" stroke-width="5" marker-end="url(#arrow)"/>
+
+    <rect x="1135" y="485" width="250" height="125" rx="22" fill="#E1F6F2"/>
+    <text x="1260" y="540" font-size="27" fill="#168C80">仿真执行器</text>
+    <text x="1260" y="578" font-size="19" fill="#102B4E">执行并返回状态</text>
+    <path d="M1260 620 C1260 700, 550 700, 550 625" fill="none" stroke="#9FB1C2" stroke-width="4" marker-end="url(#arrow)"/>
+  </g>
+
+  <rect x="135" y="735" width="1330" height="74" rx="20" fill="#102F4A"/>
+  <text x="800" y="781" font-size="25" font-weight="700" fill="#FFFFFF" text-anchor="middle">先在仿真中分别评价轨迹质量和跟踪误差，再决定是否值得向真机推进。</text>
+</svg>

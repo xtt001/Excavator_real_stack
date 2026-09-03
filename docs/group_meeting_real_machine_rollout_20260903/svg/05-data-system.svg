@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 850" role="img" aria-labelledby="title desc">
+  <title id="title">数采系统的准备工作</title>
+  <desc id="desc">软件侧减少命令行操作并提供设备状态、任务设置、采集和质量检查，硬件侧统一时间、设备身份、标定、接口和安装要求。</desc>
+  <defs><style>text{font-family:"Noto Sans CJK SC","Microsoft YaHei",sans-serif}</style></defs>
+  <rect width="1600" height="850" fill="#F4F7FB"/>
+  <rect width="1600" height="12" fill="#3178F6"/>
+  <text x="78" y="66" font-size="19" font-weight="700" fill="#3178F6">本周组会 · 2026.09.03</text>
+  <text x="78" y="128" font-size="45" font-weight="700" fill="#102B4E">数采系统的准备工作</text>
+  <line x1="78" y1="154" x2="1522" y2="154" stroke="#CDD9E5" stroke-width="2"/>
+  <text x="78" y="200" font-size="27" fill="#667A91">现场人员能够看懂状态、完成采集、判断数据是否可用，集中采集才能稳定展开。</text>
+
+  <rect x="70" y="245" width="700" height="455" rx="24" fill="#FFFFFF" stroke="#D4DFEA" stroke-width="2"/>
+  <rect x="70" y="245" width="12" height="455" fill="#3178F6"/>
+  <text x="112" y="300" font-size="31" font-weight="700" fill="#3178F6">软件先减少命令行操作</text>
+  <g font-size="22" fill="#102B4E">
+    <circle cx="125" cy="360" r="9" fill="#3178F6"/><text x="150" y="368">自动发现相机、IMU 和控制设备，并显示连接状态</text>
+    <circle cx="125" cy="418" r="9" fill="#3178F6"/><text x="150" y="426">在界面中填写操作者、任务、场地和采集批次</text>
+    <circle cx="125" cy="476" r="9" fill="#3178F6"/><text x="150" y="484">界面明确显示准备、采集、保存和失败状态</text>
+    <circle cx="125" cy="534" r="9" fill="#3178F6"/><text x="150" y="542">实时显示帧率、时间同步、缺帧和传感器异常</text>
+    <circle cx="125" cy="592" r="9" fill="#3178F6"/><text x="150" y="600">采集结束后自动检查文件、元数据和可训练性</text>
+    <circle cx="125" cy="650" r="9" fill="#3178F6"/><text x="150" y="658">统一导出、命名和交接，减少人工整理</text>
+  </g>
+
+  <rect x="830" y="245" width="700" height="455" rx="24" fill="#FFFFFF" stroke="#D4DFEA" stroke-width="2"/>
+  <rect x="830" y="245" width="12" height="455" fill="#16A394"/>
+  <text x="872" y="300" font-size="31" font-weight="700" fill="#168C80">先统一硬件要求</text>
+  <g font-size="22" fill="#102B4E">
+    <circle cx="885" cy="360" r="9" fill="#16A394"/><text x="910" y="368">所有设备提供可追溯的硬件时间戳或统一时钟</text>
+    <circle cx="885" cy="418" r="9" fill="#16A394"/><text x="910" y="426">设备具有稳定编号，端口变化后仍能识别真实身份</text>
+    <circle cx="885" cy="476" r="9" fill="#16A394"/><text x="910" y="484">标定文件绑定设备编号、安装位置和版本</text>
+    <circle cx="885" cy="534" r="9" fill="#16A394"/><text x="910" y="542">统一供电、接口、线缆固定和防松要求</text>
+    <circle cx="885" cy="592" r="9" fill="#16A394"/><text x="910" y="600">相机和 IMU 安装位置可重复，并保留检查基准</text>
+    <circle cx="885" cy="650" r="9" fill="#16A394"/><text x="910" y="658">设备能够报告在线、温度、丢帧和故障状态</text>
+  </g>
+
+  <rect x="210" y="750" width="1180" height="62" rx="18" fill="#102F4A"/>
+  <text x="800" y="790" font-size="25" font-weight="700" fill="#FFFFFF" text-anchor="middle">先统一采集入口和设备要求，再扩大采集规模。</text>
+</svg>

@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
+  <title id="title">最终部署版怎样运行</title>
+  <desc id="desc">ACT 根据图像、关节位置、关节速度和任务阶段生成连续动作。运行时根据已经发生的物理动作推进阶段，并在阶段变化时清空旧预测。</desc>
+  <defs>
+    <style>text{font-family:"Noto Sans CJK SC","Microsoft YaHei",sans-serif}</style>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#9FB1C2"/></marker>
+  </defs>
+  <rect width="1600" height="900" fill="#F4F7FB"/>
+  <rect width="1600" height="12" fill="#3178F6"/>
+  <text x="78" y="66" font-size="19" font-weight="700" fill="#3178F6">本周组会 · 2026.09.03</text>
+  <text x="78" y="128" font-size="45" font-weight="700" fill="#102B4E">最终部署版怎样运行</text>
+  <line x1="78" y1="154" x2="1522" y2="154" stroke="#CDD9E5" stroke-width="2"/>
+  <text x="78" y="200" font-size="27" fill="#667A91">模型继续负责连续多轴动作，运行时负责判断工作阶段和开放回程。</text>
+
+  <g text-anchor="middle" font-weight="700">
+    <rect x="70" y="250" width="330" height="120" rx="22" fill="#E8F0FF"/>
+    <text x="235" y="302" font-size="25" fill="#3178F6">模型输入</text>
+    <text x="235" y="341" font-size="20" fill="#102B4E">图像 + 位置 + 速度 + 任务阶段</text>
+    <line x1="410" y1="310" x2="510" y2="310" stroke="#9FB1C2" stroke-width="5" marker-end="url(#arrow)"/>
+    <rect x="530" y="250" width="300" height="120" rx="22" fill="#E9E1FF"/>
+    <text x="680" y="305" font-size="34" fill="#7754D8">ACT</text>
+    <text x="680" y="343" font-size="20" fill="#102B4E">生成连续多轴动作</text>
+    <line x1="840" y1="310" x2="940" y2="310" stroke="#9FB1C2" stroke-width="5" marker-end="url(#arrow)"/>
+    <rect x="960" y="250" width="300" height="120" rx="22" fill="#E1F6F2"/>
+    <text x="1110" y="302" font-size="25" fill="#168C80">控制与安全链路</text>
+    <text x="1110" y="341" font-size="20" fill="#102B4E">检查并下发模型动作</text>
+    <line x1="1270" y1="310" x2="1350" y2="310" stroke="#9FB1C2" stroke-width="5" marker-end="url(#arrow)"/>
+    <rect x="1370" y="250" width="160" height="120" rx="22" fill="#FFF1D6"/>
+    <text x="1450" y="305" font-size="27" fill="#D98200">真机</text>
+    <text x="1450" y="343" font-size="19" fill="#102B4E">返回新状态</text>
+  </g>
+
+  <text x="78" y="455" font-size="29" font-weight="700" fill="#102B4E">运行时怎样判断阶段</text>
+  <g text-anchor="middle">
+    <rect x="75" y="500" width="300" height="155" rx="22" fill="#FFFFFF" stroke="#D4DFEA" stroke-width="2"/>
+    <text x="225" y="548" font-size="27" font-weight="700" fill="#3178F6">工作中</text>
+    <text x="225" y="590" font-size="20" fill="#102B4E">确认大臂、挖斗和回转</text>
+    <text x="225" y="622" font-size="20" fill="#102B4E">已经产生真实动作</text>
+    <line x1="385" y1="578" x2="470" y2="578" stroke="#9FB1C2" stroke-width="5" marker-end="url(#arrow)"/>
+
+    <rect x="490" y="500" width="300" height="155" rx="22" fill="#FFFFFF" stroke="#D4DFEA" stroke-width="2"/>
+    <text x="640" y="548" font-size="27" font-weight="700" fill="#F59E0B">工作完成</text>
+    <text x="640" y="590" font-size="20" fill="#102B4E">挖斗完成有效工作动作</text>
+    <text x="640" y="622" font-size="20" fill="#102B4E">随后把动作收回</text>
+    <line x1="800" y1="578" x2="885" y2="578" stroke="#9FB1C2" stroke-width="5" marker-end="url(#arrow)"/>
+
+    <rect x="905" y="500" width="300" height="155" rx="22" fill="#FFFFFF" stroke="#D4DFEA" stroke-width="2"/>
+    <text x="1055" y="548" font-size="27" font-weight="700" fill="#16A394">允许回程</text>
+    <text x="1055" y="590" font-size="20" fill="#102B4E">多轴输出连续两帧</text>
+    <text x="1055" y="622" font-size="20" fill="#102B4E">处于停止范围</text>
+    <line x1="1215" y1="578" x2="1300" y2="578" stroke="#9FB1C2" stroke-width="5" marker-end="url(#arrow)"/>
+
+    <rect x="1320" y="500" width="205" height="155" rx="22" fill="#FFFFFF" stroke="#D4DFEA" stroke-width="2"/>
+    <text x="1422" y="548" font-size="27" font-weight="700" fill="#16A394">回位</text>
+    <text x="1422" y="590" font-size="20" fill="#102B4E">到达目标侧</text>
+    <text x="1422" y="622" font-size="20" fill="#102B4E">结束当前一铲</text>
+  </g>
+
+  <rect x="160" y="710" width="1280" height="120" rx="22" fill="#102F4A"/>
+  <text x="800" y="758" font-size="25" font-weight="700" fill="#FFFFFF" text-anchor="middle">每次任务阶段改变时，系统都会清空 ACT 上一阶段的动作块和历史平均。</text>
+  <text x="800" y="800" font-size="22" fill="#D6E4EE" text-anchor="middle">旧预测不会继续影响下一阶段，回程目标也不会在工作完成前提前生效。</text>
+</svg>

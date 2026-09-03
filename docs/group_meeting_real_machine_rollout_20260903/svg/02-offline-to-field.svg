@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 860" role="img" aria-labelledby="title desc">
+  <title id="title">离线通过后，真机仍暴露了什么</title>
+  <desc id="desc">上一阶段的离线测试证明模型会按左右目标改变回转动作，但没有证明最终目标不会在整铲开始时过早生效。真机发现了直接回程问题。</desc>
+  <defs>
+    <style>text{font-family:"Noto Sans CJK SC","Microsoft YaHei",sans-serif}</style>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#9FB1C2"/></marker>
+  </defs>
+  <rect width="1600" height="860" fill="#F4F7FB"/>
+  <rect width="1600" height="12" fill="#3178F6"/>
+  <text x="78" y="66" font-size="19" font-weight="700" fill="#3178F6">本周组会 · 2026.09.03</text>
+  <text x="78" y="128" font-size="45" font-weight="700" fill="#102B4E">离线通过后，真机仍暴露了什么</text>
+  <line x1="78" y1="154" x2="1522" y2="154" stroke="#CDD9E5" stroke-width="2"/>
+  <text x="78" y="200" font-size="27" fill="#667A91">上一阶段验证了“目标会改变动作”，但没有验证“目标只在正确阶段改变动作”。</text>
+
+  <rect x="70" y="250" width="430" height="390" rx="24" fill="#FFFFFF" stroke="#D4DFEA" stroke-width="2"/>
+  <rect x="70" y="250" width="10" height="390" fill="#3178F6"/>
+  <text x="110" y="302" font-size="28" font-weight="700" fill="#3178F6">离线测试证明了什么</text>
+  <text x="110" y="360" font-size="22" fill="#102B4E">• 同一状态只改变左右目标</text>
+  <text x="110" y="402" font-size="22" fill="#102B4E">• 模型会给出不同回转命令</text>
+  <text x="110" y="444" font-size="22" fill="#102B4E">• 右区目标能够让回转停止</text>
+  <text x="110" y="486" font-size="22" fill="#102B4E">• 模型完成整铲的表现没有明显变差</text>
+  <rect x="110" y="530" width="350" height="72" rx="16" fill="#E8F0FF"/>
+  <text x="285" y="574" font-size="21" font-weight="700" fill="#102B4E" text-anchor="middle">证明模型听得到目标</text>
+
+  <line x1="515" y1="445" x2="585" y2="445" stroke="#9FB1C2" stroke-width="5" marker-end="url(#arrow)"/>
+
+  <rect x="600" y="250" width="430" height="390" rx="24" fill="#FFFFFF" stroke="#D4DFEA" stroke-width="2"/>
+  <rect x="600" y="250" width="10" height="390" fill="#F59E0B"/>
+  <text x="640" y="302" font-size="28" font-weight="700" fill="#D98200">当时没有测到什么</text>
+  <text x="640" y="360" font-size="22" fill="#102B4E">• 最终目标从整铲第一帧就存在</text>
+  <text x="640" y="402" font-size="22" fill="#102B4E">• 模型是否会提前执行回程动作</text>
+  <text x="640" y="444" font-size="22" fill="#102B4E">• 工作是否真的完成</text>
+  <text x="640" y="486" font-size="22" fill="#102B4E">• 每一铲是否遵守完整动作顺序</text>
+  <rect x="640" y="530" width="350" height="72" rx="16" fill="#FFF1D6"/>
+  <text x="815" y="574" font-size="21" font-weight="700" fill="#102B4E" text-anchor="middle">没有证明目标何时生效</text>
+
+  <line x1="1045" y1="445" x2="1115" y2="445" stroke="#9FB1C2" stroke-width="5" marker-end="url(#arrow)"/>
+
+  <rect x="1130" y="250" width="400" height="390" rx="24" fill="#FFFFFF" stroke="#D4DFEA" stroke-width="2"/>
+  <rect x="1130" y="250" width="10" height="390" fill="#E5484D"/>
+  <text x="1170" y="302" font-size="28" font-weight="700" fill="#E5484D">真机看到的失败</text>
+  <text x="1170" y="360" font-size="22" fill="#102B4E">• 右区开始，目标为左区</text>
+  <text x="1170" y="402" font-size="22" fill="#102B4E">• 第一推理步就启动负向回程</text>
+  <text x="1170" y="444" font-size="22" fill="#102B4E">• 当前侧工作被完整跳过</text>
+  <text x="1170" y="486" font-size="22" fill="#102B4E">• 软件仍把短流程记为完成</text>
+  <rect x="1170" y="530" width="320" height="72" rx="16" fill="#FFF0F0"/>
+  <text x="1330" y="574" font-size="21" font-weight="700" fill="#102B4E" text-anchor="middle">动作顺序不符合任务</text>
+
+  <rect x="180" y="708" width="1240" height="88" rx="20" fill="#102F4A"/>
+  <text x="800" y="744" font-size="25" font-weight="700" fill="#FFFFFF" text-anchor="middle">左右目标差异已经建立。新的问题需要明确任务阶段，</text>
+  <text x="800" y="780" font-size="25" font-weight="700" fill="#FFFFFF" text-anchor="middle">让下一目标只在工作完成以后生效。</text>
+</svg>
