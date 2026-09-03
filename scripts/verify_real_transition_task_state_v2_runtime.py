@@ -259,6 +259,8 @@ def verify_runtime(
         "accepted_model.json",
         "runtime_bundle_manifest.json",
         "SOURCE_COMMIT.txt",
+        "SHADOW_ZERO_CHECKLIST.md",
+        "CONTROLLED_CYCLE_CHECKLIST.md",
         "SHA256SUMS",
         "contracts/ready_contract.json",
         "contracts/target_release_contract_v2.json",
@@ -470,6 +472,11 @@ def verify_runtime(
         "bundle_source_commit": source_commit,
         "runtime_checkout_commit": current_commit,
         "task_state_owner": "planner_plus_automatic_causal_progress",
+        "field_log_qualification": (
+            "stationary_shadow_no_progress"
+            if expected_output_mode == "shadow_zero"
+            else "controlled_cycle_automatic_progress"
+        ),
         "script": script_manifest,
         "software_control_path": [
             "PolicyActionSource",

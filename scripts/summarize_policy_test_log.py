@@ -67,7 +67,22 @@ def main() -> int:
     parser.add_argument("--require-shadow-zero", action="store_true")
     parser.add_argument("--expect-policy-remote", action="store_true")
     parser.add_argument("--expect-scripted-cycle", action="store_true")
-    parser.add_argument("--expect-task-state-v2", action="store_true")
+    task_state_mode = parser.add_mutually_exclusive_group()
+    task_state_mode.add_argument(
+        "--expect-task-state-v2",
+        action="store_true",
+        help="Compatibility alias for --expect-task-state-v2-auto-progress.",
+    )
+    task_state_mode.add_argument(
+        "--expect-task-state-v2-auto-progress",
+        action="store_true",
+        help="Require a complete automatic WORK-to-RETURN progression.",
+    )
+    task_state_mode.add_argument(
+        "--expect-task-state-v2-stationary-shadow",
+        action="store_true",
+        help="Require stationary shadow_zero to remain safely in WORK.",
+    )
     parser.add_argument("--min-steps", type=int, default=1)
     parser.add_argument("--warmup-steps", type=int, default=1)
     parser.add_argument(
@@ -107,6 +122,12 @@ def main() -> int:
         expect_policy_remote=bool(args.expect_policy_remote),
         expect_scripted_cycle=bool(args.expect_scripted_cycle),
         expect_task_state_v2=bool(args.expect_task_state_v2),
+        expect_task_state_v2_auto_progress=bool(
+            args.expect_task_state_v2_auto_progress
+        ),
+        expect_task_state_v2_stationary_shadow=bool(
+            args.expect_task_state_v2_stationary_shadow
+        ),
         min_steps=int(args.min_steps),
         max_shadow_command_abs=float(args.max_shadow_command_abs),
     )
@@ -244,8 +265,8 @@ def _compute_metrics(
         else 0.0
     )
     effective_hz = (len(steps) - 1) / duration_s if duration_s > 0.0 else 0.0
-    policy_actions = [_vec(step.get("policy_action")) for step in checked]
-    policy_actions = [vec for vec in policy_actions if vec]
+    policy_actions = [_vec(step.get("policy_action")) for step in policy_steps]
+    policy_actions = [vec for vec in policy_actions if len(vec) == 4]
     assist_steps = [
         step
         for step in checked
@@ -433,6 +454,11 @@ def _compute_metrics(
             for step in checked
             if str(step.get("scripted_cycle_task_state_applied_event", "")).strip()
         ),
+        "task_auto_pending_events": _counts(
+            str(step.get("scripted_cycle_task_auto_pending_event", ""))
+            for step in checked
+            if str(step.get("scripted_cycle_task_auto_pending_event", "")).strip()
+        ),
         "task_state_invalid_count": sum(
             1
             for step in policy_steps
@@ -445,6 +471,8 @@ def _compute_metrics(
             != _vec(step.get("planner_task_state_v2"))
         ),
         "policy_action_mean": _vector_mean(policy_actions),
+        "policy_action_vector_count": len(policy_actions),
+        "policy_step_count": len(policy_steps),
         "policy_action_max_abs": _vectors_max_abs(policy_actions),
         "deadzone_assist_enabled_count": sum(
             1
@@ -477,6 +505,8 @@ def _verdict(
     min_steps: int,
     max_shadow_command_abs: float,
     expect_task_state_v2: bool = False,
+    expect_task_state_v2_auto_progress: bool = False,
+    expect_task_state_v2_stationary_shadow: bool = False,
 ) -> tuple[bool, list[str]]:
     reasons: list[str] = []
     steps = int(metrics["steps"])
@@ -535,31 +565,18 @@ def _verdict(
             )
         if not metrics["scripted_cycle_targets"]:
             reasons.append("scripted-cycle planner target was never logged")
-    if expect_task_state_v2:
+    expect_task_common = bool(
+        expect_task_state_v2
+        or expect_task_state_v2_auto_progress
+        or expect_task_state_v2_stationary_shadow
+    )
+    if expect_task_common:
         if not int(metrics["task_state_enabled_count"]):
             reasons.append("task-state-v2 runtime was never observed")
-        expected_stages = {"work", "work_complete", "return_committed"}
-        missing_stages = expected_stages - set(metrics["task_state_stages"])
-        if missing_stages:
-            reasons.append(f"task-state-v2 missing stages={sorted(missing_stages)}")
-        if int(metrics["task_state_changed_count"]) < 2:
-            reasons.append(
-                "task-state-v2 did not log both work-complete and return-commit changes"
-            )
         if not int(metrics["task_auto_progress_enabled_count"]):
             reasons.append("task-state-v2 automatic progress was never observed")
-        if not int(metrics["task_auto_work_liveness_count"]):
-            reasons.append("task-state-v2 never confirmed boom/bucket work liveness")
-        if not int(metrics["task_auto_bucket_effective_count"]):
-            reasons.append("task-state-v2 never confirmed effective bucket work")
-        required_auto_events = {"work_complete", "return_commit"}
-        missing_auto_events = required_auto_events - set(
-            metrics["task_auto_applied_events"]
-        )
-        if missing_auto_events:
-            reasons.append(
-                f"task-state-v2 missing automatic events={sorted(missing_auto_events)}"
-            )
+        if int(metrics["task_state_advance_requested_count"]):
+            reasons.append("task-state-v2 received an unexpected manual mark")
         if metrics["task_state_advance_rejections"]:
             reasons.append(
                 "task-state-v2 mark rejections="
@@ -573,6 +590,64 @@ def _verdict(
             reasons.append(
                 "task-state-v2 planner/policy mismatch count="
                 f"{metrics['task_state_planner_mismatch_count']}"
+            )
+        if int(metrics["policy_action_vector_count"]) != int(
+            metrics["policy_step_count"]
+        ):
+            reasons.append(
+                "policy action vectors missing or malformed="
+                f"{metrics['policy_action_vector_count']}/"
+                f"{metrics['policy_step_count']}"
+            )
+    if expect_task_state_v2 or expect_task_state_v2_auto_progress:
+        expected_stages = {"work", "work_complete", "return_committed"}
+        missing_stages = expected_stages - set(metrics["task_state_stages"])
+        if missing_stages:
+            reasons.append(f"task-state-v2 missing stages={sorted(missing_stages)}")
+        if int(metrics["task_state_changed_count"]) < 2:
+            reasons.append(
+                "task-state-v2 did not log both work-complete and return-commit changes"
+            )
+        if not int(metrics["task_auto_work_liveness_count"]):
+            reasons.append("task-state-v2 never confirmed boom/bucket work liveness")
+        if not int(metrics["task_auto_bucket_effective_count"]):
+            reasons.append("task-state-v2 never confirmed effective bucket work")
+        required_auto_events = {"work_complete", "return_commit"}
+        missing_auto_events = required_auto_events - set(
+            metrics["task_auto_applied_events"]
+        )
+        if missing_auto_events:
+            reasons.append(
+                f"task-state-v2 missing automatic events={sorted(missing_auto_events)}"
+            )
+    if expect_task_state_v2_stationary_shadow:
+        if expect_output_mode != "shadow_zero" or not require_shadow_zero:
+            reasons.append(
+                "stationary task-state shadow requires shadow_zero and locked outputs"
+            )
+        stages = set(metrics["task_state_stages"])
+        if "work" not in stages:
+            reasons.append("stationary shadow never reached the WORK stage")
+        forbidden_stages = stages & {"work_complete", "return_committed"}
+        if forbidden_stages:
+            reasons.append(
+                f"stationary shadow advanced task state={sorted(forbidden_stages)}"
+            )
+        if int(metrics["task_state_changed_count"]):
+            reasons.append("stationary shadow changed task-state bits")
+        if int(metrics["task_auto_work_liveness_count"]):
+            reasons.append("stationary shadow falsely confirmed work liveness")
+        if int(metrics["task_auto_bucket_effective_count"]):
+            reasons.append("stationary shadow falsely confirmed bucket work")
+        if metrics["task_auto_pending_events"]:
+            reasons.append(
+                "stationary shadow created pending automatic events="
+                f"{metrics['task_auto_pending_events']}"
+            )
+        if metrics["task_auto_applied_events"]:
+            reasons.append(
+                "stationary shadow applied automatic events="
+                f"{metrics['task_auto_applied_events']}"
             )
     return (not reasons), reasons
 
@@ -679,6 +754,7 @@ def _print_log_summary(
         f"enabled_steps={metrics['task_auto_progress_enabled_count']} "
         f"work_liveness_steps={metrics['task_auto_work_liveness_count']} "
         f"bucket_effective_steps={metrics['task_auto_bucket_effective_count']} "
+        f"pending={metrics['task_auto_pending_events'] or '-'} "
         f"applied={metrics['task_auto_applied_events'] or '-'}"
     )
     print(f"Verdict: {'OK' if ok else 'NOT OK'}")

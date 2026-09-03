@@ -107,9 +107,14 @@ SHA-256：`6a61c5e17c7108473a4c68a1638cc7c67d9e557659b454f0844fecb770937cb3`
 物理按钮 7 继续负责 ARM、退出模型和解除 script-stop latch。正常挖掘不再绑定 task-state
 mark 按钮。脚本开始后，cycle 计划和阶段状态都由程序推进。
 
-`shadow_zero` 仍是首次现场运行要求。日志必须显示 work liveness、excursion、bucket
-effective、bucket release、action idle、WORK_COMPLETE 和 RETURN_COMMITTED 的有序链路。
-缺少任一证据时不得进入 control。
+`shadow_zero` 仍是首次现场运行要求，但它锁零模型输出，不能产生自动推进所需的真实
+boom/bucket 位移。静止 shadow 的正确结果是 task state 保持 WORK，且没有 liveness、
+pending event、WORK_COMPLETE、RETURN_COMMITTED 或 cycle advance。它用于验证输入链、
+raw policy 输出、锁零和无误触发。
+
+work liveness、excursion、bucket effective、bucket release、action idle、WORK_COMPLETE 和
+RETURN_COMMITTED 的完整有序链，只能由冻结 recorded-state replay 或受控物理 cycle
+验证。首次运动使用单 cycle B→A；该日志通过后再验证 A→B，最后才进入多 cycle。
 
 本轮没有连接 Jetson、现场 TCP 或液压系统，没有进行真机运动。自动 replay 不能证明
 策略动作会在物理闭环中产生相同 qpos/qvel、卸料效果或土方结果。候选仍保持

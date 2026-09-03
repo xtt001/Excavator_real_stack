@@ -166,7 +166,11 @@ echo
 echo "Host sender example (replace FIELD_JETSON_IP):"
 echo "  python -m testbed.cli.teleop_remote --config ${BASE_CONFIG} --host FIELD_JETSON_IP --input joystick --policy-start-button 7 --go-home-button 3 --confirm-remote-control"
 if [[ "${MODE}" == "shadow" ]]; then
-  echo "shadow_zero logs model output while the returned command remains zero."
+  echo "shadow_zero logs model output while returned/safe/commanded actions remain zero."
+  echo "Expected stationary result: remain in WORK with no liveness or automatic task event."
+  echo "It cannot prove full automatic progress because the model does not move the machine."
+else
+  echo "After the finite controlled cycle, run MODE=control check_real_transition_task_state_v2_log.sh."
 fi
 if [[ "${DRY_RUN:-}" == "YES" ]]; then
   echo "DRY_RUN=YES: static preflight complete; no field service was started."

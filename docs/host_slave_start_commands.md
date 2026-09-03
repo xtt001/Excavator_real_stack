@@ -695,6 +695,7 @@ action chunk 和时序聚合。正常 cycle 不需要操作者提交阶段按钮
 cd /media/mundane/D/Excavator_real_stack
 git switch fs/v2.0.1
 git pull --ff-only origin fs/v2.0.1
+CYCLE_SCRIPT=testbed/testbed/configs/real_transition_single_cycle_right_to_left_v1.json \
 MODE=shadow DRY_RUN=YES ./scripts/run_real_transition_task_state_v2_policy.sh
 ```
 
@@ -711,18 +712,39 @@ python -m testbed.cli.teleop_remote \
   --confirm-remote-control
 ```
 
-`shadow_zero` 完整跑过 WORK、WORK_COMPLETE 和 RETURN_COMMITTED 后，用以下入口检查
-多关节 liveness、bucket/release/idle 证据、token、planner 一致性、模型错误和命令锁零：
+`shadow_zero` 不会驱动 boom/bucket 产生真实位移，所以它不应也不可能完成自动阶段推进。
+机器稳定停在 B，ARM 策略并记录至少 20 个 policy step；状态必须保持 WORK，不得出现
+work liveness、pending event、`WORK_COMPLETE`、`RETURN_COMMITTED` 或 cycle advance，
+returned/safe/commanded action 必须全部为零。停止后检查最新日志：
 
 ```bash
 MODE=shadow ./scripts/check_real_transition_task_state_v2_log.sh
 ```
+
+随后用 `real_transition_single_cycle_left_to_right_v1.json` 在 A 区重复同一静止 shadow。
+完整的多关节 liveness、bucket/release/idle 和自动 token 顺序，只在冻结 recorded-state
+replay 或受控运动日志中检查，不能由静止 shadow 证明。
 
 `MODE=control` 仍使用相同的 ACT、landing、ActionGuard、50 Hz control pump 和 bridge
 链路。它要求现场逐次设置 `CONFIRM_HARDWARE_MOTION=YES`、
 `CONFIRM_SCRIPT_REVIEWED=YES`、`CONFIRM_AUTOMATIC_PROGRESS_REVIEWED=YES` 和
 `CONFIRM_SHADOW_LOG_REVIEWED=YES`。模型包本身保持 `OFFLINE_CANDIDATE_ONLY`，这些入口
 只说明软件链路可运行，不代表液压响应、土方效果或真机闭环已经通过。
+
+首次受控运动固定使用单 cycle B→A，不直接运行四 cycle：
+
+```bash
+CYCLE_SCRIPT=testbed/testbed/configs/real_transition_single_cycle_right_to_left_v1.json \
+MODE=control \
+CONFIRM_HARDWARE_MOTION=YES \
+CONFIRM_SCRIPT_REVIEWED=YES \
+CONFIRM_AUTOMATIC_PROGRESS_REVIEWED=YES \
+CONFIRM_SHADOW_LOG_REVIEWED=YES \
+./scripts/run_real_transition_task_state_v2_policy.sh
+```
+
+该 cycle 结束后使用 `MODE=control ./scripts/check_real_transition_task_state_v2_log.sh`
+检查完整自动推进链。B→A 和 A→B 单 cycle 分别通过后，才使用默认四 cycle 脚本。
 
 ## 运行分工
 

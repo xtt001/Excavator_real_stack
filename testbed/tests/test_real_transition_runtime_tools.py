@@ -405,6 +405,7 @@ def test_log_verdict_checks_task_state_sequence_and_planner_match() -> None:
                 "policy_remote_activated": int(index == 0),
                 "policy_output_mode": "shadow_zero",
                 "policy_inference_latency_ms": 1.0,
+                "policy_action": [0.0] * 4,
                 "policy_task_state_v2": token,
                 "planner_task_state_v2": token,
                 "scripted_cycle_enabled": 1,
@@ -414,7 +415,7 @@ def test_log_verdict_checks_task_state_sequence_and_planner_match() -> None:
                 "scripted_cycle_task_state_v2_enabled": 1,
                 "scripted_cycle_task_state_stage": stage,
                 "scripted_cycle_task_state_changed": changed,
-                "scripted_cycle_task_state_advance_requested": changed,
+                "scripted_cycle_task_state_advance_requested": 0,
                 "scripted_cycle_task_state_advance_rejected_reason": "",
                 "scripted_cycle_task_auto_progress_enabled": 1,
                 "scripted_cycle_task_auto_work_liveness": 1,
@@ -467,6 +468,79 @@ def test_log_verdict_checks_task_state_sequence_and_planner_match() -> None:
     )
     assert invalid_ok is False
     assert any("invalid policy vectors" in reason for reason in invalid_reasons)
+
+
+def test_stationary_shadow_requires_work_state_and_no_automatic_progress() -> None:
+    token = [1.0, 1.0, 0.0, 0.0, 0.0]
+    steps = [
+        {
+            "local_step": index,
+            "wall_time_ns": 1_000_000_000 + index * 50_000_000,
+            "policy_remote_mode": "policy",
+            "policy_remote_activated": int(index == 0),
+            "policy_output_mode": "shadow_zero",
+            "policy_inference_latency_ms": 1.0,
+            "policy_action": [0.2, -0.1, 0.05, 0.1],
+            "policy_task_state_v2": token,
+            "planner_task_state_v2": token,
+            "policy_returned_action": [0.0] * 4,
+            "raw_action": [0.0] * 4,
+            "safe_action": [0.0] * 4,
+            "commanded_action": [0.0] * 4,
+            "receiver_health_ok": 1,
+            "controller_ack": 1,
+            "scripted_cycle_enabled": 1,
+            "scripted_cycle_active": 1,
+            "scripted_cycle_fault": "",
+            "scripted_cycle_activation_rejected_reason": "",
+            "scripted_cycle_task_state_v2_enabled": 1,
+            "scripted_cycle_task_state_stage": "work",
+            "scripted_cycle_task_state_changed": 0,
+            "scripted_cycle_task_state_advance_requested": 0,
+            "scripted_cycle_task_state_advance_rejected_reason": "",
+            "scripted_cycle_task_auto_progress_enabled": 1,
+            "scripted_cycle_task_auto_work_liveness": 0,
+            "scripted_cycle_task_auto_bucket_effective_observed": 0,
+            "scripted_cycle_task_auto_pending_event": "",
+            "scripted_cycle_task_state_applied_event": "",
+            "planner_target_side": "A",
+        }
+        for index in range(25)
+    ]
+    metrics = _compute_metrics(steps, warmup_steps=0)
+
+    ok, reasons = _verdict(
+        summary={"stop_reason": "aborted"},
+        metrics=metrics,
+        expect_output_mode="shadow_zero",
+        allow_stop_reasons={"aborted"},
+        require_shadow_zero=True,
+        expect_policy_remote=True,
+        expect_scripted_cycle=True,
+        expect_task_state_v2_stationary_shadow=True,
+        min_steps=20,
+        max_shadow_command_abs=1e-6,
+    )
+
+    assert ok is True
+    assert reasons == []
+
+    steps[-1]["scripted_cycle_task_auto_work_liveness"] = 1
+    bad_metrics = _compute_metrics(steps, warmup_steps=0)
+    bad_ok, bad_reasons = _verdict(
+        summary={"stop_reason": "aborted"},
+        metrics=bad_metrics,
+        expect_output_mode="shadow_zero",
+        allow_stop_reasons={"aborted"},
+        require_shadow_zero=True,
+        expect_policy_remote=True,
+        expect_scripted_cycle=True,
+        expect_task_state_v2_stationary_shadow=True,
+        min_steps=20,
+        max_shadow_command_abs=1e-6,
+    )
+    assert bad_ok is False
+    assert "stationary shadow falsely confirmed work liveness" in bad_reasons
 
 
 def test_latest_log_resolution_finds_nested_receiver_run(tmp_path: Path) -> None:

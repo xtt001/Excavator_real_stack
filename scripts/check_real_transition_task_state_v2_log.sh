@@ -34,12 +34,19 @@ ARGS=(
   --expect-output-mode "${OUTPUT_MODE}"
   --expect-policy-remote
   --expect-scripted-cycle
-  --expect-task-state-v2
   --allow-stop-reason aborted
-  --min-steps 1
   --warmup-steps 1
 )
 if [[ "${MODE}" == "shadow" ]]; then
-  ARGS+=(--require-shadow-zero)
+  ARGS+=(
+    --expect-task-state-v2-stationary-shadow
+    --require-shadow-zero
+    --min-steps 20
+  )
+else
+  ARGS+=(
+    --expect-task-state-v2-auto-progress
+    --min-steps 1
+  )
 fi
 exec "${PYTHON}" scripts/summarize_policy_test_log.py "${ARGS[@]}"

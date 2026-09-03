@@ -208,6 +208,17 @@ def build_bundle(
             "script_fault_or_completion": "latched zero output",
             "shutdown": "zero command",
         },
+        "qualification": {
+            "stationary_shadow": (
+                "requires WORK to remain unchanged with no liveness, pending event, "
+                "or applied event while returned/safe/commanded actions stay zero"
+            ),
+            "automatic_progress": (
+                "requires the full ordered task-state sequence only in recorded-state "
+                "replay or controlled physical motion"
+            ),
+            "stationary_shadow_can_prove_full_progress": False,
+        },
         "evidence_boundary": (
             "Software and bundle contract only. No hydraulic response, soil effect, "
             "or physical closed-loop cycle is asserted."
@@ -241,6 +252,9 @@ def build_bundle(
     )
     (output / "SHADOW_ZERO_CHECKLIST.md").write_text(
         _shadow_zero_checklist(), encoding="utf-8"
+    )
+    (output / "CONTROLLED_CYCLE_CHECKLIST.md").write_text(
+        _controlled_cycle_checklist(), encoding="utf-8"
     )
 
     files = _bundle_files(output)
@@ -329,13 +343,15 @@ software path but does not claim a physical closed-loop result.
 Required code commit: `{git_commit}`
 
 1. Run `MODE=shadow DRY_RUN=YES scripts/run_real_transition_task_state_v2_policy.sh`.
-2. Run shadow_zero with the field stack and review the generated log.
-3. Review the automatic progress trace: boom/bucket liveness, positive swing
-   excursion, effective bucket work, bucket release, action idle, work_complete,
-   and return_commit must occur in order.
-4. Physical button 7 arms/stops policy. Normal cycle progress requires no mark
-   button. Only after the script, automatic progress, shadow log, and motion
-   boundary have been reviewed may the control confirmations be set.
+2. Run stationary shadow_zero at A and B. It must remain in WORK with no task
+   transition while returned/safe/commanded actions remain zero.
+3. Do not require WORK_COMPLETE or RETURN_COMMITTED in stationary shadow: physical
+   boom/bucket liveness is intentionally absent.
+4. Review the frozen recorded-state automatic progress replay, then use a finite
+   single-cycle script for the first controlled test.
+5. Physical button 7 arms/stops policy. Normal cycle progress requires no mark
+   button. Only after the script, stationary shadow log, automatic progress
+   contract, and motion boundary have been reviewed may control be confirmed.
 
 The runner starts the existing `slave_real_stack.sh` control stack. Its control
 chain is ACT -> landing -> ActionGuard -> real action pump -> low-level bridge.
@@ -347,15 +363,32 @@ def _shadow_zero_checklist() -> str:
 
 - Verify `sha256sum -c SHA256SUMS` inside the bundle.
 - Verify qpos, raw qvel, four camera inputs, and the five-value task token in logs.
-- Confirm boom and bucket qpos liveness are observed before task progress.
-- Confirm positive swing excursion and sustained positive bucket action occur in order.
-- Confirm bucket release automatically produces WORK_COMPLETE and resets ACT.
-- Confirm the following all-axis action-idle window automatically produces
-  RETURN_COMMITTED, exposes the next target, and resets ACT.
+- Keep the machine stationary in one supported A/B ready region for at least 20
+  logged policy steps.
+- Confirm task state remains WORK and its vector remains valid and planner-aligned.
+- Confirm no boom/bucket work liveness, bucket-effective latch, pending event,
+  WORK_COMPLETE, RETURN_COMMITTED, or cycle advance is reported.
 - Confirm a nonzero raw policy action still yields zero returned and commanded action.
 - Confirm script fault, completion, manual toggle, and shutdown all yield zero output.
-- Review one A-start and one B-start shadow sequence before any controlled motion.
+- Repeat stationary shadow at A and B before any controlled motion.
 - Do not describe shadow or offline replay as hydraulic or physical closed-loop proof.
+"""
+
+
+def _controlled_cycle_checklist() -> str:
+    return """# Task-state-v2 controlled single-cycle checklist
+
+- Use a reviewed finite single-cycle script; start with B-to-A for the known failure.
+- Confirm physical button 7 stops policy and the physical emergency path is ready.
+- Confirm measured boom and bucket qpos liveness before automatic task progress.
+- Confirm positive swing excursion, sustained effective bucket action, and bucket
+  release occur in order before WORK_COMPLETE.
+- Confirm the all-axis policy action-idle window occurs before RETURN_COMMITTED.
+- Confirm each task-state change resets ACT before the next inference.
+- Confirm post-commit negative return, landing, target ready, script completion, and
+  final zero command from raw policy_action through safe/commanded action logs.
+- Stop on missing, reordered, or prematurely applied progress evidence.
+- One controlled cycle is physical evidence for that run only, not production proof.
 """
 
 
